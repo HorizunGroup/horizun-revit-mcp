@@ -101,11 +101,12 @@ namespace Horizun.Revit.Commands
             if (mode == "carbon") return ExecuteCarbon(doc, request, top);
             if (mode != "volume")
                 return CommandResult.Fail("mode must be 'volume' (the three-source reconciliation, the default), 'takeoff', 'room_finishes' or 'carbon'. Nothing was measured.");
-            foreach (string takeoffOnly in new[] { "quantities", "classification_parameter", "include_links", "phase", "level", "carbon_factors", "factor_source", "group_by" })
+            foreach (string takeoffOnly in new[] { "quantities", "classification_parameter", "include_links", "phase", "level", "carbon_factors", "factor_source", "group_by", "categories", "rows_file" })
                 if (request[takeoffOnly] != null)
                     return CommandResult.Fail("'" + takeoffOnly + "' is not read in mode 'volume': it would be " +
                                               "silently ignored, and you would read the volume reconciliation as though your " +
-                                              "quantities had been measured. Pass the mode that reads it (takeoff, room_finishes, carbon), or drop the key. Nothing was measured.");
+                                              "quantities had been measured. It is read by: " + ModesReadingKey[takeoffOnly] +
+                                              ". Use that mode, or drop the key. Nothing was measured.");
 
             // ---- Resolve the element set. ----
             var elements = new List<Element>();
@@ -437,17 +438,43 @@ namespace Horizun.Revit.Commands
             if (roomProblem != null) return CommandResult.Fail(roomProblem + " Nothing was measured.");
             var byRoom = new Dictionary<string, TakeoffCodeTally>(StringComparer.Ordinal);
             var roomsByKey = new Dictionary<string, SpatialElement>(StringComparer.Ordinal);
+            JToken rowsFileTok = request["rows_file"];
+            if (rowsFileTok != null && rowsFileTok.Type != JTokenType.Boolean)
+                return CommandResult.Fail("rows_file must be true or false. Nothing was measured.");
+            bool rowsFile = rowsFileTok != null && (bool)rowsFileTok;
 
             var idsToken = request["element_ids"] as JArray;
             bool byIds = idsToken != null && idsToken.Count > 0;
             string catName = request.Value<string>("category");
-            BuiltInCategory bic = BuiltInCategory.INVALID;
-            if (!byIds)
+            JToken catsTok = request["categories"];
+            // ONE takeoff over several categories: the budget joins on the whole model, and
+            // per-category replies joined by hand are where a category gets counted twice
+            // or not at all.
+            var bics = new List<BuiltInCategory>();
+            if (catsTok != null && catsTok.Type != JTokenType.Null)
+            {
+                if (byIds || !string.IsNullOrWhiteSpace(catName))
+                    return CommandResult.Fail("Pass exactly one of element_ids, category or categories. Nothing was measured.");
+                var catsArr = catsTok as JArray;
+                if (catsArr == null || catsArr.Count == 0 || catsArr.Count > 50)
+                    return CommandResult.Fail("categories must be a non-empty array of at most 50 BuiltInCategory names. Nothing was measured.");
+                foreach (JToken t in catsArr)
+                {
+                    string name = t.Type == JTokenType.String ? (string)t : null;
+                    BuiltInCategory one;
+                    if (string.IsNullOrWhiteSpace(name) || !Enum.TryParse<BuiltInCategory>(name.Trim(), true, out one))
+                        return CommandResult.Fail("categories: '" + t + "' is not a BuiltInCategory name. Expected something like OST_StructuralFraming. Nothing was measured.");
+                    if (!bics.Contains(one)) bics.Add(one);
+                }
+            }
+            else if (!byIds)
             {
                 if (string.IsNullOrWhiteSpace(catName))
-                    return CommandResult.Fail("Pass element_ids, or a category to sweep. Nothing was measured.");
+                    return CommandResult.Fail("Pass element_ids, or a category (or categories) to sweep. Nothing was measured.");
+                BuiltInCategory bic;
                 if (!Enum.TryParse<BuiltInCategory>(catName, true, out bic))
                     return CommandResult.Fail($"'{catName}' is not a BuiltInCategory name. Expected something like OST_StructuralFraming. Nothing was measured.");
+                bics.Add(bic);
             }
             else if (includeLinks)
                 // An ElementId names an element in ONE document. The same integer names a
@@ -488,7 +515,7 @@ namespace Horizun.Revit.Commands
             }
             else
             {
-                hostElements = new FilteredElementCollector(doc).OfCategory(bic).WhereElementIsNotElementType().ToElements().ToList();
+                hostElements = CollectCategories(doc, bics);
             }
             scope.Add(new ScopeEntry { Owner = doc, Elements = hostElements });
 
@@ -540,7 +567,7 @@ namespace Horizun.Revit.Commands
                         List<Element> linkedElements;
                         try
                         {
-                            linkedElements = new FilteredElementCollector(linked).OfCategory(bic).WhereElementIsNotElementType().ToElements().ToList();
+                            linkedElements = CollectCategories(linked, bics);
                         }
                         catch (Exception ex)
                         {
@@ -604,6 +631,9 @@ namespace Horizun.Revit.Commands
 
             var options = new Options { ComputeReferences = false, IncludeNonVisibleObjects = false, DetailLevel = detail };
             var rows = new JArray();
+            // Every row, uncapped, only when a file was asked for: the inline reply keeps
+            // its 'top', the file does not.
+            JArray allRows = rowsFile ? new JArray() : null;
             var byCode = new Dictionary<string, TakeoffCodeTally>(StringComparer.Ordinal);
             int rowsWanted = 0, unreadableReads = 0, invalidReads = 0;
             bool visibilityComplete = true;
@@ -688,7 +718,7 @@ namespace Horizun.Revit.Commands
                     }
 
                     rowsWanted++;
-                    if (rows.Count >= top) continue;
+                    if (rows.Count >= top && allRows == null) continue;
                     var row = new JObject
                     {
                         ["element_id"] = e.Id.ToString(),
@@ -707,7 +737,8 @@ namespace Horizun.Revit.Commands
                         ["quantities"] = quantities
                     };
                     if (roomHit != null) row["room"] = RoomRowJson(roomHit);
-                    rows.Add(row);
+                    if (allRows != null) allRows.Add(row);
+                    if (rows.Count < top) rows.Add(allRows != null ? row.DeepClone() : row);
                 }
             }
 
@@ -758,6 +789,8 @@ namespace Horizun.Revit.Commands
             {
                 ["mode"] = "takeoff",
                 ["classification_parameter"] = classificationParameter,
+                // What was swept, as resolved - null for an element_ids takeoff.
+                ["categories"] = byIds ? null : new JArray(bics.Select(b => (JToken)b.ToString())),
                 ["detail_level"] = detail.ToString(),
                 ["quantity_definitions"] = new JArray(defs.Select(d => new JObject
                 {
@@ -794,7 +827,8 @@ namespace Horizun.Revit.Commands
                 ["top"] = top,
                 ["truncated"] = rowsWanted > rows.Count,
                 ["truncated_note"] = rowsWanted > rows.Count
-                    ? "by_code and coverage are EXACT; only the per-element rows were shortened. horizun_budget_compare refuses a truncated reply - re-run with top >= rows_matching."
+                    ? "by_code and coverage are EXACT; only the per-element rows were shortened. horizun_budget_compare refuses a truncated reply - " +
+                      (rowsFile ? "pass rows_file.path as its model_rows_path: that file holds every row." : "re-run with top >= rows_matching, or with rows_file=true and pass rows_file.path as its model_rows_path.")
                     : null
             };
             if (roomReader != null)
@@ -803,7 +837,24 @@ namespace Horizun.Revit.Commands
                 takeoffResult["by_room"] = RoomRollup(byRoom, roomsByKey, defs);
                 takeoffResult["room_membership"] = roomReader.Summary();
             }
+
+            if (rowsFile)
+                takeoffResult["rows_file"] = TakeoffRowsFile.Write(HorizunPaths.TakeoffsDir(),
+                                                                  TakeoffRowsFile.Document(takeoffResult, allRows),
+                                                                  DateTime.UtcNow, Guid.NewGuid());
             return CommandResult.Ok(takeoffResult);
+        }
+
+        /// <summary>
+        /// Every non-type element of the listed categories, each element once. One
+        /// collector with a multi-category filter rather than one per category, so an
+        /// element can never be counted under two of them.
+        /// </summary>
+        private static List<Element> CollectCategories(Document d, List<BuiltInCategory> bics)
+        {
+            var collector = new FilteredElementCollector(d).WhereElementIsNotElementType();
+            if (bics.Count == 1) return collector.OfCategory(bics[0]).ToElements().ToList();
+            return collector.WherePasses(new ElementMulticategoryFilter(bics)).ToElements().ToList();
         }
 
         private static List<TakeoffDefinition> ParseTakeoffDefinitions(JToken token, out string problem)

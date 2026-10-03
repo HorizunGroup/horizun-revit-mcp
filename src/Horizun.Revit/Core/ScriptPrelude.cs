@@ -178,9 +178,21 @@ def _hz_out_reference(dotnet_type):
     import clr
     return clr.Reference[dotnet_type]()
 
+def _hz_id_value(element_id):
+    '''The number inside an ElementId, on every supported Revit: .Value (64-bit)
+    from 2024, .IntegerValue before. Revit 2026 removed IntegerValue, so a script
+    written against either property alone fails on half the supported years.'''
+    if element_id is None:
+        return None
+    try:
+        return element_id.Value
+    except AttributeError:
+        return element_id.IntegerValue
+
 horizun.transaction = _hz_transaction
 horizun.report = _hz_report
 horizun.out_reference = _hz_out_reference
+horizun.id_value = _hz_id_value
 ";
 
         /// <summary>Runs after the caller's script, whatever happened to it.</summary>

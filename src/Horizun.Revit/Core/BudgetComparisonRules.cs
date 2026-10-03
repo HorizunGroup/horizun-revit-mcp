@@ -380,7 +380,7 @@ namespace Horizun.Revit.Core
                 if (reply["mode"] != null && (string)reply["mode"] != "takeoff")
                 { problem = "model_rows is a horizun_quantities reply in mode '" + (string)reply["mode"] + "'; the comparison needs mode 'takeoff' rows (per-element classification_code plus named quantities)."; return null; }
                 if (reply["truncated"] != null && reply["truncated"].Type == JTokenType.Boolean && (bool)reply["truncated"])
-                { problem = "model_rows is a horizun_quantities reply whose rows were TRUNCATED (rows_matching=" + (reply["rows_matching"] ?? "?") + ", shown=" + (reply["shown"] ?? "?") + "). Re-run the takeoff with 'top' at least rows_matching; a comparison over a prefix of the model would price a smaller building."; return null; }
+                { problem = "model_rows is a horizun_quantities reply whose rows were TRUNCATED (rows_matching=" + (reply["rows_matching"] ?? "?") + ", shown=" + (reply["shown"] ?? "?") + "). Re-run the takeoff with rows_file=true and pass rows_file.path as model_rows_path (or with 'top' at least rows_matching); a comparison over a prefix of the model would price a smaller building."; return null; }
                 arr = reply["rows"] as JArray;
                 if (arr == null) { problem = "model_rows is an object without a 'rows' array."; return null; }
             }

@@ -235,6 +235,11 @@
          the numbering that tells them apart needs no Revit to be wrong. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\TakeoffScopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ClassificationCatalogueRules.cs" />
+    <!-- The verdict of horizun_bind_shared_param: a Type binding cannot vary between
+         groups, and that must not read as a failed binding. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\SharedParamBindingRules.cs" />
+    <!-- The complete takeoff written to disk for budget_compare's model_rows_path. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\TakeoffRowsFile.cs" />
     <!-- Guided corrections: proposals only, from an allow-list, and a scope
          that may narrow but never widen. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\GuidedCorrectionRules.cs" />

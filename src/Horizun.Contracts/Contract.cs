@@ -3877,6 +3877,9 @@ namespace Horizun.Contracts
                     "code, and it makes tracebacks name the real file and line instead of <string>. " +
                     "INJECTED: doc, uidoc, uiapp AND __revit__ (both the UIApplication - __revit__ is pyRevit's " +
                     "name for it), app (the Application), checkpoint(), revit_raised(), dialog_answer(). " +
+                    "ELEMENT IDS: ElementId.IntegerValue does not exist in Revit 2026+ (it is .Value, 64-bit, " +
+                    "since 2024) - use horizun.id_value(some_id), which reads either on 2023-2027, instead of " +
+                    "either property. " +
                     "WHAT REVIT RAISED comes back as 'dialogs' and 'failures' beside __output__ - read them " +
                     "when an open fails, because the bridge CANCELS modal dialogs and all the script sees is " +
                     "'Opening was canceled'. Each carries 'while', the script's own last checkpoint() label. " +
@@ -4719,7 +4722,7 @@ namespace Horizun.Contracts
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
                        ""description"": ""Elements to measure. Omit and pass 'category' instead to sweep a whole category."" },
     ""category"": { ""type"": ""string"",
-                    ""description"": ""BuiltInCategory name, e.g. OST_StructuralFraming, OST_Walls, OST_Floors. Used when element_ids is omitted."" },
+                    ""description"": ""BuiltInCategory name, e.g. OST_StructuralFraming, OST_Walls, OST_Floors. Used when element_ids is omitted. In mode takeoff, 'categories' sweeps several at once."" },
     ""detail_level"": { ""type"": ""string"", ""enum"": [""Coarse"", ""Medium"", ""Fine""], ""default"": ""Fine"",
                         ""description"": ""Geometry detail level. Fine is the default here on purpose: Coarse geometry under-reports, and this number gets billed."" },
     ""tolerance_pct"": { ""type"": ""number"", ""default"": 1.0,
@@ -4747,6 +4750,10 @@ namespace Horizun.Contracts
           ""parameter"": { ""type"": ""string"", ""description"": ""Required when source is parameter; refused otherwise."" },
           ""unit"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""The unit this quantity is billed in, e.g. m3, m2, m, kg, un. Must be m3 / m2 / m for geometry_volume / geometry_area / length."" }
         } } },
+    ""categories"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50, ""items"": { ""type"": ""string"" },
+      ""description"": ""takeoff only. Several BuiltInCategory names measured as ONE takeoff (e.g. [\""OST_StructuralFraming\"", \""OST_StructuralColumns\"", \""OST_Floors\""]), instead of one call per category whose replies would have to be joined by hand. Exclusive with 'category' and with element_ids; include_links sweeps every listed category in every loaded link."" },
+    ""rows_file"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""takeoff only. Also write the COMPLETE reply - every row, ignoring 'top' - as JSON to the bridge's own folder (<data root>/takeoffs), and report it in rows_file {written, path, rows, bytes, sha256}. Pass rows_file.path as horizun_budget_compare model_rows_path so a takeoff of hundreds or thousands of rows never travels through the conversation; the inline reply stays capped by 'top'. The location is not caller-chosen, so this needs no permission beyond reading the model. A write that fails is reported as written=false with the error; the measurement itself is still returned."" },
     ""classification_parameter"": { ""type"": ""string"",
       ""description"": ""takeoff only, required. The parameter (instance first, then type) carrying each element's budget code. Each row's classification_code is the value, or '(no such parameter)', '(empty)', '(unreadable)' - three non-values kept apart."" },
     ""include_links"": { ""type"": ""boolean"", ""default"": false,
@@ -5812,7 +5819,7 @@ namespace Horizun.Contracts
     ""merge_existing_categories"": { ""type"": ""boolean"", ""default"": true,
                                      ""description"": ""true: UNION the categories already bound with the requested ones. false: bind ONLY the requested ones â€” ReInsert then DROPS every other bound category and LOSES the values stored in them. Leave it true unless you mean exactly that."" },
     ""allow_vary_between_groups"": { ""type"": ""boolean"", ""default"": true,
-                                     ""description"": ""Call SetAllowVaryBetweenGroups(true) on the InternalDefinition. Without it, writing different values to instances inside Model Groups raises the DESAGRUPAR modal, which hangs the bridge. Reported as read back from the InternalDefinition, never as assumed."" },
+                                     ""description"": ""Call SetAllowVaryBetweenGroups(true) on the InternalDefinition. Without it, writing different values to instances inside Model Groups raises the DESAGRUPAR modal, which hangs the bridge. Reported as read back from the InternalDefinition, never as assumed. Instance bindings only: a Type binding has one value per type and cannot vary between groups, so for binding_kind=Type the flag is reported as not_applicable, never set and never counted against the outcome."" },
     ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: bind shared parameter"" },
     ""target_document_title"": { ""type"": ""string"",
                                  ""description"": ""If given, the bind aborts unless the active document's title matches. Binding into whichever model happened to be in front is how a batch lands in the wrong file."" }
@@ -6424,7 +6431,7 @@ namespace Horizun.Contracts
     ""bc3_path"": { ""type"": ""string"", ""description"": ""export_bc3: absolute path of a NEW .bc3"" },
     ""model_rows"": { ""type"": [""array"", ""object""],
       ""description"": ""The takeoff: either the per-element rows array or the whole horizun_quantities mode='takeoff' reply (its 'rows' are used; a TRUNCATED reply is refused - re-run with top >= rows_matching). Exactly one of model_rows / model_rows_path."" },
-    ""model_rows_path"": { ""type"": ""string"", ""description"": ""Absolute path to a JSON file holding the same thing (a takeoff reply or a rows array)."" },
+    ""model_rows_path"": { ""type"": ""string"", ""description"": ""Absolute path to a JSON file holding the same thing (a takeoff reply or a rows array). The simplest source is horizun_quantities mode='takeoff' with rows_file=true: pass its rows_file.path here, which holds every row, so a large takeoff never travels through the conversation."" },
     ""baseline"": { ""type"": ""object"", ""required"": [""file_path"", ""columns""], ""additionalProperties"": false,
       ""description"": ""The budget: an .xlsx read through horizun_excel_read_rows. Every row below header_row with a non-blank code is a line; blank-code rows are skipped and counted."",
       ""properties"": {

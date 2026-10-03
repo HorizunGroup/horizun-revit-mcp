@@ -22,8 +22,9 @@ namespace Horizun.Revit.Commands
         {
             ["takeoff"] = new[] { "level", "carbon_factors", "factor_source" },
             ["room_finishes"] = new[] { "quantities", "classification_parameter", "include_links", "category",
-                                        "carbon_factors", "factor_source", "detail_level", "tolerance_pct", "only_disagreements" },
-            ["carbon"] = new[] { "quantities", "classification_parameter", "include_links", "phase", "level",
+                                        "carbon_factors", "factor_source", "detail_level", "tolerance_pct", "only_disagreements",
+                                        "categories", "rows_file" },
+            ["carbon"] = new[] { "quantities", "classification_parameter", "include_links", "phase", "level", "categories", "rows_file",
                                  "detail_level", "tolerance_pct", "only_disagreements" },
         };
 
@@ -33,6 +34,9 @@ namespace Horizun.Revit.Commands
             ["quantities"] = "takeoff",
             ["classification_parameter"] = "takeoff",
             ["include_links"] = "takeoff",
+            ["categories"] = "takeoff",
+            ["rows_file"] = "takeoff",
+            ["group_by"] = "takeoff (group_by='room')",
             ["category"] = "volume, takeoff, carbon",
             ["phase"] = "room_finishes, takeoff with group_by='room'",
             ["level"] = "room_finishes",

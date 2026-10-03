@@ -1338,13 +1338,16 @@ namespace Horizun.Server
                         Preconditions = "the scope is explicit. A take-off of everything is a number nobody can check.",
                         OnError = "an element whose quantity cannot be computed is listed, with the reason, and " +
                                   "excluded from the total rather than counted as zero.",
-                        ReadsBack = "quantities by the declared grouping, with the element count behind each row."
+                        ReadsBack = "quantities by the declared grouping, with the element count behind each row. For a " +
+                                    "comparison, run mode 'takeoff' with categories=[...] and rows_file=true: the " +
+                                    "complete rows go to a file (rows_file.path) instead of through the conversation."
                     },
                     new Step
                     {
                         N = 3, Tool = "horizun_budget_compare",
                         Purpose = "compare the measurement against the budget, when there is one.",
-                        Needs = "the take-off rows from step 2.",
+                        Needs = "the take-off rows from step 2 - preferably as model_rows_path = rows_file.path, " +
+                                "which holds every row; inline rows must not be truncated.",
                         Preconditions = "the budget arrives as an input with its own units. Comparing a volume against an " +
                                         "area is a silent error and the comparison refuses it.",
                         OnError = "a budget line with no matching take-off row is reported as unmatched IN BOTH " +

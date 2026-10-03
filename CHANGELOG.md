@@ -3,6 +3,27 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased — 2026-10-03
+
+Defects found in the "Control 4D/5D con agentes" course rehearsal.
+
+- **Type bindings are confirmed, not failed.** `horizun_bind_shared_param` with
+  `binding_kind=Type` committed and read back correctly, then answered
+  `not_bound` / `failed` because it called `SetAllowVaryBetweenGroups`, which Revit
+  rejects for a type parameter. Varying between groups is an instance notion: for a
+  Type binding `varies_across_groups.state` is now `not_applicable`, the call is
+  skipped and the outcome is `confirmed`. Instance bindings are unchanged.
+- **Takeoffs too large for the conversation.** `horizun_quantities mode=takeoff`
+  accepts `categories: [...]` (one takeoff over several categories, each element
+  once) and `rows_file: true`, which writes the complete reply - every row,
+  ignoring `top` - to `<data root>/takeoffs/` and returns its path, row count,
+  size and SHA-256. Pass `rows_file.path` as `horizun_budget_compare
+  model_rows_path`. The location is the bridge's own, so no extra permission is
+  needed; a failed write is reported, never thrown.
+- **Element ids across Revit years.** `horizun_execute_python` scripts get
+  `horizun.id_value(id)`, which reads `.Value` (2024+) or `.IntegerValue` (2023);
+  Revit 2026 removed `IntegerValue`. The tool description says so.
+
 ## v2.1.5 — 2026-09-30
 
 Patch release over 2.1.4 (tool contract: new optional fields and one new operation; nothing removed; still 123 tools). It fixes the 18 defects found by an end-to-end dry run on 2026-09-30: seven course flows on copies of the Autodesk sample models in Revit 2026. Every item was built and unit-tested offline, then **replayed live in Revit 2026 on 2026-09-30** on fresh copies of the same Autodesk samples, through the installed build. The live replay found three more defects, fixed in this release:

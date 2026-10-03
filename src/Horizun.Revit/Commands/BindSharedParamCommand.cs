@@ -68,7 +68,9 @@ namespace Horizun.Revit.Commands
             "allow_vary_between_groups (default true) calls SetAllowVaryBetweenGroups on the real InternalDefinition, " +
             "found through an element's parameter after Regenerate, because the iterator's Key is the " +
             "ExternalDefinition and has no such flag; without the flag Revit throws the DESAGRUPAR modal on the " +
-            "first differing write inside a Model Group and hangs the bridge. If NO element carries the parameter " +
+            "first differing write inside a Model Group and hangs the bridge. The flag exists only for Instance " +
+            "bindings: a Type binding cannot vary between groups, so there it is reported as not_applicable and " +
+            "does not gate the outcome. If NO element carries the parameter " +
             "the flag cannot be set and that is REPORTED, not swallowed. The binding kind, the category list and " +
             "VariesAcrossGroups are three separate measurements: if any of them could not be taken, the outcome is " +
             "'unknown' and never 'confirmed'. A ReInsert that dropped previously-bound categories under " +
@@ -79,16 +81,16 @@ namespace Horizun.Revit.Commands
         // The three-way split. `unknown` is not a polite name for `not_bound`: one says
         // the model does not carry the binding, the other says we could not look. Summing
         // them is how "I could not look" gets published as "it is absent".
-        private const string OUT_CONFIRMED = "confirmed";
-        private const string OUT_NOT_BOUND = "not_bound";
-        private const string OUT_UNKNOWN = "unknown";
+        private const string OUT_CONFIRMED = SharedParamBindingRules.Confirmed;
+        private const string OUT_NOT_BOUND = SharedParamBindingRules.NotBound;
+        private const string OUT_UNKNOWN = SharedParamBindingRules.Unknown;
 
         // A ReInsert that kept your categories but threw OTHERS away is neither
         // `confirmed` (with merge=true you asked for the UNION, and this is not it) nor
         // `not_bound` (the parameter IS bound). It gets its own name so that a batch
         // gating on outcome=="confirmed" stops on the call that deleted the values, and
         // so that `not_bound` keeps meaning what it says.
-        private const string OUT_DROPPED = "categories_dropped";
+        private const string OUT_DROPPED = SharedParamBindingRules.CategoriesDropped;
 
         public CommandResult Execute(UIApplication uiapp, string paramsJson)
         {
@@ -163,6 +165,9 @@ namespace Horizun.Revit.Commands
 
             bool merge = request["merge_existing_categories"] == null || request.Value<bool>("merge_existing_categories");
             bool allowVary = request["allow_vary_between_groups"] == null || request.Value<bool>("allow_vary_between_groups");
+            // Varying between groups is an instance notion: a type parameter has one value
+            // per type, and Revit throws if asked to let it vary. Not applicable, not failed.
+            bool varyApplies = SharedParamBindingRules.VaryApplies(wantType);
             var txName = request.Value<string>("transaction_name");
             if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: bind shared parameter";
 
@@ -447,7 +452,7 @@ namespace Horizun.Revit.Commands
                     // only handle on it is a real element's parameter.
                     probe = ProbeInternalDefinition(doc, defGuid, wantType, new HashSet<long>(finalCats.Keys));
 
-                    if (allowVary && probe.Def != null)
+                    if (allowVary && varyApplies && probe.Def != null)
                     {
                         varySetAttempted = true;
                         try
@@ -547,7 +552,12 @@ namespace Horizun.Revit.Commands
             var afterProbe = ProbeInternalDefinition(doc, defGuid, wantType, probeCats);
             bool? variesAfter = null;
             string variesError = null;
-            if (afterProbe.Def == null)
+            if (!varyApplies)
+            {
+                // Nothing to read: a TypeBinding cannot vary between groups. Left null and
+                // reported as not_applicable, never as an unmeasured flag.
+            }
+            else if (afterProbe.Def == null)
             {
                 variesError = afterProbe.NoCarrierReason();
             }
@@ -587,17 +597,31 @@ namespace Horizun.Revit.Commands
 
             bool kindMatches = after.KindMeasured && after.IsType == wantType;
             bool catsComplete = after.CatsMeasured && requestedIds.All(id => CategoryIdsOf(after).Contains(id));
-            bool varyOk = variesAfter.HasValue && (!allowVary || variesAfter.Value);
+            bool varyOk = !varyApplies || (variesAfter.HasValue && (!allowVary || variesAfter.Value));
 
-            string outcome = Classify(committed, after, kindMatches, catsComplete, noUnintendedDrop,
-                                      variesAfter, allowVary);
+            string outcome = SharedParamBindingRules.Classify(new SharedParamBindingRules.Facts
+            {
+                Committed = committed,
+                ExistsAfter = after.Exists,
+                KindMeasured = after.KindMeasured,
+                KindMatches = kindMatches,
+                CatsMeasured = after.CatsMeasured,
+                CatsComplete = catsComplete,
+                CatsHaveUnreadable = after.CatsUnreadable > 0,
+                NoUnintendedDrop = noUnintendedDrop,
+                VariesAfter = variesAfter,
+                AllowVaryRequested = allowVary,
+                TypeBinding = wantType
+            });
 
             var result = new JObject
             {
                 ["outcome"] = outcome,
                 ["outcome_means"] = "confirmed: the binding was re-read from ParameterBindings after the commit and " +
                                     "its kind, its categories and VariesAcrossGroups were all MEASURED and are what " +
-                                    "you asked for, and no previously-bound category was dropped. not_bound: the " +
+                                    "you asked for (VariesAcrossGroups only for an Instance binding: a Type binding " +
+                                    "cannot vary between groups, so there it is not_applicable), and no " +
+                                    "previously-bound category was dropped. not_bound: the " +
                                     "model was read and does not carry it. categories_dropped: it IS bound and covers " +
                                     "what you requested, but the ReInsert threw away categories that were bound " +
                                     "before, together with every value this parameter held in them — see " +
@@ -632,12 +656,13 @@ namespace Horizun.Revit.Commands
                 ["categories_dropped"] = dropped,
                 ["categories_dropped_note"] = DroppedNote(dropMeasurable, dropped, merge, before, after),
                 // (c) — off the InternalDefinition, or an explicit reason why not.
-                ["varies_across_groups"] = VaryBlock(allowVary, varySetAttempted, varySetError, variesAfter,
-                                                     variesError, afterProbe, wantType),
+                ["varies_across_groups"] = varyApplies
+                    ? VaryBlock(allowVary, varySetAttempted, varySetError, variesAfter, variesError, afterProbe, wantType)
+                    : VaryNotApplicableBlock(allowVary),
                 ["parameter_group"] = GroupBlock(afterProbe.Def, groupSpec),
                 ["note"] = Note(outcome, committed, after, kindMatches, catsComplete, noUnintendedDrop, dropped,
                                 varyOk, allowVary, variesAfter, variesError, varySetError, afterProbe, defName,
-                                kind, restoreError)
+                                kind, restoreError, varyApplies)
             };
 
             // One binding requested. `confirmed` is the only outcome that was measured to be
@@ -653,42 +678,7 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(result);
         }
 
-        // ---- Classification. -----------------------------------------------------
-        private static string Classify(bool committed, BindingState after, bool kindMatches, bool catsComplete,
-                                       bool? noUnintendedDrop, bool? varies, bool allowVary)
-        {
-            // A rollback is the only claim of absence here that does not rest on a read:
-            // Revit undid the transaction, so nothing from this call reached the model.
-            if (!committed) return OUT_NOT_BOUND;
-
-            // Could not even establish whether a binding exists.
-            if (after.Exists == null) return OUT_UNKNOWN;
-            if (after.Exists == false) return OUT_NOT_BOUND;
-
-            if (!after.KindMeasured) return OUT_UNKNOWN;
-            if (!kindMatches) return OUT_NOT_BOUND;      // it is bound — as the OTHER kind.
-
-            if (!after.CatsMeasured) return OUT_UNKNOWN;
-            // A category missing from a list that is admittedly a LOWER BOUND is not a
-            // category that is absent — it may be one of the ones we could not read. Only
-            // a clean read can carry a claim of absence.
-            if (!catsComplete && after.CatsUnreadable > 0) return OUT_UNKNOWN;
-            if (!catsComplete) return OUT_NOT_BOUND;     // read back, and your categories are not in it.
-
-            // Your categories are in it — but with merge=true you asked for the UNION, so a
-            // binding missing OTHER categories that were there before is not what you asked
-            // for either, and the values in them are gone. The subset test above passes that
-            // case trivially, which is exactly how the drop stayed invisible.
-            if (!noUnintendedDrop.HasValue) return OUT_UNKNOWN;
-            if (!noUnintendedDrop.Value) return OUT_DROPPED;
-
-            // The flag we could not read is not the flag that is off. One of those means
-            // the desagrupar modal is armed; the other means we do not know if it is.
-            if (!varies.HasValue) return OUT_UNKNOWN;
-            if (allowVary && !varies.Value) return OUT_NOT_BOUND;
-
-            return OUT_CONFIRMED;
-        }
+        // ---- Classification lives in Core/SharedParamBindingRules.cs (Revit-free, tested). ----
 
         // ---- The three measurements, each of which may report "I could not look". ----
         private static JObject KindBlock(BindingState s, bool wantType)
@@ -749,12 +739,35 @@ namespace Horizun.Revit.Commands
             return o;
         }
 
+        /// <summary>
+        /// A TypeBinding has one value per type, so there is nothing to vary between group
+        /// instances and nothing that can raise the DESAGRUPAR modal. Revit refuses the flag
+        /// on a type parameter; asking for it anyway is not a failure of the binding.
+        /// </summary>
+        private static JObject VaryNotApplicableBlock(bool allowVary)
+        {
+            return new JObject
+            {
+                ["requested"] = allowVary,
+                ["applies"] = false,
+                ["state"] = "not_applicable",
+                ["set_attempted"] = false,
+                ["set_error"] = null,
+                ["measured"] = false,
+                ["note"] = "Type binding: a type parameter has one value per type, shared by every instance inside " +
+                           "or outside a Model Group, so it cannot vary between groups and cannot raise the " +
+                           "DESAGRUPAR modal. SetAllowVaryBetweenGroups was not called (Revit rejects it for type " +
+                           "parameters), and this does not count against the outcome."
+            };
+        }
+
         private static JObject VaryBlock(bool allowVary, bool attempted, string setError, bool? value,
                                          string readError, DefProbe probe, bool wantType)
         {
             var o = new JObject
             {
                 ["requested"] = allowVary,
+                ["applies"] = true,
                 ["set_attempted"] = attempted,
                 ["set_error"] = setError
             };
@@ -900,7 +913,8 @@ namespace Horizun.Revit.Commands
         private static string Note(string outcome, bool committed, BindingState after, bool kindMatches,
                                    bool catsComplete, bool? noUnintendedDrop, JArray dropped, bool varyOk,
                                    bool allowVary, bool? varies, string variesError, string varySetError,
-                                   DefProbe probe, string defName, string kind, string restoreError)
+                                   DefProbe probe, string defName, string kind, string restoreError,
+                                   bool varyApplies)
         {
             var parts = new List<string>();
             string who = "'" + (defName ?? "the parameter") + "'";
@@ -908,9 +922,13 @@ namespace Horizun.Revit.Commands
 
             if (outcome == OUT_CONFIRMED)
             {
-                parts.Add(who + " is bound as a " + kind + "Binding: the kind, the resulting categories and " +
-                          "VariesAcrossGroups were each re-read from the model after the commit, and no " +
-                          "previously-bound category was dropped.");
+                parts.Add(varyApplies
+                    ? who + " is bound as a " + kind + "Binding: the kind, the resulting categories and " +
+                      "VariesAcrossGroups were each re-read from the model after the commit, and no " +
+                      "previously-bound category was dropped."
+                    : who + " is bound as a " + kind + "Binding: the kind and the resulting categories were each " +
+                      "re-read from the model after the commit, and no previously-bound category was dropped. " +
+                      "VariesAcrossGroups does not apply to a type parameter (see varies_across_groups).");
                 // Reachable only with merge=false, where the drop is the request. Said out
                 // loud so that a `confirmed` never sits silently on top of deleted values.
                 if (dropCount > 0)
@@ -965,7 +983,11 @@ namespace Horizun.Revit.Commands
                                   "of those categories is gone with the binding. See categories_dropped; do not " +
                                   "treat this call as done.");
 
-                    if (!varies.HasValue)
+                    if (!varyApplies)
+                    {
+                        // A Type binding: the flag is not part of this verdict.
+                    }
+                    else if (!varies.HasValue)
                         parts.Add("VariesAcrossGroups could not be measured (" +
                                   (variesError ?? "reason unrecorded") + "), so whether the DESAGRUPAR modal is " +
                                   "armed is UNKNOWN — the flag may be set or unset" +

@@ -167,6 +167,8 @@ namespace Horizun.Revit.Core
         /// <summary>One append-only event file per delivery (DeliveryLedger).</summary>
         public static string DeliveriesDir() => System.IO.Path.Combine(DataRoot(), "deliveries");
         public static string LogsDir() => System.IO.Path.Combine(DataRoot(), "logs");
+        /// <summary>Complete takeoff replies written by horizun_quantities rows_file=true (TakeoffRowsFile).</summary>
+        public static string TakeoffsDir() => System.IO.Path.Combine(DataRoot(), "takeoffs");
 
         /// <summary>
         /// The pre-0.3 location, READ ONLY and never written.

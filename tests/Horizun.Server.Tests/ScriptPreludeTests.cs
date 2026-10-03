@@ -142,6 +142,26 @@ trace = ','.join(events)
         }
 
         [Fact]
+        public void Id_value_reads_an_element_id_on_every_supported_revit()
+        {
+            // Course rehearsal 2026-10-03: an agent-written script used ElementId.IntegerValue
+            // and failed on Revit 2026, where only .Value exists. 2023 has only IntegerValue.
+            var engine = Python.CreateEngine();
+            var scope = Prepared(engine, _ => "[]", _ => new FakeScope(), new FakeJob());
+            engine.Execute(
+                "class Id2026(object):\n" +
+                "    Value = 9007199254740993\n" +
+                "class Id2023(object):\n" +
+                "    IntegerValue = 4242\n" +
+                "modern = horizun.id_value(Id2026())\n" +
+                "legacy = horizun.id_value(Id2023())\n" +
+                "nothing = horizun.id_value(None)\n", scope);
+            Assert.Equal("9007199254740993", scope.GetVariable("modern").ToString());
+            Assert.Equal("4242", scope.GetVariable("legacy").ToString());
+            Assert.Null(scope.GetVariable("nothing"));
+        }
+
+        [Fact]
         public void Checkpoint_reaches_the_record_and_stdout_is_captured_not_lost()
         {
             ScriptEngine engine = Python.CreateEngine();
