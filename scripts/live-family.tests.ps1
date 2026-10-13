@@ -30,12 +30,13 @@ $call = {
         return @{isError=$false;data=@{file=@{revit_version=$(if ($script:scenario -eq 'version') {'2025'} else {'2026'})};versions_match=$true}}
     }
     if ($tool -ne 'horizun_query_model') { throw "unexpected call: $tool" }
+    if ($arguments.parameter_format -ne 'full') { throw 'family oracle must read raw internal lengths independent of display units' }
     return @{isError=$false;data=@{
         coverage_complete=($script:scenario -ne 'coverage'); truncated=$false
         rows=@(
-            @{family=$arguments.family;type='Small';is_element_type=$true;parameters=@{HZ_TestDepth=150.0}},
+            @{family=$arguments.family;type='Small';is_element_type=$true;parameters=@{HZ_TestDepth=@{exists=$true;storage_type='Double';raw=(150.0 / 304.8);display='150 mm'}}},
             @{family=$arguments.family;type='Large';is_element_type=$true;parameters=@{
-                HZ_TestDepth=$(if ($script:scenario -eq 'value') {0} else {300.0})}}
+                HZ_TestDepth=@{exists=$true;storage_type='Double';raw=$(if ($script:scenario -eq 'value') {0} else {300.0 / 304.8});display='300 mm'}}}
         )
     }}
 }

@@ -41,7 +41,7 @@ function Invoke-HorizunFamilyProbe {
         }
         $read = & $Call 'horizun_query_model' @{
             family=$name; include_types=$true; include_links=$false; max_rows=10
-            return_fields=@('family','type','is_element_type'); parameter_format='compact'
+            return_fields=@('family','type','is_element_type'); parameter_format='full'
             return_parameters=@('HZ_TestDepth')
         }
         if ($read.isError -or $read.data.coverage_complete -ne $true -or $read.data.truncated -eq $true) {
@@ -51,11 +51,12 @@ function Invoke-HorizunFamilyProbe {
             $rows = @($read.data.rows | Where-Object {
                 $_.family -eq $name -and $_.type -eq $expected.name -and $_.is_element_type -eq $true
             })
-            # query_model returns length parameters in the requested model units
-            # (millimetres here), not Revit's internal feet. The live 2023 read
-            # returned Small=150 and Large=300 after the RFA was saved and loaded.
-            if ($rows.Count -ne 1 -or $null -eq $rows[0].parameters.HZ_TestDepth -or
-                [Math]::Abs([double]$rows[0].parameters.HZ_TestDepth - $expected.depth) -gt 1e-7) {
+            # Compact values follow the host document's display units, which can
+            # differ by template and year. Full values carry Revit's raw feet.
+            $depth = if ($rows.Count -eq 1) { $rows[0].parameters.HZ_TestDepth } else { $null }
+            if ($rows.Count -ne 1 -or $null -eq $depth -or $depth.exists -ne $true -or
+                $depth.storage_type -ne 'Double' -or $null -eq $depth.raw -or
+                [Math]::Abs([double]$depth.raw - ($expected.depth / 304.8)) -gt 1e-7) {
                 return @{ outcome='fail'; detail="loaded type $($expected.name) did not retain its length value" }
             }
         }
