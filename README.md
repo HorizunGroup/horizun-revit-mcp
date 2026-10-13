@@ -602,6 +602,12 @@ distinguishes historical design scoring from live execution evidence.
 [Security](docs/security-model.md) · [Privacy](docs/PRIVACY.md) ·
 [Release policy](docs/RELEASE-POLICY.md)
 
+## Learn to direct it
+
+Horizun Hub teaches, in Spanish, how to direct AI agents in real construction and design work — and how to review what they deliver before you sign it. The course for this MCP is [Opera agentes en Revit](https://horizunhub.com/academia/revit-con-agentes/?utm_source=github&utm_medium=readme&utm_campaign=horizun-revit-mcp): short classes on real construction work, with a verifiable certificate.
+
+New to agents? Level 1 of [Opera agentes de IA desde cero](https://horizunhub.com/academia/agentes-ia-desde-cero/?utm_source=github&utm_medium=readme&utm_campaign=horizun-revit-mcp) is free with an account.
+
 Built in Colombia 🇨🇴 and maintained by Horizun Group as part of
 [Horizun Hub](https://horizunhub.com). The bridge is organisation-neutral;
 project standards and catalogs are supplied as inputs. The optional
