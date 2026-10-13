@@ -64,7 +64,7 @@ namespace Horizun.Revit.Commands
             if (doc == null) return CommandResult.Fail("No document is open.");
 
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             var wantedTitle = request.Value<string>("target_document_title");
@@ -795,7 +795,8 @@ namespace Horizun.Revit.Commands
                 ["quantity_definitions"] = new JArray(defs.Select(d => new JObject
                 {
                     ["name"] = d.Name, ["source"] = d.Source, ["parameter"] = d.Parameter, ["unit"] = d.Unit,
-                    ["measured_in"] = MeasuredInOf(d.Source) ?? "the parameter's own unit: m / m2 / m3 for Length / Area / Volume specs (checked against 'unit'), the raw value otherwise"
+                    ["measured_in"] = MeasuredInOf(d.Source) ?? "m / m2 / m3 for Length / Area / Volume specs (checked against 'unit'); any other measured spec converted to 'unit' " +
+                        "or refused as invalid; a unitless number as stored"
                 })),
                 ["include_links"] = includeLinks,
                 ["documents"] = documents,
@@ -931,6 +932,35 @@ namespace Horizun.Revit.Commands
             return sb.ToString();
         }
 
+        private static bool IsMeasurable(ForgeTypeId spec)
+        {
+            try { return UnitUtils.IsMeasurableSpec(spec); } catch { return false; }
+        }
+
+        /// <summary>The Revit unit behind a TakeoffUnits canonical name.</summary>
+        private static ForgeTypeId UnitIdOf(string canonical)
+        {
+            switch (canonical)
+            {
+                case "meters": return UnitTypeId.Meters;
+                case "millimeters": return UnitTypeId.Millimeters;
+                case "centimeters": return UnitTypeId.Centimeters;
+                case "feet": return UnitTypeId.Feet;
+                case "inches": return UnitTypeId.Inches;
+                case "square_meters": return UnitTypeId.SquareMeters;
+                case "square_feet": return UnitTypeId.SquareFeet;
+                case "cubic_meters": return UnitTypeId.CubicMeters;
+                case "cubic_feet": return UnitTypeId.CubicFeet;
+                case "liters": return UnitTypeId.Liters;
+                case "kilograms": return UnitTypeId.Kilograms;
+                case "tonnes": return UnitTypeId.Tonnes;
+                case "newtons": return UnitTypeId.Newtons;
+                case "kilonewtons": return UnitTypeId.Kilonewtons;
+                case "kilograms_per_meter": return UnitTypeId.KilogramsPerMeter;
+                default: return null;
+            }
+        }
+
         private static TakeoffReading ReadTakeoffQuantity(Document owner, Element e, TakeoffDefinition d, Options options)
         {
             switch (d.Source)
@@ -1000,6 +1030,19 @@ namespace Horizun.Revit.Commands
                             if (spec == SpecTypeId.Length) { measuredIn = "m"; value = Guard.ToM(raw); }
                             else if (spec == SpecTypeId.Area) { measuredIn = "m2"; value = Guard.ToM2(raw); }
                             else if (spec == SpecTypeId.Volume) { measuredIn = "m3"; value = Guard.ToM3(raw); }
+                            else if (IsMeasurable(spec))
+                            {
+                                // EVERY OTHER MEASURED SPEC is stored in internal units too (a bar
+                                // length in feet, a mass in kg): converted to the declared unit, or
+                                // refused - never sent raw under the declared label (audit 2026-10-08, 6.3).
+                                string canonical = TakeoffUnits.CanonicalOf(d.UnitNormalised);
+                                ForgeTypeId unitId = canonical == null ? null : UnitIdOf(canonical);
+                                bool valid = false;
+                                if (unitId != null) { try { valid = UnitUtils.IsValidUnit(spec, unitId); } catch { valid = false; } }
+                                string refusal = TakeoffUnits.RefusalFor(d.Parameter, d.Unit, unitId == null ? null : canonical, valid, spec.TypeId);
+                                if (refusal != null) return TakeoffReading.Not(QuantityState.Invalid, refusal);
+                                return TakeoffReading.Of(UnitUtils.ConvertFromInternalUnits(raw, unitId), d.Unit);
+                            }
                         }
                         if (measuredIn != null && measuredIn != d.UnitNormalised)
                             return TakeoffReading.Not(QuantityState.Invalid,
@@ -1107,7 +1150,18 @@ namespace Horizun.Revit.Commands
             try
             {
                 var p = e.get_Parameter(BuiltInParameter.HOST_VOLUME_COMPUTED);
-                if (p == null || !p.HasValue) p = e.LookupParameter("Volume");
+                if (p == null || !p.HasValue)
+                {
+                    // A parameter that is merely NAMED "Volume" is read only when it measures a
+                    // volume: a family's own "Volume" text or number is not one (audit 2026-10-08, 6.3).
+                    Parameter named = e.LookupParameter("Volume");
+                    ForgeTypeId namedSpec = null;
+                    try { namedSpec = named?.Definition?.GetDataType(); } catch { namedSpec = null; }
+                    if (named != null && namedSpec != SpecTypeId.Volume)
+                        return Measurement.NotApplicable("This element's 'Volume' parameter does not measure a volume (spec " +
+                                                         (namedSpec?.TypeId ?? "unknown") + "), so it is not read as one.");
+                    p = named;
+                }
                 if (p == null) return Measurement.NotApplicable("This element has no Volume parameter.");
                 if (!p.HasValue) return Measurement.NotApplicable("The Volume parameter holds no value.");
                 if (p.StorageType != StorageType.Double)

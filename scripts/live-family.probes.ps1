@@ -51,8 +51,11 @@ function Invoke-HorizunFamilyProbe {
             $rows = @($read.data.rows | Where-Object {
                 $_.family -eq $name -and $_.type -eq $expected.name -and $_.is_element_type -eq $true
             })
+            # query_model returns length parameters in the requested model units
+            # (millimetres here), not Revit's internal feet. The live 2023 read
+            # returned Small=150 and Large=300 after the RFA was saved and loaded.
             if ($rows.Count -ne 1 -or $null -eq $rows[0].parameters.HZ_TestDepth -or
-                [Math]::Abs([double]$rows[0].parameters.HZ_TestDepth - $expected.depth / 304.8) -gt 1e-7) {
+                [Math]::Abs([double]$rows[0].parameters.HZ_TestDepth - $expected.depth) -gt 1e-7) {
                 return @{ outcome='fail'; detail="loaded type $($expected.name) did not retain its length value" }
             }
         }

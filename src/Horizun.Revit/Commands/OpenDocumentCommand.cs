@@ -68,7 +68,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject req;
-            try { req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             var request = new OpenRequest

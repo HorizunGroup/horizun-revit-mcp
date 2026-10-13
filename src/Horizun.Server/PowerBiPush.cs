@@ -20,7 +20,7 @@ namespace Horizun.Server
 {
     internal static class PowerBiPush
     {
-        private const string ToolName = "horizun_power_bi_push";
+        internal const string ToolName = "horizun_power_bi_push";
         private const int MaxRows = 10000;
         private const int MaxColumns = 75;
         private const int MaxStringChars = 4000;
@@ -126,6 +126,17 @@ namespace Horizun.Server
                 throw new ToolRefusal(error);
             }
 
+            // A cancellation observed HERE is definitive: nothing has left the machine yet.
+            // Reporting it as in_doubt (and leaving the claim open forever) told the caller
+            // to go and inspect a destination that never received a byte (backlog #40).
+            if (cancellationToken.IsCancellationRequested)
+            {
+                string error = "Power BI delivery was cancelled before any row was sent. No rows were sent; " +
+                    "this key is closed as not delivered. Use a new idempotency_key to send these rows.";
+                ledger.Complete(decision, CommandResult.Fail(error));
+                throw new ToolRefusal(error);
+            }
+
             HttpResponseMessage response;
             try
             {
@@ -134,7 +145,6 @@ namespace Horizun.Server
                     message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                     message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                     message.Content = new StringContent(payload, Encoding.UTF8, "application/json");
-                    cancellationToken.ThrowIfCancellationRequested();
                     response = client.SendAsync(message, cancellationToken).GetAwaiter().GetResult();
                 }
             }

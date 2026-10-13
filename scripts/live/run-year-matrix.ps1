@@ -114,6 +114,8 @@ $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $server = Join-Path $repo 'src\Horizun.Server\bin\Release\net8.0\horizun-mcp.exe'
 if (-not (Test-Path -LiteralPath $server)) { throw "no server build at $server. Build it first." }
 . (Join-Path $PSScriptRoot 'year-matrix.session.ps1')
+# Assert-HorizunBuiltYear: the add-in's own year stamp (backlog #29).
+. (Join-Path $repo 'scripts\horizun-deploy.lib.ps1')
 $probes = New-HzMatrixProbes -Repo $repo -ServerExe $server
 
 # WHICH SERVER IS THIS, beyond its hash. The driver does not build the server, so
@@ -245,6 +247,17 @@ foreach ($year in $Years) {
             continue
         }
 
+        if ($SkipBuild) {
+            # THE BIN IS SHARED ACROSS YEARS (backlog #29). The TFM guard cannot tell 2023 from
+            # 2024 nor 2025 from 2026, so a -SkipBuild run could load another year's add-in and
+            # file it as this year's evidence. The add-in's own year stamp decides, before any
+            # Revit starts.
+            try { Assert-HorizunBuiltYear -DllPath (Join-Path $repo 'src\Horizun.Revit\bin\Release\Horizun.Revit.dll') -Year $year }
+            catch {
+                $row.state = 'build_year_mismatch'; $row.why = $_.Exception.Message
+                continue
+            }
+        }
         if (-not $SkipBuild) {
             Write-Host "`n=== $year : building the add-in for this year ===" -ForegroundColor Cyan
             & dotnet build (Join-Path $repo 'src\Horizun.Revit\Horizun.Revit.csproj') -c Release -p:RevitYear=$year -warnaserror --nologo -v q

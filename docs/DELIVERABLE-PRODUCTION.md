@@ -118,9 +118,7 @@ that files may exist and that there is no transaction rollback for external file
 
 ## Stabilization block (2026-09-08)
 
-These close the release requirements the 2026-09-07 review listed. Each is
-verified live in Revit 2026 on an isolated candidate; see
-[STABILIZATION-LOG-2026-09-08.md](STABILIZATION-LOG-2026-09-08.md).
+The following behaviours were checked in a disposable Revit 2026 fixture.
 
 - **Annotation coverage.** `horizun_plan_annotations auto_tags` and every
   `horizun_annotate` tag with `avoid_collisions` report `annotation_coverage`:
@@ -261,9 +259,5 @@ working tree; a passing build is not evidence that the running add-in changed.
 
 The later isolated Revit 2026 campaign found and corrected PDF filename and
 manifest roundtrip defects, and an explicitly-hidden annotation obstacle bug.
-The final focused run passed 13 checks but still failed its native-tag case;
-visual production acceptance and the full supported-year live matrix remain
-open. Final offline counts are 3,800 Core and 477 Server tests. The detailed
-[candidate review](RELEASE-CANDIDATE-REVIEW-2026-09-07.md) separates build hashes,
-failed attempts, fixture limitations and remaining release requirements.
-These results supersede neither the clean-candidate nor installer release gate.
+That campaign was an intermediate check. The current release evidence is in
+the 3.0.0 release notes and final validation results.

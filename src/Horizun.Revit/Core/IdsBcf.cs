@@ -51,6 +51,12 @@ namespace Horizun.Revit.Core
     {
         public const string ViewpointFile = "viewpoint.bcfv";
 
+        /// <summary>
+        /// The viewpoint's Guid (backlog #42): the markup's Viewpoints Guid and the
+        /// VisualizationInfo Guid are this one value, stable per topic.
+        /// </summary>
+        public static string ViewpointGuid(string topicGuid) => TopicGuid(topicGuid, "viewpoint", null);
+
         /// <summary>Topics for every FAILED specification of a validation over the file.</summary>
         public static List<IdsBcfTopic> Topics(IdsReport report, IfcStepReader.Document ifc, string ifcFileName,
                                                string ifcSha256, int maxComponents)
@@ -146,7 +152,7 @@ namespace Horizun.Revit.Core
             sb.Append("    <CreationAuthor>Horizun</CreationAuthor>\n");
             sb.Append("    <Description>").Append(CoordinationRules.Xml(topic.Description)).Append("</Description>\n");
             sb.Append("  </Topic>\n");
-            sb.Append("  <Viewpoints Guid=\"").Append(TopicGuid(topic.Guid, "viewpoint", null)).Append("\">\n");
+            sb.Append("  <Viewpoints Guid=\"").Append(ViewpointGuid(topic.Guid)).Append("\">\n");
             sb.Append("    <Viewpoint>").Append(ViewpointFile).Append("</Viewpoint>\n");
             sb.Append("  </Viewpoints>\n");
             sb.Append("</Markup>\n");
@@ -171,7 +177,8 @@ namespace Horizun.Revit.Core
                 {
                     Entry(zip, topic.Guid + "/markup.bcf", MarkupXml(topic, ifcFileName, ifcProjectGlobalId, creation));
                     Entry(zip, topic.Guid + "/" + ViewpointFile,
-                          BcfViewpoint.Xml(topic.PointMm, topic.GlobalIds.Select(g => new BcfComponent { IfcGuid = g })));
+                          BcfViewpoint.Xml(topic.PointMm, topic.GlobalIds.Select(g => new BcfComponent { IfcGuid = g }),
+                                           BcfViewpoint.DefaultStandoffMm, ViewpointGuid(topic.Guid)));
                 }
             }
 
@@ -199,6 +206,10 @@ namespace Horizun.Revit.Core
                         if (view.DocumentElement?.Name != "VisualizationInfo" ||
                             view.DocumentElement.SelectSingleNode("PerspectiveCamera") == null)
                         { error = "the viewpoint beside '" + entry.FullName + "' is not a VisualizationInfo with a camera."; return null; }
+                        string named = (markup.DocumentElement.SelectSingleNode("Viewpoints/@Guid") as XmlAttribute)?.Value;
+                        string carried = view.DocumentElement.GetAttribute("Guid");
+                        if (!string.Equals(named, carried, StringComparison.OrdinalIgnoreCase))
+                        { error = "'" + entry.FullName + "' names viewpoint Guid '" + named + "' and its VisualizationInfo carries '" + carried + "'."; return null; }
                         XmlNodeList components = view.DocumentElement.SelectNodes("Components/Selection/Component[@IfcGuid]");
                         readComponents += components == null ? 0 : components.Count;
                         readTopics++;

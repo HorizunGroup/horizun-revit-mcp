@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizunhub.com/schemas/horizun.exchange/0",
+  "title": "horizun.exchange/0 - the manifest of one cross-app hop",
+  "description": "Written LAST, beside a copy of the payload, at <exchange_root>/<kind>/<exchange_id>/exchange.hzx.json. It wraps an existing format and never replaces it. A folder with payload and no manifest, or a manifest whose payload has not arrived, is 'not delivered'. verification.state 'verified' requires host_verified=true; anything else reads as self_reported_verified at best.",
+  "type": "object",
+  "required": ["schema", "exchange_id", "kind", "producer", "source", "files", "verification"],
+  "properties": {
+    "schema": { "const": "horizun.exchange/0" },
+    "exchange_id": { "type": "string", "pattern": "^hzx-\\d{8}T\\d{6}Z-[0-9a-f]{8}$" },
+    "kind": {
+      "type": "string",
+      "enum": ["coordination.ledger", "coordination.status", "quantities.rows", "schedule.element_4d", "model.element_lineage", "receipt"]
+    },
+    "correlation_id": { "type": ["string", "null"], "description": "The orchestration run this hop belongs to; idempotency is correlation_id + hop + attempt." },
+    "producer": {
+      "type": "object",
+      "required": ["app"],
+      "properties": {
+        "app": { "type": "string" },
+        "version": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] }
+      }
+    },
+    "project": {
+      "type": "object",
+      "properties": { "code": { "type": ["string", "null"] } }
+    },
+    "source": {
+      "type": "object",
+      "required": ["model_ref"],
+      "properties": {
+        "model_ref": { "type": ["string", "null"], "pattern": "^mdl-[0-9a-f]{12}$", "description": "The id project-integrations.json assigned (decision D0)." },
+        "model_evidence": {
+          "type": ["object", "null"],
+          "description": "The D0 evidence read from the model: creation_guid, central_guid, cloud_model_guid, unique_document_guid (strong, in that order), project_info_unique_id (weak, never matches alone), cloud_project_guid, revit_version, title, path."
+        }
+      }
+    },
+    "spatial_ref": {
+      "type": ["object", "null"],
+      "properties": {
+        "frame": { "type": "string", "enum": ["shared", "project", "internal"] },
+        "length_unit": { "type": "string" }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "format", "sha256"],
+        "properties": {
+          "path": { "type": "string", "description": "A plain file name inside the exchange folder." },
+          "format": { "type": "string", "description": "The wrapped format and its version, e.g. horizun.coordination-ledger.csv/2." },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "rows": { "type": "integer", "minimum": 0, "description": "Declared by the producer; reported, not re-counted, by the verifier." }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["state", "method", "host_verified"],
+      "properties": {
+        "state": { "type": "string", "enum": ["verified", "self_reported_verified", "partial", "failed"] },
+        "method": { "type": "string" },
+        "host_verified": { "type": "boolean" }
+      }
+    },
+    "caveats": { "type": "array", "items": { "type": "string" }, "description": "What this file does NOT prove." }
+  }
+}

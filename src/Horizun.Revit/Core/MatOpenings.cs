@@ -302,6 +302,33 @@ namespace Horizun.Revit.Core
                 return r;
             }
 
+            List<FaceLoop> loops;
+            string chainWhy = ChainRings(mesh, inFace, out loops);
+            if (chainWhy != null) { r.Why = chainWhy; return r; }
+            if (loops.Count == 0) { r.Why = "the face boundary formed no ring with three or more corners."; return r; }
+
+            // Area in the plane, computed from two in-plane axes so it does not
+            // depend on which way the face points.
+            double[] u = AnyPerpendicular(n);
+            double[] w = Cross(n, u);
+            foreach (FaceLoop l in loops)
+                l.AreaMm2 = Math.Abs(SignedArea(ProjectUv(l.PointsMm, u, w)));
+            FaceLoop outer = loops.OrderByDescending(l => l.AreaMm2).First();
+            outer.Outer = true;
+            r.Outer = outer;
+            foreach (FaceLoop l in loops) if (!ReferenceEquals(l, outer)) r.Openings.Add(l);
+            return r;
+        }
+
+        /// <summary>
+        /// The boundary of a set of triangles of one welded mesh, chained into rings: directed edges
+        /// used once are the boundary - the outline and every hole. Null on success; why otherwise.
+        /// Shared by the face of a flat mat and the facing triangles of a face a mat follows.
+        /// </summary>
+        internal static string ChainRings(HostMesh mesh, List<int[]> inFace, out List<FaceLoop> loops)
+        {
+            string why;
+            loops = new List<FaceLoop>();
             // Directed edges used once within the face are its boundary - the
             // outline and every hole. An edge shared by two face triangles is
             // interior; an edge shared with a WALL triangle is not in this subset
@@ -323,18 +350,17 @@ namespace Horizun.Revit.Core
             {
                 if (e.Value != 1)
                 {
-                    r.Why = "the face boundary uses an edge more than once, so its rings cannot be told apart.";
-                    return r;
+                    why = "the face boundary uses an edge more than once, so its rings cannot be told apart.";
+                    return why;
                 }
                 int a = (int)(e.Key / m), b = (int)(e.Key % m);
                 List<int> outs;
                 if (!next.TryGetValue(a, out outs)) { outs = new List<int>(); next[a] = outs; }
                 outs.Add(b);
             }
-            if (next.Count == 0) { r.Why = "the face triangles have no boundary edge, which is not a face."; return r; }
+            if (next.Count == 0) { why = "the face triangles have no boundary edge, which is not a face."; return why; }
 
             var used = new HashSet<long>();
-            var loops = new List<FaceLoop>();
             foreach (int start in next.Keys.OrderBy(x => x).ToList())
             {
                 foreach (int firstTo in next[start])
@@ -350,25 +376,25 @@ namespace Horizun.Revit.Core
                         List<int> outs;
                         if (!next.TryGetValue(to, out outs))
                         {
-                            r.Why = "a ring of the face boundary does not close: the edge into vertex " + to +
+                            why = "a ring of the face boundary does not close: the edge into vertex " + to +
                                     " has no edge out of it.";
-                            return r;
+                            return why;
                         }
                         int chosen = -1;
                         foreach (int cand in outs)
                             if (!used.Contains(to * m + cand)) { chosen = cand; break; }
                         if (chosen < 0)
                         {
-                            r.Why = "a ring of the face boundary does not close at vertex " + to + ".";
-                            return r;
+                            why = "a ring of the face boundary does not close at vertex " + to + ".";
+                            return why;
                         }
                         used.Add(to * m + chosen);
                         at = to;
                         to = chosen;
                         if (++guard > next.Count + 2)
                         {
-                            r.Why = "a ring of the face boundary never returns to where it started.";
-                            return r;
+                            why = "a ring of the face boundary never returns to where it started.";
+                            return why;
                         }
                     }
                     var loop = new FaceLoop();
@@ -378,19 +404,7 @@ namespace Horizun.Revit.Core
                     loops.Add(loop);
                 }
             }
-            if (loops.Count == 0) { r.Why = "the face boundary formed no ring with three or more corners."; return r; }
-
-            // Area in the plane, computed from two in-plane axes so it does not
-            // depend on which way the face points.
-            double[] u = AnyPerpendicular(n);
-            double[] w = Cross(n, u);
-            foreach (FaceLoop l in loops)
-                l.AreaMm2 = Math.Abs(SignedArea(ProjectUv(l.PointsMm, u, w)));
-            FaceLoop outer = loops.OrderByDescending(l => l.AreaMm2).First();
-            outer.Outer = true;
-            r.Outer = outer;
-            foreach (FaceLoop l in loops) if (!ReferenceEquals(l, outer)) r.Openings.Add(l);
-            return r;
+            return null;
         }
 
         /// <summary>The ring with straight-through vertices removed, so a grid corner does not count as one.</summary>

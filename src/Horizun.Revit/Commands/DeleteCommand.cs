@@ -227,7 +227,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             // WHICH model. A delete aimed at "the active document" is a delete aimed at
@@ -351,10 +351,13 @@ namespace Horizun.Revit.Commands
 
             if (dryRun)
             {
+                JObject annotationsAtRisk = AnnotationDependencyAudit.Read(doc,
+                    ids.Where(Rid.CanRepresent).Select(Rid.Make));
                 var preview = Preview(doc, targets, new HashSet<long>(ids), cascades, txName, ledger);
                 if (preview != null) return preview;   // rollback of a dry run is normal; a throw is not
                 JObject report = Report(doc, "ids", true, txName, before, before, targets, cascades,
                     idCap, rejected, null, ledger);
+                report["annotations_at_risk_by_view"] = annotationsAtRisk;
                 if (ApplicationOutcome.IsValidRehearsal(ApplicationOutcome.Read(report)))
                     DocumentGate.RecordResolvedPlan(DeletePlan(app, gate, "ids", targets, cascades));
                 return CommandResult.Ok(report);

@@ -49,6 +49,7 @@ using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
+using System.Globalization;
 
 namespace Horizun.Revit.Commands
 {
@@ -169,7 +170,7 @@ namespace Horizun.Revit.Commands
                 if (!result.Found && result.ShortLeg.HasValue)
                 {
                     error = "no_route: leg " + (result.ShortLeg.Value + 1) + " of " + (result.Polyline.Count - 1) + " of the best path is " +
-                        Math.Round(result.ShortLegLength * 304.8, 1) + " mm, shorter than the " + Math.Round(result.ShortLegMinimum * 304.8, 1) +
+                        Math.Round(result.ShortLegLength * 304.8, 1).ToString(CultureInfo.InvariantCulture) + " mm, shorter than the " + Math.Round(result.ShortLegMinimum * 304.8, 1).ToString(CultureInfo.InvariantCulture) +
                         " mm its elbow(s) need (one outside size per elbow) - put the end on the start's axis, or at least that far off it.";
                     return null;
                 }
@@ -369,7 +370,7 @@ namespace Horizun.Revit.Commands
                 {
                     Parameter p = seg.get_Parameter(r.Params[i]);
                     if (p == null || p.IsReadOnly || !p.Set(want[i]))
-                        throw new InvalidOperationException("Revit refused " + r.Params[i] + " = " + Math.Round(want[i] * 304.8, 1) + " mm on new " + r.Kind + " " + Rid.Value(seg.Id));
+                        throw new InvalidOperationException("Revit refused " + r.Params[i] + " = " + Math.Round(want[i] * 304.8, 1).ToString(CultureInfo.InvariantCulture) + " mm on new " + r.Kind + " " + Rid.Value(seg.Id));
                 }
                 rec.SizeParams = r.Params; rec.SizeWanted = want;
             }

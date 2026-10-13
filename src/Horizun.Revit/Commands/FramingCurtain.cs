@@ -278,7 +278,7 @@ namespace Horizun.Revit.Commands
                     else { s.NewStart = s.OriginalStart + centre; s.NewEnd = s.OriginalEnd + centre; }
                     double apart = Math.Abs(s.CoreOffsetFt - s.CentreOffsetFt) * 304.8;
                     if (apart > EndpointToleranceMm)
-                        p.Warnings.Add(who + ": the placeholder stays on the carrier's centre plane (its inserts sit there), " + Math.Round(apart, 1)
+                        p.Warnings.Add(who + ": the placeholder stays on the carrier's centre plane (its inserts sit there), " + Math.Round(apart, 1).ToString(CultureInfo.InvariantCulture)
                                        + " mm from the pieces' core centreline (carrier.placeholder_offset_from_pieces_mm)");
                 }
                 if (!spec.HeaderTypeId.HasValue && plan.Pieces.Any(m => m.Role == CurtainFramingRoles.Header)) p.Warnings.Add("header_type_id not given: headers use the curtain type");
@@ -391,7 +391,7 @@ namespace Horizun.Revit.Commands
                 Wall w;
                 try { w = Wall.Create(doc, line, Rid.Make(long.Parse(m.TypeKey, CultureInfo.InvariantCulture)), level.Id, (m.Z1 - m.Z0) / 304.8, s.BaseOffsetFt + m.Z0 / 304.8, false, false); }
                 catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ApplicationException || ex is ArgumentException)
-                { throw new InvalidOperationException(m.Role + " " + i + " (type " + m.TypeKey + ", x " + Math.Round(m.X0, 1) + " -> " + Math.Round(m.X1, 1) + " mm): " + ex.Message, ex); }
+                { throw new InvalidOperationException(m.Role + " " + i + " (type " + m.TypeKey + ", x " + Math.Round(m.X0, 1).ToString(CultureInfo.InvariantCulture) + " -> " + Math.Round(m.X1, 1).ToString(CultureInfo.InvariantCulture) + " mm): " + ex.Message, ex); }
                 if (w == null) throw new InvalidOperationException(m.Role + " " + i + ": Revit returned no wall.");
                 // Segments and headers end where the carrier ends: its top constraint, not a copied number.
                 if (m.Role != CurtainFramingRoles.Sill && s.TopLevelId > 0)

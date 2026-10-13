@@ -230,6 +230,28 @@ namespace Horizun.Core.Tests
             Assert.Equal(150.0, shape.Outer.Points.Max(p => p[1]), 6);
         }
 
+        // Backlog #43: a Position that does not resolve was placed at the identity, so the
+        // profile landed at the origin with no word said.
+        [Theory]
+        [InlineData("#3=IFCRECTANGLEPROFILEDEF(.AREA.,'r',#9,400.,200.);")]
+        [InlineData("#1=IFCCARTESIANPOINT((100.,50.));\n#3=IFCRECTANGLEPROFILEDEF(.AREA.,'r',#1,400.,200.);")]
+        public void A_rectangle_whose_position_does_not_resolve_is_refused(string data)
+        {
+            IfcStepReader.Document ifc = Parse(data);
+            IfcProfileShape shape = IfcProfile.Read(ifc, ifc.ById[3], 1.0);
+            Assert.NotNull(shape.Refusal);
+            Assert.Contains("Position", shape.Refusal);
+        }
+
+        [Fact]
+        public void A_rectangle_without_a_position_sits_at_its_own_origin()
+        {
+            IfcStepReader.Document ifc = Parse("#3=IFCRECTANGLEPROFILEDEF(.AREA.,'r',$,400.,200.);");
+            IfcProfileShape shape = IfcProfile.Read(ifc, ifc.ById[3], 1.0);
+            Assert.Null(shape.Refusal);
+            Assert.Equal(-200.0, shape.Outer.Points.Min(p => p[0]), 6);
+        }
+
         [Fact]
         public void A_degenerate_boundary_is_refused_rather_than_handed_to_Revit()
         {

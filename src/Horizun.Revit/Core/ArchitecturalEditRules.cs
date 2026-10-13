@@ -246,6 +246,20 @@ namespace Horizun.Revit.Core
             return null;
         }
 
+        /// <summary>
+        /// Position is an XYZ in model coordinates, not the ModifySubElement offset.
+        /// Never infer its convention from agreement with the requested result: even a single
+        /// unchanged vertex could then choose the offset reading and pass (backlog #20).
+        /// </summary>
+        public static string SlabEditConvention(IList<double?> z, double top, IList<double> offsets, double tolerance)
+        {
+            return "absolute";
+        }
+
+        /// <summary>A vertex's offset under the edit's convention (absolute when none held).</summary>
+        public static double SlabOffsetRead(double z, double top, string convention) =>
+            convention == "offset" ? z : z - top;
+
         /// <summary>How much of [lo, hi] the union of the intervals covers.</summary>
         public static double CoveredLength(IEnumerable<double[]> intervals, double lo, double hi)
         {

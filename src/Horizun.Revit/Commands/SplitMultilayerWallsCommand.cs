@@ -58,7 +58,7 @@ namespace Horizun.Revit.Commands
             bool dryRun;
             try
             {
-                request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
+                request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
                 // Default TRUE. This rewrites geometry somebody is going to build from.
                 dryRun = request.Value<bool?>("dry_run") ?? true;
             }

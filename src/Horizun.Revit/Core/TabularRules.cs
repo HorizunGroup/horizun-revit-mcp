@@ -172,5 +172,31 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static bool NumbersEqual(double a, double b) =>
             Math.Abs(a - b) <= Math.Max(1e-9, 1e-6 * Math.Max(Math.Abs(a), Math.Abs(b)));
+
+        /// <summary>
+        /// What an op WRITES for a cell. With decimal_separator declared, a cell that
+        /// parses under it goes to a Double parameter as its value in INTERNAL units
+        /// (Set(double)) and to an Integer parameter as the integer - the same reading
+        /// the unchanged-compare used. It used to go as the raw cell text to
+        /// SetValueString, which parses with the DOCUMENT's decimal symbol, so "1,5"
+        /// compared as 1.5 and could be written as 15 or refused (audit 2026-10-08).
+        /// Anything else - no declared separator, no parse, other storage, a unit that
+        /// cannot be read (toInternal returns null) - is written as the text, as before.
+        /// </summary>
+        public static Newtonsoft.Json.Linq.JToken NormalizedWrite(string cell, string decimalSeparator, string storage,
+                                                                  Func<double, double?> toInternal)
+        {
+            if (decimalSeparator == null || !TryParseCell(cell, decimalSeparator, out double n))
+                return new Newtonsoft.Json.Linq.JValue(cell);
+            if (storage == "Double" && toInternal != null)
+            {
+                double? internalValue = toInternal(n);
+                if (internalValue.HasValue && !double.IsNaN(internalValue.Value) && !double.IsInfinity(internalValue.Value))
+                    return new Newtonsoft.Json.Linq.JValue(internalValue.Value);
+            }
+            if (storage == "Integer" && n == Math.Floor(n) && n >= int.MinValue && n <= int.MaxValue)
+                return new Newtonsoft.Json.Linq.JValue((long)n);
+            return new Newtonsoft.Json.Linq.JValue(cell);
+        }
     }
 }

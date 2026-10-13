@@ -88,7 +88,7 @@ namespace Horizun.Revit.Core
                 ["by"] = by
             };
             if (unitsApplied != null) o["units_applied"] = unitsApplied;
-            try { File.WriteAllText(PathFor(doc, instanceUniqueId), o.ToString(Formatting.Indented)); }
+            try { AtomicFile.WriteAllText(PathFor(doc, instanceUniqueId), o.ToString(Formatting.Indented)); }   // never half a record
             catch { /* a record that cannot be written leaves the answer unknown, which is the safe one */ }
         }
 
@@ -108,7 +108,7 @@ namespace Horizun.Revit.Core
                 o["source_set_learned_utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
                 o["source_set_learned_means"] = "not known when the link was loaded - nothing had read the " +
                                                 "drawing here yet - and learned at the first read afterwards.";
-                File.WriteAllText(PathFor(doc, instanceUniqueId), o.ToString(Formatting.Indented));
+                AtomicFile.WriteAllText(PathFor(doc, instanceUniqueId), o.ToString(Formatting.Indented));
             }
             catch { }
         }

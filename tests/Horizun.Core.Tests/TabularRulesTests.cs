@@ -5,6 +5,7 @@
 // newlines inside cells, CRLF endings - and the mapping refusals that name
 // every problem at once instead of one per afternoon.
 // -----------------------------------------------------------------------------
+using System;
 using System.Collections.Generic;
 using Horizun.Revit.Core;
 using Xunit;
@@ -127,6 +128,41 @@ namespace Horizun.Core.Tests
             Assert.False(TabularRules.NumbersEqual(300.0, 300.001));        // a real change
             Assert.False(TabularRules.NumbersEqual(300.0, 350.0));
             Assert.False(TabularRules.NumbersEqual(0.0, 0.001));
+        }
+
+        // ---- 2026-10-08 audit: compared as a number, then written as raw text. ----
+        // With decimal_separator declared the diff read "1,5" as 1.5, and the op still
+        // carried the cell TEXT to SetValueString, which parses with the DOCUMENT's
+        // decimal symbol - so "1,5" could land as 15, or not at all.
+
+        [Theory]
+        [InlineData("en-US")]
+        [InlineData("es-CO")]
+        public void A_numeric_cell_is_written_as_its_internal_value_not_its_text(string culture)
+        {
+            var saved = System.Globalization.CultureInfo.CurrentCulture;
+            try
+            {
+                System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo(culture);
+                // A Double parameter displayed in metres; internal = feet.
+                Func<double, double?> metresToFeet = m => m / 0.3048;
+                Newtonsoft.Json.Linq.JToken v = TabularRules.NormalizedWrite("1,5", ",", "Double", metresToFeet);
+                Assert.Equal(Newtonsoft.Json.Linq.JTokenType.Float, v.Type);
+                Assert.Equal(1.5 / 0.3048, (double)v, 9);
+                Assert.Equal(Newtonsoft.Json.Linq.JTokenType.Integer, TabularRules.NormalizedWrite("3", ",", "Integer", null).Type);
+                Assert.Equal(3L, (long)TabularRules.NormalizedWrite("3", ",", "Integer", null));
+            }
+            finally { System.Globalization.CultureInfo.CurrentCulture = saved; }
+        }
+
+        [Fact]
+        public void Without_a_declared_separator_or_a_parse_the_text_is_written_as_text()
+        {
+            Assert.Equal("1,5", (string)TabularRules.NormalizedWrite("1,5", null, "Double", m => m));
+            Assert.Equal("300 mm", (string)TabularRules.NormalizedWrite("300 mm", ".", "Double", m => m));
+            Assert.Equal("Muro", (string)TabularRules.NormalizedWrite("Muro", ",", "String", null));
+            Assert.Equal("2,5", (string)TabularRules.NormalizedWrite("2,5", ",", "Integer", null));      // not an integer
+            Assert.Equal("1,5", (string)TabularRules.NormalizedWrite("1,5", ",", "Double", m => null));  // unit unreadable
         }
     }
 }

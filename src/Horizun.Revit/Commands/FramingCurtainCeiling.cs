@@ -305,7 +305,7 @@ namespace Horizun.Revit.Commands
             Wall w;
             try { w = Wall.Create(doc, line, Rid.Make(long.Parse(m.TypeKey, CultureInfo.InvariantCulture)), level.Id, (m.Z1 - m.Z0) / MmPerFt, m.Z0 / MmPerFt - z, false, false); }
             catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ApplicationException || ex is ArgumentException)
-            { throw new InvalidOperationException("hanger " + i + " (type " + m.TypeKey + ", " + Math.Round(m.Z0, 1) + " -> " + Math.Round(m.Z1, 1) + " mm): " + ex.Message, ex); }
+            { throw new InvalidOperationException("hanger " + i + " (type " + m.TypeKey + ", " + Math.Round(m.Z0, 1).ToString(CultureInfo.InvariantCulture) + " -> " + Math.Round(m.Z1, 1).ToString(CultureInfo.InvariantCulture) + " mm): " + ex.Message, ex); }
             if (w == null) throw new InvalidOperationException("hanger " + i + ": Revit returned no wall.");
             WallUtils.DisallowWallJoinAtEnd(w, 0);
             WallUtils.DisallowWallJoinAtEnd(w, 1);
@@ -477,7 +477,7 @@ namespace Horizun.Revit.Commands
                     double want = (((angleDeg.Value + 90) % 180) + 180) % 180, diff = Math.Abs(deg - want);
                     diff = Math.Min(diff, 180 - diff);
                     g["planned_direction_deg"] = Math.Round(want, 3);
-                    if (diff > 0.1) { directionProblems++; g["direction_problem"] = "grid 1 lines run at " + Math.Round(deg, 2) + " deg, planned " + Math.Round(want, 2); }
+                    if (diff > 0.1) { directionProblems++; g["direction_problem"] = "grid 1 lines run at " + Math.Round(deg, 2).ToString(CultureInfo.InvariantCulture) + " deg, planned " + Math.Round(want, 2).ToString(CultureInfo.InvariantCulture); }
                 }
                 if (layout != 1) { g["spacing_check"] = "not fixed distance: count and direction reported only"; continue; }
                 XYZ n = new XYZ(-dir.Y, dir.X, 0);

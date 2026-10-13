@@ -27,36 +27,26 @@ incluidos. No requiere Git, Visual Studio ni el SDK de .NET para instalarlo.
 
 ## Complete capability catalog
 
-The complete public 1.3.3 server surface contains 80 named MCP tools, including
-208 distinct named suboperations and dispatch modes, plus seven export formats.
-The English and Spanish READMEs list every tool and every counted selector value
-inline. docs/inventory.json is generated from the compiled server's tools/list;
-docs/readme-catalog.json contains bilingual descriptions for all 80 tools.
-An operation is counted once per tool, selector property and enum value; repeated
-schema branches do not create additional operations. Configuration enum choices
-and top-level tool names are separate counts.
+The 3.0.0 complete contract has 125 named MCP tools, 481 distinct named
+suboperations and dispatch modes, and 1,653 enumerated argument values.
+`docs/inventory.json` is generated from the compiled server; the bilingual
+README catalog is checked against it. A reachable list depends on local
+permissions and selected toolsets, so it can contain fewer tools.
 
-Actual isolated tools/list probes of 1.3.3 returned 70 tools for safe_write/all,
-79 for full_write/all with Python disabled, 80 for the fully enabled surface,
-and 4 for safe_write/core. A restricted client list does not describe the whole
-product. The owner controls permission changes.
+The default schema mode is `full`, with direct typed tools advertised.
+`HORIZUN_SCHEMA_MODE=facade` is optional: it advertises health plus
+`horizun_list_tools`, `horizun_describe_tool` and `horizun_call_tool`, which
+retrieve exact schemas and dispatch the same gated tools on demand.
+`HORIZUN_TOOLSETS=local` is an independent short-context tool selection.
+The facade remains opt-in because an authenticated agent-completion battery
+has not yet run.
 
-Capabilities include new parametric RFA creation, architectural/structural/MEP
-modeling, views/sheets/dimensions/tags, 2D detail, reinforcement, seven dedicated
-DWG-to-BIM/revision tools, layer decomposition, terrain grading, audits, clash
-coordination, quantities, Excel, Power BI and verified PDF/DWG/IFC/NWC/FBX exports.
-New workflows can compose typed actions or use owner-enabled custom Revit Python.
-
-Published demonstration: https://www.youtube.com/watch?v=tlFs5p3EM4M
-The video presents a PDF-plans-to-Revit AI workflow; PDF interpretation belongs
-to the client/model and Horizun executes the Revit operations.
-Published v1.3.3 evidence: 246 passed release-gate probes in each Revit year
-2023-2027, totaling 1230 executions across five years. Maintainer reports and
-hashes are indexed in docs/release-evidence.json. This is not a count of 1230
-different features or an independent competitive result.
-Public non-prerelease releases: 16 as of 2026-09-15, beginning with v0.5.0 on
-2026-08-02. Current GitHub stars: read the repository, rather than a cached count.
-
+3.0.0 adds reinforcement planning and audits, vector PDF/DWG schedule-card
+reading via PdfPig 0.1.13, and `horizun_exchange` manifests for cross-app
+handoffs and correction plans. Uncertain schedule rows and unverified
+cross-app claims are not treated as completed work. The bridge remains
+organisation-neutral; requirements and standards are supplied as inputs.
+See docs/TOOLS.md, docs/TOOLS-EXTENDED.md and docs/MIGRATION-3.0.md.
 ## Capability and evidence facts
 
 Horizun exposes typed, schema-described Revit operations for inspection,

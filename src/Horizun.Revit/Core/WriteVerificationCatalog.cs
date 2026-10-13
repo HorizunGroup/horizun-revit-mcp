@@ -273,7 +273,11 @@ namespace Horizun.Revit.Core
             Row("horizun_verify_changes", VerificationMechanism.FileArtifactReread, E("image", "spatial_check", "baseline_png", "artifacts_verified"), F(C + "VerifyChangesCommand.cs", C + "VerifyChangesSnapshot.cs")),
             Row("horizun_excel_write_rows", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "ExcelWriteRows.cs")),
             Row("horizun_budget_compare", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "BudgetCompare.cs", S + "BudgetBc3Export.cs")),
-            Row("horizun_project_context", VerificationMechanism.FileArtifactReread, E("written", "verification"), F(S + "ProjectContext.cs")),
+            Row("horizun_project_context", VerificationMechanism.FileArtifactReread, E("written", "verification"), F(S + "ProjectContext.cs", S + "ProjectIntegrationsTool.cs")),
+            Row("horizun_exchange", VerificationMechanism.FileArtifactReread, E("written", "reread"), F(S + "ExchangeTool.cs", "Horizun.Revit/Core/ExchangeManifest.cs"),
+                "ExchangeManifest.Emit: every payload copy and the manifest are re-hashed and the exchange re-verified before 'written'; that proves " +
+                "the bytes, not the payload's content - a wrap made by this tool carries the producer's state as testimony, capped at " +
+                "self_reported_verified, and the declared rows are reported, never re-counted."),
             Row("horizun_information_container", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "InformationContainerTool.cs")),
 
             // ---- composition ----------------------------------------------------------------

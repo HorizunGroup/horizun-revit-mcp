@@ -69,7 +69,9 @@ namespace Horizun.Revit.Core
 
     public sealed class DiffSnapshot
     {
-        public const string SchemaId = "horizun.model-diff-snapshot/1";
+        // /2: parameters keyed by BuiltInParameter or shared GUID, not by the UI name Revit
+        // translates (audit 2026-10-08, 6.13). A /1 snapshot is not comparable with a /2 one.
+        public const string SchemaId = "horizun.model-diff-snapshot/2";
         [JsonProperty("schema")] public string Schema = SchemaId;
         [JsonProperty("id")] public string Id;
         [JsonProperty("taken_utc")] public string TakenUtc;
@@ -131,6 +133,88 @@ namespace Horizun.Revit.Core
 
     public static class ModelDiffRules
     {
+        /// <summary>
+        /// May these two snapshots be compared at all? Two different projects (their Project
+        /// Information element differs) compared element by element report every element as
+        /// added and deleted (audit 2026-10-08, 6.13); two snapshots taken by different reader
+        /// versions key their parameters differently. Null when comparable, else why not.
+        /// A side whose project identity could not be read is refused too: the comparison
+        /// would rest on an assumption.
+        /// </summary>
+        /// <summary>
+        /// Which project a document is. Its CREATION GUID (Revit 2024+), generated when the document
+        /// was first made and kept by its copies; without one (Revit 2023) the ProjectInformation
+        /// element's UniqueId, which is weaker: MEASURED 2026-10-09, every project made from one of
+        /// Autodesk's templates carries the template's ProjectInformation UniqueId, so two different
+        /// projects from one template share it. Null when neither can be read.
+        /// </summary>
+        public static string ProjectIdentity(string creationGuid, string projectInfoUniqueId)
+        {
+            if (!string.IsNullOrEmpty(creationGuid)) return "creation:" + creationGuid;
+            if (!string.IsNullOrEmpty(projectInfoUniqueId)) return "project_info:" + projectInfoUniqueId;
+            return null;
+        }
+
+        public static string Incomparable(string beforeSchema, string afterSchema, string beforeProject, string afterProject)
+        {
+            if (!string.Equals(beforeSchema ?? "", afterSchema ?? "", StringComparison.Ordinal))
+                return "the two snapshots were taken by different reader versions (" + (beforeSchema ?? "none") + " vs " +
+                       (afterSchema ?? "none") + "), which key parameters differently. Take both again with this build.";
+            if (string.IsNullOrEmpty(beforeProject) || string.IsNullOrEmpty(afterProject))
+                return "the project identity (the document's creation GUID, or its Project Information before Revit 2024) of " +
+                       (string.IsNullOrEmpty(beforeProject) ? "the before side" : "the after side") +
+                       " could not be read, so whether these are the same project is unknown. Nothing was compared.";
+            // TWO KINDS OF IDENTITY say nothing about each other: a creation GUID and a template's
+            // ProjectInformation UniqueId are never equal, and never prove a difference either.
+            if (Kind(beforeProject) != Kind(afterProject))
+                return "the two sides carry project identities of different kinds (" + beforeProject + " vs " + afterProject +
+                       ") - one Revit version records the document's creation and the other cannot - so they cannot be compared. " +
+                       "Take both snapshots in one Revit version.";
+            if (!string.Equals(beforeProject, afterProject, StringComparison.Ordinal))
+                return "before and after are DIFFERENT projects (" + beforeProject + " vs " + afterProject +
+                       "): every element would read as added and deleted. Nothing was compared.";
+            return null;
+        }
+
+        /// <summary>The warning code a comparison carries when its project identity is not proven.</summary>
+        public const string WarningIdentityUnprovable = "identity_unprovable_2023";
+
+        /// <summary>
+        /// What a COMPARABLE pair proves about being one project (owner decision 2026-10-10,
+        /// option B). A creation GUID proves it. Project Information alone does not: MEASURED in
+        /// Revit 2023, two different projects made from one Autodesk template carry the same
+        /// ProjectInformation UniqueId and compared as "no changes". The comparison still runs;
+        /// identity_proven is false and a structured warning says why.
+        /// </summary>
+        public static JObject IdentityEvidence(string beforeProject, string afterProject)
+        {
+            string kind = string.IsNullOrEmpty(beforeProject) ? null : Kind(beforeProject);
+            bool proven = kind == "creation" && string.Equals(beforeProject, afterProject, StringComparison.Ordinal);
+            var warnings = new JArray();
+            if (!proven)
+                warnings.Add(new JObject
+                {
+                    ["code"] = WarningIdentityUnprovable,
+                    ["severity"] = "warning",
+                    ["message"] = "Before and after share only the Project Information identity (" + (beforeProject ?? "none") +
+                                  "). Revit 2023 records no document creation GUID, and every project made from the same " +
+                                  "template carries the template's Project Information - so these may be two different " +
+                                  "projects, and nothing here can prove they are one. Read every 'unchanged' as unproven."
+                });
+            return new JObject
+            {
+                ["project_identity_kind"] = kind,
+                ["identity_proven"] = proven,
+                ["warnings"] = warnings
+            };
+        }
+
+        private static string Kind(string identity)
+        {
+            int colon = identity.IndexOf(':');
+            return colon < 0 ? "" : identity.Substring(0, colon);
+        }
+
         public const string Added = "added", Deleted = "deleted", Modified = "modified";
 
         // ---- value normalisation --------------------------------------------------

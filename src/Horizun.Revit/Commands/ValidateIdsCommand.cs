@@ -68,7 +68,7 @@ namespace Horizun.Revit.Commands
             Document doc = app == null || app.ActiveUIDocument == null ? null : app.ActiveUIDocument.Document;
 
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             string operation = (request.Value<string>("operation") ?? "precheck").ToLowerInvariant();

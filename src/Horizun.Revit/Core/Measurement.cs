@@ -241,9 +241,9 @@ namespace Horizun.Revit.Core
                        "agreement - no comparison happened.";
 
             string core = Disagreed == 0
-                ? "All " + Compared + " compared element(s) agree within " + tolerancePct + "% between " +
+                ? "All " + Compared + " compared element(s) agree within " + tolerancePct.ToString(System.Globalization.CultureInfo.InvariantCulture) + "% between " +
                   SourceA + " and " + SourceB + "."
-                : Disagreed + " of " + Compared + " compared element(s) DISAGREE by more than " + tolerancePct +
+                : Disagreed + " of " + Compared + " compared element(s) DISAGREE by more than " + tolerancePct.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                   "% between " + SourceA + " and " + SourceB + ". No single number is reported on purpose: " +
                   "which source is correct depends on your measurement criteria, and whoever signs the " +
                   "takeoff is the one who gets to choose.";

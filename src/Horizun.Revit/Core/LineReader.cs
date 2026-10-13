@@ -155,4 +155,36 @@ namespace Horizun.Revit.Core
             return ex;
         }
     }
+
+    /// <summary>
+    /// Writing one reply line, bounded in time (backlog #37).
+    ///
+    /// The bridge's pipe has no buffer, so a write completes only when the peer reads.
+    /// A peer that is not reading - the server still blocked writing a request this end
+    /// refused as TooLong, or a client that stopped listening - held the writing thread
+    /// and its connection slot until Revit closed. This gives up at the deadline and
+    /// says so; the caller then CLOSES the connection, which cancels the pending write
+    /// and fails the peer's own blocked write instead of leaving both ends stuck.
+    /// </summary>
+    public static class LineWriter
+    {
+        /// <returns>True when the whole line, newline included, was written in time.</returns>
+        public static bool TryWriteLine(Stream stream, string line, int timeoutMs)
+        {
+            try
+            {
+                byte[] bytes = new UTF8Encoding(false).GetBytes((line ?? "") + "\n");
+                var write = stream.WriteAsync(bytes, 0, bytes.Length);
+                if (!write.Wait(timeoutMs))
+                {
+                    // Observed, so the fault the closing connection gives it is not left unobserved.
+                    write.ContinueWith(t => { var ignored = t.Exception; },
+                        System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
+                    return false;
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+    }
 }

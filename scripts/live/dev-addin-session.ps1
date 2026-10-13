@@ -128,6 +128,9 @@ if (-not (Test-Path -LiteralPath $dll)) { throw "No build at $dll. Build with: d
 # for THIS year before loading it into this Revit.
 . (Join-Path $repo 'scripts\horizun-deploy.lib.ps1')
 if (Get-Command Assert-HorizunTfm -ErrorAction SilentlyContinue) { Assert-HorizunTfm -DllPath $dll -Year $Year }
+# AND THE YEAR ITSELF (backlog #29): 2023/2024 share net48 and 2025/2026 net8.0, so the TFM
+# alone let one year's build load into the other's Revit.
+Assert-HorizunBuiltYear -DllPath $dll -Year $Year
 
 if (Test-Path -LiteralPath $devDir) { Remove-Item -LiteralPath $devDir -Recurse -Force }
 New-Item -ItemType Directory -Path $devDir -Force | Out-Null

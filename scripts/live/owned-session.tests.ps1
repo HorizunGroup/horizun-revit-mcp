@@ -20,12 +20,13 @@ $env:HORIZUN_OWNED_SESSION_ROOT = Join-Path $root 'state'
 . (Join-Path $PSScriptRoot 'owned-session.ps1')
 
 $script:Passed = 0; $script:Failed = 0; $script:Helpers = @()
+$script:HostExe = (Get-Process -Id $PID).Path
 function Check([string]$Name, [bool]$Condition, [string]$Detail = '') {
     if ($Condition) { $script:Passed++; Write-Host ("  PASS  {0}" -f $Name) -ForegroundColor Green }
     else { $script:Failed++; Write-Host ("  FAIL  {0}  {1}" -f $Name, $Detail) -ForegroundColor Red }
 }
 function Start-Helper {
-    $p = Start-Process -FilePath 'pwsh' -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 600' -WindowStyle Minimized -PassThru
+    $p = Start-Process -FilePath $script:HostExe -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 600' -WindowStyle Minimized -PassThru
     $script:Helpers += $p
     $deadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $deadline) { $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 200 }
@@ -33,7 +34,7 @@ function Start-Helper {
 }
 function Stop-Helpers { foreach ($h in $script:Helpers) { try { if (-not $h.HasExited) { $h.Kill(); $h.WaitForExit(5000) | Out-Null } } catch { } }; $script:Helpers = @() }
 function Doc([string]$Title, [string]$Path, $Active = $false) { [ordered]@{ title = $Title; path = $Path; is_active = $Active } }
-$pwshExe = (Get-Process -Id $PID).Path
+$pwshExe = $script:HostExe
 
 # Canned outside world; the helper is the "Revit". Every override is per case.
 function New-Fake {

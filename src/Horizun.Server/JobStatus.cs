@@ -353,9 +353,12 @@ namespace Horizun.Server
                     {
                         terminalEventSeen = true;
                         string candidateStatus = o["status"]?.Type == JTokenType.String ? (string)o["status"] : null;
-                        bool knownStatus = candidateStatus == "ok" || candidateStatus == "failed" || candidateStatus == "not_started";
-                        bool validSequence = seenStart &&
-                            (candidateStatus == "not_started" ? !seenRunning && !seenResult : seenRunning);
+                        // "cancelled": removed from the queue on request before it started
+                        // (__horizun_cancel_job) - the same never-ran sequence as not_started.
+                        bool knownStatus = candidateStatus == "ok" || candidateStatus == "failed" ||
+                                           candidateStatus == "not_started" || candidateStatus == "cancelled";
+                        bool neverRan = candidateStatus == "not_started" || candidateStatus == "cancelled";
+                        bool validSequence = seenStart && (neverRan ? !seenRunning && !seenResult : seenRunning);
                         int declaredCheckpoints;
                         bool checkpointCountValid = o["checkpoints"]?.Type == JTokenType.Integer &&
                             int.TryParse(o["checkpoints"].ToString(), out declaredCheckpoints) &&
@@ -480,6 +483,17 @@ namespace Horizun.Server
             bool? processAlive = null;
             if (!terminalEventSeen && pid.HasValue)
                 processAlive = PipeClient.IsRevitAlive(pid.Value);
+            DateTime jobBegan;
+            DateTime? beganLocal = DateTime.TryParseExact(runningAt ?? startedAt,
+                "yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out jobBegan) ? jobBegan : (DateTime?)null;
+            var wer = !terminalEventSeen && pid.HasValue
+                ? WerDumpEvidence.Find(WerDumpEvidence.DefaultDirectory(),
+                    pid.Value, beganLocal, DateTime.Now)
+                : new WerDumpEvidence.Finding();
+            string processCondition = !processAlive.HasValue ? "unknown" :
+                processAlive.Value ? wer.Found && wer.RecentWrite ? "alive_with_recent_wer_dump" : "alive" :
+                wer.Found ? "dead_with_wer_dump" : "dead";
 
             return new JObject
 
@@ -494,6 +508,13 @@ namespace Horizun.Server
                 // Null process_alive on a finished job: nobody needs to know.
                 ["pid"] = pid.HasValue ? (JToken)pid.Value : JValue.CreateNull(),
                 ["process_alive"] = processAlive.HasValue ? (JToken)processAlive.Value : JValue.CreateNull(),
+                ["process_condition"] = processCondition,
+                ["wer_dump"] = new JObject { ["found_for_this_job"] = wer.Found,
+                    ["recent_write"] = wer.RecentWrite,
+                    ["bytes"] = wer.Bytes.HasValue ? (JToken)wer.Bytes.Value : JValue.CreateNull(),
+                    ["last_write_local"] = wer.LastWriteLocal.HasValue
+                        ? (JToken)wer.LastWriteLocal.Value.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)
+                        : JValue.CreateNull() },
                 ["started_at"] = startedAt,
                 ["running_since"] = runningAt,
                 ["checkpoint_count"] = count,
@@ -544,7 +565,7 @@ namespace Horizun.Server
                         ((state == "queued" || state == "running") && processAlive != false) ? "poll_same_job" : "inspect_before_retry",
                     ["note"] = "Only never-started jobs may use submit_job.resume_from_job_id with idempotency_key=resume:<job_id>. The submit guard rechecks the record, document and arguments. Checkpoints are progress, not permission to repeat writes."
                 },
-                ["what_this_means"] = Explain(state, seenResult, pid, processAlive)
+                ["what_this_means"] = Explain(state, seenResult, pid, processAlive, wer)
             };
         }
 
@@ -582,7 +603,8 @@ namespace Horizun.Server
         /// a record with no pid (written before it was stamped) keeps the old sentence,
         /// because there liveness genuinely is not knowable.
         /// </summary>
-        private static string Explain(string state, bool hasResult, int? pid, bool? processAlive)
+        private static string Explain(string state, bool hasResult, int? pid, bool? processAlive,
+                                      WerDumpEvidence.Finding wer)
         {
             switch (state)
             {
@@ -599,6 +621,12 @@ namespace Horizun.Server
                            "with the same idempotency_key returns this same job_id and queues nothing.";
 
                 case "running":
+                    if (wer.Found && processAlive == false)
+                        return "The Revit PROCESS DIED and a Windows crash dump for this pid was written after this job started. " +
+                               "The job will never finish; inspect its checkpoints and model before any retry.";
+                    if (wer.Found && wer.RecentWrite && processAlive == true)
+                        return "Revit is still alive but a Windows crash dump for this pid was written recently. " +
+                               "It may be dumping or failing; this is not ordinary progress. Inspect Revit and the model; do not retry the job.";
                     if (processAlive == true)
                         return "RUNNING, or hung - the Revit that is executing it (pid " + pid + ") is alive, so " +
                                "the process did not die. A log cannot tell a slow step from a hang, and this will " +
@@ -629,6 +657,10 @@ namespace Horizun.Server
                            "queue was full - read final_note for which. Nothing was executed and nothing was " +
                            "written, so this is safe to send again. Use a NEW idempotency_key: keys are bound to " +
                            "the Revit process that issued them.";
+
+                case "cancelled":
+                    return "CANCELLED before it started: a cancellation request took it out of Revit's queue while " +
+                           "it was still waiting. Nothing was executed and nothing was written.";
 
                 case "record_incomplete":
                     return "This durable record is INCOMPLETE: read record_fault and read_error for whether an append " +

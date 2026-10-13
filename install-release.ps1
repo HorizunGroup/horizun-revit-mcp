@@ -3,10 +3,15 @@
   Download the official Horizun setup from GitHub Releases, verify it against
   SHA256SUMS.txt from the SAME release, then launch it. No Git or .NET SDK.
 
-  Usage:
-    irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1 | iex
-    powershell -ExecutionPolicy Bypass -File .\install-release.ps1
-    powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -Version vX.Y.Z
+  Usage (public releases are unsigned and need -AllowUnsigned; read README.md first):
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1))) -AllowUnsigned
+    powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned
+    powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned -Version vX.Y.Z
+
+  `irm ... | iex` alone cannot pass -AllowUnsigned, so it can never complete an
+  unsigned install. This file is kept PURE ASCII on purpose: Windows PowerShell 5.1
+  reads a BOM-less file as the ANSI code page, and a BOM would break the irm form
+  (it reaches the parser as U+FEFF before the first token).
 
   The default is a quiet CLI install. It then registers Horizun immediately when
   the selected client is closed, or schedules the registration safely after the
@@ -99,6 +104,17 @@ function Get-HorizunAuthoritativeCompletionStatus([string]$BasePath) {
     return $BasePath
 }
 
+# What the durable completion state means for the bootstrap's own exit. A fresh status
+# file is not success by itself: the finisher writes registration_failed just as
+# promptly as live_verified. Unknown states are not success either.
+function Get-HorizunCompletionOutcome([string]$State) {
+    switch ($State) {
+        { $_ -in 'installed_and_registered', 'live_verified', 'awaiting_revit', 'waiting_for_client_exit', 'registration_pending' } { return 'ok' }
+        'failed_no_client' { return 'no_client' }
+        default { return 'failed' }
+    }
+}
+
 function Assert-HorizunSetupUnsigned([string]$Path, [bool]$UnsignedAllowed) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($signature.Status -ne 'NotSigned') {
@@ -111,6 +127,36 @@ function Assert-HorizunSetupUnsigned([string]$Path, [bool]$UnsignedAllowed) {
     if (([string]$version.CompanyName).Trim() -ne 'Horizun Group' -or ([string]$version.ProductName).Trim() -ne 'Horizun Revit MCP') {
         throw "Unsigned Setup does not carry the expected Horizun product metadata. Company='$($version.CompanyName)' Product='$($version.ProductName)'"
     }
+}
+
+function Invoke-HorizunSetupProcess([string]$FilePath, [string[]]$Arguments) {
+    # Waits for SETUP, not for what Setup leaves behind. The -Wait switch waits for
+    # the whole process tree (a job object on 5.1), and Setup deliberately starts the
+    # completion helper, which can wait hours for a client to close or for Revit's
+    # first start - so the bootstrap hung long after Setup had finished.
+    $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru
+    $null = $process.Handle    # cache the handle: without it 5.1 can report ExitCode as $null
+    $process.WaitForExit()
+    return $process.ExitCode
+}
+
+function Get-HorizunInstalledAppDir([string[]]$UninstallKeys) {
+    # Where Setup really installed {app}: its own uninstall record, per-user first
+    # (PrivilegesRequired=lowest), then machine-wide. The per-user default is only
+    # the fallback when no record exists.
+    if (-not $UninstallKeys) {
+        $id = '{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1'
+        $UninstallKeys = @(
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$id",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$id",
+            "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\$id")
+    }
+    foreach ($key in $UninstallKeys) {
+        if (-not (Test-Path -LiteralPath $key)) { continue }
+        $location = [string](Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue).InstallLocation
+        if ($location) { return $location.TrimEnd('\') }
+    }
+    return (Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP')
 }
 
 function New-HorizunSetupArguments([string]$ResultPath, [string]$InstallerClient) {
@@ -189,15 +235,15 @@ try {
         $arguments += '/SUPPRESSMSGBOXES'
     }
     $startedLocal = Get-Date
-    $process = Start-Process -FilePath $setupPath -ArgumentList $arguments -Wait -PassThru
+    $setupExit = Invoke-HorizunSetupProcess $setupPath $arguments
     $finishedLocal = Get-Date
-    if ($process.ExitCode -ne 0) { throw "The setup exited with code $($process.ExitCode). Review its on-screen report." }
+    if ($setupExit -ne 0) { throw "The setup exited with code $setupExit. Review its on-screen report." }
     $installResult = Read-HorizunInstallResult -Path $resultPath -StartedLocal $startedLocal `
         -FinishedLocal $finishedLocal -ExpectedVersion $release.tag_name
     Write-Host ("[Horizun] setup completed successfully for Revit " + $installResult.succeeded + '.') -ForegroundColor Green
 
     if (-not $NoClientCompletion -and $Client -ne 'None') {
-        $serverRoot = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server'
+        $serverRoot = Join-Path (Get-HorizunInstalledAppDir) 'server'
         $complete = Join-Path $serverRoot 'client-tools\complete-install.ps1'
         if (Test-Path -LiteralPath $complete -PathType Leaf) {
             # The 0.9+ Setup itself launches the same finisher so double-clicking
@@ -207,21 +253,31 @@ try {
             # are not a convenience feature.
             $statusPath = Join-Path $env:LOCALAPPDATA 'Horizun\install-status.json'
             $freshCompletion = $false
+            $freshState = $null
             for ($attempt = 1; $attempt -le 20; $attempt++) {
                 $authoritativeStatus = Get-HorizunAuthoritativeCompletionStatus $statusPath
                 if (Test-Path -LiteralPath $authoritativeStatus) {
                     try {
                         $status = Get-Content -LiteralPath $authoritativeStatus -Raw | ConvertFrom-Json
                         $updated = [datetime]::Parse([string]$status.updated_utc).ToUniversalTime()
-                        if ($updated -ge $startedLocal.ToUniversalTime().AddSeconds(-2)) { $freshCompletion = $true; break }
+                        if ($updated -ge $startedLocal.ToUniversalTime().AddSeconds(-2)) { $freshCompletion = $true; $freshState = [string]$status.state; break }
                     }
                     catch { }
                 }
                 Start-Sleep -Milliseconds 250
             }
             $completionExit = 0
+            if ($freshCompletion) {
+                # Read the state the finisher published; exit 0 alone was never enough.
+                switch (Get-HorizunCompletionOutcome $freshState) {
+                    'failed' { $completionExit = 1 }
+                    'no_client' { $completionExit = 2 }
+                }
+                Write-Host ("[Horizun] completion state: " + $(if ($freshState) { $freshState } else { '(none)' })) -ForegroundColor DarkGray
+            }
             if (-not $freshCompletion) {
-                $completionArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $complete, '-Client', $Client)
+                $completionArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $complete, '-Client', $Client,
+                    '-ServerPath', (Join-Path $serverRoot 'horizun-mcp.exe'))
                 if ($NoLiveVerification) { $completionArgs += '-NoLiveWait' }
                 & powershell @completionArgs
                 $completionExit = $LASTEXITCODE
@@ -231,8 +287,8 @@ try {
             }
             elseif ($completionExit -eq 2) {
                 Write-Host '[Horizun] binaries are installed, but no Claude/Codex configuration exists yet.' -ForegroundColor Yellow
-                Write-Host '          Start the intended client once, close it, then use the Start-menu shortcut' -ForegroundColor Yellow
-                Write-Host '          "Completar y verificar instalación de Horizun".' -ForegroundColor Yellow
+                Write-Host '          Start the intended client once, close it, then run:' -ForegroundColor Yellow
+                Write-Host ('          powershell -ExecutionPolicy Bypass -File "' + $complete + '"') -ForegroundColor Yellow
             }
             else {
                 Write-Host '[Horizun] client registration and first-start health verification are complete or safely scheduled.' -ForegroundColor Green

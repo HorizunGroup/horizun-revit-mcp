@@ -1,0 +1,79 @@
+{
+  "tool": "horizun_plan_reinforcement",
+  "title": {
+    "en": "Bastones and laps: extra top bars from each end, and a spliced bottom row",
+    "es": "Bastones y traslapos: barras superiores desde cada extremo y una fila inferior empalmada"
+  },
+  "about": {
+    "en": "Read-only. V-102 carries two 16M bastones from each end over a quarter of its measured length, and a bottom row spliced at mid-length by a lap of 40 bar diameters - the multiplier is this example's, never a code's. The bottom layer plans as pieces <id>#h<element>#bottom#p1 and #p2; the audit measures each lap off the two centrelines the model returns. Two layers on one face are spread across the same width, so a continuous pair and bastones on the same face would coincide: this example keeps the face to the bastones. Replace the bar types with your project's.",
+    "es": "Solo lectura. V-102 lleva dos bastones 16M desde cada extremo sobre un cuarto de su longitud medida y una fila inferior empalmada a media luz con un traslapo de 40 diámetros: el multiplicador es de este ejemplo, nunca de una norma. La capa inferior se planifica como piezas <id>#h<elemento>#bottom#p1 y #p2; la auditoría mide cada traslapo sobre las dos líneas centrales que devuelve el modelo. Dos capas en una cara se reparten sobre el mismo ancho, así que un par corrido y bastones en la misma cara coincidirían: este ejemplo deja la cara a los bastones. Reemplace los tipos de barra por los de su proyecto."
+  },
+  "next": "03-apply-reinforcement.json",
+  "arguments": {
+    "requirement_set": {
+      "schema": "horizun.structural-requirements/1",
+      "units": "millimeter",
+      "requirement_set": {
+        "id": "cartilla-demo-bastones",
+        "version": "1.0.0",
+        "title": "Synthetic detail schedule - bastones and a lapped bottom row"
+      },
+      "bar_types": [
+        {
+          "id": "N16",
+          "type_name": "16M"
+        }
+      ],
+      "section_rules": [
+        {
+          "id": "V102",
+          "host": {
+            "category": "OST_StructuralFraming",
+            "mark": "V-102"
+          },
+          "cover": {
+            "source": "host"
+          },
+          "layers": [
+            {
+              "name": "top-start",
+              "face": "top",
+              "count": 2,
+              "bar_type": "N16",
+              "extend": {
+                "from": "start",
+                "run_ratio": 0.25
+              },
+              "mark": "B1"
+            },
+            {
+              "name": "top-end",
+              "face": "top",
+              "count": 2,
+              "bar_type": "N16",
+              "extend": {
+                "from": "end",
+                "run_ratio": 0.25
+              },
+              "mark": "B2"
+            },
+            {
+              "name": "bottom",
+              "face": "bottom",
+              "count": 3,
+              "bar_type": "N16",
+              "extend": "host_length",
+              "mark": "B3",
+              "laps": [
+                {
+                  "at_ratio": 0.5,
+                  "length_db": 40
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

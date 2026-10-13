@@ -137,7 +137,8 @@ namespace Horizun.Revit.Core
                     if (a == null || b == null || a.DistanceTo(b) > SamePointFt) continue;
 
                     string pair = Math.Min(mineId, theirId) + ":" + Math.Max(mineId, theirId) + ":" +
-                                  Math.Round(a.X, 4) + "," + Math.Round(a.Y, 4) + "," + Math.Round(a.Z, 4);
+                                  Math.Round(a.X, 4).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "," + Math.Round(a.Y, 4).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "," +
+                                  Math.Round(a.Z, 4).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
                     if (!reported.Add(pair)) continue;
 
                     found.Add(new JObject
@@ -175,8 +176,8 @@ namespace Horizun.Revit.Core
         /// <summary>A point, rounded to the same tolerance two ends are judged coincident by.</summary>
         private static string Key(XYZ p)
         {
-            return Math.Round(p.X / SamePointFt) + ":" + Math.Round(p.Y / SamePointFt) + ":" +
-                   Math.Round(p.Z / SamePointFt);
+            return Math.Round(p.X / SamePointFt).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ":" + Math.Round(p.Y / SamePointFt).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ":" +
+                   Math.Round(p.Z / SamePointFt).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
         }
 
         private static JToken SafeId(Connector c)

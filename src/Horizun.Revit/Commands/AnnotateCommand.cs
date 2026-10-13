@@ -62,7 +62,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name); if (!gate.Ok) return gate.Refusal;
             Document doc = gate.Document; JArray actions = request["actions"] as JArray;
@@ -462,11 +462,32 @@ namespace Horizun.Revit.Commands
                     p.Point = Point(a["point"], scale, false); p.Text = a.Value<string>("text");
                     if (string.IsNullOrEmpty(p.Text)) throw new ArgumentException("text is required");
                     p.Type = Need<TextNoteType>(doc, a, "text_type_id");
+                    if (a["expected_height_mm"] != null)
+                    {
+                        double requested = a.Value<double>("expected_height_mm");
+                        if (requested <= 0) throw new ArgumentException("expected_height_mm must be positive.");
+                        Parameter size = p.Type.get_Parameter(BuiltInParameter.TEXT_SIZE);
+                        if (size == null || !size.HasValue)
+                            throw new ArgumentException("text_type_id has no readable TEXT_SIZE; height cannot be verified.");
+                        double actual = size.AsDouble() * 304.8;
+                        if (Math.Abs(actual - requested) > 0.1)
+                            throw new ArgumentException("text_type_id has height " + actual.ToString("0.###", CultureInfo.InvariantCulture) +
+                                " mm, but expected_height_mm is " + requested.ToString("0.###", CultureInfo.InvariantCulture) +
+                                ". Choose a TextNoteType of the requested height; no type was silently resized.");
+                    }
+                    if (a["horizontal_alignment"] != null) ParseHorizontal(a.Value<string>("horizontal_alignment"));
+                    if (a["vertical_alignment"] != null) ParseVertical(a.Value<string>("vertical_alignment"));
+                    if (a["rotation_degrees"] != null)
+                    {
+                        double angle = a.Value<double>("rotation_degrees");
+                        if (double.IsNaN(angle) || double.IsInfinity(angle))
+                            throw new ArgumentException("rotation_degrees must be finite.");
+                    }
                 }
                 else if (op == "tag")
                 {
-                    if (a["text"] != null || a["text_type_id"] != null)
-                        throw new ArgumentException("tag does not accept text or text_type_id; accepting them would silently drop text-note intent.");
+                    if (a["text"] != null || a["text_type_id"] != null || HasTextOptions(a))
+                        throw new ArgumentException("tag does not accept text or text-note options; accepting them would silently drop text-note intent.");
                     p.Point = Point(a["point"], scale, false); p.Target = Need<Element>(doc, a, "element_id");
                     if (a["tag_type_id"] != null)
                         p.Type = Need<ElementType>(doc, a, "tag_type_id");
@@ -1184,9 +1205,45 @@ namespace Horizun.Revit.Commands
         // ---------------------------------------------------------------------
         // Creation.
         // ---------------------------------------------------------------------
+        private static bool HasTextOptions(JObject a) => a["expected_height_mm"] != null ||
+            a["horizontal_alignment"] != null || a["vertical_alignment"] != null || a["rotation_degrees"] != null;
+
+        private static HorizontalTextAlignment ParseHorizontal(string value)
+        {
+            switch ((value ?? "").ToLowerInvariant())
+            {
+                case "left": return HorizontalTextAlignment.Left;
+                case "center": return HorizontalTextAlignment.Center;
+                case "right": return HorizontalTextAlignment.Right;
+                default: throw new ArgumentException("horizontal_alignment must be left, center or right.");
+            }
+        }
+
+        private static VerticalTextAlignment ParseVertical(string value)
+        {
+            switch ((value ?? "").ToLowerInvariant())
+            {
+                case "top": return VerticalTextAlignment.Top;
+                case "middle": return VerticalTextAlignment.Middle;
+                case "bottom": return VerticalTextAlignment.Bottom;
+                default: throw new ArgumentException("vertical_alignment must be top, middle or bottom.");
+            }
+        }
+
         private static Element Create(Document doc, Plan p)
         {
-            if (p.Operation == "text") return TextNote.Create(doc, p.View.Id, p.Point, p.Text, p.Type.Id);
+            if (p.Operation == "text")
+            {
+                if (!HasTextOptions(p.Input)) return TextNote.Create(doc, p.View.Id, p.Point, p.Text, p.Type.Id);
+                var options = new TextNoteOptions(p.Type.Id);
+                if (p.Input["horizontal_alignment"] != null)
+                    options.HorizontalAlignment = ParseHorizontal(p.Input.Value<string>("horizontal_alignment"));
+                if (p.Input["vertical_alignment"] != null)
+                    options.VerticalAlignment = ParseVertical(p.Input.Value<string>("vertical_alignment"));
+                if (p.Input["rotation_degrees"] != null)
+                    options.Rotation = p.Input.Value<double>("rotation_degrees") * Math.PI / 180.0;
+                return TextNote.Create(doc, p.View.Id, p.Point, p.Text, options);
+            }
             if (p.Operation == "tag")
             {
                 TagMode mode = TagMode.TM_ADDBY_CATEGORY; string m = (p.Input.Value<string>("tag_mode") ?? "by_category").ToLowerInvariant();
@@ -1941,7 +1998,28 @@ namespace Horizun.Revit.Commands
             // DimensionPlanRules.StoredTextMatches, where they are unit-tested.
             if (p.Operation == "text")
             {
-                bool okText = e is TextNote note && DimensionPlanRules.StoredTextMatches(p.Text, note.Text);
+                TextNote note = e as TextNote;
+                bool okText = note != null && DimensionPlanRules.StoredTextMatches(p.Text, note.Text);
+                if (okText && note.GetTypeId() != p.Type.Id) okText = false;
+                if (okText && p.Input["horizontal_alignment"] != null &&
+                    note.HorizontalAlignment != ParseHorizontal(p.Input.Value<string>("horizontal_alignment"))) okText = false;
+                if (okText && p.Input["vertical_alignment"] != null &&
+                    note.VerticalAlignment != ParseVertical(p.Input.Value<string>("vertical_alignment"))) okText = false;
+                if (okText && p.Input["expected_height_mm"] != null)
+                {
+                    Parameter size = note.TextNoteType?.get_Parameter(BuiltInParameter.TEXT_SIZE);
+                    okText = size != null && size.HasValue &&
+                        Math.Abs(size.AsDouble() * 304.8 - p.Input.Value<double>("expected_height_mm")) <= 0.1;
+                }
+                if (okText && p.Input["rotation_degrees"] != null)
+                {
+                    XYZ basis = note.BaseDirection;
+                    double angle = Math.Atan2(basis.DotProduct(p.View.UpDirection),
+                                              basis.DotProduct(p.View.RightDirection)) * 180.0 / Math.PI;
+                    double expected = p.Input.Value<double>("rotation_degrees");
+                    double delta = ((angle - expected + 540.0) % 360.0) - 180.0;
+                    okText = Math.Abs(delta) <= 0.1;
+                }
                 if (!okText) reason = "the created text note does not read back with the requested text";
                 return okText;
             }

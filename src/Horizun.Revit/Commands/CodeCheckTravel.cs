@@ -52,6 +52,7 @@ using Autodesk.Revit.UI;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
+using System.Globalization;
 
 namespace Horizun.Revit.Commands
 {
@@ -388,7 +389,7 @@ namespace Horizun.Revit.Commands
             "the room (corners inset " + EgressTravelRules.DefaultInsetMm + " mm and kept only inside the room, room point" +
             (r.UsedLongestSearch ? ", Revit's whole-plan longest start" : "") + ") to its nearest declared exit" +
             (r.UpperMm.HasValue
-                ? "; proven ceiling " + Math.Round(r.UpperMm.Value / 1000, 3) + " m, assuming " + CeilingAssumes
+                ? "; proven ceiling " + Math.Round(r.UpperMm.Value / 1000, 3).ToString(CultureInfo.InvariantCulture) + " m, assuming " + CeilingAssumes
                 : "; no ceiling: " + (r.NoCeiling ?? "not computed."));
 
         private static JObject RowJson(TravelRow r, double? maxM)
@@ -412,8 +413,8 @@ namespace Horizun.Revit.Commands
             else if (r.OutOfScope != null) o["reason"] = "out of scope: " + r.OutOfScope;
             else if (r.Unavailable != null) o["reason"] = r.Unavailable;
             else if (outcome == EgressTravelRules.NotDecidable && lower.HasValue)
-                o["reason"] = "the routed " + Math.Round(lower.Value, 3) + " m is a LOWER bound under the limit, and the true farthest " +
-                              "point may exceed it: " + (upper.HasValue ? "the proven ceiling " + Math.Round(upper.Value, 3) + " m is over the limit."
+                o["reason"] = "the routed " + Math.Round(lower.Value, 3).ToString(CultureInfo.InvariantCulture) + " m is a LOWER bound under the limit, and the true farthest " +
+                              "point may exceed it: " + (upper.HasValue ? "the proven ceiling " + Math.Round(upper.Value, 3).ToString(CultureInfo.InvariantCulture) + " m is over the limit."
                                                                          : "no ceiling - " + (r.NoCeiling ?? "not computed."));
             if (r.DistanceMm.HasValue)
             {

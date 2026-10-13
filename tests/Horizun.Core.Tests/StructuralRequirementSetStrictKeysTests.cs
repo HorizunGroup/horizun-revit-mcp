@@ -211,7 +211,8 @@ namespace Horizun.Core.Tests
             Assert.False(s.Ok);
             Assert.Equal(StructuralRequirementSet.CodeUnknownKey, s.Code);
             Assert.Equal("reinforcement_rules['bottom'].host.categroy", s.Path);
-            Assert.Equal(new[] { "category", "element_ids", "type_name" }, s.Allowed);
+            // mark and level joined the selector with section rules (F1.1): a schedule names members by Mark.
+            Assert.Equal(new[] { "category", "element_ids", "level", "mark", "source_selector", "type_name" }, s.Allowed);
         }
 
         [Fact]

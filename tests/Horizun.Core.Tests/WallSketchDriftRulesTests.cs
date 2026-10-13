@@ -68,6 +68,46 @@ namespace Horizun.Core.Tests
             Assert.Contains("redrawn", r.Reason);
         }
 
+        // Backlog #31: drift was measured between the CENTRES of the wall and the profile, so a
+        // profile edited to run past one end of the wall read as drift - and realign_wall_sketch
+        // moved it, then verified with the same metric. The ends are compared now.
+        [Fact]
+        public void A_profile_that_runs_past_one_end_is_an_edit_not_a_drift()
+        {
+            var r = WallSketchDriftRules.Evaluate(
+                PlaneOrigin, PlaneNormal,
+                wallLineStart: new Vec3(0, 0, 0), wallLineEnd: new Vec3(5000, 0, 0),
+                sketchFootprintMin: new Vec3(0, 0, 0), sketchFootprintMax: new Vec3(6000, 0, 3000));
+            Assert.False(r.Stranded, r.Reason);
+            Assert.Equal(0, r.CorrectionVectorMm.X, 3);
+        }
+
+        [Fact]
+        public void A_protruding_profile_on_a_moved_wall_is_stranded_and_no_translation_is_chosen()
+        {
+            // Both ends off the wall's, by different amounts: moved AND edited, or a profile
+            // nobody can realign by one vector. Refused, not guessed.
+            var r = WallSketchDriftRules.Evaluate(
+                PlaneOrigin, PlaneNormal,
+                wallLineStart: new Vec3(2000, 0, 0), wallLineEnd: new Vec3(7000, 0, 0),
+                sketchFootprintMin: new Vec3(0, 0, 0), sketchFootprintMax: new Vec3(6000, 0, 3000));
+            Assert.True(r.Stranded);
+            Assert.False(r.Correctable);
+            Assert.Equal(0, r.CorrectionVectorMm.X, 3);
+        }
+
+        [Fact]
+        public void A_wall_whose_direction_runs_backwards_measures_the_same()
+        {
+            var r = WallSketchDriftRules.Evaluate(
+                PlaneOrigin, PlaneNormal,
+                wallLineStart: new Vec3(7000, 0, 0), wallLineEnd: new Vec3(2000, 0, 0),
+                sketchFootprintMin: new Vec3(0, 0, 0), sketchFootprintMax: new Vec3(5000, 0, 3000));
+            Assert.True(r.Stranded);
+            Assert.True(r.Correctable);
+            Assert.Equal(2000, r.CorrectionVectorMm.X, 3);
+        }
+
         [Fact]
         public void Drift_inside_tolerance_is_not_reported_as_stranded()
         {

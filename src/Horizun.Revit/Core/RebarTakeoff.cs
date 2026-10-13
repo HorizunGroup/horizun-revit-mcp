@@ -105,7 +105,7 @@ namespace Horizun.Revit.Core
 
             var groups = new Dictionary<string, Group0>(StringComparer.Ordinal);
             var order = new List<string>();
-            int rowsSeen = 0;
+            int rowsSeen = 0, systemRows = 0, fabricRows = 0;
 
             foreach (JToken t in rows ?? new JArray())
             {
@@ -134,9 +134,22 @@ namespace Horizun.Revit.Core
                 }
 
                 g.Sets++;
+                // A system bar (RebarInSystem of an area or path system) is counted as a set is; this says how many.
+                // A FABRIC SHEET is counted too - its bars are its wires - and says so on its own.
+                bool fabric = RebarSystemBars.IsFabric(row);
+                if (fabric) { g.FabricSheets++; fabricRows++; }
+                else if (row["system"] is JObject) { g.FromSystems++; systemRows++; }
 
                 int? quantity = Int(row, "measured", "quantity");
                 if (quantity.HasValue) g.Bars += quantity.Value; else g.QuantityUnreadable++;
+                if (fabric)
+                {
+                    if (quantity.HasValue) g.FabricWires += quantity.Value;
+                    double? fv = Num(row, "measured", "volume_m3");
+                    if (fv.HasValue) g.FabricVolumeM3 += fv.Value;
+                    double? revit = Num(row, "fabric", "revit_cut_sheet_mass_kg");
+                    if (revit.HasValue) g.FabricRevitKg += revit.Value; else g.FabricRevitUnread++;
+                }
 
                 double? lengthM = Num(row, "measured", "total_length_m");
                 if (lengthM.HasValue) g.LengthM += lengthM.Value; else g.LengthUnreadable++;
@@ -157,7 +170,8 @@ namespace Horizun.Revit.Core
             foreach (string key in order)
             {
                 Group0 g = groups[key];
-                var o = new JObject { ["group"] = g.Values, ["sets"] = g.Sets };
+                var o = new JObject { ["group"] = g.Values, ["sets"] = g.Sets, ["sets_from_systems"] = g.FromSystems };
+                if (g.FabricSheets > 0) Fabric(o, g.FabricSheets, g.FabricWires, g.FabricVolumeM3, g.FabricRevitKg, g.FabricRevitUnread, densityKgPerM3);
 
                 o["bars"] = g.QuantityUnreadable > 0 ? (JToken)JValue.CreateNull() : g.Bars;
                 o["bars_counted"] = g.Bars;
@@ -205,12 +219,24 @@ namespace Horizun.Revit.Core
             {
                 ["grouped_by"] = new JArray(groupBy.ToArray()),
                 ["sets_read"] = rowsSeen,
+                ["sets_from_systems"] = systemRows,
+                ["sets_from_systems_means"] =
+                    "how many of the rows read are bars of area or path reinforcement (RebarInSystem, marked " +
+                    "system on their rows). They are measured and summed exactly as rebar sets are.",
+                ["fabric_sheets"] = fabricRows,
+                ["fabric_sheets_means"] =
+                    "how many of the rows read are FABRIC SHEETS (system.kind fabric). A sheet's bars are its wires as " +
+                    "placed: their count is in bars, their summed length in total_length_m, their steel (length x pi x " +
+                    "d^2 / 4 per wire type) in volume_m3, weighed with the declared density like every bar. Where fabric " +
+                    "is counted, fabric.revit_cut_sheet_mass_kg is Revit's own mass for the same sheets, to check against.",
                 ["groups"] = outGroups,
                 ["group_count"] = outGroups.Count,
                 ["totals"] = Totals(groups.Values, densityKgPerM3),
                 ["how_measured"] =
-                    "length, volume and count come from the rebar element itself - Revit's own totals - and " +
-                    "are summed per group. Nothing here is derived from a declared centreline.",
+                    "length, volume and count come from the rebar element itself (a set, or a bar of an area or " +
+                    "path system) - Revit's own totals - and " +
+                    "are summed per group. A fabric sheet's come from its wires as placed (see fabric_sheets_means). " +
+                    "Nothing here is derived from a declared centreline.",
                 ["group_keys_available"] = new JArray(RebarTakeoffKey.All)
             };
             if (densityKgPerM3.HasValue)
@@ -234,11 +260,17 @@ namespace Horizun.Revit.Core
 
         private static JObject Totals(IEnumerable<Group0> groups, double? density)
         {
-            int sets = 0, bars = 0, unread = 0;
-            double lengthM = 0, volume = 0;
+            int sets = 0, bars = 0, unread = 0, fromSystems = 0, sheets = 0, wires = 0, revitUnread = 0;
+            double lengthM = 0, volume = 0, fabricVolume = 0, revitKg = 0;
             foreach (Group0 g in groups)
             {
                 sets += g.Sets;
+                fromSystems += g.FromSystems;
+                sheets += g.FabricSheets;
+                wires += g.FabricWires;
+                fabricVolume += g.FabricVolumeM3;
+                revitKg += g.FabricRevitKg;
+                revitUnread += g.FabricRevitUnread;
                 bars += g.Bars;
                 lengthM += g.LengthM;
                 volume += g.VolumeM3;
@@ -247,6 +279,7 @@ namespace Horizun.Revit.Core
             var o = new JObject
             {
                 ["sets"] = sets,
+                ["sets_from_systems"] = fromSystems,
                 ["bars"] = unread == 0 ? (JToken)bars : JValue.CreateNull(),
                 ["bars_counted"] = bars,
                 ["total_length_m"] = unread == 0 ? (JToken)Math.Round(lengthM, 4) : JValue.CreateNull(),
@@ -264,7 +297,27 @@ namespace Horizun.Revit.Core
             if (unread > 0)
                 o["why_partial"] = unread + " value(s) could not be read, so the totals are null rather than " +
                                    "a sum that looks complete and is not.";
+            o["fabric_sheets"] = sheets;
+            if (sheets > 0) Fabric(o, sheets, wires, fabricVolume, revitKg, revitUnread, density);
             return o;
+        }
+
+        /// <summary>The fabric of a group or of the totals: its sheets, wires and steel, and Revit's own mass beside it.</summary>
+        private static void Fabric(JObject o, int sheets, int wires, double volumeM3, double revitKg, int revitUnread, double? density)
+        {
+            var f = new JObject
+            {
+                ["sheets"] = sheets,
+                ["wires"] = wires,
+                ["volume_m3_counted"] = Math.Round(volumeM3, 6),
+                ["revit_cut_sheet_mass_kg"] = revitUnread > 0 ? (JToken)JValue.CreateNull() : Math.Round(revitKg, 3),
+                ["revit_cut_sheet_mass_kg_counted"] = Math.Round(revitKg, 3)
+            };
+            if (density.HasValue) f["mass_kg_counted"] = Math.Round(volumeM3 * density.Value, 3);
+            f["means"] = "the fabric sheets in this total (already inside bars, total_length_m, volume_m3 and mass_kg): " +
+                         "their wires, the wires' steel, and Revit's own cut-sheet mass for the same sheets - Revit's " +
+                         "arithmetic with Revit's density, published to check against, never summed in.";
+            o["fabric"] = f;
         }
 
         private static JToken ValueFor(JObject row, string key)
@@ -315,6 +368,12 @@ namespace Horizun.Revit.Core
         {
             public JObject Values;
             public int Sets;
+            public int FromSystems;
+            public int FabricSheets;
+            public int FabricWires;
+            public double FabricVolumeM3;
+            public double FabricRevitKg;
+            public int FabricRevitUnread;
             public int Bars;
             public double LengthM;
             public double VolumeM3;

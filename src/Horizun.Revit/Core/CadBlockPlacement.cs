@@ -42,6 +42,8 @@ namespace Horizun.Revit.Core
         public bool Mirrored;
         /// <summary>The magnitude of the scale this placement accumulated through its parents.</summary>
         public double Scale = 1.0;
+        /// <summary>The BASE POINT of this block's definition: its contents are placed relative to it.</summary>
+        public CadPoint Base;
 
         /// <summary>
         /// A point of this block's DEFINITION, where this placement puts it - the
@@ -50,6 +52,9 @@ namespace Horizun.Revit.Core
         /// </summary>
         public CadPoint Place(CadPoint local)
         {
+            // RELATIVE TO THE DEFINITION'S BASE POINT, which is where the insertion point
+            // puts it (audit 2026-10-08, lote 7). Zero for a definition based at its origin.
+            local = new CadPoint(local.X - Base.X, local.Y - Base.Y, local.Z - Base.Z);
             double lx = local.X * Scale, ly = local.Y * Scale;
             if (Mirrored) lx = -lx;
             double cos = Math.Cos(RotationRadians), sin = Math.Sin(RotationRadians);
@@ -159,7 +164,8 @@ namespace Horizun.Revit.Core
         /// level are taken as they are, and instances inside a definition are
         /// expanded once per placement of that definition.
         /// </summary>
-        public static CadPlacementReading Place(IList<CadIrEntity> entities, int maxDepth = DefaultMaxDepth)
+        public static CadPlacementReading Place(IList<CadIrEntity> entities, int maxDepth = DefaultMaxDepth,
+                                               IDictionary<string, CadPoint> blockBases = null)
         {
             var reading = new CadPlacementReading();
             if (entities == null) return reading;
@@ -197,16 +203,23 @@ namespace Horizun.Revit.Core
                     RotationRadians = rootRotation,
                     Mirrored = IsMirrored(root),
                     Scale = ScaleOf(root),
+                    Base = BaseOf(blockBases, root.BlockName),
                     ThroughHandle = root.Handle,
                     Space = root.Space,
                     HandleChain = new List<string> { root.Handle ?? root.Id }
                 });
                 Expand(reading, inside, root, root.Points[0], rootRotation, IsMirrored(root),
                        ScaleOf(root), new List<string> { root.BlockName ?? "" }, root.Handle, 1, maxDepth,
-                       root.Space, new List<string> { root.Handle ?? root.Id });
+                       root.Space, new List<string> { root.Handle ?? root.Id }, blockBases);
             }
 
             return reading;
+        }
+
+        private static CadPoint BaseOf(IDictionary<string, CadPoint> bases, string blockName)
+        {
+            CadPoint b;
+            return bases != null && blockName != null && bases.TryGetValue(blockName, out b) ? b : new CadPoint(0, 0, 0);
         }
 
         private static bool IsMirrored(CadIrEntity e)
@@ -243,7 +256,7 @@ namespace Horizun.Revit.Core
                                    CadIrEntity parent, CadPoint parentAt, double parentRotation,
                                    bool parentMirrored, double parentScale,
                                    List<string> path, string throughHandle, int depth, int maxDepth,
-                                   string space, List<string> handles)
+                                   string space, List<string> handles, IDictionary<string, CadPoint> blockBases)
         {
             if (depth > reading.MaxDepthSeen) reading.MaxDepthSeen = depth;
             if (depth > maxDepth) { reading.DepthLimitHit = true; return; }
@@ -263,7 +276,12 @@ namespace Horizun.Revit.Core
                     continue;
                 }
 
-                CadPoint local = child.Points[0];
+                // RELATIVE TO THE PARENT DEFINITION'S BASE POINT: a nested insert inside a
+                // block based at (5,5) and drawn at (5,5) sits exactly on the parent's
+                // insertion point (audit 2026-10-08, lote 7).
+                CadPoint parentBase = BaseOf(blockBases, parent.BlockName);
+                CadPoint local = new CadPoint(child.Points[0].X - parentBase.X, child.Points[0].Y - parentBase.Y,
+                                              child.Points[0].Z - parentBase.Z);
                 double cos = Math.Cos(parentRotation), sin = Math.Sin(parentRotation);
                 double lx = local.X * parentScale, ly = local.Y * parentScale;
                 if (parentMirrored) lx = -lx;                  // the parent's reflection, about its own Y axis
@@ -288,6 +306,7 @@ namespace Horizun.Revit.Core
                 reading.Placed.Add(new CadPlacedBlock
                 {
                     Source = child,
+                    Base = BaseOf(blockBases, child.BlockName),
                     At = at,
                     RotationRadians = rotation,
                     Mirrored = mirrored,
@@ -300,7 +319,7 @@ namespace Horizun.Revit.Core
 
                 Expand(reading, inside, child, at, rotation, mirrored,
                        parentScale * ScaleOf(child), next, throughHandle, depth + 1, maxDepth, space,
-                       new List<string>(handles) { child.Handle ?? child.Id });
+                       new List<string>(handles) { child.Handle ?? child.Id }, blockBases);
             }
         }
 

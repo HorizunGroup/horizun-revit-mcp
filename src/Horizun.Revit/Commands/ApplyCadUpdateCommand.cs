@@ -41,7 +41,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication uiApp, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("The arguments are not valid JSON: " + ex.Message); }
 
             // THE SHARED GATE, not a hand-rolled title check.
@@ -571,6 +571,10 @@ namespace Horizun.Revit.Commands
             var stamps = new JArray();
             var restamps = new JArray();
             int written = 0, anonymous = 0, restamped = 0, migrated = 0, restampFailed = 0;
+            // Held until the commit is known and each record read back (audit 2026-10-08, 6.2).
+            var stampLedger = new ProvenanceLedger();
+            var restampLedger = new ProvenanceLedger();
+            var migratedRows = new List<JObject>();
             using (var t = new Transaction(doc, "Horizun: record CAD update provenance"))
             {
                 t.Start();
@@ -638,8 +642,8 @@ namespace Horizun.Revit.Commands
 
                     string why;
                     bool ok = CadProvenanceStore.Write(e, p, out why);
-                    if (ok) written++; else anonymous++;
-                    stamps.Add(new JObject
+                    if (!ok) anonymous++;
+                    var stampRow = new JObject
                     {
                         ["element_id"] = pair.ElementId,
                         ["key"] = pair.Key,
@@ -652,7 +656,9 @@ namespace Horizun.Revit.Commands
                               "next update recognises it instead of building it again"
                             : "the provenance entity did not land, so this element is ANONYMOUS and the next " +
                               "update will build it again. Revit said: " + (why ?? "(nothing)")
-                    });
+                    };
+                    stamps.Add(stampRow);
+                    if (ok) stampLedger.Wrote(stampRow, ReadBack(e, p));
                 }
 
                 // RE-STAMPS: no geometry touched, the record rewritten. A v1
@@ -741,13 +747,8 @@ namespace Horizun.Revit.Commands
 
                     string why;
                     bool ok = CadProvenanceStore.Write(e, p, out why);
-                    if (ok)
-                    {
-                        restamped++;
-                        if (wasV1 && reason == CadPlacementRules.RestampMigrated) migrated++;
-                    }
-                    else restampFailed++;
-                    restamps.Add(new JObject
+                    if (!ok) restampFailed++;
+                    var restampRow = new JObject
                     {
                         ["element_id"] = id, ["reason"] = reason, ["written"] = ok,
                         ["was_version"] = wasVersion,
@@ -764,7 +765,13 @@ namespace Horizun.Revit.Commands
                                            : "re-stamped with the placement's current transform")
                             : "the rewrite did not land and the element keeps the record it had. Revit said: " +
                               (why ?? "(nothing)")
-                    });
+                    };
+                    restamps.Add(restampRow);
+                    if (ok)
+                    {
+                        restampLedger.Wrote(restampRow, ReadBack(e, p));
+                        if (wasV1 && reason == CadPlacementRules.RestampMigrated) migratedRows.Add(restampRow);
+                    }
                 }
                 // WHAT MOVED BECAUSE ITS HOST MOVED. A wall this update re-shaped
                 // carries its hosted devices with it; their as-built record still
@@ -816,8 +823,8 @@ namespace Horizun.Revit.Commands
                         p.WrittenUtc = DateTime.UtcNow.ToString("o");
                         string why;
                         bool ok = CadProvenanceStore.Write(fi, p, out why);
-                        if (ok) restamped++; else restampFailed++;
-                        restamps.Add(new JObject
+                        if (!ok) restampFailed++;
+                        var hostedRow = new JObject
                         {
                             ["element_id"] = id, ["reason"] = "host_reshaped_by_this_update", ["written"] = ok,
                             ["host_id"] = hostId, ["was_built_at_mm"] = was, ["now_at_mm"] = p.BuiltGeometry,
@@ -826,10 +833,21 @@ namespace Horizun.Revit.Commands
                                   "as-built record now names where it stands, so the next update does not read the " +
                                   "move as somebody's edit"
                                 : "the rewrite did not land. Revit said: " + (why ?? "(nothing)")
-                        });
+                        };
+                        restamps.Add(hostedRow);
+                        if (ok) restampLedger.Wrote(hostedRow, ReadBack(fi, p));
                     }
                 }
-                t.Commit();
+                TransactionStatus status;
+                try { status = t.Commit(); }
+                catch (Exception) { status = TransactionStatus.Error; }
+                bool committed = status == TransactionStatus.Committed;
+                int stampsHeld = stampLedger.PendingCount, restampsHeld = restampLedger.PendingCount;
+                written = stampLedger.Settle(committed, status.ToString());
+                anonymous += stampsHeld - written;
+                restamped = restampLedger.Settle(committed, status.ToString());
+                restampFailed += restampsHeld - restamped;
+                migrated = migratedRows.Count(r => (bool?)r["written"] == true);
             }
 
             JArray fittingsAfterResize = FittingsAfterResize(doc, actions);
@@ -1046,6 +1064,14 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>The placement half of a stamp, copied from the plan's provenance block.</summary>
+        /// <summary>After the commit: does the element carry the record that was meant?</summary>
+        private static Func<string> ReadBack(Element element, CadProvenance meant) => () =>
+        {
+            string problem;
+            CadProvenance got = CadProvenanceStore.Read(element, out problem);
+            return ProvenanceLedger.CadDiffers(meant, got, problem);
+        };
+
         private static void StampPlacement(CadProvenance p, JObject placement)
         {
             if (p == null || placement == null) return;

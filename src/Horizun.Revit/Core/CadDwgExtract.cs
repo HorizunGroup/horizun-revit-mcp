@@ -49,6 +49,11 @@ namespace Horizun.Revit.Core
 
         /// <summary>Block definition names, including the ones that are external references.</summary>
         public List<string> BlockNames = new List<string>();
+        /// <summary>
+        /// Each block definition's BASE POINT, in mm: what its contents are placed relative to.
+        /// Absent from extractions made before it was recorded, which read as the origin.
+        /// </summary>
+        public Dictionary<string, CadPoint> BlockBases = new Dictionary<string, CadPoint>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>True when the extractor wrote its end marker. A report without it was cut off.</summary>
         public bool Complete;
@@ -74,24 +79,83 @@ namespace Horizun.Revit.Core
         /// unit is not a drawing in millimetres, and treating it as one is how a
         /// building gets built at 1/25th scale. The caller has to say what it is.
         /// </summary>
+        /// <summary>
+        /// An entity written in its own OCS (extrusion not +Z), put into world coordinates
+        /// (audit 2026-10-08, lote 7). ARC, CIRCLE, LWPOLYLINE, INSERT and TEXT carry OCS
+        /// coordinates; MTEXT's insertion point is already world and is left alone. A
+        /// tilted extrusion has no plan angle: its points are converted and the reading
+        /// names it.
+        /// </summary>
+        private static void ToWorld(CadIrEntity e, string type, double[] n, CadDwgReading r)
+        {
+            if (type != "ARC" && type != "CIRCLE" && type != "LWPOLYLINE" && type != "INSERT" && type != "TEXT") return;
+            double nx = n[0], ny = n[1], nz = n[2];
+            for (int i = 0; i < e.Points.Count; i++) e.Points[i] = CadOcs.ToWorld(e.Points[i], nx, ny, nz);
+            if (e.TextAlignmentPoint.HasValue) e.TextAlignmentPoint = CadOcs.ToWorld(e.TextAlignmentPoint.Value, nx, ny, nz);
+            if (e.Arc != null)
+                e.Arc = new CadArcFact(e.Arc.CurveId, CadOcs.ToWorld(e.Arc.Centre, nx, ny, nz), e.Arc.RadiusMm,
+                                       CadOcs.ToWorld(e.Arc.Start, nx, ny, nz), CadOcs.ToWorld(e.Arc.End, nx, ny, nz),
+                                       CadOcs.ToWorld(e.Arc.Middle, nx, ny, nz), e.Arc.Layer, e.Arc.ChordCount, e.Arc.SagittaMm);
+            bool plan = CadOcs.IsMirroredPlan(nx, ny, nz);
+            if (type == "INSERT")
+            {
+                if (plan)
+                {
+                    // A block reflected about world Y: in the placement's own terms (scale,
+                    // reflection about the block's Y axis, then the turn) the X scale changes
+                    // sign and the turn reverses.
+                    e.ScaleX = -(e.ScaleX ?? 1.0);
+                    double turn = -(e.RotationRadians ?? 0.0);
+                    turn %= 2 * Math.PI; if (turn < 0) turn += 2 * Math.PI;
+                    e.RotationRadians = turn;
+                }
+                else r.Unparsed.Add("INSERT " + e.Handle + " has a tilted extrusion (" + Fmt(nx) + "," + Fmt(ny) + "," + Fmt(nz) +
+                                    "): its insertion point is converted, its rotation has no plan reading and is left as written.");
+            }
+            else if (type == "TEXT" && e.RotationRadians.HasValue)
+            {
+                double? world = CadOcs.DirectionToWorld(e.RotationRadians.Value, nx, ny, nz);
+                if (world.HasValue) e.RotationRadians = world;
+                else r.Unparsed.Add("TEXT " + e.Handle + " has a tilted extrusion: its rotation has no plan reading and is left as written.");
+            }
+        }
+
+        private static string Fmt(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+
         public static double? MmPerUnitOf(int insUnits)
         {
+            // THE DXF REFERENCE'S TABLE, every code (audit 2026-10-08, lote 7): 8 is
+            // MICROINCHES and 13 MICRONS (they read 0.0254 and 1e-6, the values of mils and
+            // nanometres), 14 decimetres read 0.1 instead of 100, 17 gigametres 1e9 instead of
+            // 1e12. US survey units are 1200/3937 m to the foot.
+            const double SurveyFootMm = 1200.0 / 3937.0 * 1000.0;
             switch (insUnits)
             {
-                case 1: return 25.4;            // inches
-                case 2: return 304.8;           // feet
-                case 4: return 1.0;             // millimetres
-                case 5: return 10.0;            // centimetres
-                case 6: return 1000.0;          // metres
-                case 8: return 0.0254;          // microinches
-                case 9: return 25.4e-3;         // mils
-                case 10: return 914.4;          // yards
-                case 13: return 1e-6;           // nanometres
-                case 14: return 0.1;            // decimetres
-                case 15: return 10000.0;        // decametres
-                case 16: return 100000.0;       // hectometres
-                case 17: return 1e9;            // gigametres
-                default: return null;           // 0 unitless, and everything unmapped
+                case 1: return 25.4;                    // inches
+                case 2: return 304.8;                   // feet
+                case 3: return 1609344.0;               // miles
+                case 4: return 1.0;                     // millimetres
+                case 5: return 10.0;                    // centimetres
+                case 6: return 1000.0;                  // metres
+                case 7: return 1e6;                     // kilometres
+                case 8: return 2.54e-5;                 // microinches
+                case 9: return 0.0254;                  // mils
+                case 10: return 914.4;                  // yards
+                case 11: return 1e-7;                   // angstroms
+                case 12: return 1e-6;                   // nanometres
+                case 13: return 1e-3;                   // microns
+                case 14: return 100.0;                  // decimetres
+                case 15: return 10000.0;                // decametres
+                case 16: return 100000.0;               // hectometres
+                case 17: return 1e12;                   // gigametres
+                case 18: return 1.495978707e14;         // astronomical units
+                case 19: return 9.4607304725808e18;     // light years
+                case 20: return 3.0856775814913673e19;  // parsecs
+                case 21: return SurveyFootMm;           // US survey feet
+                case 22: return SurveyFootMm / 12.0;    // US survey inches
+                case 23: return SurveyFootMm * 3.0;     // US survey yards
+                case 24: return SurveyFootMm * 5280.0;  // US survey miles
+                default: return null;                   // 0 unitless, and everything unmapped
             }
         }
 
@@ -136,6 +200,39 @@ namespace Horizun.Revit.Core
             return sb.ToString();
         }
 
+        /// <summary>
+        /// The entity's own colour (62) and linetype (6), written by the extractor after the
+        /// geometry (absent from dumps made before them). Kept raw here and resolved against the
+        /// layer once every layer is read: BYLAYER takes the layer's, BYBLOCK (colour 0) is left
+        /// unknown - the block reference decides it, and this record does not see it.
+        /// </summary>
+        private static void Appearance(CadIrEntity e, string[] f, int at, Dictionary<CadIrEntity, string[]> raw)
+        {
+            if (f.Length <= at) return;
+            raw[e] = new[] { Field(f, at), Field(f, at + 1), Field(f, at + 2) };
+        }
+
+        private static void ResolveAppearance(CadDwgReading r, Dictionary<CadIrEntity, string[]> raw)
+        {
+            var layers = new Dictionary<string, CadIrLayer>(StringComparer.OrdinalIgnoreCase);
+            foreach (CadIrLayer l in r.Layers) if (l.Name != null && !layers.ContainsKey(l.Name)) layers[l.Name] = l;
+            foreach (KeyValuePair<CadIrEntity, string[]> kv in raw)
+            {
+                CadIrEntity e = kv.Key;
+                layers.TryGetValue(e.Layer ?? "", out CadIrLayer layer);
+                double? c = Num(kv.Value[0]);
+                int code = c.HasValue ? (int)Math.Round(c.Value) : 256;
+                e.ColorIndex = code == 256 ? (layer?.ColorIndex.HasValue == true ? (int?)Math.Abs(layer.ColorIndex.Value) : null)
+                             : code == 0 ? null : (int?)code;
+                double? tc = Num(kv.Value[2]);
+                if (tc.HasValue && tc.Value >= 0 && tc.Value <= 0xFFFFFF)
+                    e.TrueColor = "#" + ((int)tc.Value).ToString("x6", CultureInfo.InvariantCulture);
+                string lt = Unescape(kv.Value[1]);
+                e.Linetype = string.IsNullOrWhiteSpace(lt) || string.Equals(lt, "BYLAYER", StringComparison.OrdinalIgnoreCase) ? layer?.Linetype
+                           : string.Equals(lt, "BYBLOCK", StringComparison.OrdinalIgnoreCase) ? null : lt;
+            }
+        }
+
         private static double? Num(string s)
         {
             double d;
@@ -170,6 +267,9 @@ namespace Horizun.Revit.Core
             // assume ordering. Entities are held raw and scaled at the end.
             var raw = new List<string[]>();
             var attribs = new List<string[]>();
+            var rawBases = new List<string[]>();
+            var normals = new Dictionary<string, double[]>(StringComparer.Ordinal);
+            var appearance = new Dictionary<CadIrEntity, string[]>();
             int lineNo = 0;
 
             foreach (string line in lines)
@@ -208,6 +308,7 @@ namespace Horizun.Revit.Core
                         if (f.Length < 2) { r.Unparsed.Add(lineNo + ": " + line); break; }
                         string bname = Unescape(f[1]);
                         r.BlockNames.Add(bname);
+                        if (f.Length >= 7) rawBases.Add(new[] { bname, f[4], f[5], f[6] });
                         string path = f.Length > 3 ? Unescape(f[3]) : "";
                         if (!string.IsNullOrWhiteSpace(path))
                         {
@@ -227,6 +328,16 @@ namespace Horizun.Revit.Core
 
                     case "E": raw.Add(f); break;
                     case "A": attribs.Add(f); break;
+                    case "X":
+                    {
+                        // An entity's extrusion direction (group 210), written only when it is not +Z.
+                        double? nx = Num(f.Length > 2 ? f[2] : null), ny = Num(f.Length > 3 ? f[3] : null),
+                                nz = Num(f.Length > 4 ? f[4] : null);
+                        if (f.Length > 1 && !string.IsNullOrEmpty(f[1]) && nx.HasValue && ny.HasValue && nz.HasValue)
+                            normals[f[1]] = new[] { nx.Value, ny.Value, nz.Value };
+                        else r.Unparsed.Add(lineNo + ": " + line);
+                        break;
+                    }
                     default: r.Unparsed.Add(lineNo + ": " + line); break;
                 }
             }
@@ -234,6 +345,11 @@ namespace Horizun.Revit.Core
             double? declared = r.InsUnits.HasValue ? MmPerUnitOf(r.InsUnits.Value) : null;
             r.MmPerUnit = declared ?? assumeMmPerUnit;
             double mm = r.MmPerUnit ?? 1.0;
+            foreach (string[] b in rawBases)
+            {
+                double? bx = Num(b[1]), by = Num(b[2]), bz = Num(b[3]);
+                if (bx.HasValue && by.HasValue) r.BlockBases[b[0]] = new CadPoint(bx.Value * mm, by.Value * mm, (bz ?? 0) * mm);
+            }
 
             // Attributes, by the handle of the INSERT that owns them.
             var byOwner = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
@@ -313,6 +429,30 @@ namespace Horizun.Revit.Core
                         e.TextHeightMm = Scale(Num(Field(f, 8)), mm);
                         e.RotationRadians = Num(Field(f, 9));
                         e.Text = Unescape(Field(f, 10));
+                        // What places the point (fields 11.., absent from dumps made before they
+                        // were recorded, which leaves TextType null - not "left justified").
+                        if (f.Length > 11)
+                        {
+                            e.TextType = type;
+                            if (type == "TEXT")
+                            {
+                                double? jh = Num(Field(f, 11)), jv = Num(Field(f, 12));
+                                e.TextJustifyH = jh.HasValue ? (int?)(int)Math.Round(jh.Value) : 0;
+                                e.TextJustifyV = jv.HasValue ? (int?)(int)Math.Round(jv.Value) : 0;
+                                e.TextAlignmentPoint = Point(f, 13, mm);
+                            }
+                            else
+                            {
+                                double? at = Num(Field(f, 11));
+                                e.TextAttachment = at.HasValue ? (int?)(int)Math.Round(at.Value) : null;
+                                e.TextBoxWidthMm = Scale(Num(Field(f, 12)), mm);
+                                e.TextBoxHeightMm = Scale(Num(Field(f, 13)), mm);
+                                // An MTEXT's direction is its 11 vector when it has one (world, not OCS).
+                                CadPoint? dir = Point(f, 14, 1.0);
+                                if (dir.HasValue && (Math.Abs(dir.Value.X) > 1e-12 || Math.Abs(dir.Value.Y) > 1e-12))
+                                    e.RotationRadians = Math.Atan2(dir.Value.Y, dir.Value.X);
+                            }
+                        }
                         break;
 
                     case "ATTDEF":
@@ -352,6 +492,7 @@ namespace Horizun.Revit.Core
                         e.Kind = CadEntityKind.Line;
                         AddPoint(e, Point(f, 5, mm));
                         AddPoint(e, Point(f, 8, mm));
+                        Appearance(e, f, 11, appearance);
                         break;
 
                     case "CIRCLE":
@@ -363,6 +504,7 @@ namespace Horizun.Revit.Core
                     case "ARC":
                     {
                         e.Kind = CadEntityKind.Arc;
+                        Appearance(e, f, 11, appearance);
                         CadPoint? c = Point(f, 5, mm);
                         double? rad = Scale(Num(Field(f, 8)), mm);
                         double? a1 = Num(Field(f, 9)), a2 = Num(Field(f, 10));
@@ -370,7 +512,11 @@ namespace Horizun.Revit.Core
                         e.RadiusMm = rad;
                         if (c.HasValue && rad.HasValue && a1.HasValue && a2.HasValue)
                         {
-                            double r1 = a1.Value * Math.PI / 180.0, r2 = a2.Value * Math.PI / 180.0;
+                            // RADIANS, as entget hands them to the extractor (a DXF FILE stores
+                            // degrees; the entity list does not). Read as degrees, a real
+                            // extraction's 3.141593..4.712389 was an arc of 1.57 degrees
+                            // (audit 2026-10-08, lote 7).
+                            double r1 = a1.Value, r2 = a2.Value;
                             var start = new CadPoint(c.Value.X + rad.Value * Math.Cos(r1),
                                                      c.Value.Y + rad.Value * Math.Sin(r1), c.Value.Z);
                             var end = new CadPoint(c.Value.X + rad.Value * Math.Cos(r2),
@@ -409,6 +555,7 @@ namespace Horizun.Revit.Core
                     case "LWPOLYLINE":
                     {
                         e.Kind = CadEntityKind.Polyline;
+                        Appearance(e, f, 8, appearance);
                         string pts = Field(f, 7);
                         if (!string.IsNullOrWhiteSpace(pts))
                             foreach (string v in pts.Split(';'))
@@ -457,9 +604,14 @@ namespace Horizun.Revit.Core
                         AddPoint(e, Point(f, 5, mm));
                         break;
                 }
+                double[] extrusion;
+                if (e.Handle != null && normals.TryGetValue(e.Handle, out extrusion) &&
+                    !CadOcs.IsWorld(extrusion[0], extrusion[1], extrusion[2]))
+                    ToWorld(e, type, extrusion, r);
                 r.Entities.Add(e);
             }
 
+            ResolveAppearance(r, appearance);
             return r;
         }
 

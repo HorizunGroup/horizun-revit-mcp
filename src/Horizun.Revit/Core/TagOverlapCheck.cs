@@ -115,7 +115,21 @@ namespace Horizun.Revit.Core
             {
                 BoundingBoxXYZ b = e.get_BoundingBox(view);
                 if (b == null) return null;
-                return TagOverlapRules.Rect.Normalized(b.Min.X, b.Min.Y, b.Max.X, b.Max.Y);
+                // ON SCREEN, not in model X/Y (backlog #12): the box's corners, through its own
+                // transform, projected onto the view's right and up directions. Model X/Y read a
+                // section's or an elevation's tags as flat (never overlapping) and a rotated
+                // plan's neighbours as overlapping.
+                XYZ right = view.RightDirection, up = view.UpDirection;
+                Transform t = b.Transform;
+                TagOverlapRules.BoxTransform bt = t == null || t.IsIdentity ? null : new TagOverlapRules.BoxTransform
+                {
+                    Origin = new[] { t.Origin.X, t.Origin.Y, t.Origin.Z },
+                    BasisX = new[] { t.BasisX.X, t.BasisX.Y, t.BasisX.Z },
+                    BasisY = new[] { t.BasisY.X, t.BasisY.Y, t.BasisY.Z },
+                    BasisZ = new[] { t.BasisZ.X, t.BasisZ.Y, t.BasisZ.Z }
+                };
+                return TagOverlapRules.ViewRect(new[] { b.Min.X, b.Min.Y, b.Min.Z }, new[] { b.Max.X, b.Max.Y, b.Max.Z }, bt,
+                                                new[] { right.X, right.Y, right.Z }, new[] { up.X, up.Y, up.Z });
             }
             catch { return null; }
         }

@@ -35,7 +35,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication uiApp, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("The arguments are not valid JSON: " + ex.Message); }
 
             Document doc = uiApp?.ActiveUIDocument?.Document;

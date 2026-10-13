@@ -204,6 +204,9 @@ param(
 
 $probeRun = [guid]::NewGuid().ToString('N')
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'verify-live.gates.ps1')
+# When this run began: a Revit crash dump written after it belongs to this run.
+$script:HzRunStart = Get-Date
 
 # A green report must identify the TEST that produced it, not only the product
 # it exercised. The product candidate and the harness intentionally can be
@@ -1529,9 +1532,13 @@ else {
 
 if ($OldFile) {
     if (-not (Test-Path $OldFile)) { throw "-OldFile does not exist: $OldFile" }
+    # Gated after the session starts (Get-HzOldFileGate): a file the running Revit saved
+    # itself is no upgrade and is never opened by this probe.
     $probes += @{ Name = "open_document REFUSES a file saved in another Revit"
                   Tool = 'horizun_open_document'; Args = @{ path = $OldFile; idempotency_key = "live-open-old-file-$probeRun" }
-                  ExpectError = 'REFUS' }
+                  ExpectError = 'REFUS'
+                  Needs = 'OldFileGateRun'
+                  NotCovered = 'the saved version of -OldFile was not read before the probes ran' }
 }
 
 # ---------------------------------------------------------------------------
@@ -1617,6 +1624,27 @@ Send-Rpc @{ jsonrpc='2.0'; method='notifications/initialized' }
 Send-Rpc @{ jsonrpc='2.0'; id=999001; method='tools/list'; params=@{} }
 $listReply = Read-Rpc
 $listed = @($listReply.result.tools)
+$publishedNamesForProbes = @($listed | ForEach-Object { $_.name })
+
+# -OldFile: read the file's own header (typed inspect, nothing opened) and run the
+# upgrade-guard probe only when the file was saved by ANOTHER Revit version.
+$OldFileGateRun = $null
+if ($OldFile) {
+    Send-Rpc @{ jsonrpc='2.0'; id=999002; method='tools/call'; params=@{
+        name='horizun_document_session'; arguments=@{ operation='inspect'; file_path=$OldFile } } }
+    $oldInspectReply = Read-Rpc
+    $oldSaved = $null
+    if ($oldInspectReply -and -not [bool]$oldInspectReply.result.isError) {
+        try {
+            $oldInspect = $oldInspectReply.result.content[0].text | ConvertFrom-Json
+            $oldSaved = [string]$oldInspect.file.revit_version
+            if (-not $oldSaved) { $oldSaved = [string]$oldInspect.file.format }
+        } catch { $oldSaved = $null }
+    }
+    $oldGate = Get-HzOldFileGate -SavedVersion $oldSaved -RevitYear $Year
+    $oldProbe = $probes | Where-Object { $_.Name -eq 'open_document REFUSES a file saved in another Revit' } | Select-Object -First 1
+    if ($oldGate.Run) { $OldFileGateRun = $oldGate.Reason } else { $oldProbe.NotCovered = $oldGate.Reason }
+}
 
 # Resolve the two exact local paths used to bracket the closed-workset probes.
 # ClosedWorksetDocument is deliberately a TITLE fixture because the assertions are
@@ -1815,13 +1843,14 @@ $id = 1
 foreach ($p in $probes) {
     $id++
     $p.Id = $id
-    # Activation is a real prerequisite, not just a reporting label. If it failed,
-    # do not execute untargeted audit/quantity calls against whichever model stayed
-    # active and then grade those unrelated answers as closed-workset failures.
-    if ($p.Needs -eq 'ClosedWorksetActive' -and
-        [string]::IsNullOrWhiteSpace($ClosedWorksetActive)) { continue }
-    if ($p.Name -eq 'close the closed-workset fixture opened by this harness without saving' -and
-        [string]::IsNullOrWhiteSpace($ClosedWorksetCleanupTarget)) { continue }
+    if (Test-HzPolicyHiddenTool -Tool $p.Tool -PublishedNames $publishedNamesForProbes) { continue }
+    # A PREREQUISITE IS A REAL PREREQUISITE, not just a reporting label: a probe whose
+    # Needs was never supplied is not sent (the report loop names it not_covered). It
+    # used to be checked only when reporting, after the probe had run - and the close
+    # of the open source closed the write document although the closed-workset paths
+    # were never discovered (measured 2026-10-09). The activation and cleanup probes,
+    # whose prerequisites are set during this loop, are gated the same way.
+    if (-not (Test-HzProbeRunnable -Probe $p -Resolve { param($n) Get-Variable -Name $n -ValueOnly -ErrorAction SilentlyContinue })) { continue }
 
     $m = $null
     if ($p.Name -eq 'close the closed-workset fixture opened by this harness without saving') {
@@ -5216,7 +5245,10 @@ __output__ = {'status': 'self_reported_verified' if ok else 'failed',
             $shActions += @{ operation = 'place_view'; sheet_key = 'shA'; view_id = $dimPlanViewId; point = @(300, 300); key = 'vpPlan' }
             $shActions += @{ operation = 'place_view'; sheet_key = 'shA'; view_id = $dimSectionViewId; point = @(300, 300); key = 'vpSec' }
             if ($planD2dPlaceable) { $shActions += @{ operation = 'place_view'; sheet_key = 'shB'; view_id = $d2dViewId; point = @(300, 300); key = 'vpD2d' } }
-            if ($planSchedId) { $shActions += @{ operation = 'place_schedule'; sheet_key = 'shA'; schedule_id = $planSchedId; point = @(700, 120); key = 'siA' } }
+            # The plan viewport can be several metres wide in sheet coordinates
+            # (measured in Revit 2023: x=-2428..5417, y=-27..627). A schedule at
+            # (700,120) overlapped it and made the "separated" control false.
+            if ($planSchedId) { $shActions += @{ operation = 'place_schedule'; sheet_key = 'shA'; schedule_id = $planSchedId; point = @(700, 1000); key = 'siA' } }
 
             $shMk = Invoke-WriteApply 'horizun_manage_views' @{
                 target_document = $wDoc; units = 'mm'; actions = $shActions
@@ -10140,6 +10172,10 @@ __output__ = {'status': 'self_reported_verified', 'loaded': bool(loaded)}
         # successful execution, proving neither was consumed by the cancelled
         # request; the final query must find exactly one grid.
         $t0 = Get-Date
+        if ($publishedNamesForProbes -notcontains 'horizun_execute_python') {
+            Complete-W13Case 11 $t0 'not_covered' 'the owner has Python disabled, so the harness cannot hold the UI thread with its marker; cancellation-before-start was not measured'
+        }
+        else {
         $dry11 = Invoke-Write 'horizun_create_elements' @{
             target_document=$wDoc; units='mm'
             elements=@(@{ kind='grid'; name=('HZ_CXL_' + $dimTag); start=@($w13X,24000,0); end=@(($w13X+2000),24000,0) }) }
@@ -10229,6 +10265,7 @@ __output__ = {'status': 'self_reported_verified', 'loaded': bool(loaded)}
             } else {
                 Complete-W13Case 11 $t0 'fail' ("marker=$markerReady11 queued=$queued11 cancel_proof=$([bool]$cancelProof11) cancelled_write_absent=$(-not $ran11) retry_fresh=$fresh11 once=$still11 " + (Get-DimShortText $again11.text))
             }
+        }
         }
 
         # ---- case 12: the 17th caller hears the queue is full ---------------
@@ -11574,6 +11611,11 @@ Write-Host ("-" * 70)
 foreach ($p in $probes) {
     if ($p.Check -or $p.ExpectError) { $assertingProbes++ }
 
+    if (Test-HzPolicyHiddenTool -Tool $p.Tool -PublishedNames $publishedNamesForProbes) {
+        Note-NotCovered $p.Name 'execute_python is intentionally hidden by the owner permission policy; no Python code ran' $p.Tool
+        continue
+    }
+
     # A probe whose prerequisite was never supplied is NOT COVERED, by name. It
     # used to be absent from the output altogether, which reads exactly like a
     # probe that passed.
@@ -11699,10 +11741,12 @@ $publishedNames = @($listed | ForEach-Object { $_.name })
 $danglingProbes = @()
 foreach ($p in $probes) {
     if (-not $p.Tool -or $p.Tool -eq '(contract)') { continue }
+    if (Test-HzPolicyHiddenTool -Tool $p.Tool -PublishedNames $publishedNames) { continue }
     if ($publishedNames -notcontains $p.Tool) { $danglingProbes += ("{0} -> {1}" -f $p.Name, $p.Tool) }
 }
 foreach ($w in $writeResults) {
     if (-not $w.Tool -or $w.Tool -eq '(contract)') { continue }
+    if (Test-HzPolicyHiddenTool -Tool $w.Tool -PublishedNames $publishedNames) { continue }
     if ($publishedNames -notcontains $w.Tool) { $danglingProbes += ("{0} -> {1}" -f $w.Name, $w.Tool) }
 }
 if ($danglingProbes.Count -gt 0) {
@@ -11746,6 +11790,33 @@ if ($retiredRows.Count -gt 0) {
         Write-Host ("           covered: {0}" -f $r.Covered) -ForegroundColor DarkGray
         Write-Host ("           now: {0}" -f $r.Replacement) -ForegroundColor DarkGray
     }
+}
+
+# ---------------------------------------------------------------------------
+# DID REVIT DIE? Every probe after a crash answers "Revit ... is no longer running",
+# and those dozens of UNVERIFIED rows say nothing about the probes themselves. They
+# are re-filed under ONE verdict read from Autodesk's crash dump (CER) - see
+# docs/RELEASE-POLICY.md, "Revit 2027 ADP crash". The known Autodesk crash is
+# revit_crash_autodesk_adp; anything else, or no dump, is revit_crash_unclassified
+# and fails. Neither is ever a pass: the run is repeated.
+# ---------------------------------------------------------------------------
+$revitCrash = $null
+$crashLostRows = @($results | Where-Object { $_.outcome -eq 'unverified' -and ([string]$_.detail) -match 'is no longer running' })
+$revitAlive = $true
+try { $null = Get-Process -Id ([int]$target.pid) -ErrorAction Stop } catch { $revitAlive = $false }
+if (-not $revitAlive -or $crashLostRows.Count -gt 0) {
+    $cerDumps = @(Find-HzNewCerDumps -Root (Join-Path $env:LOCALAPPDATA 'Autodesk\CER') -Since $script:HzRunStart |
+                  ForEach-Object { @{ Path = $_; Info = (Read-HzCerDumpZip -Path $_) } })
+    $inProgress = $null; if ($crashLostRows.Count -gt 0) { $inProgress = [string]$crashLostRows[0].name }
+    $revitCrash = Get-HzRevitCrashVerdict -Dumps $cerDumps -RevitYear $Year -ProbeInProgress $inProgress
+    $lostNames = @($crashLostRows | ForEach-Object { [string]$_.name })
+    foreach ($r in $crashLostRows) { $r.outcome = $revitCrash.State; $unverified-- }
+    $unverifiedDetail = @($unverifiedDetail | Where-Object { $lostNames -notcontains (($_ -split ': ', 2)[0]) })
+    Write-Host ""
+    Write-Host ("  REVIT DIED DURING THIS RUN: {0}" -f $revitCrash.State) -ForegroundColor Red
+    Write-Host ("    {0}" -f $revitCrash.Why) -ForegroundColor Red
+    if ($revitCrash.Dump) { Write-Host ("    dump: {0}" -f $revitCrash.Dump) -ForegroundColor Red }
+    Write-Host ("    first probe without Revit: {0}; {1} probe(s) re-filed under this verdict" -f $inProgress, $crashLostRows.Count) -ForegroundColor Red
 }
 
 Write-Host ("-" * 70)
@@ -11980,6 +12051,8 @@ $report = [pscustomobject]@{
     # tiers and evidence, plus where the consolidator's own record was written.
     # Null only when the section could not run at all; its probes then say why.
     iso19650          = $isoLive
+    # Null unless Revit died during the run; then the verdict read from Autodesk's dump.
+    revit_crash       = $revitCrash
     summary           = @{
         passed      = $passed
         failed      = $failed
@@ -11997,6 +12070,7 @@ $report = [pscustomobject]@{
         # 2023 gate; JSON arrays, object[] and ArrayList are unaffected).
         probes      = $results.Count
         asserting   = @($results | Where-Object { $_.outcome -ne 'not_covered' }).Count
+        revit_crash_lost = $crashLostRows.Count
     }
     probes            = $results
     not_covered       = $notCovered
@@ -12022,7 +12096,8 @@ foreach ($pair in @(@('pass', $passed), @('fail', $failed), @('unverified', $unv
     }
 }
 $rowsNotCovered = 0; if ($rowCounts.ContainsKey('not_covered')) { $rowsNotCovered = $rowCounts['not_covered'] }
-if (($passed + $failed + $unverified + $rowsNotCovered) -ne $results.Count) {
+$rowsCrash = 0; foreach ($k in @($rowCounts.Keys)) { if ([string]$k -like 'revit_crash_*') { $rowsCrash += $rowCounts[$k] } }
+if (($passed + $failed + $unverified + $rowsNotCovered + $rowsCrash) -ne $results.Count) {
     throw ("REPORT SELF-CHECK FAILED: pass({0}) + fail({1}) + unverified({2}) + not_covered rows({3}) do not " -f $passed, $failed, $unverified, $rowsNotCovered) +
           ("add up to the {0} probe rows. The report was NOT written." -f $results.Count)
 }
@@ -12047,6 +12122,14 @@ if ($Json) {
 #
 # Ordered most-severe first, so one number always means the worst thing found.
 # ---------------------------------------------------------------------------
+if ($revitCrash) {
+    # A crash is never a pass. Unclassified fails; the known Autodesk crash asks for a
+    # repetition, and only a clean repetition counts (exit 4 is "repeat this run").
+    if ($revitCrash.State -ne 'revit_crash_autodesk_adp') { exit 1 }
+    Write-Host ""
+    Write-Host "  (exit 4: the known Autodesk ADP crash. Repeat the run; only a clean repetition counts.)" -ForegroundColor Red
+    exit 4
+}
 if ($failed -gt 0) { exit 1 }
 if ($unverified -gt 0) { exit 2 }
 $gateNotCovered = @($notCovered | Where-Object { $nc = $_; -not @($releaseGateExempt | Where-Object { $nc.StartsWith($_.Prefix, [StringComparison]::Ordinal) }).Count })

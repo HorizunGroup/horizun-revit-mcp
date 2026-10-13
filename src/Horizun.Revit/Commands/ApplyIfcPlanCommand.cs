@@ -66,7 +66,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
@@ -759,6 +759,8 @@ namespace Horizun.Revit.Commands
             string planFingerprint = binding.Value<string>("plan_fingerprint");
             string stamp = DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
 
+            // Held until the commit is known and each record read back (audit 2026-10-08, 6.2).
+            var ledger = new ProvenanceLedger();
             using (var transaction = new Transaction(doc, "Horizun: record IFC provenance"))
             {
                 try { transaction.Start(); }
@@ -811,15 +813,26 @@ namespace Horizun.Revit.Commands
                     string lastError;
                     if (IfcProvenanceStore.Write(element, record, out lastError))
                     {
-                        written++;
                         if (!string.IsNullOrWhiteSpace(record.GlobalId))
                             builtByGlobalId[record.GlobalId] = id;
-                        report.Add(new JObject
+                        var stampRow = new JObject
                         {
                             ["element_id"] = id,
                             ["global_id"] = record.GlobalId,
                             ["ifc_class"] = record.IfcClass,
                             ["representation_used"] = record.Representation
+                        };
+                        report.Add(stampRow);
+                        IfcProvenance meant = record;
+                        Element stamped = element;
+                        ledger.Wrote(stampRow, () =>
+                        {
+                            IfcProvenance got = IfcProvenanceStore.Read(stamped);
+                            if (got == null) return "the element carries no IFC provenance";
+                            if (!ProvenanceLedger.Same(meant.GlobalId, got.GlobalId)) return "global_id differs";
+                            if (!ProvenanceLedger.Same(meant.PlanFingerprint, got.PlanFingerprint)) return "plan_fingerprint differs";
+                            if (!ProvenanceLedger.Same(meant.RowFingerprint, got.RowFingerprint)) return "row_fingerprint differs";
+                            return null;
                         });
                     }
                     else
@@ -836,14 +849,30 @@ namespace Horizun.Revit.Commands
                     }
                 }
 
-                try { transaction.Commit(); }
-                catch (Exception ex)
+                TransactionStatus status;
+                string commitError = null;
+                try { status = transaction.Commit(); }
+                catch (Exception ex) { status = TransactionStatus.Error; commitError = ex.Message; }
+                int held = ledger.PendingCount;
+                int confirmed = ledger.Settle(status == TransactionStatus.Committed, status.ToString());
+                written += confirmed;
+                refused += held - confirmed;
+                // An origin that did not land is no origin: the map must not claim it either.
+                foreach (JObject r in report.OfType<JObject>())
                 {
-                    refused += written;
-                    written = 0;
+                    if ((bool?)r["written"] != false) continue;
+                    string gid = r.Value<string>("global_id");
+                    long rid = r.Value<long?>("element_id") ?? -1;
+                    long mapped;
+                    if (!string.IsNullOrWhiteSpace(gid) && builtByGlobalId.TryGetValue(gid, out mapped) && mapped == rid)
+                        builtByGlobalId.Remove(gid);
+                }
+                if (status != TransactionStatus.Committed)
+                {
                     report.Add(new JObject
                     {
-                        ["error"] = "the provenance transaction would not commit: " + ex.Message,
+                        ["error"] = "the provenance transaction did not commit (" + status + ")" +
+                                    (commitError == null ? "" : ": " + commitError),
                         ["means"] = "the elements are BUILT and unstamped; the next run will plan them again."
                     });
                 }

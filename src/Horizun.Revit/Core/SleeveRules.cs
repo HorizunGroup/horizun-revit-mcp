@@ -37,6 +37,15 @@ namespace Horizun.Revit.Core
 {
     public static class SleeveRules
     {
+        /// <summary>
+        /// Categories whose elements are structural by what they ARE, not by a flag: a
+        /// framing member, a column, a foundation. A footing cut for a sleeve without the
+        /// structural opt-in was the gap (audit 2026-10-08, 6.14).
+        /// </summary>
+        public static bool IsStructuralCategory(string builtInCategory) =>
+            builtInCategory == "OST_StructuralFraming" || builtInCategory == "OST_StructuralColumns" ||
+            builtInCategory == "OST_StructuralFoundation";
+
         public const string ShapeRound = "round";
         public const string ShapeRect = "rect";
 

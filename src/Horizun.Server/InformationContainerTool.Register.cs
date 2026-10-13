@@ -336,7 +336,7 @@ namespace Horizun.Server
             return entries;
         }
 
-        private static List<string> FilePaths(JObject args)
+        internal static List<string> FilePaths(JObject args)
         {
             var arr = args["file_paths"] as JArray;
             if (arr == null || arr.Count == 0)
@@ -348,8 +348,7 @@ namespace Horizun.Server
             {
                 if (t.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)t))
                     throw new ToolRefusal("file_paths entries must be non-empty strings. Nothing was written.");
-                if (!Path.IsPathRooted((string)t)) throw new ToolRefusal("file_paths entries must be absolute: '" + (string)t + "'. Nothing was written.");
-                string full = Path.GetFullPath((string)t);
+                string full = LocalPath.Require((string)t, "each file_paths entry", " Nothing was written.");
                 if (list.Contains(full, StringComparer.OrdinalIgnoreCase))
                     throw new ToolRefusal("file_paths names " + full + " twice. Nothing was written.");
                 list.Add(full);
@@ -587,13 +586,7 @@ namespace Horizun.Server
         /// RFC 4180 quoting, and a text that a spreadsheet would read as a formula
         /// (= + - @, tab, CR) is prefixed with an apostrophe: a person's name must not run.
         /// </summary>
-        private static string Csv(string s)
-        {
-            s = s ?? "";
-            if (s.Length > 0 && "=+-@\t\r".IndexOf(s[0]) >= 0) s = "'" + s;
-            if (s.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0) s = "\"" + s.Replace("\"", "\"\"") + "\"";
-            return s;
-        }
+        private static string Csv(string s) => CsvText.Quote(CsvText.NeutralizeFormula(s), ',');
 
         // ---- record_review -------------------------------------------------------------
 

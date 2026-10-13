@@ -23,6 +23,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
+using System.Globalization;
 
 namespace Horizun.Revit.Commands
 {
@@ -365,7 +366,7 @@ namespace Horizun.Revit.Commands
                 double len = type == LinePatternSegmentType.Dot ? 0 : (s.Value<double?>("length") ?? -1) * scale;
                 if (type != LinePatternSegmentType.Dot && !(len > 0)) { error = "segments[" + i + "].length must be > 0."; return null; }
                 segs.Add(new LinePatternSegment(type, len));
-                wanted.Add(t + ":" + Math.Round(len * 304.8, 4));
+                wanted.Add(t + ":" + Math.Round(len * 304.8, 4).ToString(CultureInfo.InvariantCulture));
             }
             ElementId created = null;
             var edit = new ModelEdit { Subject = "line_pattern:" + name, Category = "line_pattern", Action = PlannedAction.Create };
@@ -385,7 +386,7 @@ namespace Horizun.Revit.Commands
                 ReadS(check, "name", name, () => e.Name);
                 try
                 {
-                    var found = new JArray(e.GetLinePattern().GetSegments().Select(s => s.Type.ToString().ToLowerInvariant() + ":" + Math.Round(s.Length * 304.8, 4)));
+                    var found = new JArray(e.GetLinePattern().GetSegments().Select(s => s.Type.ToString().ToLowerInvariant() + ":" + Math.Round(s.Length * 304.8, 4).ToString(CultureInfo.InvariantCulture)));
                     check.Record("segments", wanted, found, JToken.DeepEquals(wanted, found));
                 }
                 catch (Exception ex) { check.Unreadable("segments", wanted, ex.Message); }
@@ -431,6 +432,7 @@ namespace Horizun.Revit.Commands
             {
                 var req = new List<string> { "name", "target", "solid", "grid_count" };
                 if (grids > 0) { req.Add("angle"); req.Add("spacing"); }
+                if (grids > 1) { req.Add("angle2"); req.Add("spacing2"); }
                 var check = new PostconditionCheck(req.ToArray());
                 var e = created == null ? null : d.GetElement(created) as FillPatternElement;
                 FillPattern p = null; try { p = e?.GetFillPattern(); } catch { }
@@ -448,6 +450,20 @@ namespace Horizun.Revit.Commands
                         check.Measure("spacing", s1, g.Offset, 1e-9, "ft", "FillGrid.Offset of grid 0");
                     }
                     catch (Exception ex) { check.Unreadable("angle", angle, ex.Message); check.Unreadable("spacing", s1, ex.Message); }
+                }
+                if (grids > 1)
+                {
+                    // THE SECOND GRID (backlog #50): a crosshatch read only grid 0 back, so a
+                    // second grid at the wrong angle or spacing still read verified. It is
+                    // created at angle + 90 degrees; a direction is compared modulo pi.
+                    try
+                    {
+                        FillGrid g = p.GetFillGrids()[1];
+                        check.Measure("angle2", 0.0, FillGridRules.LineDirectionDelta(FillGridRules.CrosshatchSecondAngle(angle), g.Angle), 1e-9, "rad",
+                                      "FillGrid.Angle of grid 1 against angle + 90 degrees, modulo pi");
+                        check.Measure("spacing2", s2, g.Offset, 1e-9, "ft", "FillGrid.Offset of grid 1");
+                    }
+                    catch (Exception ex) { check.Unreadable("angle2", angle, ex.Message); check.Unreadable("spacing2", s2, ex.Message); }
                 }
                 return check;
             };

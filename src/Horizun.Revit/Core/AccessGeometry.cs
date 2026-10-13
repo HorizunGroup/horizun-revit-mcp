@@ -400,7 +400,7 @@ namespace Horizun.Revit.Core
                 double rise = (box.Max.Z - box.Min.Z) * MillimetresPerFoot;
                 double runX = (box.Max.X - box.Min.X) * MillimetresPerFoot;
                 double runY = (box.Max.Y - box.Min.Y) * MillimetresPerFoot;
-                double run = Math.Sqrt(runX * runX + runY * runY);
+                double run = AccessRules.RampRunMm(runX, runY);
                 if (run < 1 || rise < 1)
                     return AccessMeasurement.Unavailable("the ramp's extent is degenerate in plan or in height.");
 
@@ -410,8 +410,8 @@ namespace Horizun.Revit.Core
                     Basis = MeasurementBasis.Geometry,
                     Uncertainty =
                         "the bounding box is the WHOLE element: a ramp with landings measures flatter " +
-                        "than its steepest run, and a ramp that turns measures a diagonal run longer " +
-                        "than the one anybody walks. Treat it as an average, not as a maximum.",
+                        "than its steepest run, and the run is the box's long side, so a ramp that turns " +
+                        "measures a run shorter than the one anybody walks. Treat it as an estimate, not as a maximum.",
                     Note = "built average slope ≈ " +
                            Math.Round(100.0 * rise / run, 2).ToString(System.Globalization.CultureInfo.InvariantCulture) +
                            "% (rise " + Math.Round(rise, 0) + " mm over run " + Math.Round(run, 0) + " mm). " +

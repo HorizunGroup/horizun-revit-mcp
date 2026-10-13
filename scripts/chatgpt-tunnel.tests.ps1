@@ -37,8 +37,83 @@ function Assert($name, $condition, $detail) {
 $root = Join-Path ([IO.Path]::GetTempPath()) ('hz-chatgpt-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
 $tunnelScript = Join-Path $PSScriptRoot 'chatgpt-tunnel.ps1'
+$hostExe = (Get-Process -Id $PID).Path
+
+# EVERY CHILD THIS FILE STARTS HAS A HARD DEADLINE. At the deadline the child and
+# everything it started are killed and the run stops: a hang is a failure within
+# minutes, not a job stuck for twenty. Killing only the direct child is not
+# enough - a helper that started a tunnel-client or an MCP probe leaves them
+# running, holding files and pipes the next case needs.
+function Stop-ProcessTree([int]$RootId, [datetime]$NotBefore) {
+    # Descendants by parent id, kept only if created after the call began: a parent
+    # id can be a recycled one, and a process older than the call is not ours.
+    if ($RootId -le 0) { return @() }
+    $all = @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue)
+    $tree = New-Object 'System.Collections.Generic.HashSet[int]'
+    [void]$tree.Add($RootId)
+    do {
+        $grew = $false
+        foreach ($p in $all) {
+            if ($tree.Contains([int]$p.ParentProcessId) -and -not $tree.Contains([int]$p.ProcessId) -and $p.CreationDate -ge $NotBefore) {
+                [void]$tree.Add([int]$p.ProcessId); $grew = $true
+            }
+        }
+    } while ($grew)
+    $killed = @($tree | Where-Object { $_ -ne $RootId })
+    foreach ($id in $killed) { try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { } }
+    return $killed
+}
+function Invoke-Bounded {
+    param([Parameter(Mandatory = $true)][string]$Path, [string[]]$Arguments = @(), [Parameter(Mandatory = $true)][int]$TimeoutSec, [switch]$NoThrow)
+    $since = (Get-Date).AddSeconds(-1)
+    $r = Invoke-HorizunProcess -Path $Path -Arguments $Arguments -TimeoutSec $TimeoutSec
+    $killed = @()
+    if ($r.timed_out) { $killed = @(Stop-ProcessTree -RootId $r.process_id -NotBefore $since) }
+    $r | Add-Member -NotePropertyName killed_descendants -NotePropertyValue $killed -Force
+    if ($r.timed_out -and -not $NoThrow) {
+        throw ("DEADLINE: still running after {0} s, killed with {1} descendant(s): {2} {3}" -f $TimeoutSec, $killed.Count, $Path, ($Arguments -join ' '))
+    }
+    return $r
+}
+function Wait-Child($Process, [int]$TimeoutSec, [string]$What) {
+    # For the children Start-HorizunTunnelProcess hands back already started.
+    $since = $Process.StartTime.AddSeconds(-1)
+    $done = $false
+    try { $done = $Process.WaitForExit($TimeoutSec * 1000) } catch { $done = $true }
+    if (-not $done) {
+        $killed = @(Stop-ProcessTree -RootId $Process.Id -NotBefore $since)
+        try { $Process.Kill() } catch { }
+        throw ("DEADLINE: {0} still running after {1} s; killed it and {2} descendant(s)" -f $What, $TimeoutSec, $killed.Count)
+    }
+}
 
 try {
+    # ======================================================================
+    Write-Host ""
+    Write-Host "The harness: a hang fails at its deadline, and takes its children with it" -ForegroundColor Cyan
+
+    $hangScript = Join-Path $root 'hang-child.ps1'
+    $grandchildFile = Join-Path $root 'hang-grandchild.pid'
+    Set-Content -LiteralPath $hangScript -Encoding ASCII -Value @'
+param([string]$PidFile)
+$g = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 900' -WindowStyle Hidden -PassThru
+Set-Content -LiteralPath $PidFile -Value $g.Id -Encoding ASCII
+Start-Sleep -Seconds 900
+'@
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $h = Invoke-Bounded -Path $hostExe -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $hangScript, $grandchildFile) -TimeoutSec 20 -NoThrow
+    $elapsed = $clock.Elapsed.TotalSeconds
+    Assert 'a child that never returns is cut at its deadline and reported as timed out' `
+        ($h.timed_out -and $elapsed -lt 60) ("timed_out=$($h.timed_out) after $([int]$elapsed) s")
+    $grandchild = if (Test-Path -LiteralPath $grandchildFile) { [int](Get-Content -LiteralPath $grandchildFile -Raw).Trim() } else { 0 }
+    Start-Sleep -Milliseconds 500
+    Assert 'and the process it started is killed with it, not left running' `
+        ($grandchild -gt 0 -and -not (Get-Process -Id $grandchild -ErrorAction SilentlyContinue)) ("grandchild pid=$grandchild killed=" + ($h.killed_descendants -join ','))
+    if ($grandchild -gt 0) { Stop-Process -Id $grandchild -Force -ErrorAction SilentlyContinue }
+    $threw = $null
+    try { Invoke-Bounded -Path $hostExe -Arguments @('-NoProfile', '-Command', 'Start-Sleep -Seconds 900') -TimeoutSec 2 | Out-Null } catch { $threw = $_.Exception.Message }
+    Assert 'without -NoThrow a deadline stops the run, naming the command' ($threw -match '^DEADLINE: still running after 2 s' -and $threw -match 'Start-Sleep') $threw
+
     # ======================================================================
     Write-Host ""
     Write-Host "The credential: four states, not two" -ForegroundColor Cyan
@@ -120,7 +195,8 @@ try {
     Set-HorizunChatGptSecret -StateRoot $scrubRoot -Secret $secret | Out-Null
     # A stand-in for a client that echoes its own configuration back at you.
     $echo = Join-Path $env:SystemRoot 'System32\cmd.exe'
-    $r = Invoke-HorizunTunnelClient -Path $echo -Arguments @('/c', 'echo %CONTROL_PLANE_API_KEY%') -StateRoot $scrubRoot
+    $r = Invoke-HorizunTunnelClient -Path $echo -Arguments @('/c', 'echo %CONTROL_PLANE_API_KEY%') -StateRoot $scrubRoot -TimeoutSec 60
+    if ($r.timed_out) { throw 'DEADLINE: cmd.exe /c echo did not return within 60 s' }
     Assert 'a client that echoes the key has it scrubbed before any caller sees it' `
         (-not $r.output.Contains($secret)) $r.output
     Assert 'and what is left says it was redacted rather than looking like a blank' `
@@ -138,7 +214,7 @@ try {
     New-Item -ItemType Directory -Path $build -Force | Out-Null
     $fakeExe = Join-Path $build 'fake.exe'
     $cs = Join-Path $PSScriptRoot 'testdata\fake-tunnel-client.cs'
-    $compile = Invoke-HorizunProcess -Path $csc -Arguments @('/nologo', '/target:exe', "/out:$fakeExe", $cs) -TimeoutSec 120
+    $compile = Invoke-Bounded -Path $csc -Arguments @('/nologo', '/target:exe', "/out:$fakeExe", $cs) -TimeoutSec 120
     if (-not (Test-Path -LiteralPath $fakeExe)) { throw "could not compile the fake tunnel-client: $($compile.stdout) $($compile.stderr)" }
 
     $uni = 'Ana Maria\' + [char]0x00D1 + 'and' + [char]0x00FA + " O'Neil"
@@ -157,11 +233,11 @@ try {
     }
 
     $server = New-Fake (Join-Path $root "srv\$uni") 'horizun-mcp-server.exe'
-    $hostExe = (Get-Process -Id $PID).Path
     function Invoke-Helper([string[]]$HelperArgs, [int]$TimeoutSec = 180) {
         # Captured output and a deadline: a helper that leaves a child holding its
-        # stdout would hang here, and the deadline turns that into a failure.
-        $r = Invoke-HorizunProcess -Path $hostExe -Arguments (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tunnelScript) + $HelperArgs) -TimeoutSec $TimeoutSec
+        # stdout would hang here, and the deadline turns that into a failure that
+        # stops the run (Invoke-Bounded).
+        $r = Invoke-Bounded -Path $hostExe -Arguments (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $tunnelScript) + $HelperArgs) -TimeoutSec $TimeoutSec
         $r | Add-Member -NotePropertyName text -NotePropertyValue ($r.stdout + "`n" + $r.stderr) -Force
         return $r
     }
@@ -174,7 +250,7 @@ try {
 
     $echoArgs = New-Fake (Join-Path $root 'echo') 'echo-args.exe'
     $tricky = @('plain', 'with space', 'trailing\', 'C:\dir with space\', 'quote"inside', '"', '', ('non-ascii ' + [char]0x00D1), "apostrophe O'Neil", 'a\\"b')
-    $r = Invoke-HorizunProcess -Path $echoArgs -Arguments $tricky
+    $r = Invoke-Bounded -Path $echoArgs -Arguments $tricky -TimeoutSec 60
     $back = @(($r.stdout -replace "`r", '').TrimEnd("`n") -split "`n")
     Assert 'every argv element survives the Windows command line exactly, including empty and trailing backslashes' `
         (($back.Count -eq $tricky.Count) -and (@(0..($tricky.Count - 1) | Where-Object { $back[$_] -cne $tricky[$_] }).Count -eq 0)) `
@@ -302,17 +378,35 @@ try {
     $rep = $null; $r = Invoke-Helper (@('-Status', '-Json', (Join-Path $root 'r-never.json')) + $common); $rep = Read-Report (Join-Path $root 'r-never.json')
     Assert 'process alive, /readyz green, NO successful poll ever: not connected' `
         ($rep.state -eq 'failed' -and $rep.evidence.connection.control_plane.state -eq 'never') "$($rep.state) $($rep.evidence.connection.control_plane.state)"
+    # "Connecting" is the process's AGE judged against the startup grace its own
+    # poll settings give - so no -StartupGraceSec here: the derived grace is what
+    # is under test. The age is read against an injected clock. Against the real
+    # one this case failed whenever the machine was busy enough for the tunnel
+    # started above to be older than the grace by the time it ran.
     $connArgs = @('-StateRoot', $life, '-StatusPath', $lifeStatus, '-ServerPath', $server)
-    $rep = $null; $r = Invoke-Helper (@('-Status', '-Json', (Join-Path $root 'r-connecting.json')) + $connArgs); $rep = Read-Report (Join-Path $root 'r-connecting.json')
+    $tunnelStartUtc = (Get-Process -Id $rec.pid).StartTime.ToUniversalTime()
+    $grace = (Get-HorizunTunnelFreshness -Settings $rec.poll_settings).startup_grace_seconds
+    $clockAt = { param([int]$ageSec) $tunnelStartUtc.AddSeconds($ageSec).ToString('o', [Globalization.CultureInfo]::InvariantCulture) }
+    $rep = $null; $r = Invoke-Helper (@('-Status', '-ClockUtc', (& $clockAt ($grace - 1)), '-Json', (Join-Path $root 'r-connecting.json')) + $connArgs); $rep = Read-Report (Join-Path $root 'r-connecting.json')
     Assert 'a young process with no successful poll YET is "connecting", a pending step - not a failure' `
-        ($rep.state -eq 'pending_user_action' -and $rep.evidence.connection.control_plane.state -eq 'connecting' -and $r.exit_code -eq 3) "$($rep.state) $($rep.evidence.connection.control_plane.state) exit=$($r.exit_code)"
+        ($rep.state -eq 'pending_user_action' -and $rep.evidence.connection.control_plane.state -eq 'connecting' -and $r.exit_code -eq 3) "$($rep.state) $($rep.evidence.connection.control_plane.state) exit=$($r.exit_code) grace=$grace"
+    # PowerShell 7's ConvertFrom-Json turns the ISO string into a DateTime and 5.1
+    # does not, so the instants are compared, not the text.
+    $seen = $rep.evidence.clock_override_utc
+    $seenUtc = $null
+    try { $seenUtc = if ($seen -is [datetime]) { $seen.ToUniversalTime() } else { [datetime]::Parse([string]$seen, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() } } catch { }
+    Assert 'and the report says its clock was injected, so a seam can never pass for a measurement' `
+        ($null -ne $seenUtc -and $seenUtc.Ticks -eq $tunnelStartUtc.AddSeconds($grace - 1).Ticks) "clock_override_utc=$seen"
+    $rep = $null; $r = Invoke-Helper (@('-Status', '-ClockUtc', (& $clockAt ($grace + 1)), '-Json', (Join-Path $root 'r-past-grace.json')) + $connArgs); $rep = Read-Report (Join-Path $root 'r-past-grace.json')
+    Assert 'one second past that same grace, still no successful poll: failed, not connecting' `
+        ($rep.state -eq 'failed' -and $rep.evidence.connection.control_plane.state -eq 'never' -and $r.exit_code -eq 1) "$($rep.state) $($rep.evidence.connection.control_plane.state) exit=$($r.exit_code) grace=$grace"
     Set-FakePoll $full 'absent'
     $rep = $null; $r = Invoke-Helper (@('-Status', '-Json', (Join-Path $root 'r-absent.json')) + $common); $rep = Read-Report (Join-Path $root 'r-absent.json')
     Assert 'no poll metric at all: contact with OpenAI unknown, not assumed' `
         ($rep.state -eq 'failed' -and $rep.evidence.connection.control_plane.state -eq 'unknown') "$($rep.state) $($rep.evidence.connection.control_plane.state)"
 
     $diagJson = Join-Path $root 'diag.json'
-    $d = Invoke-HorizunProcess -Path $hostExe -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'diagnose-integrations.ps1'),
+    $d = Invoke-Bounded -Path $hostExe -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'diagnose-integrations.ps1'),
         '-ChatGptStateRoot', $life, '-StatusPath', $lifeStatus, '-ServerPath', $server, '-Json', $diagJson) -TimeoutSec 240
     $row = @((Read-Report $diagJson).clients | Where-Object { $_.client -eq 'chatgpt-work' })[0]
     Assert 'the general diagnosis measures the tunnel NOW instead of trusting a recorded "configured"' `
@@ -342,7 +436,7 @@ try {
     [Environment]::SetEnvironmentVariable($keyName, 'value-that-was-already-here', 'Process')
     try {
         $p = Start-HorizunTunnelProcess -Executable $full -WorkingDirectory $envDir -Secret $secret -Arguments @('doctor', '--profile-dir', $envDir, '--profile', 'none')
-        try { [void]$p.WaitForExit(15000) } catch { }
+        Wait-Child $p 60 'tunnel-client doctor (env check)'
         Assert 'after a successful start the previous value is back' ([Environment]::GetEnvironmentVariable($keyName, 'Process') -ceq 'value-that-was-already-here') $null
         Assert 'and the child really received the key (it ran with KEY=present)' `
             (@(Get-FakeArgv $full | Where-Object { $_ -match '^doctor --profile-dir' -and $_ -match 'KEY=present' }).Count -eq 1) ((Get-FakeArgv $full) -join "`n")
@@ -351,7 +445,7 @@ try {
         Assert 'a start that FAILS still restores the previous value' ($threw -and [Environment]::GetEnvironmentVariable($keyName, 'Process') -ceq 'value-that-was-already-here') "threw=$threw"
         [Environment]::SetEnvironmentVariable($keyName, [NullString]::Value, 'Process')
         $p = Start-HorizunTunnelProcess -Executable $full -WorkingDirectory $envDir -Secret $secret -Arguments @('doctor', '--profile-dir', $envDir, '--profile', 'none2')
-        try { [void]$p.WaitForExit(15000) } catch { }
+        Wait-Child $p 60 'tunnel-client doctor (env check, no previous value)'
         Assert 'with no previous value, none is left behind' ($null -eq [Environment]::GetEnvironmentVariable($keyName, 'Process')) $null
     }
     finally { [Environment]::SetEnvironmentVariable($keyName, [NullString]::Value, 'Process') }
@@ -371,7 +465,7 @@ try {
     Assert 'a listener on 0.0.0.0 fails local health and is named' ((-not $c.local_health.ok) -and $c.local_health.detail -match 'NON-loopback.*0\.0\.0\.0:8080' -and -not $c.connected) $c.local_health.detail
     Remove-Item Function:\Get-HorizunTunnelListeners
     . (Join-Path $PSScriptRoot 'chatgpt-tunnel.lib.ps1')
-    try { [void]$exProc.WaitForExit(15000) } catch { }
+    Wait-Child $exProc 60 'tunnel-client doctor (exposed listener)'
 
     function Get-HorizunTunnelListeners { param([int]$ProcessId) return [pscustomobject]@{ state = 'incomplete'; listeners = @(); errors = @('access denied') } }
     $c = Get-HorizunTunnelConnection -StateRoot $exRoot -Runtime $fakeRuntime
@@ -529,6 +623,11 @@ try {
         $html = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) "installer\instructions\$sheet") -Raw
         Assert "the $sheet sheet does not claim ChatGPT Work is configured" ($html -notmatch 'Codex and ChatGPT Work &mdash; was already configured' -and $html -notmatch 'Codex y ChatGPT Work &mdash; ya quedaron') $null
     }
+}
+catch {
+    # A deadline, or any other error that stops the run, is a failure that says so.
+    Write-Host "  FAIL  the run stopped: $($_.Exception.Message)" -ForegroundColor Red
+    $failed++
 }
 finally {
     # Nothing a test started is left running.

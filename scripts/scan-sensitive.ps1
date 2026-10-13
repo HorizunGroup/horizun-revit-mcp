@@ -1,4 +1,4 @@
-<#
+﻿<#
     Horizun MCP - original Horizun code.
 
     WHAT LEAKED, AND WHAT WOULD LEAK NEXT TIME.
@@ -200,10 +200,17 @@ try {
         $termsUsed = $terms.Count
         if ($termsUsed -gt 0) {
             $termsRan = $true
+            # Skip lines without any term; matching lines still use the original
+            # per-term checks, governance exceptions and reporting.
+            $termPattern = ($terms | ForEach-Object { [regex]::Escape($_) }) -join '|'
+            $termPrefilter = [regex]::new($termPattern,
+                [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                [Text.RegularExpressions.RegexOptions]::Compiled)
             foreach ($f in $files) {
                 $n = 0
                 foreach ($line in (Get-Content -LiteralPath $f -ErrorAction SilentlyContinue)) {
                     $n++
+                    if (-not $termPrefilter.IsMatch($line)) { continue }
                     foreach ($t in $terms) {
                         $termHits = @([regex]::Matches(
                             $line,

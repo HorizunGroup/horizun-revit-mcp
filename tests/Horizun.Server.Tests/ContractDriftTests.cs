@@ -54,8 +54,8 @@ namespace Horizun.Server.Tests
                 new[]
                 {
                     "horizun_budget_compare", "horizun_catalog_lookup", "horizun_cde_cloud", "horizun_excel_read_rows",
-                    "horizun_excel_write_rows", "horizun_information_container", "horizun_job_status", "horizun_power_bi_push",
-                    "horizun_project_context", "horizun_promote_script", "horizun_repair_memory", "horizun_run_procedure",
+                    "horizun_excel_write_rows", "horizun_exchange", "horizun_information_container", "horizun_job_status", "horizun_power_bi_push",
+                    "horizun_project_context", "horizun_promote_script", "horizun_read_schedule", "horizun_repair_memory", "horizun_run_procedure",
                     "horizun_selection_exchange", "horizun_target"
                 },
                 hostResident);
@@ -74,6 +74,18 @@ namespace Horizun.Server.Tests
             Assert.Null(properties?["access_token"]);
             Assert.Null(properties?["client_secret"]);
             Assert.Contains("environment variables", c.Description);
+        }
+
+        // D5 (2026-10-09): coordination show reports elements_painted_requested in the dry
+        // run and the apply. The old elements_painted counted requests, not paint; the
+        // rename is breaking and the contract says so, so the hash moves with it.
+        [Fact]
+        public void Coordination_show_names_the_requested_count_and_the_rename()
+        {
+            CommandContract c = Contract.Find("horizun_coordination");
+            Assert.NotNull(c);
+            Assert.Contains("elements_painted_requested", c.Description);
+            Assert.Contains("renamed from elements_painted in 2.2.0", c.Description);
         }
 
         [Fact]

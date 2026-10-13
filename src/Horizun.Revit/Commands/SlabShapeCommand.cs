@@ -119,17 +119,24 @@ namespace Horizun.Revit.Commands
                         var check = new PostconditionCheck(pts.Select((p, i) => "point[" + i + "]").ToArray());
                         SlabShapeEditor ed = Editor(Slab(d));
                         var conventions = new JArray();
+                        var vertices = pts.Select(p => ed.IsEnabled ? VertexAt(ed, p.X, p.Y) : null).ToList();
+                        // ONE ABSOLUTE READING (backlog #20). Choosing a convention by its fit
+                        // to the requested result could accept even a single unchanged vertex.
+                        string convention = ArchitecturalEditRules.SlabEditConvention(
+                            vertices.Select(v => v == null ? (double?)null : v.Position.Z).ToList(), top, pts.Select(p => p.Offset).ToList(), Tol);
                         for (int i = 0; i < pts.Count; i++)
                         {
                             var p = pts[i]; string key = "point[" + i + "]";
-                            SlabShapeVertex v = ed.IsEnabled ? VertexAt(ed, p.X, p.Y) : null;
+                            SlabShapeVertex v = vertices[i];
                             if (v == null) { check.Unreadable(key, p.Offset * 304.8, "no vertex found at that x,y after the commit"); conventions.Add(null); continue; }
                             string how = ArchitecturalEditRules.SlabVertexConvention(v.Position.Z, top, p.Offset, Tol);
                             conventions.Add(how);
-                            double found = how == "absolute" ? v.Position.Z - top : v.Position.Z;
-                            check.Measure(key, p.Offset * 304.8, found * 304.8, 0.5, "mm", "vertex offset re-read (Position.Z read as " + (how ?? "neither reading") + ")");
+                            double found = ArchitecturalEditRules.SlabOffsetRead(v.Position.Z, top, convention);
+                            check.Measure(key, p.Offset * 304.8, found * 304.8, 0.5, "mm",
+                                          "vertex offset re-read (Position.Z read as " + (convention ?? "absolute, no reading held") + " for the whole edit)");
                         }
                         edit.Evidence["z_convention"] = conventions;
+                        edit.Evidence["z_convention_of_the_edit"] = convention;
                         edit.Evidence["vertices"] = Vertices(ed, scale);
                         return check;
                     };
@@ -186,13 +193,18 @@ namespace Horizun.Revit.Commands
                         else
                         {
                             var check = new PostconditionCheck("crease_start", "crease_end");
-                            foreach (var end in new[] { new { K = "crease_start", P = a }, new { K = "crease_end", P = b } })
+                            var ends = new[] { new { K = "crease_start", P = a }, new { K = "crease_end", P = b } };
+                            var endVertices = ends.Select(end => ed.IsEnabled ? VertexAt(ed, end.P.X, end.P.Y) : null).ToList();
+                            // One convention for both ends, as for points (backlog #20).
+                            string convention = ArchitecturalEditRules.SlabEditConvention(
+                                endVertices.Select(v => v == null ? (double?)null : v.Position.Z).ToList(), top, new[] { offset, offset }, Tol);
+                            for (int i = 0; i < ends.Length; i++)
                             {
-                                SlabShapeVertex v = ed.IsEnabled ? VertexAt(ed, end.P.X, end.P.Y) : null;
-                                if (v == null) { check.Unreadable(end.K, offset * 304.8, "no vertex at that end after the commit"); continue; }
-                                string how = ArchitecturalEditRules.SlabVertexConvention(v.Position.Z, top, offset, Tol);
-                                double found = how == "absolute" ? v.Position.Z - top : v.Position.Z;
-                                check.Measure(end.K, offset * 304.8, found * 304.8, 0.5, "mm", "crease end offset re-read (Position.Z read as " + (how ?? "neither reading") + ")");
+                                SlabShapeVertex v = endVertices[i];
+                                if (v == null) { check.Unreadable(ends[i].K, offset * 304.8, "no vertex at that end after the commit"); continue; }
+                                double found = ArchitecturalEditRules.SlabOffsetRead(v.Position.Z, top, convention);
+                                check.Measure(ends[i].K, offset * 304.8, found * 304.8, 0.5, "mm",
+                                              "crease end offset re-read (Position.Z read as " + (convention ?? "absolute, no reading held") + " for both ends)");
                             }
                             return check;
                         }

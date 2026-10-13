@@ -3,24 +3,24 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary; enumerated values walked from the full input schemas of horizun://contract/tools served by the same binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "08aaee619bbd2e0615c41a1adfef97b0c1df1c585fba88260d71099b02d65413",
-  "generated_from_contract_hash": "8c90d39bda0eaec89960fa93",
+  "generated_from_server_sha": "27fc4623750d37c88e8ac189352e3969f41756b48ca02271766f928309895e4a",
+  "generated_from_contract_hash": "e44f15ba2c5bbc64f7555ae8",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "e4f16a5517a5e0d64b01b3ee788c21ea9450eb85",
-  "code_candidate_version": "2.1.6",
+  "code_candidate_commit": "eab60ae8643051f8ab8012532ae86b6ffea649fa-dirty",
+  "code_candidate_version": "3.0.0",
   "code_candidate_stamp_source": "product_version",
-  "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "e4f16a5517a5e0d64b01b3ee788c21ea9450eb85",
+  "source_tree_clean_at_generation": false,
+  "source_tree_head_at_generation": "eab60ae8643051f8ab8012532ae86b6ffea649fa",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
-    "tools": 123,
-    "reads": 45,
-    "writes": 78,
+    "tools": 125,
+    "reads": 46,
+    "writes": 79,
     "destructive": 20,
-    "operations": 457,
-    "enumerated_variants": 1598
+    "operations": 481,
+    "enumerated_variants": 1653
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -779,7 +779,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 0,
+      "enumerated_variants": 2,
       "operation_detail": []
     },
     {
@@ -788,7 +788,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 0,
+      "enumerated_variants": 2,
       "operation_detail": []
     },
     {
@@ -797,7 +797,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 0,
+      "enumerated_variants": 2,
       "operation_detail": []
     },
     {
@@ -805,8 +805,8 @@
       "read_only": true,
       "destructive": false,
       "open_world": false,
-      "operations": 10,
-      "enumerated_variants": 30,
+      "operations": 15,
+      "enumerated_variants": 35,
       "operation_detail": [
         {
           "property": "mode",
@@ -821,7 +821,12 @@
             "coverage",
             "quantities",
             "analytical",
-            "loads"
+            "loads",
+            "reconcile",
+            "bending_schedule",
+            "parse_notation",
+            "compare_bars",
+            "steel_review"
           ],
           "source_read_confirmed": true
         }
@@ -986,20 +991,25 @@
       "read_only": false,
       "destructive": true,
       "open_world": false,
-      "operations": 9,
-      "enumerated_variants": 11,
+      "operations": 14,
+      "enumerated_variants": 16,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operation",
           "values": [
             "list",
+            "find_duplicates",
+            "annotation_report",
             "create",
             "add_members",
             "remove_members",
             "rename_type",
             "duplicate_type",
             "swap_type",
+            "change_group_type",
+            "set_group_level",
+            "place_group",
             "ungroup",
             "convert_to_link"
           ],
@@ -1131,7 +1141,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 10,
-      "enumerated_variants": 18,
+      "enumerated_variants": 24,
       "operation_detail": [
         {
           "property": "operation",
@@ -1671,14 +1681,15 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 13,
-      "enumerated_variants": 13,
+      "operations": 14,
+      "enumerated_variants": 14,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operation",
           "values": [
             "list",
+            "visible_elements",
             "unload",
             "reload",
             "pin",
@@ -1935,8 +1946,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": true,
-      "operations": 6,
-      "enumerated_variants": 8,
+      "operations": 9,
+      "enumerated_variants": 11,
       "operation_detail": [
         {
           "property": "operation",
@@ -1947,7 +1958,44 @@
             "questions",
             "draft",
             "elicit",
-            "ids_from_loin"
+            "ids_from_loin",
+            "integrations",
+            "register_model",
+            "resolve_model"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_exchange",
+      "read_only": false,
+      "destructive": false,
+      "open_world": true,
+      "operations": 10,
+      "enumerated_variants": 14,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "emit",
+            "verify",
+            "correction_plan_check",
+            "correction_plan_reverify"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "kind",
+          "path": "kind",
+          "values": [
+            "coordination.ledger",
+            "coordination.status",
+            "quantities.rows",
+            "schedule.element_4d",
+            "model.element_lineage",
+            "receipt"
           ],
           "source_read_confirmed": true
         }
@@ -2009,6 +2057,15 @@
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 0,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_read_schedule",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 15,
       "operation_detail": []
     },
     {

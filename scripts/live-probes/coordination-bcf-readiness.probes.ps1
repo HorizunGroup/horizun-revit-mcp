@@ -119,7 +119,17 @@ $script:HzProbeModules += [pscustomobject]@{
                             Set-Content -LiteralPath (Join-Path $topicDir 'viewpoint.bcfv') -Encoding utf8 -Value $viewpoint
                             $bcfZip = Join-Path $Ctx.ScratchRoot ('hz-bcf-readiness-' + $Ctx.RunId + '.bcfzip')
                             if (Test-Path -LiteralPath $bcfZip) { Remove-Item -LiteralPath $bcfZip -Force }
-                            Compress-Archive -Path (Join-Path $bcfDir '*') -DestinationPath $bcfZip -Force
+                            # Windows PowerShell 5.1 accepts only .zip as the archive output
+                            # extension. A BCFZIP is a ZIP with a different name.
+                            $zipFile = [IO.Path]::ChangeExtension($bcfZip, '.zip')
+                            if (Test-Path -LiteralPath $zipFile) { Remove-Item -LiteralPath $zipFile -Force }
+                            try {
+                                Compress-Archive -Path (Join-Path $bcfDir '*') -DestinationPath $zipFile -Force
+                                Move-Item -LiteralPath $zipFile -Destination $bcfZip -Force
+                            }
+                            finally {
+                                if (Test-Path -LiteralPath $zipFile) { Remove-Item -LiteralPath $zipFile -Force }
+                            }
 
                             # ---- 0: dry_run reproduces ---------------------------------
                             $dry = & $Ctx.Call 'horizun_coordination' @{ operation = 'import'; target_document = $doc; path = $bcfZip; dry_run = $true }

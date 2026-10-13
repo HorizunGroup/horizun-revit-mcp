@@ -68,8 +68,8 @@ namespace Horizun.Revit.Commands
             double thickFt = (doc.GetElement(ceiling.GetTypeId()) as HostObjAttributes)?.GetCompoundStructure()?.GetWidth() ?? 0;
             if ((bb.Max.Z - bb.Min.Z) - thickFt > 1.0 / MmPerFt)
             {
-                refusal = "ceiling " + id + " is sloped (its box is " + Math.Round((bb.Max.Z - bb.Min.Z) * MmPerFt, 1) + " mm tall for a " +
-                          Math.Round(thickFt * MmPerFt, 1) + " mm type); only flat ceilings are framed.";
+                refusal = "ceiling " + id + " is sloped (its box is " + Math.Round((bb.Max.Z - bb.Min.Z) * MmPerFt, 1).ToString(CultureInfo.InvariantCulture) + " mm tall for a " +
+                          Math.Round(thickFt * MmPerFt, 1).ToString(CultureInfo.InvariantCulture) + " mm type); only flat ceilings are framed.";
                 return null;
             }
             // The ceiling's OWN sketch: its dependents also hold the sketches of openings it hosts.

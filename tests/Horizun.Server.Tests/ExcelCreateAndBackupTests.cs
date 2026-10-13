@@ -174,5 +174,30 @@ namespace Horizun.Server.Tests
             Assert.StartsWith("Book1.xlsx.", Path.GetFileName(a));
             Assert.EndsWith(".horizunbak", a);
         }
+
+        // ---- 2026-10-08 audit: no File.Copy over the workbook when Replace fails. ----
+        // A reader holding the workbook without FILE_SHARE_DELETE (Excel, an indexer)
+        // makes File.Replace fail while File.Copy still succeeds; the fallback then
+        // rewrote the user's file in place, non-atomically, and called it done.
+
+        [Fact]
+        public void A_failed_replace_never_falls_back_to_copying_over_the_workbook()
+        {
+            if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)) return;
+            string path = Path.Combine(_dir, "held.xlsx");
+            File.WriteAllBytes(path, ExcelWriteRows.MinimalWorkbook("Sheet1"));
+            byte[] before = File.ReadAllBytes(path);
+
+            IOException ex;
+            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))   // no Delete share
+                ex = Assert.Throws<IOException>(() => ExcelWriteRows.Handle(Args(path, Rows(new object[] { "x" })), ExcelTestLedger.New()));
+
+            Assert.Equal(before, File.ReadAllBytes(path));                 // the workbook was not rewritten in place
+            Assert.Contains(".horizuntmp", ex.Message);                    // where the verified new workbook is
+            Assert.Contains(".horizunbak", ex.Message);                    // where the backup is
+            string tmp = StrayFilesBeside(path).Single(p => p.EndsWith(".horizuntmp", StringComparison.Ordinal));
+            Assert.Contains(Path.GetFileName(tmp), ex.Message);
+            Assert.False(File.Exists(path + ".horizunlock"));
+        }
     }
 }

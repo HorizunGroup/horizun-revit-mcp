@@ -129,8 +129,10 @@ namespace Horizun.Revit.Core
                     Directory.CreateDirectory(directory);
                     RetentionPolicy policy = ReceiptRetention.FromSettings(settings, out _);
 
-                    string line = receipt.ToString(Formatting.None);
-                    string redacted = ReceiptRetention.Redact(line, policy, out string patternError);
+                    // OVER THE VALUES, not the serialized line (backlog #32): JSON doubles every
+                    // backslash of a path, and a pattern written for the path never matched it.
+                    string redacted = ReceiptRetention.RedactValues(receipt, policy, out string patternError)
+                                                      .ToString(Formatting.None);
                     if (patternError != null)
                     {
                         // A redaction pattern that does not compile must not ship the

@@ -47,7 +47,7 @@ namespace Horizun.Revit.Commands
             bool includeVerificationCatalog = false;
             try
             {
-                JObject request = string.IsNullOrWhiteSpace(paramsJson) ? null : JObject.Parse(paramsJson);
+                JObject request = string.IsNullOrWhiteSpace(paramsJson) ? null : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
                 includeVerificationCatalog = request?.Value<bool?>("include_verification_catalog") ?? false;
             }
             catch { /* keep the default */ }
@@ -116,7 +116,7 @@ namespace Horizun.Revit.Commands
                 // they are asked: which build of ours is running, and where is its log.
                 horizun_version = Build.Version,
                 contract_hash = Horizun.Contracts.Contract.Hash,
-                python_runtime = RuntimeWarmup.Python.Snapshot(),
+                python_runtime = PythonRuntimeHealth.Snapshot(Horizun.Revit.Core.Settings.ExecutePythonEnabled),
                 // Where this bridge comes from, and where the layer above it lives.
                 // Stated here because the design property it names is real and a caller
                 // acts on it: nothing organisation-specific is compiled in, so a command

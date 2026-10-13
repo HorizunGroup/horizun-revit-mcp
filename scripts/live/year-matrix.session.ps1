@@ -1,4 +1,4 @@
-# -----------------------------------------------------------------------------
+﻿# -----------------------------------------------------------------------------
 # Horizun Revit MCP — original Horizun code.
 #
 # The part of the year-matrix driver that decides whether a Revit may be closed,
@@ -446,12 +446,26 @@ function New-HzMatrixProbes {
             # returns EVERYTHING it emits, and "[lines..., 0]" is not an exit code of 0
             # (measured 2026-09-08: every year read as enable_failed after a successful
             # enable, then as restore_failed after a successful restore).
-            & pwsh -NoProfile -File (Join-Path $scriptsLive 'dev-addin-session.ps1') -Year $Year -Enable 2>&1 | ForEach-Object { Write-Host $_ }
-            return [int]$LASTEXITCODE
+            $previousPreference = $ErrorActionPreference
+            try {
+                # PowerShell 5.1 promotes a child's expected stderr refusal to a
+                # terminating NativeCommandError under Stop before we can read its exit code.
+                $ErrorActionPreference = 'Continue'
+                & pwsh -NoProfile -File (Join-Path $scriptsLive 'dev-addin-session.ps1') -Year $Year -Enable 2>&1 | ForEach-Object { Write-Host $_ }
+                $code = [int]$LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $previousPreference }
+            return $code
         }.GetNewClosure()
         Restore = { param([string]$Year)
-            & pwsh -NoProfile -File (Join-Path $scriptsLive 'dev-addin-session.ps1') -Year $Year -Restore 2>&1 | ForEach-Object { Write-Host $_ }
-            return [int]$LASTEXITCODE
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                & pwsh -NoProfile -File (Join-Path $scriptsLive 'dev-addin-session.ps1') -Year $Year -Restore 2>&1 | ForEach-Object { Write-Host $_ }
+                $code = [int]$LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $previousPreference }
+            return $code
         }.GetNewClosure()
         ManifestState = { param([string]$Year)
             $dir = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$Year"

@@ -184,7 +184,8 @@ namespace Horizun.Revit.Core
                        "the extra placements or acquire from another link. Nothing was written.";
             if (siteDeltaMm.HasValue && siteDeltaMm.Value <= toleranceMm)
                 return "instance " + instanceId + " already shares the host's coordinates (same_site delta " +
-                       Math.Round(siteDeltaMm.Value, 3) + " mm <= " + toleranceMm + " mm); acquiring would change nothing " +
+                       Math.Round(siteDeltaMm.Value, 3).ToString(System.Globalization.CultureInfo.InvariantCulture) + " mm <= " +
+                       toleranceMm.ToString(System.Globalization.CultureInfo.InvariantCulture) + " mm); acquiring would change nothing " +
                        "and Revit refuses it. Nothing was written.";
             return null;
         }
@@ -224,7 +225,8 @@ namespace Horizun.Revit.Core
             {
                 o["state"] = "not_measured";
                 o["reason"] = "low_coverage";
-                o["note"] = "points in " + Math.Round(coverageShare.Value, 3) + " of the face's cells, " + MinCoverageShare +
+                o["note"] = "points in " + Math.Round(coverageShare.Value, 3).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                            " of the face's cells, " + MinCoverageShare.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                             " needed: the scan saw the face in patches and it is not judged.";
                 return o;
             }

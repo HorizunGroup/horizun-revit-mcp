@@ -43,6 +43,14 @@ namespace Horizun.Revit.Core
         /// <summary>The chord tolerance the tessellation was asked for, in millimetres.</summary>
         public double ChordToleranceMm;
 
+        /// <summary>
+        /// The indices of the triangles that came from a CURVED face (acero 3.0, a face a mat follows):
+        /// a tessellation of it, within the chord tolerance, not planar facets of the real shape. Filled
+        /// where the mesh is read off Revit and carried through the weld and the crack repair. Empty with
+        /// AnyCurvedFace set means the triangles were not attributed, which a follower treats as unknown.
+        /// </summary>
+        public HashSet<int> CurvedTriangles = new HashSet<int>();
+
         /// <summary>How this mesh was obtained. Published so a reader can judge it.</summary>
         public string Source;
 
@@ -86,6 +94,35 @@ namespace Horizun.Revit.Core
             return m;
         }
 
+        /// <summary>
+        /// Set only on a UNION (acero 3.0, L1): the closed, convex meshes of the elements a bar
+        /// was declared into. Inside-ness is their summed winding number; the triangles of THIS
+        /// mesh are the union's outer boundary, for distances, and carry no topology of their own.
+        /// </summary>
+        public List<HostMesh> Parts;
+
+        /// <summary>
+        /// Set on a union with at least one element that is not convex: what measures the
+        /// distance to air across its joints. Null for a union of convex elements, whose outer
+        /// boundary is exact and is measured as it always was.
+        /// </summary>
+        internal UnionJoints Joints;
+
+        /// <summary>
+        /// The union of several elements' boundaries, for a bar declared into all of them: a
+        /// dowel from the footing into the column, a beam bar anchored in the column. The face
+        /// two of them share is concrete on both sides, so it is clipped out of the boundary
+        /// rather than measured as air. Every part must be closed; anything else returns null
+        /// and says which element, by its 1-based position, and why. A part that is not convex -
+        /// a beam cut by a column, a footing notched for a beam - is accepted: faces are clipped
+        /// against the convex parts only, and across a joint with a non-convex part the distance
+        /// to air is found by rays (see UnionJoints), within a published bound.
+        /// </summary>
+        public static HostMesh Union(IList<HostMesh> parts, out string why)
+        {
+            return HostUnion.Build(parts, out why);
+        }
+
         /// <summary>The same box, turned about Z by an angle in radians, about the origin.</summary>
         public HostMesh RotatedAboutZ(double radians)
         {
@@ -99,6 +136,7 @@ namespace Horizun.Revit.Core
             foreach (double[] v in Vertices)
                 m.AddVertex(v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]);
             foreach (int[] t in Triangles) m.AddTriangle(t[0], t[1], t[2]);
+            m.CurvedTriangles = new HashSet<int>(CurvedTriangles);
             return m;
         }
     }
@@ -113,6 +151,13 @@ namespace Horizun.Revit.Core
         public int OpenEdges;
         public double[] MinMm;
         public double[] MaxMm;
+
+        /// <summary>The counts behind the answer, for a reader who has to find the bad face.</summary>
+        public string Summary()
+        {
+            return TriangleCount + " usable triangle(s), " + DegenerateTriangles + " zero-area triangle(s) left out, " +
+                   OpenEdges + " edge(s) not used exactly once in each direction";
+        }
     }
 
     public sealed class ContainmentVerdict
@@ -155,6 +200,13 @@ namespace Horizun.Revit.Core
         /// no flat ends, so it carries its full radius the whole way round.
         /// </summary>
         public bool ClosedLoop;
+
+        /// <summary>Samples near a joint with a non-convex element whose clearance came from rays.</summary>
+        public int RaySamples;
+        /// <summary>How far short of the truth a ray-measured clearance here can be. Zero with no ray sample.</summary>
+        public double ClearanceBoundMm;
+        /// <summary>The widest gap between two elements read as a seam rather than air. Zero for no joint.</summary>
+        public double SeamWidthMm;
     }
 
     public static class SolidContainment
@@ -201,6 +253,25 @@ namespace Horizun.Revit.Core
         public static MeshDiagnosis Diagnose(HostMesh mesh)
         {
             var d = new MeshDiagnosis();
+            // A UNION is as good as its parts. Its own triangles are the clipped outer boundary,
+            // which meets itself along T-junctions and so never passes the directed-edge test -
+            // and does not need to: inside-ness comes from the parts, each closed on its own.
+            if (mesh != null && mesh.Parts != null)
+            {
+                for (int i = 0; i < mesh.Parts.Count; i++)
+                {
+                    MeshDiagnosis p = Diagnose(mesh.Parts[i]);
+                    if (!p.Usable)
+                    {
+                        d.Why = "element " + (i + 1) + " of the union: " + p.Why;
+                        return d;
+                    }
+                }
+                if (mesh.Triangles.Count == 0) { d.Why = "the union has no outer boundary."; return d; }
+                d.TriangleCount = mesh.Triangles.Count;
+                d.Usable = true;
+                return d;
+            }
             if (mesh == null || mesh.Triangles.Count == 0)
             {
                 d.Why = "no host boundary was obtained.";
@@ -286,6 +357,18 @@ namespace Horizun.Revit.Core
             return d;
         }
 
+        /// <summary>
+        /// Why one element's boundary cannot be measured: the element by id, what the diagnosis
+        /// found, and the counts it found it with. A refusal that names neither the element nor
+        /// the reason leaves the reader to search a model for a face nobody pointed at.
+        /// </summary>
+        public static string UnusableBoundaryWhy(long elementId, MeshDiagnosis d)
+        {
+            if (d == null) return "the boundary of element " + elementId + " was not diagnosed.";
+            return "the boundary of element " + elementId + " is not usable: " + d.Why +
+                   " Diagnosis: " + d.Summary() + ".";
+        }
+
         /// <summary>The same mesh with its zero-area triangles left out.</summary>
         public static HostMesh WithoutDegenerateTriangles(HostMesh mesh)
         {
@@ -294,7 +377,8 @@ namespace Horizun.Revit.Core
             {
                 AnyCurvedFace = mesh.AnyCurvedFace,
                 ChordToleranceMm = mesh.ChordToleranceMm,
-                Source = mesh.Source + ", without its zero-area triangles"
+                Source = mesh.Source + ", without its zero-area triangles",
+                Parts = mesh.Parts
             };
             foreach (double[] v in mesh.Vertices) clean.AddVertex(v[0], v[1], v[2]);
             foreach (int[] t in mesh.Triangles)
@@ -320,6 +404,26 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static double WindingNumber(HostMesh mesh, double[] p)
         {
+            // A UNION: the parts' winding numbers summed. On a face two parts share, each
+            // gives one half and the sum is one - the joint reads as concrete, which it is.
+            if (mesh.Parts != null)
+            {
+                double sum = 0;
+                foreach (HostMesh part in mesh.Parts)
+                {
+                    // ON A PART'S OWN FACE the solid angle has no reliable sign - on a face
+                    // diagonal two triangles each give a quarter - so it is not computed. This
+                    // is only ever asked of a point OFF the union's outer boundary (SignedDistance
+                    // answers on-boundary points before it asks), and a point on a part's face
+                    // that is not on the outer boundary is on a face the union buried: concrete.
+                    // Every dowel crossing a footing's top face samples exactly this.
+                    if (DistanceToBoundary(part, p) <= 1e-6) return 1.0;
+                    double w = WindingNumber(part, p);
+                    if (!IsFinite(w)) return double.NaN;
+                    sum += Math.Abs(w);
+                }
+                return sum;
+            }
             double total = 0;
             foreach (int[] t in mesh.Triangles)
             {
@@ -424,7 +528,30 @@ namespace Horizun.Revit.Core
         /// <summary>Positive inside the host, negative outside, NaN when the mesh will not say.</summary>
         public static double SignedDistance(HostMesh mesh, double[] p, out double windingDeviation)
         {
+            return SignedDistance(mesh, p, double.PositiveInfinity, null, out windingDeviation);
+        }
+
+        /// <summary>
+        /// The worst-case shortfall, in millimetres, of a clearance of radiusMm measured by rays
+        /// across a joint: radius x (1 - cos theta), theta the covering angle of the ray set. The
+        /// reported clearance is never more than the true one, and never less by more than this.
+        /// </summary>
+        public static double RayBoundMm(double radiusMm)
+        {
+            return radiusMm * (1 - UnionJoints.CosCovering);
+        }
+
+        /// <summary>The number of rays cast from a sample near a joint.</summary>
+        public static int RayCount { get { return UnionJoints.Directions.Length; } }
+
+        /// <summary>The covering angle of the ray set, in degrees.</summary>
+        public static double RayCoveringAngleDeg { get { return UnionJoints.CoveringAngle * 180 / Math.PI; } }
+
+        internal static double SignedDistance(HostMesh mesh, double[] p, double capMm, JointStats stats,
+                                              out double windingDeviation)
+        {
             windingDeviation = double.NaN;
+            if (mesh.Joints != null) return mesh.Joints.SignedDistance(mesh, p, capMm, stats, out windingDeviation);
 
             double d = DistanceToBoundary(mesh, p);
             if (!IsFinite(d)) return double.NaN;
@@ -652,6 +779,11 @@ namespace Horizun.Revit.Core
                                samples[samples.Count - 1][2] - samples[0][2]) <= 1e-6);
             v.ClosedLoop = closed;
 
+            // ACROSS A JOINT WITH A NON-CONVEX ELEMENT the distance to air may come from rays. They
+            // are not followed past the largest clearance any decision here turns on, plus 100 mm.
+            JointStats joint = mesh.Joints != null ? new JointStats() : null;
+            double cap = barRadiusMm + (requiredCoverMm ?? 0) + toleranceMm + 100;
+
             double minSigned = double.MaxValue, maxSigned = double.MinValue, worstDev = 0;
             double minClearance = double.MaxValue;
             int worstIndex = -1;
@@ -660,7 +792,7 @@ namespace Horizun.Revit.Core
             for (int i = 0; i < samples.Count; i++)
             {
                 double dev;
-                double sd = SignedDistance(mesh, samples[i], out dev);
+                double sd = SignedDistance(mesh, samples[i], cap, joint, out dev);
                 if (!IsFinite(sd))
                 {
                     v.SamplesTested = i;
@@ -689,6 +821,7 @@ namespace Horizun.Revit.Core
             }
 
             v.Evaluated = true;
+            if (joint != null) DescribeJoints(v, mesh.Joints, joint, cap);
             v.WorstWindingDeviation = worstDev;
             v.MinSignedDistanceMm = minSigned;
             v.MinSurfaceClearanceMm = minClearance;
@@ -735,6 +868,67 @@ namespace Horizun.Revit.Core
             return v;
         }
 
+        private static void DescribeJoints(ContainmentVerdict v, UnionJoints j, JointStats s, double cap)
+        {
+            v.RaySamples = s.RaySamples;
+            v.SeamWidthMm = j.SeamMm;
+            double r = s.Capped ? cap : s.LargestRayClearanceMm;
+            v.ClearanceBoundMm = s.RaySamples > 0 ? RayBoundMm(r) : 0;
+            v.HowMeasured += " The elements are JOINED and at least one is not convex, so the distance to air " +
+                "was measured in two ways. " + s.ExactSamples + " sample(s): the nearest face, with air confirmed " +
+                "0.001 mm beyond it - exact. " + s.RaySamples + " sample(s) near a joint: " + RayCount +
+                " rays (an icosphere subdivided four times, turned off the axes), each followed to where it " +
+                "leaves the union, the nearest exit times cos " +
+                RayCoveringAngleDeg.ToString("0.###", CultureInfo.InvariantCulture) + " deg - never more than " +
+                "the true clearance and never less by more than " +
+                v.ClearanceBoundMm.ToString("0.###", CultureInfo.InvariantCulture) + " mm here (at most " +
+                RayBoundMm(100).ToString("0.###", CultureInfo.InvariantCulture) + " mm at 100 mm). A gap " +
+                "between two elements whose middle lies within " + j.SeamMm.ToString("0.###", CultureInfo.InvariantCulture) +
+                " mm of both is a tessellation seam, not air" +
+                (s.Capped ? "; a clearance beyond " + cap.ToString("0.###", CultureInfo.InvariantCulture) +
+                            " mm was not followed further and is reported as at least that." : ".");
+        }
+
+        /// <summary>
+        /// How much of a polyline lies inside ONE convex element, exactly: every segment is
+        /// clipped against the element's face planes (Cyrus-Beck). This is the anchored length a
+        /// bar has in the element it is declared into - hooks included when the polyline
+        /// carries them. NaN when the element is not a closed convex solid.
+        /// </summary>
+        public static double LengthInside(HostMesh convex, IList<double[]> polyline)
+        {
+            if (convex == null || polyline == null) return double.NaN;
+            List<double[]> planes = HostUnion.Planes(convex);
+            // NOT CONVEX - a beam cut by a column: cut at every crossing, each piece judged by
+            // the winding number at its middle. Exact for a closed mesh.
+            if (planes == null) return UnionJoints.LengthInsideAnyShape(convex, polyline);
+            double total = 0;
+            for (int i = 1; i < polyline.Count; i++)
+            {
+                double[] a = polyline[i - 1], b = polyline[i];
+                double t0 = 0, t1 = 1;
+                bool gone = false;
+                foreach (double[] h in planes)
+                {
+                    // inside: n.x <= d. Along the segment: n.a + t n.(b-a) <= d.
+                    double na = h[0] * a[0] + h[1] * a[1] + h[2] * a[2] - h[3];
+                    double nd = h[0] * (b[0] - a[0]) + h[1] * (b[1] - a[1]) + h[2] * (b[2] - a[2]);
+                    if (Math.Abs(nd) < 1e-12)
+                    {
+                        if (na > HostUnion.PlaneEpsMm) { gone = true; break; }
+                        continue;
+                    }
+                    double t = -na / nd;
+                    if (nd > 0) { if (t < t1) t1 = t; }
+                    else { if (t > t0) t0 = t; }
+                    if (t0 > t1) { gone = true; break; }
+                }
+                if (gone) continue;
+                total += (t1 - t0) * Len(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+            }
+            return total;
+        }
+
         /// <summary>The worst of several verdicts - the answer for a whole set.</summary>
         public static string Weakest(IEnumerable<string> words)
         {
@@ -754,6 +948,211 @@ namespace Horizun.Revit.Core
             if (notEval) return NotEvaluable;
             if (cover) return InsideCoverViolated;
             return Inside;
+        }
+    }
+
+    /// <summary>
+    /// The outer boundary of several convex solids (acero 3.0, L1). Each part's triangles are
+    /// clipped against every other part, and what lies inside another part - the face a column
+    /// stands on, the end of a beam buried in a column - is dropped. Two faces in the same
+    /// plane facing the SAME way are both kept: air is on that side of both.
+    /// </summary>
+    internal static class HostUnion
+    {
+        /// <summary>A point this close to a face plane counts as on it, in millimetres.</summary>
+        public const double PlaneEpsMm = 1e-3;
+        /// <summary>A vertex further than this outside one of its own face planes makes a part non-convex.</summary>
+        public const double ConvexityEpsMm = 0.05;
+
+        public static HostMesh Build(IList<HostMesh> parts, out string why)
+        {
+            why = null;
+            if (parts == null || parts.Count == 0) { why = "no element was given."; return null; }
+            var planes = new List<List<double[]>>();
+            var outwardAll = new bool[parts.Count];
+            bool anyNonConvex = false;
+            for (int i = 0; i < parts.Count; i++)
+            {
+                MeshDiagnosis d = SolidContainment.Diagnose(parts[i]);
+                if (!d.Usable) { why = "element " + (i + 1) + " of the union: " + d.Why; return null; }
+                // NOT CONVEX IS NOT REFUSED. A notch, an L, a join that cut it: such a part cannot
+                // clip the others' faces by planes, so it does not, and the joints it makes are
+                // measured by rays instead (UnionJoints).
+                List<double[]> p = Planes(parts[i]);
+                if (p == null) anyNonConvex = true;
+                planes.Add(p);
+                outwardAll[i] = SignedVolume(parts[i]) >= 0;
+            }
+
+            var u = new HostMesh
+            {
+                Parts = new List<HostMesh>(parts),
+                Source = anyNonConvex
+                    ? "the union of " + parts.Count + " element(s), faces clipped against the convex ones; " +
+                      "joints with the others measured by rays"
+                    : "the union of " + parts.Count + " element(s), with the faces they share clipped out"
+            };
+            var triPart = new List<int>();
+            for (int i = 0; i < parts.Count; i++)
+            {
+                HostMesh m = parts[i];
+                if (m.AnyCurvedFace) u.AnyCurvedFace = true;
+                u.ChordToleranceMm = Math.Max(u.ChordToleranceMm, m.ChordToleranceMm);
+                bool outward = SignedVolume(m) >= 0;
+                foreach (int[] t in m.Triangles)
+                {
+                    double[] a = m.Vertices[t[0]], b = m.Vertices[t[1]], c = m.Vertices[t[2]];
+                    double[] n = Normal(a, b, c);
+                    if (n == null) continue;
+                    if (!outward) n = new[] { -n[0], -n[1], -n[2] };
+                    var pieces = new List<List<double[]>> { new List<double[]> { a, b, c } };
+                    for (int j = 0; j < parts.Count && pieces.Count > 0; j++)
+                    {
+                        if (j == i || planes[j] == null) continue;
+                        var next = new List<List<double[]>>();
+                        foreach (List<double[]> poly in pieces) next.AddRange(Subtract(poly, n, planes[j]));
+                        pieces = next;
+                    }
+                    foreach (List<double[]> poly in pieces)
+                    {
+                        int first = u.AddVertex(poly[0][0], poly[0][1], poly[0][2]);
+                        int prev = -1;
+                        for (int k = 1; k < poly.Count; k++)
+                        {
+                            int cur = u.AddVertex(poly[k][0], poly[k][1], poly[k][2]);
+                            if (prev >= 0) { u.AddTriangle(first, prev, cur); triPart.Add(i); }
+                            prev = cur;
+                        }
+                    }
+                }
+            }
+            if (anyNonConvex)
+            {
+                if (parts.Count > UnionJoints.MaxParts)
+                {
+                    why = "the union has " + parts.Count + " elements and at least one is not convex; joints are measured " +
+                          "across at most " + UnionJoints.MaxParts + " elements at a time.";
+                    return null;
+                }
+                u.Joints = UnionJoints.Create(parts, outwardAll);
+                u.Joints.TrianglePart = triPart;
+                u.Joints.Prepare(u);
+            }
+            return u;
+        }
+
+        /// <summary>
+        /// The face planes of a closed convex mesh as [nx, ny, nz, d], outward, inside n.x &lt;= d.
+        /// Null when a vertex stands outside one of them: the mesh is not convex.
+        /// </summary>
+        public static List<double[]> Planes(HostMesh m)
+        {
+            if (m == null || m.Triangles.Count == 0) return null;
+            bool outward = SignedVolume(m) >= 0;
+            var outp = new List<double[]>();
+            foreach (int[] t in m.Triangles)
+            {
+                double[] n = Normal(m.Vertices[t[0]], m.Vertices[t[1]], m.Vertices[t[2]]);
+                if (n == null) continue;
+                if (!outward) n = new[] { -n[0], -n[1], -n[2] };
+                double[] a = m.Vertices[t[0]];
+                double d = n[0] * a[0] + n[1] * a[1] + n[2] * a[2];
+                bool seen = false;
+                foreach (double[] q in outp)
+                    if (Math.Abs(q[0] - n[0]) < 1e-9 && Math.Abs(q[1] - n[1]) < 1e-9 &&
+                        Math.Abs(q[2] - n[2]) < 1e-9 && Math.Abs(q[3] - d) < PlaneEpsMm) { seen = true; break; }
+                if (seen) continue;
+                foreach (double[] v in m.Vertices)
+                    if (n[0] * v[0] + n[1] * v[1] + n[2] * v[2] - d > ConvexityEpsMm) return null;
+                outp.Add(new[] { n[0], n[1], n[2], d });
+            }
+            return outp.Count >= 4 ? outp : null;
+        }
+
+        /// <summary>
+        /// A convex planar polygon less a convex solid: the pieces of it outside the solid. A
+        /// polygon lying IN one of the solid's face planes and facing the same way is the solid's
+        /// neighbour on the outside, not inside it, and comes back whole.
+        /// </summary>
+        private static List<List<double[]>> Subtract(List<double[]> poly, double[] polyNormal, List<double[]> planes)
+        {
+            var outside = new List<List<double[]>>();
+            List<double[]> remaining = poly;
+            foreach (double[] h in planes)
+            {
+                bool onPlane = true;
+                foreach (double[] v in remaining)
+                    if (Math.Abs(h[0] * v[0] + h[1] * v[1] + h[2] * v[2] - h[3]) > PlaneEpsMm) { onPlane = false; break; }
+                if (onPlane && h[0] * polyNormal[0] + h[1] * polyNormal[1] + h[2] * polyNormal[2] > 0.999)
+                {
+                    outside.Add(remaining);
+                    return outside;
+                }
+
+                List<double[]> inPart = Clip(remaining, h, true);
+                List<double[]> outPart = Clip(remaining, h, false);
+                if (outPart.Count >= 3 && Area(outPart) > 1e-9) outside.Add(outPart);
+                remaining = inPart;
+                if (remaining.Count < 3 || Area(remaining) <= 1e-9) return outside;
+            }
+            return outside;   // what remains is inside the solid
+        }
+
+        // Sutherland-Hodgman against the plane n.x = d + eps: keepInside keeps n.x <= d + eps.
+        private static List<double[]> Clip(List<double[]> poly, double[] h, bool keepInside)
+        {
+            var outp = new List<double[]>();
+            int n = poly.Count;
+            for (int i = 0; i < n; i++)
+            {
+                double[] a = poly[i], b = poly[(i + 1) % n];
+                double sa = h[0] * a[0] + h[1] * a[1] + h[2] * a[2] - h[3] - PlaneEpsMm;
+                double sb = h[0] * b[0] + h[1] * b[1] + h[2] * b[2] - h[3] - PlaneEpsMm;
+                if (!keepInside) { sa = -sa; sb = -sb; }
+                bool ina = sa <= 0, inb = sb <= 0;
+                if (ina) outp.Add(a);
+                if (ina != inb)
+                {
+                    double t = sa / (sa - sb);
+                    outp.Add(new[] { a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t });
+                }
+            }
+            return outp;
+        }
+
+        private static double Area(List<double[]> poly)
+        {
+            double x = 0, y = 0, z = 0;
+            for (int i = 1; i + 1 < poly.Count; i++)
+            {
+                double[] a = poly[0], b = poly[i], c = poly[i + 1];
+                double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+                double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+                x += uy * vz - uz * vy; y += uz * vx - ux * vz; z += ux * vy - uy * vx;
+            }
+            return 0.5 * Math.Sqrt(x * x + y * y + z * z);
+        }
+
+        private static double[] Normal(double[] a, double[] b, double[] c)
+        {
+            double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+            double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+            double x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx;
+            double l = Math.Sqrt(x * x + y * y + z * z);
+            if (l <= 1e-12) return null;
+            return new[] { x / l, y / l, z / l };
+        }
+
+        private static double SignedVolume(HostMesh m)
+        {
+            double sum = 0;
+            foreach (int[] t in m.Triangles)
+            {
+                double[] a = m.Vertices[t[0]], b = m.Vertices[t[1]], c = m.Vertices[t[2]];
+                sum += (a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) +
+                        a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0;
+            }
+            return sum;
         }
     }
 }

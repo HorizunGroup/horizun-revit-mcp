@@ -196,8 +196,16 @@ Send @{ jsonrpc = '2.0'; method = 'notifications/initialized' }
 if ($Resource) {
     Send @{ jsonrpc = '2.0'; id = 2; method = 'resources/read'; params = @{ uri = $Resource } }
 } else {
-    Send @{ jsonrpc = '2.0'; id = 2; method = 'tools/call'
-            params = @{ name = $Tool; arguments = $argObj } }
+    # THE ARGUMENTS AS GIVEN. $argObj came from ConvertFrom-Json, which under PowerShell 6+
+    # turns ISO 8601 text into a DateTime, and sending it back through ConvertTo-Json moved
+    # "2026-10-10T12:00:00+02:00" into this machine's zone before the server saw it (backlog
+    # P0 #1). The text was validated above; it is sent as it is, on one line - a raw line
+    # break cannot occur inside a JSON string, so removing them changes nothing else.
+    $argsLine = ($Arguments -replace "[`r`n]+", ' ').Trim()
+    $line = '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":' +
+            (ConvertTo-Json -InputObject ([string]$Tool) -Compress) + ',"arguments":' + $argsLine + '}}'
+    $proc.StandardInput.WriteLine($line)
+    $proc.StandardInput.Flush()
 }
 $reply = ReadReply $TimeoutSec
 $clock.Stop()

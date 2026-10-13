@@ -795,6 +795,14 @@ namespace Horizun.Revit.Core
             var candidates = new List<KeyValuePair<QuantityAggregate, double>>();
             foreach (QuantityAggregate q in pool)
             {
+                // A quantity whose rows carry several units only spoils the line when one of
+                // those units could feed it (or it is pinned). A foreign quantity in mixed
+                // units is not a candidate at all, and used to make every line of its
+                // classification unit_incompatible (backlog #44).
+                if (q.Units.Count > 1 && mapping.QuantityField == null &&
+                    !q.Units.Any(u => BudgetComparisonMapping.Normalise(u) == target ||
+                                      mapping.UnitConversions.ContainsKey(BudgetComparisonMapping.ConversionKey(BudgetComparisonMapping.Normalise(u), target))))
+                    continue;
                 if (q.Units.Count > 1)
                 { problem = "the model quantity '" + q.Name + "' carries more than one unit across its rows (" + string.Join(", ", q.Units.OrderBy(u => u, StringComparer.Ordinal)) + "), which no single factor can convert."; return false; }
                 string unit = BudgetComparisonMapping.Normalise(q.Unit);

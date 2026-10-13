@@ -22,7 +22,7 @@ lawyer, and nothing here should be read as an answer to it.
 | --- | --- | --- | --- |
 | Newtonsoft.Json | 13.0.3 | MIT | JSON on the pipe and in every reply. Revit ships its own copy, but the add-in cannot rely on which version. |
 | IronPython | 3.4.2 | Apache-2.0 | The scripting escape hatch. |
-| PdfPig (UglyToad.PdfPig assemblies) | 0.1.13 | Apache-2.0 | Reopens exported PDFs to verify page counts and page geometry. [Package, license and source](https://www.nuget.org/packages/PdfPig/0.1.13). |
+| PdfPig (UglyToad.PdfPig assemblies) | 0.1.13 | Apache-2.0 | Reopens exported PDFs to verify page counts and page geometry. The same pinned version is used by the server to read vector schedule cards. [Package, license and source](https://www.nuget.org/packages/PdfPig/0.1.13). |
 | Microsoft.Bcl.HashCode | 6.0.0 | MIT | Compatibility dependency of PdfPig. |
 | IronPython.Modules | 3.4.2 | Apache-2.0 | Ships with IronPython; required by the standard library. |
 | IronPython.SQLite | 3.4.2 | Apache-2.0 | Ships with IronPython. Contains a managed port of SQLite (public domain). |
@@ -65,6 +65,7 @@ powershell -ExecutionPolicy Bypass -File scripts/audit-python-stdlib.ps1 `
 | Component | Version | Licence |
 | --- | --- | --- |
 | Newtonsoft.Json | 13.0.3 | MIT |
+| PdfPig (UglyToad.PdfPig assemblies: `UglyToad.PdfPig`, `.Core`, `.DocumentLayoutAnalysis`, `.Fonts`, `.Package`, `.Tokenization`, `.Tokens`) | 0.1.13 | Apache-2.0. [Package, license and source](https://www.nuget.org/packages/PdfPig/0.1.13). Reads the vector content of schedule PDFs for `horizun_read_schedule` (stroked lines and the text layer). The same exact version the add-in ships; on .NET 8 it has no further dependency. |
 | Microsoft .NET runtime and native host (`win-x64`, self-contained publish) | 8.x, exact files and hashes in `sbom.json` | MIT |
 
 Embedded in the server binary as resources:

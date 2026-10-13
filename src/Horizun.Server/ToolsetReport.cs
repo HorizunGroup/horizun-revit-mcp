@@ -14,6 +14,7 @@
 // English-heavy JSON. Characters and UTF-8 bytes are exact.
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
@@ -111,6 +112,12 @@ namespace Horizun.Server
                 block["tools_advertised"] = advertised["tools"];
                 block["tools_list_characters"] = advertised["characters"];
                 block["tools_list_approx_tokens"] = advertised["approx_tokens"];
+                // What the selection LEAVES OUT, so a client knows a tool exists before it asks for it.
+                ToolPacks.Resolution sel = Settings.ActivePackResolution();
+                var active = new HashSet<string>(new[] { "core" }.Concat(sel.ActivePacks ?? ToolPacks.KnownPacks), StringComparer.Ordinal);
+                block["toolsets_not_active"] = new JArray(ToolPacks.KnownPacks.Where(p => !active.Contains(p))
+                                                                     .OrderBy(p => p, StringComparer.Ordinal));
+                block["tools_not_advertised"] = Math.Max(0, Tools.ListIgnoringPacks(false).Count - (int)advertised["tools"]);
                 block["details"] = ResourceUri;
                 return block;
             }

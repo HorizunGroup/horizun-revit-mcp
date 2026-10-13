@@ -59,6 +59,10 @@ namespace Horizun.Server
         internal const string ToolName = "horizun_cde_cloud";
         internal const string ApsBase = "https://developer.api.autodesk.com";
         internal const string OpenCdeTokenName = "HORIZUN_OPENCDE_ACCESS_TOKEN";
+        /// <summary>The ONE OpenCDE server the token belongs to. server_url must name it; the token goes nowhere else.</summary>
+        internal const string OpenCdeServerName = "HORIZUN_OPENCDE_SERVER_URL";
+        /// <summary>Further hosts (comma or semicolon separated) the token may reach - e.g. a Documents API the server hosts elsewhere.</summary>
+        internal const string OpenCdeAllowedHostsName = "HORIZUN_OPENCDE_ALLOWED_HOSTS";
         private const int DefaultMaxCalls = 300, MaxMaxCalls = 5000;
         // Fixed walk limits. They are not arguments because tools/list has a byte budget;
         // reaching any of them is reported as a coverage gap, never as an empty folder.
@@ -621,7 +625,13 @@ namespace Horizun.Server
         private static JObject OpenCde(string op, JObject args, CancellationToken ct, CdeCloudEnvironment env)
         {
             JObject context = InformationContainerTool.LoadContext(args);
+            // 2026-10-08 audit: the server the token went to used to come from the
+            // ARGUMENTS alone, so any server_url - and any Documents API base that server
+            // advertised - received the bearer token. The token now belongs to the server
+            // named in the environment beside it, and goes nowhere else.
+            string configuredServer = env.Variable(OpenCdeServerName);
             string server = Str(args, "server_url");
+            if (string.IsNullOrWhiteSpace(server)) server = configuredServer;
             Uri serverUri;
             if (string.IsNullOrWhiteSpace(server) || !Uri.TryCreate(server.Trim(), UriKind.Absolute, out serverUri) || serverUri.Scheme != Uri.UriSchemeHttps)
                 throw new ToolRefusal("provider=opencde needs server_url: the https base URL of the OpenCDE server (where /foundation/versions lives). Nothing was read.");
@@ -654,6 +664,19 @@ namespace Horizun.Server
                 throw new ToolRefusal("OpenCDE authentication is not configured. Set " + OpenCdeTokenName + " (an OAuth2 access token issued " +
                                       "by the server's oauth2_token_url) in the MCP server's environment. Credentials are never accepted in " +
                                       "tool arguments. This reader does not run the interactive OAuth2 browser flow. No request was made.");
+            if (op != "list_states")
+            {
+                Uri pinned;
+                if (string.IsNullOrWhiteSpace(configuredServer) ||
+                    !Uri.TryCreate(configuredServer.Trim(), UriKind.Absolute, out pinned) || pinned.Scheme != Uri.UriSchemeHttps)
+                    throw new ToolRefusal(OpenCdeTokenName + " is set but " + OpenCdeServerName + " is not (or is not an https URL). The " +
+                                          "token is only ever sent to the server configured beside it, never to one named in the " +
+                                          "arguments. Set " + OpenCdeServerName + " to the server's base URL. No request was made.");
+                if (!SameServer(pinned, serverUri))
+                    throw new ToolRefusal("server_url '" + serverUri.GetLeftPart(UriPartial.Path) + "' is not the OpenCDE server configured in " +
+                                          OpenCdeServerName + ", and the token belongs to that one. Omit server_url or name the " +
+                                          "configured server. No request was made.");
+            }
 
             using (var http = new CdeCloudHttp(env, maxCalls, ct))
             {
@@ -673,8 +696,6 @@ namespace Horizun.Server
                     result["http"] = http.Describe();
                     return result;
                 }
-                http.AllowHost(new Uri(s.DocumentsBase).Host);
-                http.BearerToken = tokenConfigured ? token.Trim() : null;
                 var auth = new JObject { ["mode"] = tokenConfigured ? "access_token" : "none", ["source"] = tokenConfigured ? OpenCdeTokenName : null };
 
                 if (op == "list_states")
@@ -690,6 +711,24 @@ namespace Horizun.Server
                     result["note"] = "Discovery only: the Foundation endpoints were read without a token. Nothing was written.";
                     return result;
                 }
+
+                // The Documents API base is what the SERVER advertised. It receives the
+                // token only when it is the configured server's own host or a host the
+                // owner listed; otherwise nothing is sent there at all.
+                string documentsHost = new Uri(s.DocumentsBase).Host;
+                if (!TokenMayReach(documentsHost, serverUri, env.Variable(OpenCdeAllowedHostsName)))
+                {
+                    result["coverage_complete"] = false;
+                    result["reason"] = "The server advertises its Documents API on " + documentsHost + ", which is neither the configured " +
+                                       "server's host nor listed in " + OpenCdeAllowedHostsName + ", so the token was not sent and " +
+                                       "nothing was read there. Add that host to " + OpenCdeAllowedHostsName + " if it is genuinely " +
+                                       "the CDE's own.";
+                    result["auth"] = auth;
+                    result["http"] = http.Describe();
+                    return result;
+                }
+                http.AllowHost(documentsHost);
+                http.BearerToken = token.Trim();
 
                 if (op == "versions")
                 {
@@ -766,6 +805,22 @@ namespace Horizun.Server
                               "Read-only: nothing was written anywhere. OpenCDE documents carry no ISO 19650 state here (state=null); " +
                               "status and revision come from the file name. coverage_complete is false by construction.");
             }
+        }
+
+        /// <summary>Same scheme, host (case-insensitive), port and path, ignoring a trailing slash.</summary>
+        internal static bool SameServer(Uri a, Uri b) =>
+            string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase) &&
+            a.Port == b.Port &&
+            string.Equals(a.AbsolutePath.TrimEnd('/'), b.AbsolutePath.TrimEnd('/'), StringComparison.Ordinal);
+
+        /// <summary>The configured server's own host, or one the owner listed in the environment.</summary>
+        internal static bool TokenMayReach(string host, Uri server, string allowedHosts)
+        {
+            if (string.Equals(host, server.Host, StringComparison.OrdinalIgnoreCase)) return true;
+            foreach (string h in (allowedHosts ?? "").Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+                if (string.Equals(h.Trim(), host, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
         }
 
         private static JObject DescribeDocument(JObject v) => new JObject

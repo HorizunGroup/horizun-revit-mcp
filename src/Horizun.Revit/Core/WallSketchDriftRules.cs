@@ -79,7 +79,7 @@ namespace Horizun.Revit.Core
         /// planeOrigin/planeNormal describe the sketch's own SketchPlane (planeNormal need not be a
         /// literal unit vector; it is normalised here). wallLineStart/End are the wall's CURRENT
         /// LocationCurve endpoints. sketchFootprintMin/Max is the axis-aligned box of every point in
-        /// the sketch's profile loops - its centre stands in for "where the profile currently is".
+        /// the sketch's profile loops - its ENDS along the wall's run are compared with the wall's ends.
         /// All in millimetres.
         /// </summary>
         public static WallSketchDriftResult Evaluate(Vec3 planeOrigin, Vec3 planeNormal,
@@ -123,14 +123,37 @@ namespace Horizun.Revit.Core
             }
             along = along * (1.0 / alongLen);
 
-            Vec3 wallMid = (wallLineStart + wallLineEnd) * 0.5;
-            Vec3 sketchMid = (sketchFootprintMin + sketchFootprintMax) * 0.5;
-            Vec3 rawDrift = wallMid - sketchMid;
-            double alongComponent = rawDrift.Dot(along);
+            // BY THE ENDS, NOT THE CENTRES (backlog #31). A profile edited to run past one end of
+            // the wall (or to stop short of it) moves its centre without anything having moved, and
+            // the centre comparison read that as drift - realign_wall_sketch then moved the profile
+            // and verified with the same metric. A MOVE shifts both ends by one amount; an edit
+            // leaves one end on the wall's. Both off by different amounts is neither a clean move
+            // nor a clean edit, and no single translation is chosen for it.
+            double w0 = wallLineStart.Dot(along), w1 = wallLineEnd.Dot(along);
+            double s0, s1;
+            ProjectBox(sketchFootprintMin, sketchFootprintMax, along, out s0, out s1);
+            double startShift = w0 - s0, endShift = w1 - s1;
+            bool startHolds = Math.Abs(startShift) <= toleranceMm, endHolds = Math.Abs(endShift) <= toleranceMm;
+            bool rigid = Math.Abs(startShift - endShift) <= toleranceMm;
+            double alongComponent = (startHolds || endHolds) ? 0 : rigid ? (startShift + endShift) / 2 : 0;
             Vec3 inPlaneDrift = along * alongComponent;
-            result.InPlaneOffsetMm = Math.Abs(alongComponent);
+            result.InPlaneOffsetMm = (startHolds || endHolds) ? Math.Min(Math.Abs(startShift), Math.Abs(endShift))
+                                                               : Math.Max(Math.Abs(startShift), Math.Abs(endShift));
 
-            result.Stranded = result.PerpendicularOffsetMm > toleranceMm || result.InPlaneOffsetMm > toleranceMm;
+            if (!startHolds && !endHolds && !rigid && result.PerpendicularOffsetMm <= toleranceMm)
+            {
+                result.Stranded = true;
+                result.Correctable = false;
+                result.CorrectionVectorMm = new Vec3(0, 0, 0);
+                result.Reason = "the profile's ends sit " + startShift.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) +
+                                " mm and " + endShift.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) +
+                                " mm from the wall's, by different amounts: the profile was edited as well as moved, " +
+                                "or it never matched the wall. No single translation realigns both ends; the profile " +
+                                "needs to be redrawn or inspected, not corrected.";
+                return result;
+            }
+
+            result.Stranded = result.PerpendicularOffsetMm > toleranceMm || Math.Abs(alongComponent) > toleranceMm;
             if (!result.Stranded)
             {
                 result.Correctable = false;
@@ -142,7 +165,7 @@ namespace Horizun.Revit.Core
             if (!result.Correctable)
             {
                 result.Reason = "the wall's location line no longer lies in the sketch's own plane " +
-                                 "(perpendicular offset " + result.PerpendicularOffsetMm.ToString("0.#") + " mm): " +
+                                 "(perpendicular offset " + result.PerpendicularOffsetMm.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " mm): " +
                                  "the wall moved sideways across its own face. A translation of the sketch's " +
                                  "curves cannot follow it off their own plane; the profile needs to be redrawn.";
                 result.CorrectionVectorMm = new Vec3(0, 0, 0);
@@ -151,9 +174,16 @@ namespace Horizun.Revit.Core
 
             result.CorrectionVectorMm = inPlaneDrift;
             result.Reason = "the wall's location line still lies in the sketch's plane; translating the " +
-                             "sketch's curves by " + result.InPlaneOffsetMm.ToString("0.#") +
+                             "sketch's curves by " + result.InPlaneOffsetMm.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) +
                              " mm within that plane realigns them.";
             return result;
+        }
+
+        /// <summary>The range an axis-aligned box covers along a direction.</summary>
+        private static void ProjectBox(Vec3 min, Vec3 max, Vec3 d, out double lo, out double hi)
+        {
+            lo = Math.Min(d.X * min.X, d.X * max.X) + Math.Min(d.Y * min.Y, d.Y * max.Y) + Math.Min(d.Z * min.Z, d.Z * max.Z);
+            hi = Math.Max(d.X * min.X, d.X * max.X) + Math.Max(d.Y * min.Y, d.Y * max.Y) + Math.Max(d.Z * min.Z, d.Z * max.Z);
         }
     }
 }

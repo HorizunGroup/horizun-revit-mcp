@@ -1,4 +1,4 @@
-# -----------------------------------------------------------------------------
+﻿# -----------------------------------------------------------------------------
 # Horizun Revit MCP — original Horizun code.
 #
 # The closure evaluator, exercised against SYNTHETIC evidence trees under %TEMP%.

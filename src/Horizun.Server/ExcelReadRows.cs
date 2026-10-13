@@ -39,6 +39,9 @@ namespace Horizun.Server
         {
             string filePath = (string)args?["file_path"];
             if (string.IsNullOrEmpty(filePath)) throw new ArgumentException("file_path is required.");
+            // Before File.Exists: on a UNC path that call is already an SMB sign-in as the user.
+            string notLocal = LocalPath.Problem(filePath, "file_path");
+            if (notLocal != null) throw new ArgumentException(notLocal + " Nothing was read.");
             if (!File.Exists(filePath)) throw new FileNotFoundException("Workbook not found: " + filePath);
             int maxRows = (int?)args?["max_rows"] ?? 1000;
             if (maxRows < 1 || maxRows > MaxRows)

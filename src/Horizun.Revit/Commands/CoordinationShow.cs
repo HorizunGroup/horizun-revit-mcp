@@ -122,7 +122,7 @@ namespace Horizun.Revit.Commands
                     ["dry_run"] = true,
                     ["view_name"] = viewName,
                     ["findings_selected"] = selected.Count,
-                    ["elements_painted"] = paint.Count,
+                    ["elements_painted_requested"] = paint.Count,
                     ["links_painted_whole"] = linkPaint.Count,
                     ["unresolved_sides"] = unresolvedSides,
                     ["legend"] = "red = side that must move, orange = immovable side, blue = no side preference known " +
@@ -148,7 +148,7 @@ namespace Horizun.Revit.Commands
 
             View3D created = null;
             string txName = "Horizun: navisworks coordination view";
-            var checklist = new PostconditionCheck("view_created", "section_box_active", "overrides_sample");
+            var checklist = new PostconditionCheck("view_created", "section_box_active", "overrides_applied");
             using (var tx = new Transaction(doc, txName))
             {
                 RevitErrorRecorder said = RevitErrorRecorder.On(tx);
@@ -200,20 +200,24 @@ namespace Horizun.Revit.Commands
             }
             catch (Exception ex) { checklist.Unreadable("section_box_active", true, ex.Message); }
 
-            int sampleOk = 0, sampleTotal = 0;
+            // EVERY OVERRIDE READ BACK, not a sample: the verdict depends on it (audit 2026-10-08, 6.10).
+            int overridesOk = 0, overridesTotal = 0;
+            var notApplied = new JArray();
             try
             {
-                foreach (var kv in paint.Take(20).Concat(linkPaint.Take(10)))
+                foreach (var kv in paint.Concat(linkPaint))
                 {
-                    sampleTotal++;
+                    overridesTotal++;
                     OverrideGraphicSettings got = reread.GetElementOverrides(Rid.Make(kv.Key));
                     Color c = got?.ProjectionLineColor;
                     if (c != null && c.IsValid && c.Red == kv.Value.Red && c.Green == kv.Value.Green && c.Blue == kv.Value.Blue)
-                        sampleOk++;
+                        overridesOk++;
+                    else if (notApplied.Count < 20) notApplied.Add(kv.Key);
                 }
-                checklist.Record("overrides_sample", sampleTotal, sampleOk, sampleTotal > 0 && sampleOk == sampleTotal);
+                checklist.Record("overrides_applied", overridesTotal, overridesOk, overridesTotal > 0 && overridesOk == overridesTotal);
             }
-            catch (Exception ex) { checklist.Unreadable("overrides_sample", "all_sampled_match", ex.Message); }
+            catch (Exception ex) { checklist.Unreadable("overrides_applied", "every override reads back", ex.Message); }
+            bool shown = CoordinationShowRules.Shown(viewOk, boxOk, overridesTotal, overridesOk);
 
             if (selectAlso)
                 try { app.ActiveUIDocument.Selection.SetElementIds(paint.Keys.Select(Rid.Make).ToList()); } catch { }
@@ -224,13 +228,19 @@ namespace Horizun.Revit.Commands
                 ["view_id"] = Rid.Value(created.Id),
                 ["view_name"] = viewName,
                 ["findings_selected"] = selected.Count,
-                ["elements_painted"] = paint.Count,
+                ["overrides_requested"] = overridesTotal,
+                ["overrides_applied"] = overridesOk,
+                ["overrides_not_applied"] = notApplied,
+                ["elements_painted_requested"] = paint.Count,
                 ["links_painted_whole"] = linkPaint.Count,
+                ["shown"] = shown,
+                ["shown_means"] = "true only when the view exists, its section box is active at the asked extent and " +
+                                  "EVERY colour override reads back from the committed view.",
                 ["link_level_overrides"] = linkPaint.Count > 0,
                 ["unresolved_sides"] = unresolvedSides,
                 ["postconditions"] = checklist.ToJson()
             };
-            ApplicationOutcome.StampApplied(applied, ApplicationOutcome.Committed, 1, viewOk ? 1 : 0, viewOk ? 1 : 0, 0, viewOk ? 0 : 1, 0);
+            ApplicationOutcome.StampApplied(applied, ApplicationOutcome.Committed, 1, shown ? 1 : 0, shown ? 1 : 0, 0, shown ? 0 : 1, 0);
             return CommandResult.Ok(applied);
         }
 

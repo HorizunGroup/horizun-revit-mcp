@@ -79,5 +79,17 @@ namespace Horizun.Core.Tests
             // a failed attempt is reported on the row, as it always was.
             Assert.True(VaryBetweenGroupsRules.ShouldAttempt(Facts(builtIn: null, binding: null)));
         }
+
+        [Fact]
+        public void A_group_member_is_refused_unless_the_definition_change_is_asked_for()
+        {
+            // audit 2026-10-08, 6.9: the definition change is opt-in.
+            Assert.True(VaryBetweenGroupsRules.RefuseGroupMember(false, "instance", false, true));
+            Assert.False(VaryBetweenGroupsRules.RefuseGroupMember(true, "instance", false, true));
+            Assert.False(VaryBetweenGroupsRules.RefuseGroupMember(false, "instance", true, true));    // already varies
+            Assert.False(VaryBetweenGroupsRules.RefuseGroupMember(false, "instance", false, false));  // not in a group
+            Assert.False(VaryBetweenGroupsRules.RefuseGroupMember(false, "type", false, true));
+            Assert.False(VaryBetweenGroupsRules.RefuseGroupMember(false, "instance", null, true));    // unreadable: attempted and reported
+        }
     }
 }

@@ -4,7 +4,7 @@
 
 Horizun Revit MCP es un servidor MCP y add-in de Windows gratuito y de código
 abierto para **Autodesk Revit 2023–2027**. Su catálogo completo contiene
-**123 herramientas** <!--inventory:tools--> con **457 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+**125 herramientas** <!--inventory:tools--> con **481 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 para modelado arquitectónico y estructural, MEP, familias paramétricas, planos,
 CAD a BIM, auditoría, cantidades, Excel, Power BI y exportación.
 
@@ -21,17 +21,26 @@ el runtime del servidor y los add-ins.
 
 **[Descargar](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** ·
 **[Ver demostración](https://www.youtube.com/watch?v=tlFs5p3EM4M)** ·
-[Novedades de la 2.1](#novedades-de-la-versión-21) ·
+[Novedades de la 3.0](#novedades-de-la-30) ·
 [Instalar con Claude Desktop Free](#video-de-instalación-claude-desktop-free) ·
 [Todas las herramientas](#catálogo-completo-de-herramientas) ·
 [Suboperaciones](#suboperaciones-y-modos) · [Pruebas](#probado-en-revit-evidencia-publicada) · [Instalar](#instalar)
+
+## Novedades de la 3.0
+
+- **Acero:** las reglas tipadas cubren barras que cruzan anfitriones, anclajes, traslapos, secciones, losas, cimentaciones, muros, columnas, acoples, orden de cruces y auditoría de geometría tras el commit. `horizun_read_schedule` lee cartillas vectoriales PDF o DWG y rechaza filas ambiguas. Véase la [matriz de capacidades](docs/plans/acero-3.0-matriz.md).
+- **Interoperabilidad:** `horizun_exchange` emite y verifica manifiestos `horizun.exchange/0`, transporta identidad de modelo y comprueba planes de corrección antes y después de aplicarlos. Véanse los [detalles de herramientas](docs/TOOLS-EXTENDED.md).
+- **Esquemas a petición:** `full` sigue predeterminado. `HORIZUN_SCHEMA_MODE=facade` por cliente muestra health y tres herramientas de descubrimiento y llamada que obtienen los esquemas exactos cuando se necesitan. La reducción medida de `tools/list` aún no tiene una comparación de agentes completada. Véanse la [configuración](docs/CLIENTS.md) y las [mediciones](docs/plans/lazy-schema-3.0.md).
+- **Toolset local:** `HORIZUN_TOOLSETS=local` reduce la superficie tipada anunciada para clientes de contexto corto y conserva los permisos. El modo de esquema y el toolset son independientes.
+
+Para actualizar una instalación existente, sigue la [migración a 3.0](docs/MIGRATION-3.0.md): el protocolo 3 exige actualizar juntos servidor y add-in. Las [notas de versión](docs/plans/release-notes-3.0.0.md) resumen la entrega.
 
 ## El producto en cifras
 
 | Superficie | Qué ofrece | Dónde comprobarlo |
 |---|---|---|
-| Entradas MCP | **123 herramientas** <!--inventory:tools-->, incluidas **45 de solo lectura** <!--inventory:reads--> y **78 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
-| Acciones internas | **457 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
+| Entradas MCP | **125 herramientas** <!--inventory:tools-->, incluidas **46 de solo lectura** <!--inventory:reads--> y **79 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
+| Acciones internas | **481 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
 | Cobertura Revit | 2023, 2024, 2025, 2026 y 2027 | Cinco add-ins y sus informes de pruebas versionados |
 | Contenido nuevo | 26 clases de creación de elementos; autoría RFA paramétrica; planificación estructural y MEP | [Referencia de familias](docs/FAMILY-AUTHORING.md) |
 | Planos y entregables | 24 acciones de vistas/láminas, 10 acciones de anotación, tablas nativas y distribución de láminas | [Producción de planos](docs/PLANIMETRY-PRODUCTION.md) |
@@ -256,7 +265,7 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 | `get_document_info` | Consultar identidad y cantidades de elementos del documento abierto. |
 | `horizun_document_session` | Inspeccionar, abrir, guardar, guardar como y cerrar documentos, o crear un proyecto en blanco desde una plantilla, mediante operaciones explícitas. |
 | `horizun_file_info` | Leer cabeceras RVT/RFA, versión y datos de trabajo compartido sin abrirlos ni actualizarlos. |
-| `horizun_health` | Consultar estado del puente, documento activo, año de Revit, versión y commit cargados. |
+| `horizun_health` | Consultar estado del puente, documento activo, versión, commit y estado de Python. |
 | `horizun_job_status` | Consultar progreso y estado de recuperación mientras Revit está ocupado o después de reiniciar un proceso. |
 | `horizun_open_document` | Abrir modelos comprobando actualización de versión y archivos centrales compartidos. |
 | `horizun_relinquish_all` | Liberar elementos prestados y reportar los que siguen perteneciendo al usuario. |
@@ -342,7 +351,7 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 | `horizun_apply_cad_update` | Aplicar cambios de revisión soportados y conservar la procedencia para la siguiente actualización. |
 | `horizun_audit_cad_model` | Comparar dibujo y modelo mediante procedencia, geometría y diferencias medidas. |
 | `horizun_cad_connect` | Construir las uniones que declara un dibujo, colocando el accesorio que pide cada nudo y verificándolo. |
-| `horizun_cad_extract` | Leer un DWG vinculado directamente -capas, líneas, arcos, textos y bloques- sin importarlo. |
+| `horizun_cad_extract` | Extraer geometría CAD y, con DWG fuente legible, texto; planear el detalle con brechas medidas. |
 | `horizun_cad_networks` | Derivar la red que describe un dibujo: qué extremos se encuentran, qué va entre ellos y cuáles quedan abiertos. |
 | `horizun_cad_review` | Reportar lo que una conversión no pudo resolver, con la evidencia de cada candidato retenido. |
 | `horizun_cad_symbols` | Listar los símbolos de bloque que define un dibujo y dónde se coloca cada uno. |
@@ -362,8 +371,9 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 | `horizun_clash` | Detectar interferencias en un alcance definido, planear penetraciones soportadas y registrar hallazgos. |
 | `horizun_connect_mep` | Conectar o desconectar conectores MEP nombrados, negándose a cerrar un hueco visible moviendo geometría. |
 | `horizun_coordination` | Seguir hallazgos, asignaciones, decisiones, evidencia y resolución o reaparición medida en el modelo. |
-| `horizun_manage_links` | Añadir y gestionar vínculos/instancias de Revit, rutas, carga y fijación. |
+| `horizun_manage_links` | Gestionar vínculos de Revit y analizar candidatos visibles con incertidumbre explícita. |
 | `horizun_plan_mep` | Planear rutas y accesorios de tuberías/conductos; consultar redes mediante conectividad real de conectores. |
+| `horizun_read_schedule` | Leer hojas de despiece (PDF vectorial, entidades DWG) en filas de barras y autocomprobaciones con nombre, y proponer las cartillas de vigas como un conjunto de requisitos por marca; rechazar lo que no se lee con certeza. |
 | `horizun_plan_reinforcement` | Planear refuerzo a partir de anfitriones y requisitos proporcionados. |
 | `horizun_plan_structure` | Planear columnas en intersecciones de ejes y vigas entre cruces consecutivos. |
 | `horizun_query_structure` | Consultar miembros, anfitriones, recubrimientos, barras, sistemas de refuerzo, conexiones y cantidades. |
@@ -387,7 +397,7 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 | `horizun_copy_slab_elevations` | Transferir la superficie de un suelo modificado a suelos destino explícitos. |
 | `horizun_embed_floors_in_toposolid` | Integrar contornos y elevaciones de suelos en un sólido topográfico. |
 | `horizun_grade_toposolid_around_floors` | Conformar terreno alrededor de suelos con desfases, líneas de quiebre y taludes definidos. |
-| `horizun_manage_groups` | Listar, crear, redefinir, renombrar, duplicar y cambiar tipos de grupo de modelo, preguntando antes de tocar otras instancias. |
+| `horizun_manage_groups` | Gestionar grupos, hallar duplicados, anticipar anotaciones y conservar la colocación patrón. |
 | `horizun_manage_worksets` | Listar, crear y renombrar worksets, mover elementos entre ellos y ajustar su visibilidad por vista. |
 
 ### Cantidades, Excel, Power BI y entregables
@@ -417,7 +427,8 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 
 | Herramienta | Capacidad |
 |---|---|
-| `horizun_project_context` | Validar, preguntar y redactar el contexto ISO 19650 del proyecto: designación, EIR/BEP/MIDP, estados del CDE, nomenclatura, entrega. |
+| `horizun_project_context` | Validar, preguntar y redactar el contexto ISO 19650 del proyecto: designación, EIR/BEP/MIDP, estados del CDE, nomenclatura, entrega; registrar sus modelos por evidencia fuerte de identidad. |
+| `horizun_exchange` | Envolver un salto entre apps en un manifiesto horizun.exchange/0 verificado, comprobarlo antes de consumirlo y conciliar un plan de correcciones de revisión. |
 | `horizun_information_container` | Nombrar, sellar, verificar, inspeccionar y promover contenedores de información entre carpetas WIP, Compartido, Publicado y Archivado. |
 | `horizun_deliver_ifc` | Exportar un IFC y demostrarlo: IDS sobre el archivo, cobertura del mapeo de Psets, georreferencia, BCF de fallos y contenedor sellado. |
 | `horizun_cde_cloud` | Leer un CDE en la nube (Autodesk Construction Cloud o un servidor OpenCDE) por estado y cruzarlo con el MIDP, en solo lectura. |
@@ -430,7 +441,7 @@ Una herramienta MCP puede ejecutar muchas acciones. Crear un muro, una tubería
 y una escalera son opciones de `horizun_create_elements`; crear una sección y
 colocar una tabla son acciones diferentes de `horizun_manage_views`.
 
-La tabla contiene **457 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+La tabla contiene **481 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 en 26 herramientas compuestas. Cada opción se cuenta una vez por herramienta,
 propiedad selectora y valor, incluidos selectores anidados. Las rutas repetidas
 del esquema `oneOf` se cuentan una sola vez. Algunos selectores afinan otra
@@ -482,19 +493,19 @@ herramientas MCP adicionales de primer nivel.
 | `horizun_query_cad` | `mode` | `instances`, `layers`, `geometry`, `coverage`, `profile`, `blocks` |
 | `horizun_connect_mep` | `operation` | `connect`, `disconnect` |
 | `horizun_coordination` | `operation` | `list`, `update`, `export`, `import`, `import_navisworks`, `show`, `evidence`, `navisworks_readiness`, `prepare_navisworks`, `navisworks_status` |
-| `horizun_manage_links` | `operation` | `list`, `unload`, `reload`, `pin`, `unpin`, `add`, `add_instance`, `change_path`, `acquire_coordinates`, `scan_deviation` |
+| `horizun_manage_links` | `operation` | `list`, `visible_elements`, `unload`, `reload`, `pin`, `unpin`, `add`, `add_instance`, `change_path`, `acquire_coordinates`, `scan_deviation` |
 | `horizun_manage_links` | `kind` | `rvt`, `point_cloud`, `ifc` |
 | `horizun_plan_mep` | `operation` | `route_run`, `network_census`, `system_analysis` |
 | `horizun_plan_mep` | `kind` | `pipe`, `duct` |
 | `horizun_plan_structure` | `operation` | `columns_on_grid_intersections`, `beams_along_grids` |
-| `horizun_query_structure` | `mode` | `members`, `hosts`, `covers`, `rebar`, `reinforcement_systems`, `connections`, `coverage`, `quantities`, `analytical`, `loads` |
+| `horizun_query_structure` | `mode` | `members`, `hosts`, `covers`, `rebar`, `reinforcement_systems`, `connections`, `coverage`, `quantities`, `analytical`, `loads`, `reconcile`, `bending_schedule`, `parse_notation`, `compare_bars`, `steel_review` |
 | `horizun_mep_routing` | `operation` | `read`, `set_rules`, `add_sizes`, `remove_sizes`, `resize`, `slope`, `size_by_flow`, `route`, `hangers` |
 | `horizun_mep_routing` | `kind` | `pipe`, `duct`, `conduit`, `cable_tray` |
 | `horizun_mep_routing` | `action` | `add`, `remove`, `move` |
 | `horizun_electrical` | `operation` | `list_panels`, `list_circuits`, `create_circuit`, `assign_panel`, `add_to_circuit`, `remove_from_circuit`, `panel_schedule` |
 | `horizun_resolve_clash` | `operation` | `propose`, `apply`, `propose_opening`, `apply_opening` |
 | `horizun_framing` | `operation` | `wall`, `ceiling`, `read`, `remove` |
-| `horizun_manage_groups` | `operation` | `list`, `create`, `add_members`, `remove_members`, `rename_type`, `duplicate_type`, `swap_type`, `ungroup`, `convert_to_link` |
+| `horizun_manage_groups` | `operation` | `list`, `find_duplicates`, `annotation_report`, `create`, `add_members`, `remove_members`, `rename_type`, `duplicate_type`, `swap_type`, `change_group_type`, `set_group_level`, `place_group`, `ungroup`, `convert_to_link` |
 | `horizun_manage_worksets` | `operation` | `list`, `create`, `rename`, `move_elements`, `set_default`, `visibility` |
 | `horizun_quantities` | `mode` | `volume`, `takeoff`, `room_finishes`, `carbon` |
 | `horizun_budget_compare` | `operation` | `compare`, `export_bc3` |
@@ -503,14 +514,16 @@ herramientas MCP adicionales de primer nivel.
 | `horizun_execute_plan` | `kind` | `plan`, `section`, `elevation` |
 | `horizun_promote_script` | `operation` | `list`, `show`, `propose`, `review`, `approve`, `activate`, `deactivate`, `source`, `resolve`, `invocation` |
 | `horizun_run_procedure` | `operation` | `start`, `advance`, `decide`, `record`, `reconcile`, `status`, `abandon` |
-| `horizun_project_context` | `operation` | `schema`, `validate`, `questions`, `draft`, `elicit`, `ids_from_loin` |
+| `horizun_project_context` | `operation` | `schema`, `validate`, `questions`, `draft`, `elicit`, `ids_from_loin`, `integrations`, `register_model`, `resolve_model` |
+| `horizun_exchange` | `operation` | `emit`, `verify`, `correction_plan_check`, `correction_plan_reverify` |
+| `horizun_exchange` | `kind` | `coordination.ledger`, `coordination.status`, `quantities.rows`, `schedule.element_4d`, `model.element_lineage`, `receipt` |
 | `horizun_information_container` | `operation` | `name`, `stamp`, `verify`, `inspect`, `transition`, `transmittal`, `record_review`, `register` |
 | `horizun_cde_cloud` | `operation` | `list_projects`, `list_states`, `inspect`, `versions`, `issues_list`, `issue_create`, `issue_update` |
 <!-- END SUBOPERATIONS -->
 
 Otras opciones tipadas incluyen los siete valores de `horizun_export.format`:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. El inventario también
-registra **1598 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
+registra **1653 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
 entre todas las propiedades y rutas; incluye configuraciones y rutas repetidas,
 por lo que esa cifra no se utiliza como número de herramientas.
 

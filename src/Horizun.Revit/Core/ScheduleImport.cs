@@ -71,9 +71,12 @@ namespace Horizun.Revit.Core
         {
             value = null;
             if (string.IsNullOrWhiteSpace(text)) return true;           // absent is not malformed
-            if (DateTime.TryParseExact(text.Trim(), IsoFormats, CultureInfo.InvariantCulture,
-                    DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out DateTime d))
-            { value = d.Date; return true; }
+            // THE DAY AS WRITTEN (backlog #46). Moving an offset date to UTC before truncating it
+            // put a task at 00:30+02:00 on the day before. DateTimeOffset keeps the clock time
+            // the schedule wrote, and its day is the day.
+            if (DateTimeOffset.TryParseExact(text.Trim(), IsoFormats, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal, out DateTimeOffset d))
+            { value = DateTime.SpecifyKind(d.DateTime.Date, DateTimeKind.Utc); return true; }
             return false;
         }
 
@@ -183,13 +186,31 @@ namespace Horizun.Revit.Core
                 string pc = C("percent_complete");
                 if (!string.IsNullOrWhiteSpace(pc))
                 {
-                    if (!double.TryParse(pc.TrimEnd('%'), NumberStyles.Float, CultureInfo.InvariantCulture, out double v))
+                    if (!TryParsePercent(pc, sep, out double v))
                     { r.Reject(i + 1, "percent_complete '" + pc + "' is not a number."); continue; }
                     a.PercentComplete = v;
                 }
                 r.Activities.Add(a);
             }
             return r;
+        }
+
+        /// <summary>
+        /// A percent cell in the decimal mark that goes with the file's separator: a
+        /// semicolon CSV is what a Spanish-locale Excel writes, with a decimal COMMA
+        /// ("37,5"); a comma CSV has a decimal point. Both marks in one cell is a
+        /// grouping nobody can read without guessing, and is rejected.
+        /// </summary>
+        public static bool TryParsePercent(string cell, char sep, out double value)
+        {
+            value = 0;
+            string t = (cell ?? "").Trim().TrimEnd('%').Trim();
+            if (sep == ';' && t.IndexOf(',') >= 0)
+            {
+                if (t.IndexOf('.') >= 0 || t.IndexOf(',') != t.LastIndexOf(',')) return false;
+                t = t.Replace(',', '.');
+            }
+            return double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
         }
 
         /// <summary>One CSV line; double quotes enclose separators and "" escapes a quote.</summary>

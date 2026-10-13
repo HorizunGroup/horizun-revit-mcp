@@ -795,7 +795,7 @@ $zMatched = Get-HzCount $auditZ.Result @('scope', 'bars_matched')
   else. An unexpected code here would be a new defect, and it would fail.
 #>
 $zKnown = @('array_length_differs', 'length_differs', 'geometry_differs',
-            'missing_first_bar', 'quantity_differs', 'bar_mark_duplicate', 'rule_built_nothing')
+            'missing_first_bar', 'quantity_differs', 'rule_built_nothing')
 $zUnexpected = @()
 foreach ($f in @(Get-HzPath $auditZ.Result 'findings')) {
     $c = [string](Get-HzProp $f 'code')
@@ -899,7 +899,7 @@ $z5Matched = Get-HzCount $auditZ5.Result @('scope', 'bars_matched')
 # reads the drawn centreline, verified the same three sets. rule_built_nothing
 # is reported beside matched=1 on the same rows and is also pre-existing.
 # Measured 2026-09-03 at 0333471; recorded in the backlog, not hidden here.
-$z5Allowed = @('bar_mark_duplicate', 'geometry_differs', 'length_differs', 'rule_built_nothing')
+$z5Allowed = @('geometry_differs', 'length_differs', 'rule_built_nothing')
 $z5Unexpected = @()
 foreach ($f in @(Get-HzPath $auditZ5.Result 'findings')) {
     $c = [string](Get-HzProp $f 'code')

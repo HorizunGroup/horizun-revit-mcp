@@ -50,6 +50,18 @@ try {
     if ($appDependency.Count -ne 1 -or $runtime[0].'bom-ref' -notin @($appDependency[0].dependsOn)) {
         throw 'application dependency graph does not bind the shipped runtime component'
     }
+    # The server's PDF reader (horizun_read_schedule): its package and every one of its
+    # staged assemblies carry Apache-2.0, never the runtime's MIT by default.
+    $pdfPig = @($doc.components | Where-Object { $_.type -eq 'library' -and $_.name -eq 'PdfPig' })
+    if ($pdfPig.Count -ne 1 -or $pdfPig[0].purl -ne "pkg:nuget/PdfPig@$($pdfPig[0].version)" -or
+        $pdfPig[0].licenses[0].license.id -ne 'Apache-2.0' -or $pdfPig[0].'bom-ref' -notin @($appDependency[0].dependsOn)) {
+        throw 'SBOM does not carry one PURL-addressable, Apache-2.0 PdfPig package bound to the application'
+    }
+    $pdfPigFiles = @($fileComponents | Where-Object { $_.name -like 'server/UglyToad.PdfPig*.dll' })
+    if ($pdfPigFiles.Count -eq 0) { throw 'the staged server carries no UglyToad.PdfPig assembly' }
+    foreach ($file in $pdfPigFiles) {
+        if ($file.licenses[0].license.id -ne 'Apache-2.0') { throw "$($file.name) is not classified Apache-2.0" }
+    }
     Write-Host "[PASS] SDK $effectiveSdk is exact; CycloneDX inventories all $($listed.Count) staged files and runtime $($runtime[0].version) with PURL/dependency evidence"
 }
 finally { Remove-Item $out -Force -ErrorAction SilentlyContinue }

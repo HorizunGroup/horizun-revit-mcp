@@ -40,6 +40,13 @@ namespace Horizun.Revit.Core
         public const string GeometryDiffers = "geometry_differs";
         public const string GeometryReversed = "geometry_reversed";
         public const string PlaneDiffers = "plane_differs";
+        /// <summary>
+        /// D1 option A: a stirrup declared closed with a hook at both ends, which Revit's
+        /// as-declared form leaves open at its first corner - published as info, never an error.
+        /// </summary>
+        public const string HookCornerOpening = "hook_corner_opening";
+        // An open bar's hooked end carried on along the bar by Revit (acero 3.0 L2) - info only
+        public const string HookEndExtension = "hook_end_extension";
         public const string NormalDiffers = "normal_differs";
         public const string SideDiffers = "side_differs";
         public const string StyleDiffers = "style_differs";
@@ -48,6 +55,16 @@ namespace Horizun.Revit.Core
         // Terminations
         public const string HookDiffers = "hook_differs";
         public const string OrientationDiffers = "orientation_differs";
+        /// <summary>
+        /// Info: Revit's orientation WORD at a hooked end disagrees with the side the hook is DRAWN on, and the drawing
+        /// is what was declared (measured, Revit 2024: a straight bar matched to M_01 drew 'left' and read 'right').
+        /// </summary>
+        public const string OrientationLabelDiffersFromDrawing = "orientation_label_differs_from_drawing";
+        /// <summary>
+        /// A hook length the set declares (hook_types[].lengths_mm) that the BAR TYPE does not carry,
+        /// or carries auto-calculated. A type property: every bar of that type with that hook has it.
+        /// </summary>
+        public const string HookLengthDiffers = "hook_length_differs";
         // Layout
         public const string LayoutDiffers = "layout_differs";
         public const string QuantityDiffers = "quantity_differs";
@@ -61,12 +78,50 @@ namespace Horizun.Revit.Core
         public const string CoverDiffers = "cover_differs";
         public const string CoverUnreadable = "cover_unreadable";
         // Marks and provenance
-        public const string BarMarkDuplicate = "bar_mark_duplicate";
+        /// <summary>
+        /// One schedule mark on sets that are NOT the same bar (bar type, shape, or one bar's length
+        /// beyond the set's length tolerance). Several IDENTICAL sets under one mark are how a
+        /// schedule is meant to work and are not a finding (L9; it replaced bar_mark_duplicate).
+        /// </summary>
+        public const string BarMarkConflict = "bar_mark_conflict";
         public const string HostChanged = "host_changed";
         public const string UndeclaredSetInHost = "undeclared_set_in_host";
         public const string ProvenanceMissing = "provenance_missing";
         public const string ManuallyDiverged = "manually_diverged";
         public const string StaleRequirementSet = "stale_requirement_set";
+        // Laps a section rule declared (F2.1)
+        public const string LapInsufficient = "lap_insufficient";
+        // Steel declared into another element (acero 3.0, L1): the anchored length it has there
+        public const string AnchorageShort = "anchorage_short";
+        // Area, path and fabric systems (acero 3.0, L4b): a parameter the system was built with
+        // reads back as something other than what was declared
+        public const string SystemParameterDiffers = "system_parameter_differs";
+        // A coupler a section layer declares (acero 3.0, L7): absent from either bar, or of another type
+        public const string MissingCoupler = "missing_coupler";
+        // Info (L7): a coupled end Revit left short of the station, inside the coupler's body.
+        public const string CoupledEndSeated = "coupled_end_seated";
+        // Info (L10): the row at the stirrup hooks' corner seated in the other pass's bend, within half a stirrup.
+        public const string HookCornerSeat = "hook_corner_seat";
+        public const string CouplerTypeDiffers = "coupler_type_differs";
+        // A hoop or spiral placed from a rebar shape (L7) whose drawn centreline or parameters are not the placement
+        public const string PlacedShapeDiffers = "placed_shape_differs";
+        /// <summary>
+        /// acero 3.0: bars of DIFFERENT rules closer than the set's declared clearances, or passing THROUGH
+        /// each other whatever is declared (Revit moves such a bar until it touches the other). One per pair
+        /// of sets, with both rule ids, both bar ids, the clear distance and the point. See RebarOverlap.
+        /// </summary>
+        public const string OverlappingBar = "overlapping_bar";
+        /// <summary>
+        /// acero 3.0 (stage 1c): two bars of different rules or sets laid on ONE centreline - every point of each
+        /// within the length tolerance of the other, the same model diameter. One bar built twice. Reported once,
+        /// as this, never also as overlapping_bar; compared against bars no rule built as well. See RebarOverlap.
+        /// </summary>
+        public const string DuplicateBar = "duplicate_bar";
+        /// <summary>
+        /// etapa 1c: a set the declared crossing_order displaced does not stand where the displacement put it,
+        /// measured from the DECLARED position along the displacement (RebarCrossing.Measure).
+        /// </summary>
+        public const string CrossingDisplacementDiffers = "crossing_displacement_differs";
         // Reading failures - never silence
         public const string Unreadable = "unreadable";
 
@@ -74,13 +129,14 @@ namespace Horizun.Revit.Core
         {
             HostMissing, HostIneligible, RuleBuiltNothing, TypeDiffers, DiameterDiffers, ShapeDiffers,
             BarOutsideHost, BarPartiallyOutsideHost, CoverViolated, ContainmentNotEvaluable,
-            GeometryDiffers, GeometryReversed, PlaneDiffers,
+            GeometryDiffers, GeometryReversed, PlaneDiffers, HookCornerOpening, HookEndExtension,
             NormalDiffers, SideDiffers, StyleDiffers, MarkDiffers, LengthDiffers,
-            HookDiffers, OrientationDiffers, LayoutDiffers, QuantityDiffers, SpacingDiffers,
+            HookDiffers, OrientationDiffers, OrientationLabelDiffersFromDrawing, HookLengthDiffers, LayoutDiffers, QuantityDiffers, SpacingDiffers,
             ArrayLengthDiffers, MissingFirstBar, MissingLastBar, PositionCountDiffers,
             SuppressedBarsDiffer, CoverDiffers, CoverUnreadable,
-            BarMarkDuplicate, HostChanged, UndeclaredSetInHost, ProvenanceMissing,
-            StaleRequirementSet, Unreadable
+            BarMarkConflict, HostChanged, UndeclaredSetInHost, ProvenanceMissing,
+            StaleRequirementSet, LapInsufficient, AnchorageShort, SystemParameterDiffers, MissingCoupler, CouplerTypeDiffers, CoupledEndSeated, HookCornerSeat,
+            PlacedShapeDiffers, OverlappingBar, DuplicateBar, CrossingDisplacementDiffers, Unreadable
         };
 
         /// <summary>
@@ -90,13 +146,36 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static readonly string[] NotChecked =
         {
-            "duplicate_bar", "overlapping_bar", "lap_insufficient",
-            "missing_coupler", "coupler_incompatible", "partition_differs",
+            // overlapping_bar compares the bars THIS SET's rules built with each other. Bars no rule of the
+            // set built - another set's, somebody's hand modelling, an area/path system's - are compared with
+            // them for duplicate_bar only, not for crossing or clearance (horizun_query_structure
+            // mode=steel_review judges every bar of a model against every other); fabric is not compared.
+            "overlap_with_unattributed_bar",
+            // Revit's own numbering on sets whose rule declared no mark (measured: all read '1').
+            "undeclared_mark_numbering",
+            // A splice only a section rule's laps declare is measured (lap_insufficient); bars
+            // somebody lapped by hand, or two reinforcement_rules that happen to overlap, are not paired.
+            "undeclared_lap",
+            // L7: a coupler a section layer declares is checked on both bars (missing_coupler,
+            // coupler_type_differs). Whether Revit judges it COMPATIBLE with the bars - size,
+            // engagement - is Revit's to refuse at creation and is not re-checked here.
+            "coupler_incompatible", "partition_differs",
+            // A placed hoop or spiral (L7) is compared by its placement - radius, plane or
+            // height, parameters - and not point by point: where round the axis its lap or its
+            // first turn starts, and how long the lap is, are the shape's and are not compared.
+            "placed_shape_start_angle", "placed_shape_lap_length",
             // Whether a bar is still WORTH what it was: a set whose host was
             // resized keeps every property this compares and is now the wrong
             // length for the concrete around it. Containment catches the bar
             // leaving the host; nothing here proposes what it should have become.
-            "rebar_should_have_been_regenerated"
+            "rebar_should_have_been_regenerated",
+            // Area, path and fabric systems (acero 3.0, L4b). Their PARAMETERS are re-read and
+            // compared; the bars Revit lays from them are not. Where each RebarInSystem lies, whether
+            // it stays inside the host and keeps its cover, and where the outline's EDGES run (only
+            // its corners are held to the host face) are not measured. Nor are the sheets a fabric
+            // area cuts, the side a path was flipped to, or an area system's layout rule.
+            "area_reinforcement_geometry", "path_reinforcement_geometry", "path_reinforcement_flip",
+            "fabric_sheet_layout", "area_reinforcement_layout_rule"
         };
     }
 
@@ -118,6 +197,27 @@ namespace Horizun.Revit.Core
         /// row from RebarFacts. Both are the shapes those two actually emit -
         /// deliberately, so this cannot drift from either.
         /// </summary>
+        /// <summary>
+        /// The rule ids a set claims: its own reinforcement rules and every id the resolver
+        /// expanded (zones, mat components, section layers). A bar recorded under any of them
+        /// is not an orphan.
+        /// </summary>
+        public static HashSet<string> KnownRuleIds(IEnumerable<string> declared, IEnumerable<string> expanded)
+        {
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string id in declared ?? Enumerable.Empty<string>()) if (id != null) ids.Add(id);
+            foreach (string id in expanded ?? Enumerable.Empty<string>()) if (id != null) ids.Add(id);
+            return ids;
+        }
+
+        /// <summary>
+        /// Is a termination's orientation a fact worth comparing? Only when a hook is declared
+        /// or found at that end (-1 = none): a straight end has nothing that turns, and Revit's
+        /// answer there is whatever the curve and the normal made it. Shared by the apply's
+        /// re-read and the audit.
+        /// </summary>
+        public static bool OrientationApplies(long wantHookId, long gotHookId) => !(wantHookId == -1 && gotHookId == -1);
+
         public static JArray CompareBar(JObject expected, JObject observed, StructuralTolerances tol)
         {
             var findings = new JArray();
@@ -229,11 +329,16 @@ namespace Horizun.Revit.Core
             // bar. The plan publishes the allowed shortfall; without it this falls
             // back to strict equality, which is the old behaviour and is only
             // reachable for a plan that could not read its bar type's diameter.
-            CompareArrayLength(findings, rule, barId,
-                               Path(expected, "layout", "array_length_mm"),
-                               Path(observed, "layout", "array_length_mm"),
-                               Path(expected, "layout", "array_length_shortfall_allowed_mm"),
-                               tol.LengthMm);
+            // A SET OF ONE HAS NO ARRAY LENGTH and no side to march to: Revit raises rather
+            // than answering, and the audit filed both as unreadable - measured live
+            // 2026-10-08 on a column's single face bars. The flags below already knew.
+            bool oneBar = string.Equals(wantRule, RebarLayout.Single, StringComparison.Ordinal);
+            if (!oneBar)
+                CompareArrayLength(findings, rule, barId,
+                                   Path(expected, "layout", "array_length_mm"),
+                                   Path(observed, "layout", "array_length_mm"),
+                                   Path(expected, "layout", "array_length_shortfall_allowed_mm"),
+                                   tol.LengthMm);
 
             // Spacing is compared only where the layout HAS one. A single bar has
             // no spacing, and reporting a difference of null against null would be
@@ -293,7 +398,13 @@ namespace Horizun.Revit.Core
             // the rule says X matches on every other field - same count, same array
             // length, same type, same hooks - and the audit says `agrees` about
             // steel running the wrong way through the member.
-            JToken wantN = Path(expected, "normal");
+            // A PLACED HOOP OR SPIRAL (L7) is one bar placed from a shape: it has no set to march,
+            // its lapped circle is longer than its circle by the lap, and the points Revit draws
+            // are not the two the expansion declared. Its normal, length and point-by-point
+            // geometry are therefore not compared here; the placement check (PlacedShapes) holds
+            // its drawn centreline to the radius, the plane or the height it was placed at.
+            bool placed = expected["placement"] is JObject;
+            JToken wantN = placed ? null : Path(expected, "normal");
             JToken gotN = Path(observed, "layout", "normal");
             if (wantN != null)
             {
@@ -315,11 +426,12 @@ namespace Horizun.Revit.Core
                 }
             }
 
-            CompareBool(findings, RebarFinding.SideDiffers, rule, barId,
-                        Path(expected, "layout", "bars_on_normal_side"),
-                        Path(observed, "layout", "bars_on_normal_side"),
-                        "the set marches to the other side of the declared bar. The count is the same and the " +
-                        "steel is in the other half of the member.");
+            if (!oneBar)
+                CompareBool(findings, RebarFinding.SideDiffers, rule, barId,
+                            Path(expected, "layout", "bars_on_normal_side"),
+                            Path(observed, "layout", "bars_on_normal_side"),
+                            "the set marches to the other side of the declared bar. The count is the same and the " +
+                            "steel is in the other half of the member.");
 
             // ------------------------------------------------------------ mark
             JToken wantMark = Path(expected, "mark");
@@ -329,43 +441,11 @@ namespace Horizun.Revit.Core
                             "the schedule mark on this set is not the one the rule declares, so it appears in " +
                             "the bending schedule under a different line or none.");
 
-            // ---------------------------------------------------------- length
-            // MEASURED steel against declared steel, and only where the comparison
-            // is meaningful: Revit adds hook length itself, so a hooked bar always
-            // reads longer than its declared centreline and comparing them would
-            // fail on every correct one.
-            JToken wantLen = Path(expected, "expected_total_steel_length_mm");
-            bool hooked = HasHook(expected, "start") || HasHook(expected, "end");
-            if (wantLen != null && wantLen.Type != JTokenType.Null && !hooked)
-                CompareLength(findings, RebarFinding.LengthDiffers, rule, barId, wantLen,
-                              Path(observed, "measured", "total_length_mm"),
-                              Math.Max(tol.LengthMm, tol.LengthMm * QuantityOf(expected)),
-                              "the steel in this set does not measure what the declared centreline and bar " +
-                              "count come to. The bar has been reshaped, or bars are missing from the set.");
+            // ---------------------------------- coupled ends, length and geometry
+            // ONE RULE FOR THE AUDIT AND THE APPLY (stage 1c): the apply's re-read judges each built bar
+            // with CompareBarGeometry too, on the same reading and with the same accepted notes.
+            foreach (JToken g in CompareBarGeometry(expected, observed, tol)) findings.Add(g);
 
-            // -------------------------------------------------------- geometry
-            // POINT BY POINT, not just the total. The length comparison above
-            // catches a bar somebody stretched; it passes a bar somebody reshaped
-            // to the same length, and it is skipped entirely on a hooked bar.
-            // AGAINST THE HOOK-FREE, BEND-FREE FORM when the model gives one. A
-            // declaration draws sharp corners and no hooks; the bar as drawn has
-            // both. Comparing the two reported the hook length as a difference on
-            // every correctly built stirrup - an error-severity finding, marked
-            // fixable, about a bar this bridge had verified minutes earlier.
-            List<double[]> observedShape = PointsOf(Path(observed, "geometry", "centreline_points_as_declared_mm"));
-            double bendAllowance = 0;
-            if (observedShape == null)
-            {
-                // Fall back to the drawn form, and pay for it with an allowance.
-                observedShape = PointsOf(Path(observed, "geometry", "centreline_points_mm"));
-                bendAllowance = BendAllowanceMm(expected, observed);
-            }
-            CompareGeometry(findings, rule, barId,
-                            PointsOf(expected["curve_mm"]),
-                            observedShape,
-                            (bool?)expected["closed"] == true,
-                            tol.LengthMm,
-                            bendAllowance);
 
             // ---------------------------------------------------- terminations
             var observedEnds = observed["terminations"] as JArray ?? new JArray();
@@ -400,9 +480,32 @@ namespace Horizun.Revit.Core
                         "the hook type at the " + which + " end differs from the rule.", true,
                         "horizun_apply_reinforcement"));
 
+                // AN END WITHOUT A HOOK HAS NO ORIENTATION. Revit reports one anyway, and it
+                // is whatever the curve and the normal made it - measured live 2026-10-08,
+                // straight bars read 'right' against a declared default of 'left'. Only a
+                // hook turns, so only a hooked end is compared.
+                if (!OrientationApplies(wantHook, gotHook)) continue;
                 string wantOr = want.Value<string>("orientation");
                 string gotOr = got.Value<string>("orientation");
-                if (gotOr == null)
+                // THE DRAWING DECIDES WHEN IT CAN BE READ (etapa 1b). Revit's word and the side the hook is drawn on
+                // can disagree - measured on Revit 2024, a straight bar matched to M_01 drew 'left' and read 'right'.
+                // RebarFacts measures the drawn side (HookSide); only when it could not is the word compared.
+                string drawnOr = got.Value<string>("drawn_orientation");
+                if (drawnOr != null)
+                {
+                    if (!string.Equals(wantOr, drawnOr, StringComparison.Ordinal))
+                        findings.Add(Finding(RebarFinding.OrientationDiffers, RebarSeverity.Error, rule, barId,
+                            wantOr, drawnOr, "exact",
+                            "the hook at the " + which + " end is drawn turning the other way (measured from the drawn " +
+                            "centreline; Revit reports '" + (gotOr ?? "nothing") + "').", true,
+                            "horizun_apply_reinforcement"));
+                    else if (gotOr != null && !string.Equals(wantOr, gotOr, StringComparison.Ordinal))
+                        findings.Add(Finding(RebarFinding.OrientationLabelDiffersFromDrawing, RebarSeverity.Info, rule, barId,
+                            wantOr, gotOr, "exact",
+                            "Revit reports '" + gotOr + "' at the " + which + " end, and the hook is drawn turning '" + drawnOr +
+                            "', as declared (measured from the drawn centreline). The drawing is what was asked for.", false, null));
+                }
+                else if (gotOr == null)
                     findings.Add(Unknown(RebarFinding.OrientationDiffers, rule, barId, wantOr,
                         "the model would not report the termination orientation at the " + which + " end."));
                 else if (!string.Equals(wantOr, gotOr, StringComparison.Ordinal))
@@ -413,6 +516,282 @@ namespace Horizun.Revit.Core
             }
 
             return findings;
+        }
+
+        /// <summary>
+        /// What one measurement of a bar's geometry came to, beside its findings: the worst distance between
+        /// the declared centreline and the one Revit drew (both ways), and the allowance it was held to.
+        /// Null where nothing was compared.
+        /// </summary>
+        public sealed class GeometryMeasure
+        {
+            public double? WorstMm;
+            public double? AllowanceMm;
+            public double? BendAllowanceMm;
+        }
+
+        /// <summary>
+        /// THE BAR'S GEOMETRY AGAINST ITS PLAN - coupled ends, total length and the centreline point by point,
+        /// with the notes Revit's own drawing earns (coupled_end_seated, hook_end_extension, hook_corner_opening,
+        /// hook_corner_seat, the bend rounding R(2 tan(t/2) - t)). ONE rule, called by the audit (CompareBar) and
+        /// by the apply's re-read after the commit (GeometryMatchesPlan): stage 1c measured a bar Revit moved
+        /// 11.45 mm off its plan that the apply called verified and only the audit reported.
+        /// </summary>
+        public static JArray CompareBarGeometry(JObject expected, JObject observed, StructuralTolerances tol,
+                                                GeometryMeasure measure = null)
+        {
+            var findings = new JArray();
+            if (expected == null || observed == null)
+            {
+                findings.Add(Unknown(RebarFinding.GeometryDiffers, expected == null ? null : (string)expected["rule_id"], -1, null,
+                    expected == null ? "there is nothing to compare against: the rule did not resolve."
+                                     : "the bar could not be described, so its geometry was not compared."));
+                return findings;
+            }
+            string rule = (string)expected["rule_id"];
+            long barId = observed.Value<long?>("id") ?? -1;
+            bool placed = expected["placement"] is JObject;
+
+            // --------------------------------------------------- coupled ends (L7)
+            // A COUPLED END IS SEATED, NOT PLACED: Revit leaves a gap inside the coupler (measured: 12 mm
+            // in a 56 mm CPL16M) that no type parameter predicts. Where the end the model drew is on the
+            // declared line and inside the coupler's body, with the declared station inside it too, the
+            // declared end moves there for the length and the point-by-point comparison - and nowhere else.
+            List<double[]> declaredCurve = PointsOf(expected["curve_mm"]);
+            double coupledTrim = 0;
+            if (expected["coupled_ends"] is JArray coupledEnds && declaredCurve != null && declaredCurve.Count >= 2)
+            {
+                // AS DRAWN: the declared form does not carry Revit's seating of the coupled end.
+                List<double[]> drawn = PointsOf(Path(observed, "geometry", "centreline_points_mm"))
+                                       ?? PointsOf(Path(observed, "geometry", "centreline_points_as_declared_mm"));
+                var termsSeen = observed["terminations"] as JArray ?? new JArray();
+                declaredCurve = declaredCurve.Select(q => new[] { q[0], q[1], q[2] }).ToList();
+                foreach (JToken ce in coupledEnds)
+                {
+                    int k = ce.Value<int>();
+                    JObject term = termsSeen.OfType<JObject>().FirstOrDefault(o => (o.Value<int?>("end") ?? -1) == k);
+                    // A coupler_box_mm of null (no coupler there) must not be indexed into: it is a JValue.
+                    JObject cbox = term?["coupler_box_mm"] as JObject;
+                    List<double[]> box = new List<double[]> { PointsOf(new JArray((object)(cbox?["min"] as JArray)))?.FirstOrDefault(),
+                                                             PointsOf(new JArray((object)(cbox?["max"] as JArray)))?.FirstOrDefault() };
+                    if (drawn == null || drawn.Count < 2 || box[0] == null || box[1] == null) continue;
+                    int di = k == 0 ? 0 : declaredCurve.Count - 1, oi = k == 0 ? 0 : declaredCurve.Count - 2;
+                    double[] seen = k == 0 ? drawn[0] : drawn[drawn.Count - 1];
+                    double t = CoupledEnd.TrimMm(declaredCurve[di], declaredCurve[k == 0 ? 1 : oi], seen, box[0], box[1], tol.LengthMm);
+                    if (t < 0) continue;
+                    coupledTrim += t;
+                    declaredCurve[di] = new[] { seen[0], seen[1], seen[2] };
+                    findings.Add(Finding(RebarFinding.CoupledEndSeated, RebarSeverity.Info, rule, barId,
+                        Math.Round(0.0, 3), Math.Round(t, 3), "inside the coupler's body",
+                        "the " + (k == 0 ? "start" : "end") + " of this bar is coupled, and Revit left it " + Mm(t) +
+                        " short of the declared station, inside the coupler. Its length and shape are compared from there.",
+                        false, null));
+                }
+            }
+
+            // ---------------------------------------------------------- length
+            // MEASURED steel against declared steel, and only where the comparison
+            // is meaningful: Revit adds hook length itself, so a hooked bar always
+            // reads longer than its declared centreline and comparing them would
+            // fail on every correct one.
+            JToken wantLen = Path(expected, "expected_total_steel_length_mm");
+            bool hooked = HasHook(expected, "start") || HasHook(expected, "end");
+            // A BENT BAR IS SHORTER THAN ITS SHARP-CORNERED DECLARATION by the arc Revit puts
+            // in each corner, R(2 tan(t/2) - t). MEASURED (acero 3.0 L1, Revit 2024 and 2026): an L
+            // in 16M measures 2366.2 mm against 2390 declared and was reported reshaped. The bend
+            // diameter is the bar type's; when the model does not report one, nothing is subtracted.
+            if (placed) wantLen = null;
+            if (wantLen != null && wantLen.Type != JTokenType.Null && !hooked)
+            {
+                double bendD = BendDiameterMm(expected, observed);
+                List<double[]> declared = PointsOf(Path(expected, "curve_mm"));
+                JToken closedTok = Path(expected, "closed");
+                bool closedBar = closedTok != null && closedTok.Type == JTokenType.Boolean && (bool)closedTok;
+                // THE CENTRELINE RADIUS: Revit's bend diameter is the INSIDE one, so the centreline turns
+                // on half of it plus half the bar (measured: 96/2 + 16/2 for 16M, 2366.2 mm exactly).
+                double barD = Path(observed, "bar_type", "model_diameter_mm")?.Value<double?>()
+                              ?? Path(expected, "bar_type", "model_diameter_mm")?.Value<double?>()
+                              ?? Path(expected, "bar_type", "nominal_diameter_mm")?.Value<double?>() ?? 0;
+                double shorten = bendD > 0 && declared != null ? BendShorteningMm(declared, closedBar, bendD / 2.0 + barD / 2.0) : 0;
+                if (shorten > 0)
+                    wantLen = new JValue(wantLen.Value<double>() - shorten * QuantityOf(expected));
+                if (coupledTrim > 0)
+                    wantLen = new JValue(wantLen.Value<double>() - coupledTrim * QuantityOf(expected));
+
+            }
+            if (wantLen != null && wantLen.Type != JTokenType.Null && !hooked)
+                CompareLength(findings, RebarFinding.LengthDiffers, rule, barId, wantLen,
+                              ExactTotalLengthMm(observed, QuantityOf(expected)) ?? Path(observed, "measured", "total_length_mm"),
+                              Math.Max(tol.LengthMm, tol.LengthMm * QuantityOf(expected)),
+                              "the steel in this set does not measure what the declared centreline and bar " +
+                              "count come to. The bar has been reshaped, or bars are missing from the set.");
+
+            // -------------------------------------------------------- geometry
+            // POINT BY POINT, not just the total. The length comparison above
+            // catches a bar somebody stretched; it passes a bar somebody reshaped
+            // to the same length, and it is skipped entirely on a hooked bar.
+            // AGAINST THE HOOK-FREE, BEND-FREE FORM when the model gives one. A
+            // declaration draws sharp corners and no hooks; the bar as drawn has
+            // both. Comparing the two reported the hook length as a difference on
+            // every correctly built stirrup - an error-severity finding, marked
+            // fixable, about a bar this bridge had verified minutes earlier.
+            List<double[]> observedShape = PointsOf(Path(observed, "geometry", "centreline_points_as_declared_mm"));
+            double bendAllowance = 0;
+            if (observedShape == null)
+            {
+                // Fall back to the drawn form, and pay for it with an allowance.
+                observedShape = PointsOf(Path(observed, "geometry", "centreline_points_mm"));
+                bendAllowance = BendAllowanceMm(expected, observed);
+            }
+            bool closedDecl = (bool?)expected["closed"] == true;
+            bool hs = HasHook(expected, "start"), he = HasHook(expected, "end");
+            double dNom = Path(observed, "bar_type", "nominal_diameter_mm")?.Value<double?>()
+                          ?? Path(expected, "bar_type", "nominal_diameter_mm")?.Value<double?>() ?? 0;
+            if (placed) { }
+            else if (!closedDecl && (hs || he))
+            {
+                var geometry = new JArray();
+                CompareOpenHookedGeometry(geometry, rule, barId, declaredCurve, observedShape,
+                                          tol.LengthMm, bendAllowance, hs, he, dNom, measure);
+                // A HOOKED ROW SEATS AT THE HOOKS' CORNER TOO (second steel duel, 2026-10-12): a column's
+                // top#p1 with a 90 at its start came out 3.964 mm off - the measured seat - and was
+                // refused, because the seat was only ever accepted on the hook-free comparison below.
+                AcceptHookCornerSeat(geometry, expected, rule, barId, tol.LengthMm, within =>
+                    CompareOpenHookedGeometry(within, rule, barId, declaredCurve, observedShape,
+                                              tol.LengthMm + SeatOf(expected), bendAllowance, hs, he, dNom));
+                foreach (JToken g in geometry) findings.Add(g);
+            }
+            else
+            {
+                double nominal = Path(observed, "bar_type", "nominal_diameter_mm")?.Value<double?>()
+                                 ?? Path(expected, "bar_type", "nominal_diameter_mm")?.Value<double?>() ?? 0;
+                bool hookedBoth = HasHook(expected, "start") && HasHook(expected, "end");
+                var geometry = new JArray();
+                CompareGeometry(geometry, rule, barId, declaredCurve, observedShape, (bool?)expected["closed"] == true,
+                                tol.LengthMm, bendAllowance, hookedBoth, nominal, measure);
+                AcceptHookCornerSeat(geometry, expected, rule, barId, tol.LengthMm, within =>
+                    CompareGeometry(within, rule, barId, declaredCurve, observedShape, (bool?)expected["closed"] == true,
+                                    tol.LengthMm + SeatOf(expected), bendAllowance, hookedBoth, nominal));
+                foreach (JToken g in geometry) findings.Add(g);
+            }
+
+            return findings;
+        }
+
+        private static double SeatOf(JObject expected) => expected["hook_corner_seat_mm"]?.Value<double?>() ?? 0;
+
+        /// <summary>
+        /// THE ROW AT THE HOOKS' CORNER may seat in either pass's bend (measured, Revit 2024 and 2026:
+        /// 0 or 3.964 mm, by position). Within the seat the plan declared - half a stirrup - and only
+        /// for that row, the difference is published as info; past it, it stays the error it was.
+        /// `compareWithin` repeats the row's own comparison with the tolerance widened by the seat.
+        /// </summary>
+        private static void AcceptHookCornerSeat(JArray geometry, JObject expected, string rule, long barId,
+                                                 double toleranceMm, Action<JArray> compareWithin)
+        {
+            double seat = SeatOf(expected);
+            JObject off = geometry.OfType<JObject>().FirstOrDefault(o => (string)o["code"] == RebarFinding.GeometryDiffers &&
+                                                                       (string)o["severity"] == RebarSeverity.Error);
+            if (off == null || seat <= 0) return;
+            var within = new JArray();
+            compareWithin(within);
+            if (within.OfType<JObject>().Any(o => (string)o["code"] == RebarFinding.GeometryDiffers)) return;
+            geometry.Remove(off);
+            geometry.Add(Finding(RebarFinding.HookCornerSeat, RebarSeverity.Info, rule, barId,
+                off["expected"], off["observed"], Mm(toleranceMm + seat),
+                "this row touches the stirrup's hooks' corner, and Revit seated it in the bend of the hooks' " +
+                "other pass - which leg that pass lies along is Revit's own tie-break. Accepted within half a " +
+                "stirrup of the plan, for this row only.", false, null));
+        }
+
+        /// <summary>
+        /// The notes CompareBarGeometry publishes about Revit's own way of drawing a correct bar. The audit
+        /// files them as info; the apply accepts exactly these and nothing else - an info code it does not
+        /// know is not a pass.
+        /// </summary>
+        public static readonly string[] AcceptedGeometryNotes =
+        {
+            RebarFinding.CoupledEndSeated, RebarFinding.HookCornerSeat,
+            RebarFinding.HookCornerOpening, RebarFinding.HookEndExtension
+        };
+
+        /// <summary>
+        /// THE APPLY'S VERDICT on one built bar's geometry (stage 1c), from CompareBarGeometry - the audit's
+        /// own rule, on the same reading, tolerances and notes. Verified only when nothing differs, nothing
+        /// was unreadable and every note is one the audit accepts. When the bar was built WITHOUT hold_ends
+        /// and Revit holds handles to a cover or to another element (read typed, RebarConstraintRules), the
+        /// `why` names hold_ends - that is how Revit moves a bar off its plan.
+        /// </summary>
+        /// <param name="holdEndsRequested">The set asked to hold this rule's ends.</param>
+        /// <param name="constraints">The bar's handles as read after the commit; null when not read.</param>
+        public static JObject GeometryMatchesPlan(JObject expected, JObject observed, StructuralTolerances tol,
+                                                  bool holdEndsRequested, RebarConstraintRules.Summary constraints)
+        {
+            if (expected != null && expected["placement"] is JObject)
+                return new JObject
+                {
+                    ["verified"] = JValue.CreateNull(),
+                    ["applicable"] = false,
+                    ["why"] = "a placed hoop or spiral is compared by its placement (placement_centreline), as the audit does."
+                };
+            var measure = new GeometryMeasure();
+            JArray found = CompareBarGeometry(expected, observed, tol, measure);
+            var notes = new JArray();
+            var faults = new JArray();
+            foreach (JObject f in found.OfType<JObject>())
+            {
+                bool accepted = (string)f["severity"] == RebarSeverity.Info &&
+                                AcceptedGeometryNotes.Contains((string)f["code"], StringComparer.Ordinal);
+                (accepted ? notes : faults).Add(f);
+            }
+            bool verified = faults.Count == 0;
+            var o = new JObject
+            {
+                ["verified"] = verified,
+                ["worst_mm"] = measure.WorstMm.HasValue ? (JToken)measure.WorstMm.Value : JValue.CreateNull(),
+                ["tolerance_mm"] = tol.LengthMm,
+                ["allowance_mm"] = measure.AllowanceMm.HasValue ? (JToken)measure.AllowanceMm.Value : JValue.CreateNull(),
+                ["bend_allowance_mm"] = measure.BendAllowanceMm.HasValue ? (JToken)measure.BendAllowanceMm.Value : JValue.CreateNull(),
+                ["notes_accepted"] = notes,
+                ["findings"] = faults,
+                ["rule"] = "the audit's own comparison (RebarAuditRules.CompareBarGeometry): coupled ends, total length " +
+                           "and the drawn centreline point by point against the planned polyline, both ways."
+            };
+            if (constraints != null)
+                o["evidence"] = new JObject
+                {
+                    ["handles_to_cover"] = constraints.ToCover,
+                    ["handles_on_other_elements"] = new JArray(constraints.HandlesOnOtherTargets.Cast<object>().ToArray()),
+                    ["other_elements"] = new JArray(constraints.OtherTargets.Cast<object>().ToArray())
+                };
+            if (verified)
+            {
+                o["why"] = notes.Count == 0
+                    ? "the bar Revit drew is the bar that was planned, within the tolerance."
+                    : "the bar Revit drew is the bar that was planned, with " + notes.Count + " note(s) the audit " +
+                      "also accepts about how Revit draws it.";
+                return o;
+            }
+            bool unread = faults.OfType<JObject>().All(f => (string)f["severity"] == RebarSeverity.Unknown);
+            string what = string.Join(", ", faults.OfType<JObject>()
+                .Select(f => (string)f["code"] == RebarFinding.Unreadable ? "unreadable " + (string)f["about"] : (string)f["code"])
+                .Distinct(StringComparer.Ordinal));
+            string why = unread
+                ? "the bar's geometry could not be read in full (" + what + "), so it was not judged. Unknown is not a pass."
+                : "the bar Revit drew is not the bar that was planned (" + what + ")" +
+                  (measure.WorstMm.HasValue ? ", " + Mm(measure.WorstMm.Value) + " off at its worst point" : "") + ".";
+            bool pinned = constraints != null && (constraints.ToCover > 0 || constraints.HandlesOnOtherTargets.Count > 0);
+            if (!unread && pinned && !holdEndsRequested)
+                why += " Revit holds " + constraints.ToCover + " handle(s) to a cover" +
+                       (constraints.HandlesOnOtherTargets.Count > 0
+                           ? " and " + constraints.HandlesOnOtherTargets.Count + " to another element than the host"
+                           : "") +
+                       " - how it moves a bar off its plan onto a neighbour's cover. The set did not ask for hold_ends; " +
+                       "hold_ends re-pins those handles where the plan put them.";
+            else if (!unread && constraints != null && constraints.ToCover > 0)
+                why += " hold_ends was asked for and Revit still holds " + constraints.ToCover + " handle(s) to a cover.";
+            o["why"] = why;
+            return o;
         }
 
         /// <summary>
@@ -459,29 +838,243 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>Two bars carrying one schedule mark. Every schedule then counts them as one.</summary>
-        public static JArray DuplicateMarks(IEnumerable<JObject> observedBars)
+        /// <summary>
+        /// How far two pieces of a layer overlap, measured along the first piece's direction:
+        /// the furthest reach of either onto the other's span. Negative is the gap between them.
+        /// </summary>
+        /// <summary>
+        /// A coupler a section layer declares between two pieces (acero 3.0, L7): the
+        /// coupler at the END of the first piece must be the one at the START of the next,
+        /// and of the declared type. `observedA`/`observedB` are RebarFacts rows (their
+        /// terminations carry coupler_id and coupler_readable); `typeRead` is the name of the
+        /// coupler type the model carries, or null when it could not be read.
+        /// </summary>
+        public static JArray CheckCoupler(string ruleId, JObject observedA, JObject observedB, string declaredType, string typeRead, int aEnd = 1)
         {
             var findings = new JArray();
-            var byMark = new Dictionary<string, List<long>>(StringComparer.Ordinal);
-            foreach (JObject b in observedBars)
+            long aId = observedA?.Value<long?>("id") ?? -1, bId = observedB?.Value<long?>("id") ?? -1;
+            bool aReadable, bReadable;
+            long atA = CouplerAt(observedA, aEnd, out aReadable), atB = CouplerAt(observedB, 0, out bReadable);
+            if (!aReadable || !bReadable)
             {
-                string mark = (string)Path(b, "measured", "schedule_mark");
-                if (string.IsNullOrWhiteSpace(mark)) continue;
-                if (!byMark.ContainsKey(mark)) byMark[mark] = new List<long>();
-                byMark[mark].Add(b.Value<long?>("id") ?? -1);
+                findings.Add(Unknown(RebarFinding.MissingCoupler, ruleId, !aReadable ? aId : bId, declaredType,
+                    "the coupler at the " + (!aReadable ? "end of bar " + aId : "start of bar " + bId) + " could not be read."));
+                return findings;
             }
-            foreach (var pair in byMark.OrderBy(p => p.Key, StringComparer.Ordinal))
+            if (atA < 0 || atB < 0 || atA != atB)
             {
-                if (pair.Value.Count < 2) continue;
-                JObject f = Finding(RebarFinding.BarMarkDuplicate, RebarSeverity.Error, null, pair.Value[0],
-                    "one bar per mark", pair.Value.Count + " bars carry mark '" + pair.Key + "'", "exact",
-                    "a schedule groups by mark, so these are counted as one line and the steel of the others " +
-                    "never appears. Revit permits it: duplicate marks are a warning, not a refusal.", true,
-                    "horizun_write_params_verified");
-                f["rebar_ids"] = new JArray(pair.Value.Cast<object>().ToArray());
-                findings.Add(f);
+                findings.Add(Finding(RebarFinding.MissingCoupler, RebarSeverity.Error, ruleId, aId,
+                    "one coupler of type '" + declaredType + "' joining bar " + aId + " (end) to bar " + bId + " (start)",
+                    new JObject { ["coupler_at_end_of_" + aId] = atA, ["coupler_at_start_of_" + bId] = atB }, "exact",
+                    atA < 0 && atB < 0 ? "neither bar carries a coupler at the declared splice."
+                    : atA < 0 || atB < 0 ? "only one of the two bars carries a coupler at the declared splice."
+                    : "each bar carries a different coupler, so no one coupler joins them.",
+                    true, "horizun_apply_reinforcement"));
+                return findings;
+            }
+            if (typeRead == null)
+                findings.Add(Unknown(RebarFinding.CouplerTypeDiffers, ruleId, aId, declaredType,
+                    "coupler " + atA + " joins the two bars and its type could not be read."));
+            else if (!string.Equals(typeRead, declaredType, StringComparison.Ordinal))
+                findings.Add(Finding(RebarFinding.CouplerTypeDiffers, RebarSeverity.Error, ruleId, aId,
+                    declaredType, typeRead, "exact",
+                    "coupler " + atA + " joins the two bars and is of another type than the layer declares.",
+                    true, "horizun_apply_reinforcement"));
+            return findings;
+        }
+
+        private static long CouplerAt(JObject observed, int end, out bool readable)
+        {
+            readable = false;
+            JObject t = (observed?["terminations"] as JArray)?.OfType<JObject>().FirstOrDefault(o => (o.Value<int?>("end") ?? -1) == end);
+            if (t == null || t["coupler_id"] == null || t.Value<bool?>("coupler_readable") == false) return -1;
+            readable = true;
+            return t.Value<long?>("coupler_id") ?? -1;
+        }
+
+        public static double LapOverlapMm(IList<double[]> a, IList<double[]> b)
+        {
+            double[] d = { a[a.Count - 1][0] - a[0][0], a[a.Count - 1][1] - a[0][1], a[a.Count - 1][2] - a[0][2] };
+            double n = Math.Sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (n < 1e-9) return 0;
+            d = new[] { d[0] / n, d[1] / n, d[2] / n };
+            Func<double[], double> at = p => p[0] * d[0] + p[1] * d[1] + p[2] * d[2];
+            double aMin = a.Min(at), aMax = a.Max(at), bMin = b.Min(at), bMax = b.Max(at);
+            return Math.Min(aMax, bMax) - Math.Max(aMin, bMin);
+        }
+
+        /// <summary>
+        /// A DECLARED lap against the two pieces the model has (F2.1): they must overlap by the
+        /// declared length, less the length tolerance, and stand the declared distance apart across
+        /// the bar - one bar diameter, in contact (D4) - within the length tolerance. Bars spliced by
+        /// hand, or by reinforcement_rules, are not paired here: only laps a section rule declared
+        /// are measured.
+        /// </summary>
+        public static JArray CheckLap(string ruleId, long barId, long nextBarId, double wantMm,
+                                      IList<double[]> got, IList<double[]> gotNext, StructuralTolerances tol)
+            => CheckLap(ruleId, barId, nextBarId, wantMm, 0, got, gotNext, tol);
+
+        public static JArray CheckLap(string ruleId, long barId, long nextBarId, double wantMm, double acrossMm,
+                                      IList<double[]> got, IList<double[]> gotNext, StructuralTolerances tol)
+        {
+            var findings = new JArray();
+            if (got == null || got.Count < 2 || gotNext == null || gotNext.Count < 2)
+            {
+                JObject u = Unknown(RebarFinding.LapInsufficient, ruleId, barId, Mm(wantMm),
+                    "a piece of this lap would not return its centreline, so the overlap was not measured. " +
+                    "Unreadable is not a lap.");
+                u["next_rebar_id"] = nextBarId;
+                findings.Add(u);
+                return findings;
+            }
+            double overlap = LapOverlapMm(got, gotNext);
+            double apart = LapAcrossMm(got, gotNext);
+            bool acrossOk = Math.Abs(apart - acrossMm) <= tol.LengthMm;
+            if (overlap >= wantMm - tol.LengthMm && acrossOk) return findings;
+            JObject f = Finding(RebarFinding.LapInsufficient, RebarSeverity.Error, ruleId, barId,
+                Mm(wantMm), Mm(overlap), Mm(tol.LengthMm),
+                !acrossOk
+                    ? "the two pieces of this lap stand " + Mm(apart) + " mm apart across the bar and the lap declares " +
+                      Mm(acrossMm) + " mm (" + (acrossMm > 0 ? "one bar diameter, in contact" : "on the layer's line") +
+                      "), so they do not lap as declared however far they overlap."
+                    : "the pieces overlap " + Mm(overlap) + " mm and the lap declares " + Mm(wantMm) + " mm.",
+                true, "horizun_apply_reinforcement");
+            f["next_rebar_id"] = nextBarId;
+            f["across_mm"] = Math.Round(apart, 3);
+            f["declared_across_mm"] = Math.Round(acrossMm, 3);
+            findings.Add(f);
+            return findings;
+        }
+
+        /// <summary>
+        /// How far apart two pieces of a lap stand ACROSS the bar, centre to centre: the two lines,
+        /// not two end points - a piece that runs on beside the other is measured in the middle of
+        /// the shared stretch.
+        /// </summary>
+        public static double LapAcrossMm(IList<double[]> got, IList<double[]> gotNext)
+        {
+            double apart = Math.Min(DistanceToPath(gotNext[0], got, false), DistanceToPath(gotNext[gotNext.Count - 1], got, false));
+            double[] mid = Mid(gotNext, got);
+            if (mid != null) apart = DistanceToPath(mid, got, false);
+            return apart;
+        }
+
+        // The point of `b` in the middle of where it overlaps `a`, or null when they do not overlap.
+        private static double[] Mid(IList<double[]> b, IList<double[]> a)
+        {
+            double[] s = b[0], e = b[b.Count - 1];
+            double[] d = { a[a.Count - 1][0] - a[0][0], a[a.Count - 1][1] - a[0][1], a[a.Count - 1][2] - a[0][2] };
+            double n = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            if (n < 1e-12) return null;
+            Func<double[], double> at = p => ((p[0] - a[0][0]) * d[0] + (p[1] - a[0][1]) * d[1] + (p[2] - a[0][2]) * d[2]) / n;
+            double ta0 = 0, ta1 = 1, tb0 = at(s), tb1 = at(e);
+            double lo = Math.Max(ta0, Math.Min(tb0, tb1)), hi = Math.Min(ta1, Math.Max(tb0, tb1));
+            if (hi < lo || Math.Abs(tb1 - tb0) < 1e-12) return null;
+            double t = ((lo + hi) / 2 - tb0) / (tb1 - tb0);
+            return new[] { s[0] + (e[0] - s[0]) * t, s[1] + (e[1] - s[1]) * t, s[2] + (e[2] - s[2]) * t };
+        }
+
+        /// <summary>
+        /// ONE MARK, ONE BAR. Sets are grouped by schedule mark; within a mark every set is compared
+        /// with the first by RebarMarkIdentity - bar type, shape, and one bar's length within
+        /// `lengthTolMm`. The same bar under one mark is correct (Revit numbers identical bars that
+        /// way itself) and produces nothing here; see SharedMarks. A different bar under one mark is
+        /// bar_mark_conflict, naming every property that differs with both values. A property that
+        /// could not be read, with nothing proved different, is UNKNOWN - never "the same bar".
+        /// Blank marks are not compared: an unmarked bar is unmarked, not a clash.
+        /// </summary>
+        public static JArray MarkConflicts(IEnumerable<JObject> observedBars, double lengthTolMm)
+        {
+            var findings = new JArray();
+            foreach (var pair in ByMark(observedBars))
+            {
+                List<JObject> sets = pair.Value;
+                if (sets.Count < 2) continue;
+                var diffs = new List<JObject>();
+                var unread = new SortedSet<string>(StringComparer.Ordinal);
+                for (int i = 1; i < sets.Count; i++)
+                {
+                    List<string> u;
+                    diffs.AddRange(RebarMarkIdentity.Differences(sets[0], sets[i], lengthTolMm, out u));
+                    foreach (string x in u) unread.Add(x);
+                }
+                var ids = new JArray(sets.Select(b => (object)RebarMarkIdentity.Id(b)).ToArray());
+                string tolerance = "bar type and shape exact; one bar's length " +
+                                   lengthTolMm.ToString("0.###", CultureInfo.InvariantCulture) + " mm";
+                if (diffs.Count > 0)
+                {
+                    JObject f = Finding(RebarFinding.BarMarkConflict, RebarSeverity.Error, null,
+                        RebarMarkIdentity.Id(sets[0]),
+                        "every set carrying mark '" + pair.Key + "' is the same bar",
+                        string.Join("; ", diffs.Select(RebarMarkIdentity.Describe)), tolerance,
+                        "a schedule groups by mark, so these sets are counted as one line of one bar, and the " +
+                        "steel that is a different bar is scheduled as the wrong one. One mark on several " +
+                        "IDENTICAL sets is correct; one mark on different bars is not.", true,
+                        "horizun_write_params_verified");
+                    f["mark"] = pair.Key;
+                    f["rebar_ids"] = ids;
+                    f["differences"] = new JArray(diffs.ToArray());
+                    if (unread.Count > 0) f["unreadable_properties"] = new JArray(unread.ToArray());
+                    findings.Add(f);
+                }
+                else if (unread.Count > 0)
+                {
+                    JObject f = Unknown(RebarFinding.BarMarkConflict, null, RebarMarkIdentity.Id(sets[0]),
+                        "every set carrying mark '" + pair.Key + "' is the same bar",
+                        "the sets carrying mark '" + pair.Key + "' could not all be compared: " +
+                        string.Join(", ", unread) + " would not read on at least one of them, so whether the " +
+                        "mark covers one bar or several is not known.");
+                    f["tolerance"] = tolerance;
+                    f["mark"] = pair.Key;
+                    f["rebar_ids"] = ids;
+                    f["unreadable_properties"] = new JArray(unread.ToArray());
+                    findings.Add(f);
+                }
             }
             return findings;
+        }
+
+        /// <summary>
+        /// The marks several sets share AND that were proved to be one bar - published, not
+        /// hidden, because a schedule line made of several sets is a fact a reader may want, and
+        /// silence about it would look like each mark stands on one set.
+        /// </summary>
+        public static JArray SharedMarks(IEnumerable<JObject> observedBars, double lengthTolMm)
+        {
+            var shared = new JArray();
+            foreach (var pair in ByMark(observedBars))
+            {
+                List<JObject> sets = pair.Value;
+                if (sets.Count < 2) continue;
+                bool same = true;
+                for (int i = 1; i < sets.Count && same; i++)
+                {
+                    List<string> u;
+                    if (RebarMarkIdentity.Differences(sets[0], sets[i], lengthTolMm, out u).Count > 0 || u.Count > 0)
+                        same = false;
+                }
+                if (!same) continue;
+                shared.Add(new JObject
+                {
+                    ["mark"] = pair.Key,
+                    ["rebar_ids"] = new JArray(sets.Select(b => (object)RebarMarkIdentity.Id(b)).ToArray())
+                });
+            }
+            return shared;
+        }
+
+        private static IEnumerable<KeyValuePair<string, List<JObject>>> ByMark(IEnumerable<JObject> observedBars)
+        {
+            var byMark = new Dictionary<string, List<JObject>>(StringComparer.Ordinal);
+            foreach (JObject b in observedBars)
+            {
+                string mark = RebarMarkIdentity.Mark(b);
+                if (mark == null) continue;
+                List<JObject> l;
+                if (!byMark.TryGetValue(mark, out l)) { l = new List<JObject>(); byMark[mark] = l; }
+                l.Add(b);
+            }
+            return byMark.OrderBy(p => p.Key, StringComparer.Ordinal);
         }
 
         // ---------------------------------------------------------- comparisons
@@ -692,6 +1285,52 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static double BendAllowanceMm(JObject expected, JObject observed)
         {
+            double d = BendDiameterMm(expected, observed);
+            return d > 0 ? 0.4143 * (d / 2.0) : 0;
+        }
+
+        /// <summary>
+        /// How much shorter a polyline is once every interior corner (and, closed, the closing
+        /// ones) is replaced by a tangent arc of radius R: R(2 tan(t/2) - t) per corner, t the turn.
+        /// </summary>
+        private static double Dot(double[] a, double[] b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+        public static double BendShorteningMm(IList<double[]> pts, bool closed, double radiusMm)
+        {
+            if (pts == null || pts.Count < 3 || !(radiusMm > 0)) return 0;
+            int n = pts.Count;
+            double total = 0;
+            for (int i = 0; i < n; i++)
+            {
+                // A CLOSED bar starts and ends at its first corner, which Revit does not bend
+                // (measured: a hookless closed stirrup carries three bends, not four).
+                if (i == 0 || (!closed && i == n - 1)) continue;
+                double[] a = pts[(i - 1 + n) % n], b = pts[i], c = pts[(i + 1) % n];
+                double[] u = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, v = { c[0] - b[0], c[1] - b[1], c[2] - b[2] };
+                double lu = Math.Sqrt(Dot(u, u)), lv = Math.Sqrt(Dot(v, v));
+                if (lu < 1e-9 || lv < 1e-9) continue;
+                double cos = Math.Max(-1, Math.Min(1, Dot(u, v) / (lu * lv)));
+                double t = Math.Acos(cos);
+                if (t < 1e-6 || t > Math.PI - 1e-6) continue;
+                total += radiusMm * (2 * Math.Tan(t / 2) - t);
+            }
+            return total;
+        }
+
+        /// <summary>
+        /// The set's steel length from ONE bar's exact centreline times the quantity (L2): Revit's
+        /// TotalLength is rounded per bar by the bar type's rule. Null when not measured.
+        /// </summary>
+        private static JToken ExactTotalLengthMm(JObject observed, int quantity)
+        {
+            double? one = Path(observed, "measured", "bar_centreline_length_mm")?.Value<double?>();
+            if (!one.HasValue || quantity <= 0 || double.IsNaN(one.Value)) return null;
+            return new JValue(one.Value * quantity);
+        }
+
+        /// <summary>The bend DIAMETER Revit uses for this bar, by its style, or 0 when not reported.</summary>
+        public static double BendDiameterMm(JObject expected, JObject observed)
+        {
             // A stirrup bends to a different radius than a straight bar, and Revit
             // keeps the two numbers separately on the bar type. Reading the wrong
             // one is a silent few millimetres of allowance in the wrong direction.
@@ -710,9 +1349,52 @@ namespace Horizun.Revit.Core
             double? d = Path(observed, "bar_type", field)?.Value<double?>()
                         ?? Path(expected, "bar_type", field)?.Value<double?>();
             if (!d.HasValue || double.IsNaN(d.Value) || double.IsInfinity(d.Value) || d.Value <= 0) return 0;
-            return 0.4143 * (d.Value / 2.0);
+            return d.Value;
         }
 
+
+        /// <summary>
+        /// An OPEN bar with a hook at one or both ends (acero 3.0 L2). MEASURED: Revit's
+        /// as-declared form carries a 135 degree hooked end on along the bar by half its
+        /// diameter (4.748 mm for 10M). Exactly that is accepted - at a hooked end, on the bar's
+        /// own line, outward, within one bar diameter plus the tolerance - and published as
+        /// info; the declared end is moved to where Revit put it and everything else is
+        /// compared as before. Sideways, inward, at an unhooked end or further: a difference.
+        /// </summary>
+        public static void CompareOpenHookedGeometry(JArray into, string rule, long barId,
+            IList<double[]> want, IList<double[]> got, double toleranceMm, double bendAllowanceMm,
+            bool hookStart, bool hookEnd, double barDiameterMm, GeometryMeasure measure = null)
+        {
+            if (want == null || want.Count < 2 || got == null || got.Count < 2 || barDiameterMm <= 0)
+            {
+                CompareGeometry(into, rule, barId, want, got, false, toleranceMm, bendAllowanceMm, false, 0, measure);
+                return;
+            }
+            var adjusted = new List<double[]>(want);
+            foreach (bool start in new[] { true, false })
+            {
+                if (start ? !hookStart : !hookEnd) continue;
+                double[] end = start ? want[0] : want[want.Count - 1];
+                double[] prev = start ? want[1] : want[want.Count - 2];
+                double[] gotEnd = start ? got[0] : got[got.Count - 1];
+                double[] dir = { end[0] - prev[0], end[1] - prev[1], end[2] - prev[2] };
+                double len = Math.Sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+                if (len < 1e-9) continue;
+                for (int k = 0; k < 3; k++) dir[k] /= len;
+                double[] d = { gotEnd[0] - end[0], gotEnd[1] - end[1], gotEnd[2] - end[2] };
+                double along = d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2];
+                double side = Math.Sqrt(Math.Max(0, d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - along * along));
+                if (along <= toleranceMm || along > barDiameterMm + toleranceMm || side > toleranceMm) continue;
+                double[] moved = { end[0] + dir[0] * along, end[1] + dir[1] * along, end[2] + dir[2] * along };
+                if (start) adjusted[0] = moved; else adjusted[adjusted.Count - 1] = moved;
+                into.Add(Finding(RebarFinding.HookEndExtension, RebarSeverity.Info, rule, barId,
+                    Math.Round(0.0, 3), Math.Round(along, 3), Mm(barDiameterMm + toleranceMm),
+                    "the bar is open with a hook at its " + (start ? "start" : "end") + ", and Revit's as-declared form " +
+                    "carries that end on along the bar by " + Mm(along) + " - where it starts the hook. Accepted there, " +
+                    "on the bar's own line, within one bar diameter, and nowhere else.", false, null));
+            }
+            CompareGeometry(into, rule, barId, adjusted, got, false, toleranceMm, bendAllowanceMm, false, 0, measure);
+        }
 
         /// <summary>
         /// The declared centreline against the one Revit drew, point by point.
@@ -733,6 +1415,14 @@ namespace Horizun.Revit.Core
         public static void CompareGeometry(JArray into, string rule, long barId,
             IList<double[]> want, IList<double[]> got, bool closed,
             double toleranceMm, double bendAllowanceMm)
+            => CompareGeometry(into, rule, barId, want, got, closed, toleranceMm, bendAllowanceMm, false, 0);
+
+        /// <param name="hookedBothEnds">The declaration puts a hook at BOTH ends of the bar.</param>
+        /// <param name="barDiameterMm">The bar's nominal diameter; 0 when unknown (no opening is then accepted).</param>
+        public static void CompareGeometry(JArray into, string rule, long barId,
+            IList<double[]> want, IList<double[]> got, bool closed,
+            double toleranceMm, double bendAllowanceMm, bool hookedBothEnds, double barDiameterMm,
+            GeometryMeasure measure = null)
         {
             if (want == null || want.Count < 2) return;   // nothing was declared to compare
 
@@ -778,7 +1468,28 @@ namespace Horizun.Revit.Core
             // have, so a stirrup Revit drew with a leg missing had that leg invented
             // for it and the comparison agreed.
             bool gotClosed = Near(got[0], got[got.Count - 1], Math.Max(toleranceMm, 1e-6));
-            if (closed != gotClosed)
+            // D1, OPTION A (owner; MEASURED 4.75 mm alike in Revit 2024, 2025, 2026 and 2027 for a
+            // 10M stirrup): a stirrup declared CLOSED with a hook at BOTH ends comes back from
+            // Revit's as-declared form OPEN at its first corner, that corner moved half the bar's
+            // diameter - Revit lays the overlapping hooks there. That, and only that, is accepted:
+            // both open ends within ONE bar diameter of the declared first corner. The opening is
+            // published as info and the corner is the only place it is excused; every other point
+            // is compared exactly as before.
+            double[] corner = want[0];
+            double openStart = Distance(got[0], corner), openEnd = Distance(got[got.Count - 1], corner);
+            bool hookOpening = closed && !gotClosed && hookedBothEnds && barDiameterMm > 0 &&
+                               openStart <= barDiameterMm + toleranceMm && openEnd <= barDiameterMm + toleranceMm;
+            if (hookOpening)
+            {
+                double opening = Math.Max(openStart, openEnd);
+                into.Add(Finding(RebarFinding.HookCornerOpening, RebarSeverity.Info, rule, barId,
+                    Math.Round(0.0, 3), Math.Round(opening, 3), Mm(barDiameterMm + toleranceMm),
+                    "the stirrup is declared closed with a hook at both ends, and Revit's as-declared form " +
+                    "leaves it open at its first corner by " + Mm(opening) + " - where Revit lays the " +
+                    "overlapping hooks. Accepted there, within one bar diameter, and nowhere else.",
+                    false, null));
+            }
+            else if (closed != gotClosed)
                 into.Add(Finding(RebarFinding.GeometryDiffers, RebarSeverity.Error, rule, barId,
                     closed ? "a closed shape" : "an open shape",
                     gotClosed ? "a closed shape" : "an open shape", Mm(toleranceMm),
@@ -787,8 +1498,9 @@ namespace Horizun.Revit.Core
                     "an open bar, and comparing it as though it closed would invent the missing leg.",
                     true, "horizun_apply_reinforcement"));
 
-            double aToB = WorstDistanceToPath(want, got, closed && gotClosed);
-            double bToA = WorstDistanceToPath(got, want, closed && gotClosed);
+            double excuse = hookOpening ? barDiameterMm + toleranceMm : 0;
+            double aToB = WorstDistanceToPath(want, got, closed && (gotClosed || hookOpening), corner, excuse);
+            double bToA = WorstDistanceToPath(got, want, closed && (gotClosed || hookOpening), corner, excuse);
             if (double.IsNaN(aToB) || double.IsNaN(bToA))
             {
                 into.Add(Unknown(RebarFinding.GeometryDiffers, rule, barId, null,
@@ -798,6 +1510,12 @@ namespace Horizun.Revit.Core
             }
 
             double worst = Math.Max(aToB, bToA);
+            if (measure != null)
+            {
+                measure.WorstMm = Math.Round(worst, 3);
+                measure.AllowanceMm = Math.Round(allowance, 3);
+                measure.BendAllowanceMm = Math.Round(Math.Max(0, bendAllowanceMm), 3);
+            }
             if (worst > allowance)
             {
                 into.Add(Finding(RebarFinding.GeometryDiffers, RebarSeverity.Error, rule, barId,
@@ -851,10 +1569,16 @@ namespace Horizun.Revit.Core
         /// through the same endpoints identical.
         /// </summary>
         public static double WorstDistanceToPath(IList<double[]> points, IList<double[]> path, bool closed)
+            => WorstDistanceToPath(points, path, closed, null, 0);
+
+        /// <summary>As above, except points within <paramref name="excuseRadius"/> of <paramref name="excusedAt"/>.</summary>
+        public static double WorstDistanceToPath(IList<double[]> points, IList<double[]> path, bool closed,
+                                                 double[] excusedAt, double excuseRadius)
         {
             double worst = 0;
             foreach (double[] p in points)
             {
+                if (excusedAt != null && excuseRadius > 0 && Distance(p, excusedAt) <= excuseRadius) continue;
                 double d = DistanceToPath(p, path, closed);
                 if (double.IsNaN(d)) return double.NaN;
                 if (d > worst) worst = d;
@@ -902,6 +1626,14 @@ namespace Horizun.Revit.Core
         private static bool Ok(double v)
         {
             return !double.IsNaN(v) && !double.IsInfinity(v);
+        }
+
+        private static double Distance(double[] a, double[] b)
+        {
+            if (a == null || b == null || a.Length < 3 || b.Length < 3) return double.PositiveInfinity;
+            double dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+            double d = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+            return Ok(d) ? d : double.PositiveInfinity;
         }
 
         private static bool Near(double[] a, double[] b, double tol)

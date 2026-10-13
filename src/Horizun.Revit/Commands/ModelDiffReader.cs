@@ -127,6 +127,24 @@ namespace Horizun.Revit.Commands
             return d;
         }
 
+        /// <summary>
+        /// The key a parameter is compared under: its BuiltInParameter, its shared GUID, or -
+        /// for a project parameter, whose name is the project's own - its name. Keyed by the
+        /// UI name, a model opened in another Revit language reported every built-in value as
+        /// deleted and added again (audit 2026-10-08, 6.13).
+        /// </summary>
+        private static string ParameterKey(Parameter p, InternalDefinition internalDef)
+        {
+            try
+            {
+                if (internalDef != null && internalDef.BuiltInParameter != BuiltInParameter.INVALID)
+                    return "bip:" + internalDef.BuiltInParameter;
+            }
+            catch { }
+            try { if (p.IsShared) return "guid:" + p.GUID.ToString("D"); } catch { }
+            return p.Definition.Name ?? "";
+        }
+
         private static void ReadParameters(Element e, SortedDictionary<string, string> into, int max)
         {
             foreach (Parameter p in e.Parameters)
@@ -148,7 +166,7 @@ namespace Horizun.Revit.Commands
                         case StorageType.ElementId: value = ModelDiffRules.NormalizeElementId(Rid.Value(p.AsElementId())); break;
                         default: continue;
                     }
-                    string name = p.Definition.Name ?? "";
+                    string name = ParameterKey(p, internalDef);
                     if (into.ContainsKey(name)) name = name + "#" + Rid.Value(p.Id).ToString(CultureInfo.InvariantCulture);
                     into[name] = value;
                 }
@@ -165,8 +183,16 @@ namespace Horizun.Revit.Commands
                 ["source"] = source,
                 ["revit_version"] = revitVersion,
                 ["is_workshared"] = SafeBool(() => doc.IsWorkshared),
-                ["project_info_unique_id"] = Safe(() => doc.ProjectInformation?.UniqueId)
+                ["project_info_unique_id"] = Safe(() => doc.ProjectInformation?.UniqueId),
+#if REVIT2023
+                ["creation_guid"] = JValue.CreateNull()   // Document.CreationGUID arrived in Revit 2024
+#else
+                ["creation_guid"] = Safe(() => doc.CreationGUID.ToString())
+#endif
             };
+            // WHICH PROJECT: the document's creation, not its ProjectInformation element, which a
+            // template hands to every project made from it (measured 2026-10-09).
+            o["project_identity"] = ModelDiffRules.ProjectIdentity((string)o["creation_guid"], (string)o["project_info_unique_id"]);
             try
             {
                 DocumentVersion v = Document.GetDocumentVersion(doc);

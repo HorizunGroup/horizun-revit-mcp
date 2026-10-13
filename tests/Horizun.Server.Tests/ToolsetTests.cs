@@ -267,6 +267,103 @@ namespace Horizun.Server.Tests
         private static void WriteSettings(string json)
             => File.WriteAllText(Path.Combine(_dir, "settings.json"), json);
 
+        // ---- the "local" toolset: local or short-context models (owner, 2026-10-10) ----
+
+        private static readonly string[] LocalMembers =
+        {
+            "horizun_health", "horizun_target", "horizun_job_status", "horizun_submit_job",
+            "get_document_info", "horizun_list_elements", "horizun_query_model", "horizun_model_scan",
+            "horizun_quantities", "horizun_capture_view",
+            // owner, 2026-10-10 (close): the evaluation battery's task 5 selects a linked element and
+            // task 6 compares a snapshot - without these two local covered 13 of its 15 tasks.
+            "horizun_navigate", "horizun_model_diff",
+            "horizun_write_params_verified", "horizun_create_elements", "horizun_transform_elements",
+            "horizun_delete_verified", "horizun_manage_views", "horizun_undo"
+        };
+
+        // MEASURED 2026-10-10 on the 2.2.0 candidate: tools/list with HORIZUN_TOOLSETS=local at
+        // the shipped default profile. The budget is that measurement + 10 %; growing past it
+        // must be a decision, not an accident. Re-measured with navigate and model_diff (owner,
+        // 2026-10-10 close): the budget follows the new measurement + 10 %.
+        private const long LocalMeasuredCharacters = 99771;
+        private const long LocalBudgetCharacters = LocalMeasuredCharacters + LocalMeasuredCharacters / 10;
+
+        [Fact]
+        public void Local_is_core_reading_and_six_typed_writes()
+        {
+            Assert.Contains("local", ToolPacks.KnownPacks);
+            Assert.Equal(LocalMembers.OrderBy(n => n, StringComparer.Ordinal),
+                         ToolPacks.MembersOf("local").Concat(ToolPacks.MembersOf("core")).Distinct().OrderBy(n => n, StringComparer.Ordinal));
+            Assert.Empty(ToolPacks.DependenciesOf("local"));
+        }
+
+        [Fact]
+        public void Local_never_carries_the_python_surface()
+        {
+            // Fails the day somebody adds execute_python, the access request, or ANY tool that rides
+            // in unsafe_code to the local toolset.
+            var local = new HashSet<string>(ToolPacks.MembersOf("local"), StringComparer.Ordinal);
+            Assert.DoesNotContain("horizun_execute_python", local);
+            Assert.DoesNotContain("horizun_request_python_access", local);
+            Assert.Empty(local.Intersect(ToolPacks.MembersOf("unsafe_code")));
+            foreach (CommandContract c in Contract.All.Where(c => local.Contains(c.Name)))
+                Assert.DoesNotContain("unsafe_code", c.Toolsets ?? new string[0]);
+            WithIsolation(null, null, "local", () =>
+            {
+                var names = Tools.List(false).OfType<JObject>().Select(t => (string)t["name"]).ToList();
+                Assert.DoesNotContain("horizun_execute_python", names);
+                Assert.DoesNotContain("horizun_request_python_access", names);
+            });
+        }
+
+        [Fact]
+        public void Local_tools_list_stays_within_its_budget()
+        {
+            WithIsolation(null, null, "local", () =>
+            {
+                JObject size = ToolsetReport.Size(Tools.List(false));
+                _out.WriteLine("HORIZUN_TOOLSETS=local -> " + size.ToString(Formatting.None));
+                // The permission profile still governs: at the shipped safe_write, capture_view (it writes
+                // an image outside the document) is hidden, so local advertises the other seventeen.
+                var names = Tools.List(false).OfType<JObject>().Select(x => (string)x["name"]).OrderBy(n => n, StringComparer.Ordinal);
+                Assert.Equal(LocalMembers.Where(n => n != "horizun_capture_view").OrderBy(n => n, StringComparer.Ordinal), names);
+                Assert.True((long)size["characters"] <= LocalBudgetCharacters,
+                    "tools/list with the local toolset is " + size["characters"] + " characters; the budget is " +
+                    LocalBudgetCharacters + " (measured " + LocalMeasuredCharacters + " + 10 %).");
+            });
+        }
+
+        [Fact]
+        public void At_full_write_local_advertises_all_eighteen()
+        {
+            WithIsolation("{\"permission_profile\":\"full_write\"}", null, "local", () =>
+            {
+                var names = Tools.List(false).OfType<JObject>().Select(x => (string)x["name"]).OrderBy(n => n, StringComparer.Ordinal);
+                Assert.Equal(LocalMembers.OrderBy(n => n, StringComparer.Ordinal), names);
+            });
+        }
+
+        [Fact]
+        public void Health_names_local_and_what_it_leaves_out()
+        {
+            WithIsolation(null, null, "local", () =>
+            {
+                int all = Tools.ListIgnoringPacks(false).Count;
+                int advertised = Tools.List(false).Count;
+                JObject health = ToolsetReport.HealthBlock();
+                var active = health["active"].Select(x => (string)x).ToList();
+                Assert.Contains("local", active);
+                Assert.Contains("core", active);
+                var left = health["toolsets_not_active"].Select(x => (string)x).ToList();
+                Assert.Contains("unsafe_code", left);
+                Assert.Contains("cad", left);
+                Assert.DoesNotContain("local", left);
+                Assert.DoesNotContain("core", left);
+                Assert.Equal(all - advertised, (int)health["tools_not_advertised"]);
+                Assert.Equal(advertised, (int)health["tools_advertised"]);
+            });
+        }
+
         private static void WithIsolation(string settingsJson, string packsEnv, string toolsetsEnv, Action action)
         {
             string oldRoot = Environment.GetEnvironmentVariable("HORIZUN_DATA_ROOT");

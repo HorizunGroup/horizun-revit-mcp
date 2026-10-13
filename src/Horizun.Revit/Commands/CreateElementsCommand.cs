@@ -14,6 +14,7 @@ using Autodesk.Revit.UI;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
+using System.Globalization;
 
 namespace Horizun.Revit.Commands
 {
@@ -25,7 +26,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -93,7 +94,7 @@ namespace Horizun.Revit.Commands
             }
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
-            string planHash = DocumentGate.PlanHash(request, "units", "elements");
+            string planHash = DocumentGate.PlanHash(request, "units", "elements", "tabular_source");
 
             // ---- The MATERIALISED plan: what the request's NAMES resolved to. -----------
             // planHash binds the batch as written, and for a creation command the batch is
@@ -142,6 +143,14 @@ namespace Horizun.Revit.Commands
                 row.BeforeValues["top_level_uid"] = SafePlanUid(planned.TopLevel);
                 row.BeforeValues["top_level_elev_mm"] = SafePlanElevation(planned.TopLevel);
                 row.BeforeValues["host_uid"] = SafePlanUid(planned.Host);
+                // WHERE, not only WHAT. A tabular_source batch is expanded from the CSV on
+                // every call, and the request carries only the file's path: without the
+                // placement in the plan, a file whose rows kept their type and level but
+                // moved was applied with the rehearsal's token (backlog P0 #5).
+                row.BeforeValues["start_mm"] = SafePlanPoint(planned.Start);
+                row.BeforeValues["end_mm"] = SafePlanPoint(planned.End);
+                row.BeforeValues["rotation_deg"] = System.Math.Round(planned.RotationRadians * 180.0 / System.Math.PI, 4)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture);
                 if (planned.DisplacedState != null) row.BeforeValues["displacement_source"] = planned.DisplacedState.ToString(Formatting.None);
                 resolvedPlan.Elements.Add(row);
             }
@@ -1472,7 +1481,7 @@ namespace Horizun.Revit.Commands
                             if (t < -1e-6 || t > length + 1e-6)
                                 throw new InvalidOperationException(
                                     "the drawn point projects beyond the ends of its host wall (" +
-                                    Math.Round(t * 304.8, 1) + " mm along a " + Math.Round(length * 304.8, 1) +
+                                    Math.Round(t * 304.8, 1).ToString(CultureInfo.InvariantCulture) + " mm along a " + Math.Round(length * 304.8, 1).ToString(CultureInfo.InvariantCulture) +
                                     " mm wall). A wall-based family is placed on the wall's line; nothing was built.");
                             var onLine = new XYZ(a.X + dir.X * t, a.Y + dir.Y * t, drawn.Z);
                             XYZ exterior = hostWall.Orientation;
@@ -1489,7 +1498,7 @@ namespace Horizun.Revit.Commands
                             else if (deadBand.HasValue && Math.Abs(side) * 304.8 < deadBand.Value)
                                 throw new InvalidOperationException(
                                     "side_of_the_wall_not_stated: the symbol is drawn " +
-                                    Math.Round(Math.Abs(side) * 304.8, 1) + " mm from its wall's line, inside the " +
+                                    Math.Round(Math.Abs(side) * 304.8, 1).ToString(CultureInfo.InvariantCulture) + " mm from its wall's line, inside the " +
                                     deadBand.Value + " mm dead band, and no facing is declared. Nothing was built.");
                             p.HostedEvidence = new JObject
                             {
@@ -1606,8 +1615,7 @@ namespace Horizun.Revit.Commands
                         placed = p.Level == null
                             ? doc.Create.NewFamilyInstance(p.Start, symbol, p.StructuralType)
                             : doc.Create.NewFamilyInstance(p.Start, symbol, p.Level, p.StructuralType);
-                        PositionInstance(doc, p, placed);
-                        SetTop(doc, p, placed);
+                        PositionAndTop(doc, p, placed);
                     }
 
                     // THE MIRROR, BY WHICHEVER OPERATION THIS FAMILY SUPPORTS.
@@ -1691,8 +1699,7 @@ namespace Horizun.Revit.Commands
                     FamilySymbol column = (FamilySymbol)p.Type;
                     if (!column.IsActive) { column.Activate(); doc.Regenerate(); }
                     FamilyInstance placedColumn = doc.Create.NewFamilyInstance(p.Start, column, p.Level, StructuralType.Column);
-                    PositionInstance(doc, p, placedColumn);
-                    SetTop(doc, p, placedColumn);
+                    PositionAndTop(doc, p, placedColumn);
                     return placedColumn;
                 case "wall_opening":
                     return doc.Create.NewOpening(p.OpeningHost, p.Start, p.End);
@@ -2692,6 +2699,15 @@ namespace Horizun.Revit.Commands
         /// regeneration jitters the last digits, and a fingerprint that changes on its own
         /// would refuse every apply - the same lesson the transform wiring paid for.
         /// </summary>
+        private static string SafePlanPoint(XYZ point)
+        {
+            if (point == null) return "";
+            System.Globalization.CultureInfo inv = System.Globalization.CultureInfo.InvariantCulture;
+            return System.Math.Round(point.X * 304.8, 1).ToString(inv) + "," +
+                   System.Math.Round(point.Y * 304.8, 1).ToString(inv) + "," +
+                   System.Math.Round(point.Z * 304.8, 1).ToString(inv);
+        }
+
         private static string SafePlanElevation(Level level)
         {
             try

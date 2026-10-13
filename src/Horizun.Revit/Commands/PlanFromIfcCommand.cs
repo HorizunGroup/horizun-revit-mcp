@@ -80,7 +80,7 @@ namespace Horizun.Revit.Commands
             if (doc == null) return CommandResult.Fail("No active Revit document.");
 
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
@@ -1424,9 +1424,14 @@ namespace Horizun.Revit.Commands
         private static JArray Coordinate(double[] point, double z) =>
             new JArray(Math.Round(point[0], 3), Math.Round(point[1], 3), Math.Round(z, 3));
 
+        /// <summary>
+        /// The level's Z in the frame geometry uses (internal origin). Level.Elevation is measured
+        /// from the level type's elevation base (project base point or survey point), so with an
+        /// elevated base point every offset derived from it was off by that elevation (audit 2026-10-08, 6.6).
+        /// </summary>
         private static double LevelElevationMm(Level level)
         {
-            try { return level.Elevation * 304.8; } catch { return 0; }
+            try { return level.ProjectElevation * 304.8; } catch { return 0; }
         }
 
         private static string Fingerprint(string prefix, JToken token) =>

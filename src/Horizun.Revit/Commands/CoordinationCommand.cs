@@ -45,7 +45,7 @@ namespace Horizun.Revit.Commands
             if (doc == null) return CommandResult.Fail("No document is open.");
 
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             string operation = (request.Value<string>("operation") ?? "list").ToLowerInvariant();
@@ -298,7 +298,7 @@ namespace Horizun.Revit.Commands
                     WriteZipEntry(zip, topic + "/markup.bcf",
                                   CoordinationRules.BcfMarkupXml(f, doc.Title, note));
                     WriteZipEntry(zip, topic + "/" + CoordinationRules.BcfViewpointFile,
-                                  BcfViewpoint.Xml(f.PointMm, components));
+                                  BcfViewpoint.Xml(f.PointMm, components, BcfViewpoint.DefaultStandoffMm, CoordinationRules.ViewpointGuid(f.Id)));
                 }
             }
 

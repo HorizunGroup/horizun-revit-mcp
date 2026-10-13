@@ -104,6 +104,33 @@ function Assert-HorizunTfm([string]$DllPath, [int]$Year) {
     }
 }
 
+# THE YEAR THE ADD-IN WAS BUILT FOR (backlog #29). The TFM cannot tell 2023 from 2024
+# (both net48) nor 2025 from 2026 (both net8.0), so a bin left by another year passed the
+# guard above and loaded into the wrong Revit. Horizun.Revit.csproj stamps
+# [AssemblyMetadata("HorizunRevitYear", "<year>")]; its blob holds the key and the value as
+# length-prefixed UTF-8 strings, read here without loading the assembly.
+function Get-HorizunBuiltRevitYear([string]$DllPath) {
+    # Validate the PE/CLR shape before trusting the metadata blob. This reads the
+    # assembly identity without loading or executing the add-in or its references.
+    $null = [Reflection.AssemblyName]::GetAssemblyName($DllPath)
+    $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($DllPath))
+    $m = [regex]::Match($text, 'HorizunRevitYear\x04(20\d\d)')
+    if ($m.Success) { return [int]$m.Groups[1].Value }
+    return $null
+}
+
+function Assert-HorizunBuiltYear([string]$DllPath, [int]$Year) {
+    $built = Get-HorizunBuiltRevitYear $DllPath
+    if ($null -eq $built) {
+        throw ("Refusing to load: $DllPath carries no HorizunRevitYear stamp, so the Revit year it was built " +
+               "for cannot be proven. Rebuild with: dotnet build src/Horizun.Revit/Horizun.Revit.csproj -c Release -p:RevitYear=$Year")
+    }
+    if ($built -ne $Year) {
+        throw ("Refusing to load: $DllPath was built for Revit $built, not Revit $Year. bin is shared across " +
+               "years and the TFM alone cannot tell them apart - rebuild for $Year first.")
+    }
+}
+
 # EVERY PLACE REVIT WILL LOOK. Both roots matter and only one was ever considered:
 # the per-user Addins folder, and the machine-wide ProgramData one that an
 # installer writes. A stale Horizun.addin in either points Revit at an old DLL.

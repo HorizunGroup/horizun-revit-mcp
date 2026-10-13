@@ -82,6 +82,43 @@ namespace Horizun.Server.Tests
             }
         }
 
+        // Backlog #40: a cancellation that lands after the claim but BEFORE the rows go
+        // out was reported as "in_doubt" and the record was never completed - although
+        // nothing had left the machine. It is a definitive "not sent", recorded as such.
+        [Fact]
+        public void CancellationBeforeSending_IsRecordedAsNotSentRatherThanInDoubt()
+        {
+            var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+            using (var client = new HttpClient(handler))
+            using (var cts = new CancellationTokenSource())
+            {
+                DurableCommandLedger ledger = Ledger(out string dir);
+                try
+                {
+                    int tokenReads = 0;
+                    // The first read decides the auth mode; the second resolves the token,
+                    // after the key is claimed. Cancel there: past the claim, before the send.
+                    Func<string, string> environment = name =>
+                    {
+                        if (name == "HORIZUN_POWER_BI_ACCESS_TOKEN" && ++tokenReads == 2) cts.Cancel();
+                        return EnvToken(name);
+                    };
+                    JObject request = Request(false);
+                    ToolRefusal first = Assert.Throws<ToolRefusal>(() => PowerBiPush.Handle(request, client, ledger, environment, cts.Token));
+                    Assert.DoesNotContain("in_doubt", first.Message);
+                    Assert.Contains("No rows were sent", first.Message);
+                    Assert.Equal(0, handler.Calls);
+
+                    // The record is COMPLETE: a retry with the same key replays the outcome
+                    // instead of meeting an open, in-doubt claim.
+                    ToolRefusal replay = Assert.Throws<ToolRefusal>(() => PowerBiPush.Handle(request, client, ledger, EnvToken));
+                    Assert.Equal(first.Message, replay.Message);
+                    Assert.Equal(0, handler.Calls);
+                }
+                finally { Directory.Delete(dir, true); }
+            }
+        }
+
         [Fact]
         public void DefinitiveHttpFailure_IsRecordedAndRetryDoesNotSendAgain()
         {

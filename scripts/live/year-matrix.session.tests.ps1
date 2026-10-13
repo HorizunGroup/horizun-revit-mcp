@@ -1,4 +1,4 @@
-# -----------------------------------------------------------------------------
+﻿# -----------------------------------------------------------------------------
 # Horizun Revit MCP — original Horizun code.
 #
 # The safety rules of the year-matrix driver, exercised WITHOUT a Revit and
@@ -788,7 +788,14 @@ $c = & $p.CloseDocument ([ordered]@{ year = '2099'; dir = $dir; target = 'C:\now
     $env:HZ_TESTS_TMP = $tmp
     $env:HZ_TESTS_REPO = $script:RepoRoot
     foreach ($form in @('File', 'Command')) {
-        $out = if ($form -eq 'File') { & pwsh -NoProfile -File $probeScript 2>&1 } else { & pwsh -NoProfile -Command "& '$probeScript'" 2>&1 }
+        $previousPreference = $ErrorActionPreference
+        try {
+            # The probe intentionally asks a missing server; PowerShell 5.1 must
+            # capture that child's stderr before checking the refusal text.
+            $ErrorActionPreference = 'Continue'
+            $out = if ($form -eq 'File') { & pwsh -NoProfile -File $probeScript 2>&1 } else { & pwsh -NoProfile -Command "& '$probeScript'" 2>&1 }
+        }
+        finally { $ErrorActionPreference = $previousPreference }
         $text = ($out | Out-String)
         Check ("the real health and close probes run under pwsh -$form and answer instead of throwing") (
             ($text -match 'health-ok=False') -and ($text -match 'close-ok=False') -and
@@ -1087,8 +1094,13 @@ try {
                 Skip 'the REAL helper refuses to restore while a Revit of unknown year runs' 'no Revit year was free before the test started'
             }
             else {
-                $out = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'dev-addin-session.ps1') -Year $guardYear -Restore 2>&1
-                $code = $LASTEXITCODE
+                $previousPreference = $ErrorActionPreference
+                try {
+                    $ErrorActionPreference = 'Continue'
+                    $out = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'dev-addin-session.ps1') -Year $guardYear -Restore 2>&1
+                    $code = $LASTEXITCODE
+                }
+                finally { $ErrorActionPreference = $previousPreference }
                 Check 'the REAL helper refuses to restore while a Revit of unknown year runs' (
                     ($code -ne 0) -and (($out -join ' ') -match 'could not be determined')) ("exit $code : " + ($out -join ' '))
             }

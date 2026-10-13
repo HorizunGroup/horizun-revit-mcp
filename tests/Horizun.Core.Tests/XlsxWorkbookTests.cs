@@ -289,6 +289,31 @@ namespace Horizun.Core.Tests
             Assert.Contains("xl/workbook.xml is absent", ex.Message);
         }
 
+        // Backlog #47: the row attribute padded Rows without a bound, so r="2000000000"
+        // exhausted memory. Rows and columns past the sheet's own limits (1 048 576 rows,
+        // 16 384 columns, XFD) are refused instead. Just past the limit keeps the red cheap.
+        [Theory]
+        [InlineData("<row r=\"1048577\"><c r=\"A1048577\"><v>1</v></c></row>", "row")]
+        [InlineData("<row r=\"1\"><c r=\"XFE1\"><v>1</v></c></row>", "column")]
+        public void A_row_or_column_past_the_sheet_limits_is_refused(string rowXml, string what)
+        {
+            byte[] bytes;
+            using (var ms = new MemoryStream())
+            {
+                using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, true))
+                {
+                    Put(zip, "xl/workbook.xml", "<workbook xmlns=\"" + Main.NamespaceName + "\" xmlns:r=\"" + XlsxWorkbookWriter.RelationshipsNamespace +
+                        "\"><sheets><sheet name=\"S\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>");
+                    Put(zip, "xl/_rels/workbook.xml.rels", "<Relationships xmlns=\"" + XlsxWorkbookWriter.PackageRelationshipsNamespace +
+                        "\"><Relationship Id=\"rId1\" Type=\"" + XlsxWorkbookWriter.WorksheetRelationship + "\" Target=\"worksheets/sheet1.xml\"/></Relationships>");
+                    Put(zip, "xl/worksheets/sheet1.xml", "<worksheet xmlns=\"" + Main.NamespaceName + "\"><sheetData>" + rowXml + "</sheetData></worksheet>");
+                }
+                bytes = ms.ToArray();
+            }
+            var ex = Assert.Throws<InvalidDataException>(() => XlsxWorkbookReader.Read(bytes));
+            Assert.Contains(what, ex.Message);
+        }
+
         private static void Put(ZipArchive zip, string name, string xml)
         {
             using (var w = new StreamWriter(zip.CreateEntry(name).Open(), new UTF8Encoding(false))) w.Write(xml);

@@ -48,6 +48,7 @@ namespace Horizun.Revit.Commands
             CommandResult failure = ResolvePair(app, request, beforeId, Active, out before, out after);
             if (failure != null) return failure;
             DiffResult diff = ModelDiffRules.Compare(before, after, Options(request));
+            JObject identity = IdentityOf(before, after);
 
             var targets = new List<Target>();
             foreach (DiffRow row in diff.Rows)
@@ -76,7 +77,10 @@ namespace Horizun.Revit.Commands
                                                  ["modified"] = targets.Count(t => t.State == ModelDiffRules.Modified) },
                     ["deleted_not_colorable"] = deleted,
                     ["colors"] = new JObject { ["added"] = "0,170,0", ["modified"] = "255,140,0" },
-                    ["note"] = "Nothing was changed. The apply duplicates the view and overrides elements in the COPY only."
+                    ["note"] = "Nothing was changed. The apply duplicates the view and overrides elements in the COPY only.",
+                    ["project_identity_kind"] = identity["project_identity_kind"],
+                    ["identity_proven"] = identity["identity_proven"],
+                    ["warnings"] = identity["warnings"]
                 };
                 ApplicationOutcome.StampRehearsal(rehearsal, targets.Count, 0, 0, 0);
                 DocumentGate.StampConfirmation(rehearsal, gate, ToolName, planHash, true,
@@ -97,7 +101,8 @@ namespace Horizun.Revit.Commands
             string viewName = UniqueViewName(doc, "Horizun diff " + (before.Id ?? "snapshot"));
             using (var tx = new Transaction(doc, txName))
             {
-                tx.Start();
+                if (tx.Start() != TransactionStatus.Started)
+                    return CommandResult.Fail("the colorize transaction did not start; nothing was changed (audit 2026-10-08, 6.18).");
                 try
                 {
                     newViewId = source.Duplicate(ViewDuplicateOption.Duplicate);
@@ -139,8 +144,16 @@ namespace Horizun.Revit.Commands
                 ["overrides_verified"] = verified, ["not_in_view"] = notInView,
                 ["deleted_not_colorable"] = deleted,
                 ["solid_fill_found"] = solid != null,
-                ["colors"] = new JObject { ["added"] = "0,170,0", ["modified"] = "255,140,0" }
+                ["colors"] = new JObject { ["added"] = "0,170,0", ["modified"] = "255,140,0" },
+                // The overrides are verified; WHICH comparison they paint is only as proven as the
+                // identity. Never sealed without saying so (owner decision 2026-10-10).
+                ["project_identity_kind"] = identity["project_identity_kind"],
+                ["identity_proven"] = identity["identity_proven"],
+                ["warnings"] = identity["warnings"]
             };
+            if ((bool?)identity["identity_proven"] != true)
+                payload["verified_means"] = "the view and its overrides are verified in the model; that they paint the " +
+                    "changes of ONE project is not proven (identity_proven=false) - see warnings.";
             ApplicationOutcome.StampApplied(payload, ApplicationOutcome.Committed, targets.Count, inView.Count,
                                             viewOk ? verified : 0, notInView, 0, inView.Count - verified);
             return CommandResult.Ok(payload);

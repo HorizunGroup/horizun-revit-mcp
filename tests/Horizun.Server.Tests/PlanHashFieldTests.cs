@@ -38,6 +38,42 @@ namespace Horizun.Server.Tests
             return Path.Combine(d.FullName, "src", "Horizun.Revit", "Commands");
         }
 
+        /// <summary>
+        /// create_elements with tabular_source (backlog P0 #5, 2026-10-10). The token was
+        /// bound by PlanHash(request, "units", "elements") - tabular_source left out - and
+        /// a family_instance row of the resolved plan recorded type, level and host but no
+        /// point or rotation, so a CSV whose rows kept their count, type and level but moved
+        /// to other coordinates was applied with the rehearsal's token. Both halves are
+        /// pinned: the request field in the hash, the placement in the resolved plan.
+        /// </summary>
+        [Fact]
+        public void Create_elements_binds_the_csv_and_each_rows_placement()
+        {
+            string text = File.ReadAllText(Path.Combine(SrcDir(), "CreateElementsCommand.cs"));
+            Match call = Regex.Match(text, @"PlanHash\(\s*request\s*,(?<args>[^;]*?)\)\s*;", RegexOptions.Singleline);
+            Assert.True(call.Success, "no PlanHash call in CreateElementsCommand.cs");
+            Assert.Contains("\"tabular_source\"", call.Groups["args"].Value);
+            foreach (string fact in new[] { "\"start_mm\"", "\"end_mm\"", "\"rotation_deg\"" })
+                Assert.True(text.Contains("row.BeforeValues[" + fact + "]"), "the resolved plan row does not record " + fact);
+        }
+
+        /// <summary>
+        /// resolve_clash apply (backlog P0 #6, 2026-10-10). The token bound only the
+        /// proposals' text and clearance_mm; the connected network was worked out again
+        /// at apply and nothing recorded the members' positions or the finding's state.
+        /// A fitting connected after the rehearsal widened what moved, and a pipe already
+        /// moved was moved again by the same vector. The resolved plan - every member and
+        /// its location - is now recorded by the rehearsal and compared at the apply.
+        /// </summary>
+        [Fact]
+        public void Resolve_clash_binds_its_resolved_network_and_positions()
+        {
+            string text = File.ReadAllText(Path.Combine(SrcDir(), "ResolveClashCommand.cs"));
+            Assert.Contains("DocumentGate.RecordResolvedPlan(", text);
+            Assert.Matches(new Regex(@"RequireConfirmation\(\s*app\s*,\s*gate\s*,\s*request\s*,\s*Name\s*,\s*planHash\s*,\s*\w+\s*,"), text);
+            Assert.Contains("BeforeValues[\"loc\"]", text);
+        }
+
         /// <summary>Every field a command hashes must be one the contract says it takes.</summary>
         [Fact]
         public void Plan_hash_fields_all_exist_in_the_declared_schema()

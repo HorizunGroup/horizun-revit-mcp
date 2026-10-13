@@ -2130,7 +2130,7 @@ namespace Horizun.Revit.Core
         /// </summary>
 
         /// <summary>One value the set declares and the model does not hold.</summary>
-        private sealed class CadDivergence
+        internal sealed class CadDivergence
         {
             public string Field;
             public string Wanted;
@@ -2166,18 +2166,28 @@ namespace Horizun.Revit.Core
 
             foreach (CadParameterWrite write in c.Parameters ?? new List<CadParameterWrite>())
             {
-                if (write == null || string.IsNullOrWhiteSpace(write.Parameter)) continue;
-                // Unreadable is not a difference either: the audit says so with a
-                // code of its own, and guessing here would turn "could not look"
-                // into "somebody changed it".
-                if (held.ParametersUnreadable != null && held.ParametersUnreadable.Contains(write.Parameter)) continue;
-                string now;
-                if (held.ParameterValues == null || !held.ParameterValues.TryGetValue(write.Parameter, out now)) continue;
-                string wanted = write.Value == null ? null : write.Value.ToString();
-                if (wanted == null || string.Equals(wanted, now, StringComparison.Ordinal)) continue;
-                return new CadDivergence { Field = "parameter " + Quoted(write.Parameter), Wanted = wanted, Held = now };
+                CadDivergence d = ParameterDivergence(write, held);
+                if (d != null) return d;
             }
             return null;
+        }
+
+        /// <summary>One rule parameter against the element, or null when they agree or cannot be compared.</summary>
+        internal static CadDivergence ParameterDivergence(CadParameterWrite write, CadAuditSubject held)
+        {
+            if (write == null || held == null || string.IsNullOrWhiteSpace(write.Parameter)) return null;
+            // Unreadable is not a difference either: the audit says so with a
+            // code of its own, and guessing here would turn "could not look"
+            // into "somebody changed it".
+            if (held.ParametersUnreadable != null && held.ParametersUnreadable.Contains(write.Parameter)) return null;
+            string now;
+            if (held.ParameterValues == null || !held.ParameterValues.TryGetValue(write.Parameter, out now)) return null;
+            string wanted = CadParameterValues.ExpectedText(write.Value);
+            if (wanted == null) return null;
+            string shown = null;
+            held.ParameterDisplay?.TryGetValue(write.Parameter, out shown);
+            if (CadParameterValues.Agrees(write.Value, now, shown)) return null;
+            return new CadDivergence { Field = "parameter " + Quoted(write.Parameter), Wanted = wanted, Held = shown ?? now };
         }
 
         private static string Quoted(string s) { return s == null ? "(nothing)" : "'" + s + "'"; }

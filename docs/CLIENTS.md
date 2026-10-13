@@ -55,6 +55,37 @@ $clientTools = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\client-t
 & (Join-Path $clientTools 'register-client.ps1') -Client Both
 ```
 
+### No duplicate registrations
+
+Registering `horizun-revit` also removes what an earlier install left behind **for
+this same product** in the same client, so two entries can never start two
+instances. An entry goes only when it is not the current name and either runs the
+very same `horizun-mcp.exe` being registered (any name) or carries a retired name
+(`horizun`, `horizun-next`) and launches a `horizun-mcp` executable. A retired
+name that launches some other program is kept and reported; no other server is
+ever touched.
+
+- **Codex:** the `[mcp_servers.<old>]` table and its `[mcp_servers.<old>.*]`
+  subtables are cut from `config.toml` in the same write that adds the current
+  entry, after a dated backup. The result is checked to be the original minus
+  those tables (nothing added, every other table present) and, when a Python with
+  `tomllib` is available, to still parse; otherwise nothing is written. Line
+  endings are kept; the file is written as UTF-8 without a BOM, through a temporary
+  file and a move, like every client file the installer touches.
+- **Claude Code:** removed with `claude mcp remove <old> --scope user`, never by
+  editing `~/.claude.json` (Claude Code rewrites it while it runs). If the CLI is
+  not on PATH, or fails, the registration still completes and the exact command
+  to run is printed. Entries scoped to a project are reported, not changed.
+- **Claude Desktop:** removed from `claude_desktop_config.json` (backup first)
+  by the extension helper, one member at a time, every other byte kept, UTF-8
+  without a BOM; while Claude Desktop is running the entry is kept and
+  the helper says so.
+
+The run prints what it removed and is idempotent. `-KeepOtherEntries` (on
+`register-client.ps1` and `install-claude-desktop-extension.ps1`) keeps them, for
+running two builds side by side on purpose; `-WhatIfOnly` shows the change
+without writing.
+
 Manual CLI registration is also available after the client closes:
 
 ```powershell
@@ -76,6 +107,67 @@ tool_timeout_sec = 600
 Replace `<you>` with the real account path. JSON needs doubled backslashes;
 TOML single-quoted strings do not. Other clients should use that same expanded
 path and allow enough time for long Revit scans.
+
+## Local or short-context models: `HORIZUN_TOOLSETS=local`
+
+### Optional schema facade
+
+3.0.0 defaults to `HORIZUN_SCHEMA_MODE=full`: each reachable typed tool is
+advertised directly. A client with a short context window can set
+`HORIZUN_SCHEMA_MODE=facade` in **its own** MCP server environment. It then
+sees `horizun_health`, `horizun_list_tools`, `horizun_describe_tool` and
+`horizun_call_tool`; the latter three discover the reachable tools, return
+exact schemas and dispatch the same typed calls. The bridge still checks the
+underlying permission profile and toolset. `horizun_health.schema_mode`
+reports the active mode. The facade is opt-in because an authenticated agent
+battery has not yet established better task completion.
+
+For a Codex entry that already points to the installed executable, add:
+
+```toml
+env = { HORIZUN_SCHEMA_MODE = "facade" }
+```
+
+If `HORIZUN_TOOLSETS=local` is also selected, put both keys in the same `env`
+table. Restart a client that does not refresh `tools/list` after this change.
+
+The full tool list is about 475 KB (roughly 120-160 thousand tokens), and every session
+pays for it before the first question. A model served on this machine, or any client with
+a short context window, can ask for the **`local`** toolset instead: reading (document
+facts, element listing and queries, model scan, quantities, view capture, navigation to
+an element - linked ones too - and model diff) and six typed
+writes (parameters, create, transform, delete, views, undo), with `horizun_health`,
+`horizun_target`, `horizun_job_status` and `horizun_submit_job` always on. It never
+carries the Python surface. Historically measured on the 2.2.0 candidate at the default `safe_write`
+profile: 17 tools, about 100 thousand characters (about 25 thousand tokens); at
+`full_write` the eighteenth, `horizun_capture_view`, appears as well.
+
+Set it in the client's own server entry, so it applies to that client only:
+
+```powershell
+$serverPath = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
+claude mcp add --scope user -e HORIZUN_TOOLSETS=local horizun-revit -- "$serverPath"
+```
+
+```toml
+[mcp_servers.horizun-revit]
+command = 'C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
+args = []
+env = { HORIZUN_TOOLSETS = "local" }
+```
+
+```json
+"horizun-revit": {
+  "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe",
+  "env": { "HORIZUN_TOOLSETS": "local" }
+}
+```
+
+`horizun_health` then reports `toolsets.active` (`core`, `local`), the toolsets left out
+(`toolsets_not_active`) and how many tools are not advertised (`tools_not_advertised`); a
+call to a hidden tool is refused naming the toolset that carries it. The permission profile
+still governs: `local` never widens what `safe_write` allows. Add more toolsets with a
+comma (`local,documentation`) when a task needs them.
 
 ## ChatGPT Work
 

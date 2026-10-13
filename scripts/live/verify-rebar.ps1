@@ -748,7 +748,7 @@ $auditFinal = Invoke-HzTool -Run $run -Tool 'horizun_audit_reinforcement' -Label
 # which is the measurement behind it.
 $otherCodes = @()
 foreach ($f in @(Get-HzPath $auditFinal.Result 'findings')) {
-    if ((Get-HzProp $f 'severity') -eq 'error' -and (Get-HzProp $f 'code') -ne 'bar_mark_duplicate') {
+    if ((Get-HzProp $f 'severity') -eq 'error' -and (Get-HzProp $f 'code') -ne 'bar_mark_conflict') {
         $otherCodes += [string](Get-HzProp $f 'code')
     }
 }
@@ -769,17 +769,23 @@ Add-HzProbe -Run $run -Id 'R3' `
 # the first to AAA leaves the others alone; and a bar created afterwards INHERITS
 # AAA. So a set that declares a mark hands it to everything built next that does
 # not declare its own, and a schedule groups by mark.
+# SINCE L9 the collision is judged, not just counted: sets sharing a mark that are the SAME bar
+# are listed in summary.marks_shared (a schedule line, not a fault); sets sharing a mark that are
+# DIFFERENT bars are bar_mark_conflict, naming what differs. Either way the shared mark is SEEN.
 $markCodes = @()
 foreach ($f in @(Get-HzPath $auditFinal.Result 'findings')) {
-    if ((Get-HzProp $f 'code') -eq 'bar_mark_duplicate') { $markCodes += $f }
+    if ((Get-HzProp $f 'code') -eq 'bar_mark_conflict') { $markCodes += $f }
 }
+$shared = @(Get-HzPath $auditFinal.Result 'summary', 'marks_shared')
+$seen = @($markCodes | Where-Object { @(Get-HzProp $_ 'rebar_ids').Count -ge 2 }).Count +
+        @($shared | Where-Object { $_ -and @(Get-HzProp $_ 'rebar_ids').Count -ge 2 }).Count
 Add-HzProbe -Run $run -Id 'R4' `
-    -Name 'the audit finds the mark collision that a schedule would silently count as one line' `
-    -Expected 'bar_mark_duplicate, naming more than one bar' `
-    -Observed ("{0} duplicate-mark finding(s), first names {1} bars" -f $markCodes.Count,
-        $(if ($markCodes.Count -gt 0) { @(Get-HzProp $markCodes[0] 'rebar_ids').Count } else { 0 })) `
-    -Ok ($markCodes.Count -ge 1 -and (@(Get-HzProp $markCodes[0] 'rebar_ids').Count -ge 2)) `
-    -Evidence @{ finding = $markCodes[0]
+    -Name 'the audit sees the shared mark a schedule would count as one line, and judges it' `
+    -Expected 'bar_mark_conflict or a summary.marks_shared entry, naming more than one bar' `
+    -Observed ("{0} bar_mark_conflict finding(s), {1} marks_shared entr(ies)" -f $markCodes.Count, $shared.Count) `
+    -Ok ($seen -ge 1) `
+    -Evidence @{ finding = $(if ($markCodes.Count -gt 0) { $markCodes[0] } else { $null })
+                 marks_shared = $shared
                  marks_checked_over = (Get-HzPath $auditFinal.Result 'summary', 'marks_checked_over')
                  note = 'the check scans every bar in the audited hosts, not only the ones a rule matched - a collision between a set this bridge built and one somebody modelled by hand is exactly the one worth finding' }
 

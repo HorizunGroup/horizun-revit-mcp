@@ -21,8 +21,8 @@
         ],
         [
           "horizun_health",
-          "Report bridge health, active document, Revit year, loaded version and commit.",
-          "Consultar estado del puente, documento activo, año de Revit, versión y commit cargados."
+          "Report bridge health, active document, version, commit and Python runtime state.",
+          "Consultar estado del puente, documento activo, versión, commit y estado de Python."
         ],
         [
           "horizun_job_status",
@@ -375,8 +375,8 @@
         ],
         [
           "horizun_cad_extract",
-          "Read a linked DWG directly - layers, lines, arcs, text and blocks - without importing it.",
-          "Leer un DWG vinculado directamente -capas, líneas, arcos, textos y bloques- sin importarlo."
+          "Extract CAD geometry and, with a readable source DWG, text; plan detail transfer with measured gaps.",
+          "Extraer geometría CAD y, con DWG fuente legible, texto; planear el detalle con brechas medidas."
         ],
         [
           "horizun_cad_networks",
@@ -456,13 +456,18 @@
         ],
         [
           "horizun_manage_links",
-          "Add and manage Revit links/instances, paths, load state and pinning.",
-          "Añadir y gestionar vínculos/instancias de Revit, rutas, carga y fijación."
+          "Manage Revit links and screen linked-view candidates with explicit uncertainty.",
+          "Gestionar vínculos de Revit y analizar candidatos visibles con incertidumbre explícita."
         ],
         [
           "horizun_plan_mep",
           "Plan pipe/duct routes and fittings; inspect networks through actual connector connectivity.",
           "Planear rutas y accesorios de tuberías/conductos; consultar redes mediante conectividad real de conectores."
+        ],
+        [
+          "horizun_read_schedule",
+          "Read reinforcement schedule sheets (vector PDF, DWG entities) into bar rows and named self-checks, and propose beam cards as a requirement set keyed by mark; refuse what cannot be read.",
+          "Leer hojas de despiece (PDF vectorial, entidades DWG) en filas de barras y autocomprobaciones con nombre, y proponer las cartillas de vigas como un conjunto de requisitos por marca; rechazar lo que no se lee con certeza."
         ],
         [
           "horizun_plan_reinforcement",
@@ -562,8 +567,8 @@
         ],
         [
           "horizun_manage_groups",
-          "List, create, redefine, rename, duplicate and swap model group types, asking before touching other instances.",
-          "Listar, crear, redefinir, renombrar, duplicar y cambiar tipos de grupo de modelo, preguntando antes de tocar otras instancias."
+          "Manage groups, find duplicates, preview annotations and preserve pattern placement.",
+          "Gestionar grupos, hallar duplicados, anticipar anotaciones y conservar la colocación patrón."
         ],
         [
           "horizun_manage_worksets",
@@ -655,8 +660,13 @@
       "tools": [
         [
           "horizun_project_context",
-          "Validate, question and draft the project's ISO 19650 context: appointment, EIR/BEP/MIDP, CDE states, naming, delivery.",
-          "Validar, preguntar y redactar el contexto ISO 19650 del proyecto: designación, EIR/BEP/MIDP, estados del CDE, nomenclatura, entrega."
+          "Validate, question and draft the project's ISO 19650 context: appointment, EIR/BEP/MIDP, CDE states, naming, delivery; register its models by strong identity evidence.",
+          "Validar, preguntar y redactar el contexto ISO 19650 del proyecto: designación, EIR/BEP/MIDP, estados del CDE, nomenclatura, entrega; registrar sus modelos por evidencia fuerte de identidad."
+        ],
+        [
+          "horizun_exchange",
+          "Wrap a cross-app hop in a verified horizun.exchange/0 manifest, check one before consuming it, and reconcile a review's correction plan.",
+          "Envolver un salto entre apps en un manifiesto horizun.exchange/0 verificado, comprobarlo antes de consumirlo y conciliar un plan de correcciones de revisión."
         ],
         [
           "horizun_information_container",

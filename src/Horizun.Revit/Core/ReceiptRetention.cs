@@ -23,6 +23,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace Horizun.Revit.Core
@@ -186,6 +187,41 @@ namespace Horizun.Revit.Core
                                string.Join(", ", bad.ToArray()) +
                                ". Fix them - a rule that never fires reads like protection.";
             return result;
+        }
+
+        /// <summary>
+        /// The same patterns over every STRING VALUE of a receipt (backlog #32), on a copy.
+        /// Run over the serialized line, a pattern written for a Windows path as the reply
+        /// carried it met every backslash doubled by JSON, never matched, and the path left in
+        /// the clear. Property names are the bridge's own vocabulary and are not touched.
+        /// `patternError` is set exactly as Redact sets it.
+        /// </summary>
+        public static Newtonsoft.Json.Linq.JObject RedactValues(Newtonsoft.Json.Linq.JObject receipt, RetentionPolicy policy,
+                                                                out string patternError)
+        {
+            patternError = null;
+            if (receipt == null) return null;
+            var copy = (Newtonsoft.Json.Linq.JObject)receipt.DeepClone();
+            if (policy == null || policy.RedactPatterns == null || policy.RedactPatterns.Count == 0) return copy;
+            string firstError = null;
+            foreach (Newtonsoft.Json.Linq.JValue v in copy.Descendants().OfType<Newtonsoft.Json.Linq.JValue>().ToList())
+            {
+                if (v.Type != Newtonsoft.Json.Linq.JTokenType.String) continue;
+                string error;
+                string redacted = Redact((string)v.Value, policy, out error);
+                if (error != null) { firstError = firstError ?? error; continue; }
+                v.Value = redacted;
+            }
+            if (firstError == null)
+            {
+                // A pattern that compiles and never meets a string value still has to be judged:
+                // run it once over nothing so a broken one is reported even on a bare receipt.
+                string error;
+                Redact("-", policy, out error);
+                firstError = error;
+            }
+            patternError = firstError;
+            return copy;
         }
 
         /// <summary>

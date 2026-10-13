@@ -52,7 +52,7 @@ namespace Horizun.Revit.Commands
             if (doc == null) return CommandResult.Fail("No document is open.");
 
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             // response_mode=summary is applied by the dispatcher after the run

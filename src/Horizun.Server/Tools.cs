@@ -52,9 +52,11 @@ namespace Horizun.Server
                 { "horizun_catalog_lookup",   (a, ct) => CatalogLookup.Handle(a, ct) },
                 { "horizun_project_context",  (a, ct) => ProjectContext.Handle(a, ct) },
                 { "horizun_information_container", (a, ct) => InformationContainerTool.Handle(a, ct) },
+                { "horizun_exchange",         (a, ct) => ExchangeTool.Handle(a, ct) },
                 { "horizun_cde_cloud",        (a, ct) => CdeCloudTool.Handle(a, ct) },
                 { "horizun_excel_write_rows", (a, ct) => ExcelWriteRows.Handle(a, ct) },
                 { "horizun_excel_read_rows",  (a, ct) => { ct.ThrowIfCancellationRequested(); return ExcelReadRows.Handle(a); } },
+                { "horizun_read_schedule",    (a, ct) => ReadScheduleTool.Handle(a, ct) },
                 { "horizun_power_bi_push",    (a, ct) => PowerBiPush.Handle(a, ct) },
                 { "horizun_budget_compare",   (a, ct) => BudgetCompare.Handle(a, ct) },
                 { "horizun_repair_memory",    (a, ct) => RepairMemoryTool.Handle(a, ct) },
@@ -203,6 +205,23 @@ namespace Horizun.Server
 
         public static JArray List(bool advertiseTaskSupport = false)
             => Build(advertiseTaskSupport, IsEnabled);
+
+        /// <summary>
+        /// The tools List would advertise right now, in contract order, without publishing
+        /// them: the SAME enablement and withholding filter, so the schema facade
+        /// (SchemaFacade.cs) can never reach a tool the full list would not show.
+        /// </summary>
+        internal static List<ToolDef> Advertisable()
+        {
+            Discovered live = Live();
+            var list = new List<ToolDef>();
+            foreach (var t in All)
+                if (IsEnabled(t) && WithheldReason(t, live) == null) list.Add(t);
+            return list;
+        }
+
+        /// <summary>Why a known tool is withheld from the list right now, or null - the live-bridge half.</summary>
+        internal static string WithheldNow(ToolDef t) => WithheldReason(t, Live());
 
         /// <summary>
         /// The list this server would publish if no tool pack were selected, at the same
@@ -450,6 +469,14 @@ namespace Horizun.Server
         // word. Keyed by the EXACT full text on purpose: if the contract's wording changes,
         // the short form silently stops applying, nothing breaks, the 250-character cap
         // applies as before, and the tools/list ledger shows the growth.
+        //
+        // 2026-10-10 (tools/list budget): every argument text repeated verbatim in three or
+        // more tools gets one too - target_document, confirmation_token and the four
+        // cooperative-reading arguments. ToolsListBudgetTests fails when a new one appears
+        // without a short form, and when a short form drops an argument name or REQUIRED.
+        // Two of them are the write_params_verified / set_keynote / family_apply wording, which
+        // until 2.2.0 was horizun_delete_verified's text copied word for word (contract
+        // 5663f2c49479ebbd280926f4 gave them their own); delete_verified alone keeps its text.
         internal static readonly Dictionary<string, string> AdvertisedShortForms = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["REQUIRED whenever this call will mutate or change the Revit session. A retry " +
@@ -457,7 +484,61 @@ namespace Horizun.Server
              "executing twice. Reusing it for different arguments is refused. Generate a new " +
              "UUID for each deliberate operation; keep it unchanged only for retries."] =
                 "Required when the call mutates the model or session: a new UUID per deliberate change; " +
-                "reuse it only to retry the identical call."
+                "reuse it only to retry the identical call.",
+
+            // target_document
+            ["REQUIRED. Title or full path of the model to change. It must be the document ACTIVE " +
+             "in Revit; this never switches documents for you."] =
+                "REQUIRED. Title or full path of the ACTIVE document; this never switches documents.",
+            ["REQUIRED. Title or full path of the document to write to. It must be the document " +
+             "that is ACTIVE in Revit; this command will not switch documents for you. A write aimed " +
+             "at whatever window happens to be in front is a write aimed at whatever turns up."] =
+                "REQUIRED. Title or full path of the ACTIVE document to act on; this never switches documents.",
+            ["REQUIRED. Title or full path of the document to change. It must be the document ACTIVE " +
+             "in Revit; this never switches documents for you. Aliases accepted for compatibility: " +
+             "expected_document, target_document_title."] =
+                "REQUIRED. Title or full path of the ACTIVE document; this never switches documents. " +
+                "Aliases: expected_document, target_document_title.",
+
+            // confirmation_token
+            ["REQUIRED when dry_run=false. The token this exact request's dry run returned. " +
+             "Single-use, expiring, bound to this document and this scope."] =
+                "REQUIRED when dry_run=false: the token this exact request's dry run returned. Single-use, expiring.",
+            ["REQUIRED when dry_run=false. The token returned by the dry run of this exact request. " +
+             "Single-use, expires, and bound to this document and this request - if either changed, " +
+             "execution is refused and nothing is written."] =
+                "REQUIRED when dry_run=false: the token this exact request's dry run returned. Single-use, " +
+                "expiring; refused if the document or request changed.",
+
+            // the cooperative-reading arguments of list_elements, query_model and model_scan
+            ["OPT-IN cooperative reading. OMIT IT AND NOTHING CHANGES: this reader behaves exactly as " +
+             "it always has, and the reply carries no extra field. Send it when a PARTIAL answer that " +
+             "arrives is worth more to you than a complete one nobody waited for - a scan of a large " +
+             "model holds Revit's UI thread for as long as it runs, and the person whose Revit it is " +
+             "cannot click anything meanwhile. With it, the read asks BETWEEN elements whether to carry " +
+             "on: it stops if you have gone away, and it stops at your budget. A result that stopped " +
+             "early says PARTIAL and never passes itself off as clean. WHAT THIS DOES NOT PROVE: " +
+             "ui_budget_ms bounds how long the command SPENDS, not that Revit's interface stayed " +
+             "responsive - the command holds the UI thread for its whole duration, the reply still " +
+             "travels back through the pipe, and Revit's own event queue decides when the window " +
+             "repaints. Stopping work and releasing the interface are different events, and only a " +
+             "sampler watching from outside can measure the second."] =
+                "OPT-IN; omit it and nothing changes. With it the read stops if you have gone away or at your " +
+                "budget, and a result that stopped early says PARTIAL. ui_budget_ms bounds the work, not Revit's responsiveness.",
+            ["How long this read may hold Revit's UI thread before it stops and says so. Twenty seconds " +
+             "by default, chosen against what a person does: below about that a frozen window reads as " +
+             "'it is working'; past it people start clicking, then killing Revit."] =
+                "How long this read may hold Revit's UI thread before it stops and says so. Default 20 seconds.",
+            ["A hard bound on elements EXAMINED, independent of the clock. Separate from the budget on " +
+             "purpose: a bound in units is reproducible across machines and a bound in milliseconds is not."] =
+                "A hard bound on elements EXAMINED, independent of the clock.",
+            ["Continue a previous partial read. Opaque, and REFUSED against a different request: resuming " +
+             "one query at another query's position produces a page of the wrong elements with nothing to " +
+             "show that anything went wrong. Where this command already pages with its own cursor or " +
+             "offset, the reply says so and issues none here - two continuation tokens over different " +
+             "things is worse than either."] =
+                "Continue a previous partial read. Opaque; REFUSED against a different request. Where the command " +
+                "pages with its own cursor or offset, use that; the reply says so."
         };
 
         private static void ApplyAdvertisedShortForms(JToken node)

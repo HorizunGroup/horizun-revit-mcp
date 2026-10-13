@@ -244,7 +244,7 @@ namespace Horizun.Revit.Core
 
         private static void Write(string operationId, JObject o)
         {
-            try { File.WriteAllText(PathFor(operationId), o.ToString(Formatting.Indented)); }
+            try { AtomicFile.WriteAllText(PathFor(operationId), o.ToString(Formatting.Indented)); }   // never half a record
             catch { /* a record that cannot be written leaves continuation unavailable, which is safe */ }
         }
     }

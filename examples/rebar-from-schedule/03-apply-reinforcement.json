@@ -1,0 +1,194 @@
+{
+  "tool": "horizun_apply_reinforcement",
+  "title": {
+    "en": "Build it, all or nothing",
+    "es": "Construirlo, todo o nada"
+  },
+  "about": {
+    "en": "Rehearses first (dry_run true); the apply is the same call with dry_run false, the rehearsal's confirmation_token and a new idempotency_key. One transaction, every set re-read: positions, counts, cover, hooks; provenance (rule, set, sha256) stamped on each set.",
+    "es": "Primero el ensayo (dry_run true); la aplicación es la misma llamada con dry_run false, el confirmation_token del ensayo y un idempotency_key nuevo. Una transacción, cada conjunto releído: posiciones, cantidades, recubrimiento, ganchos; procedencia (regla, set, sha256) en cada conjunto."
+  },
+  "next": "04-audit-reinforcement.json",
+  "arguments": {
+    "target_document": "DEMO-ESTRUCTURA",
+    "requirement_set": {
+      "schema": "horizun.structural-requirements/1",
+      "units": "millimeter",
+      "requirement_set": {
+        "id": "cartilla-demo",
+        "version": "1.0.0",
+        "title": "Synthetic detail schedule - two beams and a column"
+      },
+      "bar_types": [
+        {
+          "id": "N16",
+          "type_name": "16M"
+        },
+        {
+          "id": "N10",
+          "type_name": "10M"
+        }
+      ],
+      "hook_types": [
+        {
+          "id": "H135",
+          "type_name": "Stirrup/Tie - 135 deg."
+        }
+      ],
+      "section_rules": [
+        {
+          "id": "V101",
+          "host": {
+            "category": "OST_StructuralFraming",
+            "mark": "V-101"
+          },
+          "cover": {
+            "source": "host"
+          },
+          "layers": [
+            {
+              "face": "top",
+              "count": 3,
+              "bar_type": "N16",
+              "extend": "host_length",
+              "mark": "A1"
+            },
+            {
+              "face": "bottom",
+              "count": 2,
+              "bar_type": "N16",
+              "extend": "host_length",
+              "mark": "A2"
+            }
+          ],
+          "stirrups": {
+            "bar_type": "N10",
+            "start": {
+              "hook_type": "H135"
+            },
+            "end": {
+              "hook_type": "H135"
+            },
+            "cover": {
+              "source": "host"
+            },
+            "zones": [
+              {
+                "name": "all",
+                "layout": {
+                  "rule": "maximum_spacing",
+                  "spacing_mm": 150
+                }
+              }
+            ],
+            "mark": "E1"
+          }
+        },
+        {
+          "id": "V102",
+          "host": {
+            "category": "OST_StructuralFraming",
+            "mark": "V-102"
+          },
+          "cover": {
+            "source": "host"
+          },
+          "layers": [
+            {
+              "face": "top",
+              "count": 2,
+              "bar_type": "N16",
+              "extend": "host_length",
+              "mark": "B1"
+            },
+            {
+              "face": "bottom",
+              "count": 3,
+              "bar_type": "N16",
+              "extend": "host_length",
+              "mark": "B2"
+            }
+          ],
+          "stirrups": {
+            "bar_type": "N10",
+            "start": {
+              "hook_type": "H135"
+            },
+            "end": {
+              "hook_type": "H135"
+            },
+            "cover": {
+              "source": "host"
+            },
+            "zones": [
+              {
+                "name": "all",
+                "layout": {
+                  "rule": "maximum_spacing",
+                  "spacing_mm": 150
+                }
+              }
+            ],
+            "mark": "E2"
+          }
+        },
+        {
+          "id": "C1",
+          "host": {
+            "category": "OST_StructuralColumns",
+            "mark": "C-1"
+          },
+          "cover": {
+            "source": "host"
+          },
+          "layers": [
+            {
+              "face": "perimeter",
+              "count": 4,
+              "bar_type": "N16",
+              "extend": "host_length",
+              "mark": "L1"
+            },
+            {
+              "face": "left",
+              "count": 1,
+              "bar_type": "N16",
+              "extend": "host_length",
+              "mark": "L1"
+            },
+            {
+              "face": "right",
+              "count": 1,
+              "bar_type": "N16",
+              "extend": "host_length",
+              "mark": "L1"
+            }
+          ],
+          "stirrups": {
+            "bar_type": "N10",
+            "start": {
+              "hook_type": "H135"
+            },
+            "end": {
+              "hook_type": "H135"
+            },
+            "cover": {
+              "source": "host"
+            },
+            "zones": [
+              {
+                "name": "all",
+                "layout": {
+                  "rule": "maximum_spacing",
+                  "spacing_mm": 150
+                }
+              }
+            ],
+            "mark": "E3"
+          }
+        }
+      ]
+    },
+    "dry_run": true
+  }
+}

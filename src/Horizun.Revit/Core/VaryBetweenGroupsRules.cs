@@ -25,7 +25,7 @@ namespace Horizun.Revit.Core
     /// <summary>What the command knows about one planned write when deciding.</summary>
     public sealed class VaryStepFacts
     {
-        /// <summary>allow_vary_between_groups as the caller sent it (default true).</summary>
+        /// <summary>allow_vary_between_groups as the caller sent it (the command's default is false since audit 2026-10-08, 6.9).</summary>
         public bool AllowVary = true;
 
         /// <summary>InternalDefinition.VariesAcrossGroups before the write; null when unreadable.</summary>
@@ -59,6 +59,15 @@ namespace Horizun.Revit.Core
         /// An instance target whose binding could not be read still attempts it: that is the
         /// case the step exists for, and skipping it would bring the modal back.
         /// </summary>
+        /// <summary>
+        /// Must this write be refused BEFORE anything is written? An instance in a model group
+        /// whose parameter does not vary between groups, with the caller not allowing the
+        /// definition change: Revit would ask to ungroup mid-batch (audit 2026-10-08, 6.9).
+        /// Unreadable (null) is not refused here; the attempt and its report decide it.
+        /// </summary>
+        public static bool RefuseGroupMember(bool allowVary, string targetKind, bool? variesBefore, bool inGroup) =>
+            !allowVary && targetKind == "instance" && variesBefore == false && inGroup;
+
         public static bool ShouldAttempt(VaryStepFacts f)
         {
             if (f == null || !f.AllowVary) return false;

@@ -48,6 +48,8 @@ namespace Horizun.Revit.Core
 
         // why one name failed
         public const string RegexFailed = "regex";
+        /// <summary>The name could not be judged: the profile's regex ran past its time limit (backlog #30).</summary>
+        public const string RegexTimedOut = "regex_timed_out";
         public const string PrefixFailed = "prefix";
         public const string SuffixFailed = "suffix";
         public const string SegmentsFailed = "segments";
@@ -86,9 +88,16 @@ namespace Horizun.Revit.Core
         public List<string> DefaultWords;   // "Unnamed", "Copy of", ...
         public readonly HashSet<string> Exceptions = new HashSet<string>(StringComparer.Ordinal);
 
+        /// <summary>
+        /// How long one name may take against a profile's regex (backlog #30). Without a limit
+        /// a catastrophic pattern ran on Revit's UI thread inside model_scan until somebody
+        /// killed Revit.
+        /// </summary>
+        public static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+
         private Regex _compiled;
         public Regex Compiled => _compiled ?? (_compiled = Regex == null ? null
-            : new Regex(Regex, RegexOptions.CultureInvariant));
+            : new Regex(Regex, RegexOptions.CultureInvariant, RegexTimeout));
     }
 
     public sealed class NamingProfile
@@ -207,7 +216,7 @@ namespace Horizun.Revit.Core
                     {
                         case "regex":
                             rule.Regex = r.Value.ToString();
-                            try { var _ = new Regex(rule.Regex, RegexOptions.CultureInvariant); }
+                            try { var _ = new Regex(rule.Regex, RegexOptions.CultureInvariant, NamingRule.RegexTimeout); }
                             catch (Exception ex)
                             {
                                 return NamingProfile.Refused(NamingCodes.BadRegex,
@@ -380,8 +389,19 @@ namespace Horizun.Revit.Core
             if (r.Case == "lower" && name != name.ToLowerInvariant())
                 return F(NamingCodes.CaseFailed, "is not lower case", name.ToLowerInvariant());
 
-            if (r.Compiled != null && !r.Compiled.IsMatch(name))
-                return F(NamingCodes.RegexFailed, "does not match " + r.Regex, null);
+            if (r.Compiled != null)
+            {
+                bool matches;
+                try { matches = r.Compiled.IsMatch(name); }
+                catch (RegexMatchTimeoutException)
+                {
+                    // NOT A PASS: the name was not judged. The pattern is what is wrong.
+                    return F(NamingCodes.RegexTimedOut, "could not be judged: " + r.Regex + " ran past " +
+                             (int)NamingRule.RegexTimeout.TotalMilliseconds + " ms on this name (a pattern that backtracks " +
+                             "catastrophically); fix the pattern", null);
+                }
+                if (!matches) return F(NamingCodes.RegexFailed, "does not match " + r.Regex, null);
+            }
 
             return null;
         }

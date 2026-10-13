@@ -38,7 +38,9 @@ namespace Horizun.Server
 {
     internal static class RepairMemoryTool
     {
-        private static readonly object Gate = new object();
+        public const string Name = "horizun_repair_memory";
+        /// <summary>How long another process's hold on the memory is waited out before refusing.</summary>
+        internal static TimeSpan MutexWait = TimeSpan.FromSeconds(10);
 
         public static JObject Handle(JObject arguments, CancellationToken cancellationToken)
         {
@@ -47,23 +49,38 @@ namespace Horizun.Server
             string path = RepairMemory.Path();
             string nowUtc = DateTime.UtcNow.ToString("o");
 
-            lock (Gate)
+            // ACROSS PROCESSES. Claude's and Codex's servers each load, change and save
+            // this one file; an in-process lock let their cycles interleave.
+            using (var mutex = new Mutex(false, RepairMemory.MutexName(path)))
             {
-                Dictionary<string, RepairEntry> entries = RepairMemory.Load(path);
-
-                switch (operation)
+                bool held;
+                try { held = mutex.WaitOne(MutexWait); }
+                catch (AbandonedMutexException) { held = true; }   // the other process died holding it; the file is whole (atomic writes)
+                if (!held)
+                    throw new ToolRefusal("Another Horizun process is updating the repair memory at " + path +
+                                          " and did not finish within " + MutexWait.TotalSeconds + " s. Nothing was " +
+                                          "read or written; try again.");
+                try
                 {
-                    case "list": return List(entries, arguments);
-                    case "advice": return Advice(entries, arguments);
-                    case "observe": return Observe(entries, arguments, path, nowUtc);
-                    case "remedy": return Remedy(entries, arguments, path, nowUtc);
-                    case "quarantine": return Quarantine(entries, arguments, path, nowUtc);
-                    case "release": return Release(entries, arguments, path);
-                    default:
-                        throw new ToolRefusal(
-                            "operation must be list, advice, observe, remedy, quarantine or release; '" +
-                            operation + "' is not one of them.");
+                    Dictionary<string, RepairEntry> entries = RepairMemory.Load(path, out string problem);
+                    JObject result;
+                    switch (operation)
+                    {
+                        case "list": result = List(entries, arguments); break;
+                        case "advice": result = Advice(entries, arguments); break;
+                        case "observe": result = Observe(entries, arguments, path, nowUtc); break;
+                        case "remedy": result = Remedy(entries, arguments, path, nowUtc); break;
+                        case "quarantine": result = Quarantine(entries, arguments, path, nowUtc); break;
+                        case "release": result = Release(entries, arguments, path); break;
+                        default:
+                            throw new ToolRefusal(
+                                "operation must be list, advice, observe, remedy, quarantine or release; '" +
+                                operation + "' is not one of them.");
+                    }
+                    if (problem != null) result["memory_problem"] = problem;
+                    return result;
                 }
+                finally { mutex.ReleaseMutex(); }
             }
         }
 
@@ -133,16 +150,24 @@ namespace Horizun.Server
                     "fails closed: losing one remembered failure costs nothing, and writing a client's project " +
                     "number into a file that outlives the project costs a great deal.");
 
+            string fingerprint = CallFingerprintOf(entry.Tool, arguments);
+            if (fingerprint != null) RepairMemory.AttachCall(entry, fingerprint);
+
             RepairMemory.Save(path, entries.Values);
             return new JObject
             {
                 ["shape"] = entry.Shape,
                 ["occurrences"] = entry.Occurrences,
+                ["calls_recorded"] = entry.ArgumentFingerprints.Count,
                 ["state"] = entry.State,
                 ["normalized_message"] = entry.NormalizedMessage,
                 ["suggest_attention"] = entry.Occurrences >= RepairMemory.SuggestAfterOccurrences &&
                                         string.IsNullOrWhiteSpace(entry.Remedy),
-                ["means"] = "the SHAPE was recorded. The original message was never written anywhere."
+                ["means"] = "the SHAPE was recorded. The original message was never written anywhere" +
+                            (fingerprint == null
+                                ? ", and no call was recorded (call_arguments was not given), so a quarantine of " +
+                                  "this shape could not refuse anything."
+                                : "; the call was recorded as a hash of its normalised arguments, never the arguments.")
             };
         }
 
@@ -172,20 +197,33 @@ namespace Horizun.Server
                                           string path, string nowUtc)
         {
             RepairEntry entry = Find(entries, arguments);
+            string fingerprint = CallFingerprintOf(entry.Tool, arguments);
             string error = RepairMemory.Quarantine(entry, arguments?.Value<string>("reason"),
                                                    arguments?.Value<string>("author"), nowUtc);
             if (error != null) throw new ToolRefusal(error);
+            if (fingerprint != null) RepairMemory.AttachCall(entry, fingerprint);
 
             RepairMemory.Save(path, entries.Values);
+            int refuses = entry.ArgumentFingerprints.Count;
             return new JObject
             {
                 ["shape"] = entry.Shape,
                 ["state"] = entry.State,
                 ["quarantined_at_utc"] = entry.QuarantinedAtUtc,
-                ["means"] =
-                    "calls matching this exact shape are now REFUSED, and the refusal says it came from a " +
-                    "quarantine, who set it, when and why. It is reversible with operation=release, it does " +
-                    "not expire silently, and it applies to nothing else."
+                ["refuses_calls"] = refuses,
+                ["means"] = refuses == 0
+                    ? "this exact shape is now marked do-not-retry, but NO CALL is refused: none was recorded " +
+                      "against it. The bridge cannot refuse by shape alone - a shape is the failure's own " +
+                      "message, known only once a call has failed. Pass the failing call's arguments as " +
+                      "call_arguments (to observe or to quarantine) and that call is refused from then on. " +
+                      "advice on this shape answers QUARANTINED with the reason, who set it and when. It is " +
+                      "reversible with operation=release and does not expire silently."
+                    : "this exact shape is now marked do-not-retry, and the " + refuses + " call(s) recorded " +
+                      "against it - the same tool with the same arguments, idempotency_key and " +
+                      "confirmation_token aside - are now refused before they reach Revit, with code " +
+                      RepairMemory.CallQuarantinedCode + ". Any other call still runs. advice on this shape " +
+                      "answers QUARANTINED with the reason, who set it and when. It is reversible with " +
+                      "operation=release and does not expire silently."
             };
         }
 
@@ -215,6 +253,23 @@ namespace Horizun.Server
             if (!entries.TryGetValue(shape, out entry))
                 throw new ToolRefusal("no remembered shape with id '" + shape + "'.");
             return entry;
+        }
+
+        /// <summary>
+        /// The fingerprint of the call named by call_arguments, or null when none was
+        /// given. Only the hash leaves this method; the arguments are never stored.
+        /// </summary>
+        private static string CallFingerprintOf(string tool, JObject arguments)
+        {
+            JToken given = arguments?["call_arguments"];
+            if (given == null || given.Type == JTokenType.Null) return null;
+            if (given.Type != JTokenType.Object)
+                throw new ToolRefusal("call_arguments must be the failing call's arguments object, exactly as " +
+                                      "it was sent; it is " + given.Type + ". Nothing was written.");
+            if (string.Equals(tool, Name, StringComparison.Ordinal))
+                throw new ToolRefusal("the repair memory's own calls are never refused, so call_arguments " +
+                                      "cannot be recorded for " + Name + ". Nothing was written.");
+            return RepairMemory.CallFingerprint(tool, (JObject)given);
         }
 
         private static string Required(JObject arguments, string field)

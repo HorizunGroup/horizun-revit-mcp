@@ -154,6 +154,27 @@ if ($serverRuntimeVersion -ne $expectedServerRuntime) {
     throw "self-contained publish resolved runtime $serverRuntimeVersion, expected pinned $expectedServerRuntime"
 }
 Step "  pinned Microsoft.NETCore.App.Runtime.win-x64 $serverRuntimeVersion"
+
+# Every NuGet package the server references must ship its runtime assemblies in
+# server\ - the deps file names them, so a publish that left one out (and a server
+# that then fails on the first PDF it opens) is caught here, not by a user.
+# PdfPig is the case this was written for: horizun_read_schedule reads PDFs with it.
+$serverPackages = @($serverDeps.libraries.PSObject.Properties | Where-Object { $_.Value.type -eq 'package' })
+if (-not ($serverPackages | Where-Object { $_.Name -like 'PdfPig/*' })) {
+    throw 'published server deps carry no PdfPig package: horizun_read_schedule would have no PDF reader'
+}
+$serverTarget = @($serverDeps.targets.PSObject.Properties | Where-Object { $_.Name -like '*/win-x64' })[0].Value
+foreach ($package in $serverPackages) {
+    $runtime = $serverTarget.($package.Name).runtime
+    if (-not $runtime) { throw "published deps list no runtime assemblies for $($package.Name)" }
+    foreach ($assembly in $runtime.PSObject.Properties.Name) {
+        $leaf = [IO.Path]::GetFileName($assembly)
+        if (-not (Test-Path (Join-Path $serverBin $leaf) -PathType Leaf)) {
+            throw "self-contained server publish is missing $leaf of $($package.Name)"
+        }
+    }
+    Step "  ships $($package.Name) ($(@($runtime.PSObject.Properties).Count) assemblies)"
+}
 $clientTools = Join-Path $stage 'server\client-tools'
 New-Item -ItemType Directory -Path $clientTools -Force | Out-Null
 Copy-Item (Join-Path $repo 'scripts\register-client.ps1') $clientTools -Force
@@ -166,14 +187,19 @@ Copy-Item (Join-Path $repo 'scripts\uninstall-cleanup.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\toml-section.lib.ps1') $clientTools -Force
 # The desktop and ChatGPT Work integrations and their libraries travel with the installer,
 # because a shortcut that dot-sources a file the installer did not stage fails
-# at the first line with a message about a path.
+# at the first line with a message about a path. mcp-clients.lib.ps1 loads the two
+# client-config libraries, so they are named HERE, in the list chatgpt-tunnel.tests.ps1
+# reads to prove every library the installed helpers load is staged.
 foreach ($tool in @(
     'install-claude-desktop-extension.ps1',
     'diagnose-integrations.ps1',
+    'json-member.lib.ps1',
+    'client-process.lib.ps1',
     'mcp-clients.lib.ps1',
     'mcpb-manifest.lib.ps1',
     'mcp-stdio.lib.ps1',
-    'integration-status.lib.ps1')) {
+    'integration-status.lib.ps1',
+    'mcp-legacy-registrations.lib.ps1')) {
     Copy-Item (Join-Path $repo "scripts\$tool") $clientTools -Force
 }
 foreach ($tool in @('chatgpt-tunnel.ps1', 'chatgpt-tunnel.lib.ps1', 'chatgpt-secret.lib.ps1', 'process.lib.ps1')) {

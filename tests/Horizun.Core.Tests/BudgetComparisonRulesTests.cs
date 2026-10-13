@@ -157,6 +157,34 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Mixed_units_in_a_quantity_the_line_does_not_use_do_not_spoil_the_line()
+        {
+            // Backlog #44: a foreign quantity whose rows carry two units made the whole line
+            // unit_incompatible, although the line is fed by another quantity in its own unit.
+            var rows = new JArray
+            {
+                Row("1", "A-1", "Host.rvt", null, Measured("volume", 10, "m3"), Measured("length", 3, "m")),
+                Row("2", "A-1", "Host.rvt", null, Measured("volume", 5, "m3"), Measured("length", 3000, "mm"))
+            };
+            JObject line = LineOf(Run(rows, new JArray { Line("A-1", "m3", 15) }), "A-1");
+            Assert.Equal("unchanged", (string)line["status"]);
+            Assert.Equal("volume", (string)line["model"]["selected"]["quantity_name"]);
+        }
+
+        [Fact]
+        public void Mixed_units_in_the_quantity_the_line_needs_are_still_unit_incompatible()
+        {
+            var rows = new JArray
+            {
+                Row("1", "A-1", "Host.rvt", null, Measured("length", 3, "m")),
+                Row("2", "A-1", "Host.rvt", null, Measured("length", 3000, "mm"))
+            };
+            JObject line = LineOf(Run(rows, new JArray { Line("A-1", "m", 6) }), "A-1");
+            Assert.Equal("unit_incompatible", (string)line["reason"]);
+            Assert.Contains("more than one unit", (string)line["detail"]);
+        }
+
+        [Fact]
         public void Two_model_quantities_in_the_baseline_unit_are_a_tie_that_is_refused_unless_pinned()
         {
             var rows = new JArray

@@ -130,8 +130,19 @@ namespace Horizun.Core.Tests
     /// The job record, which for an async run is the ONLY place the answer exists —
     /// its caller got a job_id and went away.
     /// </summary>
-    public class JobRecordTests
+    public class JobRecordTests : IDisposable
     {
+        private readonly string _savedRoot = Environment.GetEnvironmentVariable(HorizunPaths.RootOverrideVariable);
+        private readonly string _root = Path.Combine(Path.GetTempPath(), "hz-job-record-" + Guid.NewGuid().ToString("N"));
+
+        public JobRecordTests() => Environment.SetEnvironmentVariable(HorizunPaths.RootOverrideVariable, _root);
+
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable(HorizunPaths.RootOverrideVariable, _savedRoot);
+            if (Directory.Exists(_root)) Directory.Delete(_root, true);
+        }
+
         [Fact]
         public void The_result_is_written_before_the_finish_line()
         {
@@ -189,6 +200,40 @@ namespace Horizun.Core.Tests
                 Assert.Contains("\"n\":15", text);
             }
             finally { try { File.Delete(job.Path); } catch { } }
+        }
+    }
+
+    public class AsyncQueueRemoveTests
+    {
+        private static AsyncWork Work(string id) => new AsyncWork { JobId = id, Command = "horizun_model_scan", ParamsJson = "{}", QueuedUtc = DateTime.UtcNow };
+        private static void Drain() { while (AsyncQueue.Take() != null) { } }
+
+        // ---- 2026-10-08 audit: tasks/cancel needs to take ONE job out of the queue. ----
+
+        [Fact]
+        public void A_waiting_entry_can_be_removed_by_job_id_and_the_order_of_the_rest_is_kept()
+        {
+            Drain();
+            AsyncQueue.TryAdd(Work("a"), out _);
+            AsyncQueue.TryAdd(Work("b"), out _);
+            AsyncQueue.TryAdd(Work("c"), out _);
+
+            Assert.True(AsyncQueue.TryRemove("b", out AsyncWork removed));
+            Assert.Equal("b", removed.JobId);
+            Assert.False(AsyncQueue.TryRemove("b", out _));          // once
+            Assert.False(AsyncQueue.TryRemove("missing", out _));
+            Assert.Equal("a", AsyncQueue.Take().JobId);
+            Assert.Equal("c", AsyncQueue.Take().JobId);
+            Assert.Null(AsyncQueue.Take());
+        }
+
+        [Fact]
+        public void An_entry_already_taken_cannot_be_removed()
+        {
+            Drain();
+            AsyncQueue.TryAdd(Work("started"), out _);
+            Assert.Equal("started", AsyncQueue.Take().JobId);         // the UI thread claimed it
+            Assert.False(AsyncQueue.TryRemove("started", out _));
         }
     }
 }

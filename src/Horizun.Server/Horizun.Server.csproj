@@ -1,9 +1,9 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     Horizun MCP server. A stdio JSON-RPC process that speaks MCP to the client
     and forwards each tool call to the Revit add-in over its named pipe. Original
-    Horizun code; the only dependency is Newtonsoft.Json (MIT). The MCP wire
+    Horizun code; its dependencies are Newtonsoft.Json (MIT) and PdfPig (Apache-2.0). The MCP wire
     format is hand-rolled from the open MCP stdio spec, not a third-party SDK.
   -->
   <PropertyGroup>
@@ -56,6 +56,11 @@
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- PdfPig (Apache-2.0), approved by the owner for THIS project and no other new
+         dependency: horizun_read_schedule reads the vector content of a schedule PDF
+         (stroked lines and the text layer) with it. The exact version the add-in already
+         pins, so the repository carries one PdfPig. See THIRD-PARTY-NOTICES.md. -->
+    <PackageReference Include="PdfPig" Version="0.1.13" />
   </ItemGroup>
 
   <ItemGroup>
@@ -98,6 +103,8 @@
          answers in this process because the moment somebody most wants to ask "has this
          failure been seen before?" is the moment Revit is busy or gone. -->
     <Compile Include="..\Horizun.Revit\Core\RepairMemory.cs" />
+    <Compile Include="..\Horizun.Revit\Core\InvariantText.cs" />
+    <Compile Include="..\Horizun.Revit\Core\AtomicFile.cs" />
     <!-- The promotion registry. Revit-free for the same reason: states, transitions and
          an atomic pointer are arithmetic over files, and the tool that works them must
          answer whether or not a Revit is running. -->
@@ -111,6 +118,18 @@
          read it, not with a second parser that could disagree. Revit-free. -->
     <Compile Include="..\Horizun.Revit\Core\IdsDocument.cs" />
     <Compile Include="..\Horizun.Revit\Core\IdsRestriction.cs" />
+    <!-- L10: the schedule-sheet reader and the F3 notation it reads callouts with. Pure and
+         Revit-free; the add-in compiles the same files, so a PDF read here and a DWG read
+         through the bridge go through ONE reader. -->
+    <Compile Include="..\Horizun.Revit\Core\RebarNotation.cs" />
+    <Compile Include="..\Horizun.Revit\Core\ScheduleCards.cs" />
+    <!-- 3.0.0 interoperability: the horizun.exchange/0 manifest, model identity (decision D0)
+         with the project registry, and the review -> correction -> re-review reconciliation.
+         Revit-free; get_document_info compiles ModelIdentity into the add-in to publish the
+         same evidence the registry binds. -->
+    <Compile Include="..\Horizun.Revit\Core\ModelIdentity.cs" />
+    <Compile Include="..\Horizun.Revit\Core\ExchangeManifest.cs" />
+    <Compile Include="..\Horizun.Revit\Core\ReviewCorrectionPlan.cs" />
   </ItemGroup>
 
   <ItemGroup>

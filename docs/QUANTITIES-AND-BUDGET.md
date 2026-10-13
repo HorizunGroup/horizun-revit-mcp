@@ -199,7 +199,12 @@ through `horizun_excel_write_rows`'s own path - exclusive lock, in-memory and
 on-disk re-read verification, its backup, its ledger under `<key>/excel` - and
 the evidence (`rows_written`, `sha256`, `bytes`, `verified`) is that writer's.
 An existing file is `skipped` unless `overwrite_policy: replace`, and then it
-is copied to `<file>.<stamp>.horizunbak` before being replaced.
+is backed up to the Horizun state folder (`replaced_backup_path`) and replaced by
+the new workbook under that same lock, through a temp file and a replace - the
+policy is checked again under the lock. Each destination also answers to its
+own tool's admission: a tool listed in `denied_tools` (or otherwise disabled by
+the owner's settings) makes that destination `skipped` with
+`skip_reason: denied_by_owner`, and nothing is sent or written for it.
 
 **Power BI** pushes one row per code (plus `run_id`) through
 `horizun_power_bi_push` under `<key>/powerbi`, with `dry_run` defaulting to

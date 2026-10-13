@@ -85,8 +85,8 @@ namespace Horizun.Server
         {
             if (string.IsNullOrEmpty(catalogPath))
                 throw new ArgumentException("catalog_path is required.");
-            if (!Path.IsPathRooted(catalogPath))
-                throw new ArgumentException("catalog_path must be an absolute path. Got a relative path: '" + catalogPath + "'.");
+            string notLocal = LocalPath.Problem(catalogPath, "catalog_path");
+            if (notLocal != null) throw new ArgumentException(notLocal);
             string ext = Path.GetExtension(catalogPath);
             bool allowed = false;
             foreach (string candidate in AllowedCatalogExtensions)

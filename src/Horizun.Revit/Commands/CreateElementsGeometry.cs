@@ -168,6 +168,47 @@ namespace Horizun.Revit.Commands
                 throw new InvalidOperationException("the column's top did not read back as set.");
         }
 
+        /// <summary>
+        /// A column's base and top, in the order Revit will accept (acero 3.0, L8). MEASURED on Revit
+        /// 2024: a column on the first level asked for a 3000 mm base offset and a 3000 mm height was
+        /// refused - the base offset was set while the top still sat at its default, below the new
+        /// base, and Revit declined the Set. When the base cannot go above a top not yet set, the top
+        /// is set first and the base again; both are still read back by SetTop and PositionInstance.
+        /// </summary>
+        private static void PositionAndTop(Document doc, Plan p, FamilyInstance instance)
+        {
+            // NO STEP MAY LEAVE THE COLUMN AT ZERO HEIGHT (measured, Revit 2024): the error an
+            // intermediate regeneration posts survives to the commit and rolls the batch back.
+            if (p.TopLevel != null && TopGoesFirst(doc, p, instance))
+            {
+                SetTop(doc, p, instance);
+                PositionInstance(doc, p, instance);
+                SetTop(doc, p, instance);
+                return;
+            }
+            try { PositionInstance(doc, p, instance); }
+            catch (InvalidOperationException) when (p.TopLevel != null)
+            {
+                SetTop(doc, p, instance);
+                PositionInstance(doc, p, instance);
+            }
+            SetTop(doc, p, instance);
+        }
+
+        private static bool TopGoesFirst(Document doc, Plan p, FamilyInstance instance)
+        {
+            doc.Regenerate();
+            Level baseLevel = BaseLevelOf(doc, instance);
+            Parameter offset = ElevationParameter(instance);
+            Parameter topLevel = instance.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM);
+            Parameter topOffset = instance.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM);
+            Level currentTopLevel = topLevel == null ? null : doc.GetElement(topLevel.AsElementId()) as Level;
+            if (baseLevel == null || offset == null || currentTopLevel == null || topOffset == null) return false;
+            double currentBase = baseLevel.ProjectElevation + offset.AsDouble();
+            double currentTop = currentTopLevel.ProjectElevation + topOffset.AsDouble();
+            return ColumnConstraintOrder.TopFirst(currentBase, currentTop, p.Start.Z, p.TopLevel.ProjectElevation + p.TopOffset);
+        }
+
         private static void PositionInstance(Document doc, Plan p, FamilyInstance instance)
         {
             doc.Regenerate();

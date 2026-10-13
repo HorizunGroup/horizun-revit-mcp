@@ -80,6 +80,17 @@ ANSWERS = {
         "src/Horizun.Revit/Core/IfcProvenanceStore.cs",
     ],
     "horizun_repair_memory": ["src/Horizun.Server/RepairMemoryTool.cs"],
+    "horizun_exchange": [
+        "src/Horizun.Server/ExchangeTool.cs",
+        "src/Horizun.Server/ProjectIntegrationsTool.cs",
+        "src/Horizun.Revit/Core/ExchangeManifest.cs",
+        "src/Horizun.Revit/Core/ModelIdentity.cs",
+        "src/Horizun.Revit/Core/ReviewCorrectionPlan.cs",
+    ],
+    "horizun_read_schedule": [
+        "src/Horizun.Server/ReadScheduleTool.cs",
+        "src/Horizun.Revit/Core/ScheduleCards.cs",
+    ],
     "horizun_promote_script": [
         "src/Horizun.Server/ScriptPromotionTool.cs",
         "src/Horizun.Revit/Core/ScriptPromotion.cs",

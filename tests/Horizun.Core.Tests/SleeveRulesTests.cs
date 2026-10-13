@@ -172,5 +172,15 @@ namespace Horizun.Core.Tests
             var fresh = SleeveRules.UnintendedNewPairs(before, after, createdId: 99, hostId: 20);
             Assert.Equal(new[] { ClashResolveRules.PairKey(99, 10), ClashResolveRules.PairKey(10, 30) }, fresh);
         }
+
+        [Fact]
+        public void A_foundation_is_a_structural_host()
+        {
+            // audit 2026-10-08, 6.14: a footing needs the structural opt-in like a beam or a column.
+            Assert.True(SleeveRules.IsStructuralCategory("OST_StructuralFoundation"));
+            Assert.True(SleeveRules.IsStructuralCategory("OST_StructuralFraming"));
+            Assert.True(SleeveRules.IsStructuralCategory("OST_StructuralColumns"));
+            Assert.False(SleeveRules.IsStructuralCategory("OST_Ceilings"));
+        }
     }
 }

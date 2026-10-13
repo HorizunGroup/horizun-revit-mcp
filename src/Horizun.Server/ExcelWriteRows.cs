@@ -55,68 +55,230 @@ namespace Horizun.Server
         // ---------------------------------------------------------------------
 
         // ---- the CSV side of the same contract. -----------------------------
+        //
+        // 2026-10-08 audit: this path used to write ANY extension to ANY folder it
+        // could create, with free text - a .bat in the Startup folder was one call
+        // away, with no Python permission involved. It now writes only a .csv, only
+        // into a folder that already exists and is not a system or autostart
+        // location, through the same lock, backup, temp-and-replace and on-disk
+        // re-read as the workbook path, in the file's own encoding and delimiter.
         private static JObject HandleCsv(JObject args, string filePath, List<IList<object>> rows,
-                                         string idempotencyKey, DurableCommandLedger ledger)
+                                         string idempotencyKey, DurableCommandLedger ledger,
+                                         CancellationToken cancellationToken)
         {
-            // The same at-most-once story as the workbook path: claim first, and a
-            // replayed key answers with the recorded result instead of appending twice.
-            string fingerprint = RequestFingerprint.OfOperation(
-                ToolName, "csv:" + filePath.ToLowerInvariant(), args, "idempotency_key");
-            DurableCommandDecision decision = ledger.Claim(idempotencyKey, ToolName, fingerprint);
-            if (decision.Outcome == DurableCommandOutcome.Replay) return Replay(decision.ReplayResult);
-            if (!decision.IsFresh) throw new ToolRefusal(decision.Message);
+            string problem = CsvPathProblem(filePath, ForbiddenCsvRoots());
+            if (problem != null) throw new ToolRefusal(problem + " Nothing was written.");
+            string fullPath = Path.GetFullPath(filePath);
 
-            var sb = new StringBuilder();
-            bool existed = File.Exists(filePath);
-            if (existed)
+            string stamp = System.Diagnostics.Process.GetCurrentProcess().Id + "-" +
+                           Guid.NewGuid().ToString("N").Substring(0, 8);
+            string lockPath = fullPath + ".horizunlock";
+            string backupPath = BackupPathFor(fullPath, stamp);
+            string tmp = fullPath + "." + stamp + ".horizuntmp";
+
+            cancellationToken.ThrowIfCancellationRequested();
+            FileStream lockHandle = AcquireWorkbookLock(lockPath);
+
+            DurableCommandDecision decision = null;
+            bool writeStarted = false;
+            bool keepTemp = false;
+            bool existed;
+            byte[] produced, onDisk;
+            string encodingName, replaceNote, newline;
+            char delimiter;
+            try
             {
-                string current = File.ReadAllText(filePath);
-                sb.Append(current);
-                if (current.Length > 0 && !current.EndsWith("\n")) sb.Append("\r\n");
-            }
-            foreach (IList<object> row in rows)
-            {
-                for (int i = 0; i < row.Count; i++)
+                // Claimed under the lock, exactly as the workbook path does and for the
+                // same reason: a caller refused the lock must be able to retry the key.
+                string fingerprint = RequestFingerprint.OfOperation(
+                    ToolName, "csv:" + fullPath.ToLowerInvariant(), args, "idempotency_key");
+                decision = ledger.Claim(idempotencyKey, ToolName, fingerprint);
+                if (decision.Outcome == DurableCommandOutcome.Replay) return Replay(decision.ReplayResult);
+                if (!decision.IsFresh) throw new ToolRefusal(decision.Message);
+
+                existed = File.Exists(fullPath);
+                byte[] before = existed ? File.ReadAllBytes(fullPath) : new byte[0];
+                CsvText.Detected current;
+                if (existed)
                 {
-                    if (i > 0) sb.Append(',');
-                    sb.Append(CsvField(row[i]));
+                    try { current = CsvText.Detect(before); }
+                    catch (DecoderFallbackException)
+                    {
+                        throw new ToolRefusal("The existing file " + fullPath + " is neither UTF-8 nor Windows-1252, so its " +
+                                              "encoding is unknown and an append would corrupt it. Nothing was written.");
+                    }
                 }
-                sb.Append("\r\n");
-            }
-            string dir = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllText(filePath, sb.ToString(), new UTF8Encoding(false));
+                else
+                {
+                    current = new CsvText.Detected
+                    {
+                        Name = "utf-8", Encoding = new UTF8Encoding(false, true), Preamble = new byte[0], Text = ""
+                    };
+                }
+                encodingName = current.Name;
+                delimiter = existed ? CsvText.DetectDelimiter(current.Text) : ',';
+                newline = existed ? CsvText.DetectNewline(current.Text) : "\r\n";
 
-            byte[] written = File.ReadAllBytes(filePath);
-            string sha;
-            using (var hasher = System.Security.Cryptography.SHA256.Create())
-                sha = BitConverter.ToString(hasher.ComputeHash(written)).Replace("-", "").ToLowerInvariant();
+                var appended = new StringBuilder();
+                if (current.Text.Length > 0 && !current.Text.EndsWith("\n")) appended.Append(newline);
+                foreach (IList<object> row in rows)
+                {
+                    for (int i = 0; i < row.Count; i++)
+                    {
+                        if (i > 0) appended.Append(delimiter);
+                        appended.Append(CsvText.Field(row[i], delimiter));
+                    }
+                    appended.Append(newline);
+                }
+
+                byte[] tail;
+                try { tail = current.Encoding.GetBytes(appended.ToString()); }
+                catch (EncoderFallbackException ex)
+                {
+                    throw new ToolRefusal("The file is " + current.Name + " and cannot hold the character U+" +
+                                          ((int)ex.CharUnknown).ToString("X4") + " in these rows; writing it would " +
+                                          "turn it into '?'. Nothing was written. Save the file as UTF-8 first, or " +
+                                          "send the text without that character.");
+                }
+
+                byte[] head = existed ? before : current.Preamble;
+                produced = new byte[head.Length + tail.Length];
+                Buffer.BlockCopy(head, 0, produced, 0, head.Length);
+                Buffer.BlockCopy(tail, 0, produced, head.Length, tail.Length);
+
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!existed)
+                {
+                    backupPath = null;
+                    File.WriteAllBytes(tmp, produced);
+                    try { File.Move(tmp, fullPath); }
+                    catch (IOException ex)
+                    {
+                        throw new IOException(
+                            "A file appeared at " + fullPath + " while the new CSV was being prepared, and it was NOT " +
+                            "overwritten (" + ex.Message + "). Nothing was written.", ex);
+                    }
+                    writeStarted = true;
+                    replaceNote = "File.Move of a new file (nothing existed to replace)";
+                }
+                else
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(backupPath));
+                    File.Copy(fullPath, backupPath, true);
+                    File.WriteAllBytes(tmp, produced);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    writeStarted = true;
+                    try { replaceNote = ReplaceFile(tmp, fullPath, backupPath); }
+                    catch (IOException ex)
+                    {
+                        // Same as the workbook path: the verified new CSV stays where the
+                        // message says it is, and an untouched original makes the outcome KNOWN.
+                        keepTemp = true;
+                        bool unchanged;
+                        try { unchanged = Sha256Hex(File.ReadAllBytes(fullPath)) == Sha256Hex(before); }
+                        catch (IOException) { unchanged = false; }
+                        catch (UnauthorizedAccessException) { unchanged = false; }
+                        if (unchanged) ledger.Complete(decision, CommandResult.Fail(ex.Message));
+                        throw;
+                    }
+                }
+
+                // The FILE, not the bytes we meant: what is on disk must be exactly the
+                // original followed by the rows, byte for byte.
+                onDisk = File.ReadAllBytes(fullPath);
+                if (Sha256Hex(onDisk) != Sha256Hex(produced))
+                    throw new IOException("The CSV on disk is NOT what this call produced: its SHA-256 differs." +
+                                          Undo(!existed, backupPath, fullPath));
+            }
+            catch (Exception ex) when (!writeStarted && decision != null && decision.IsFresh)
+            {
+                ledger.Complete(decision, CommandResult.Fail(ex.Message));
+                throw;
+            }
+            finally
+            {
+                ReleaseWorkbookLock(lockHandle, lockPath, keepTemp ? null : tmp);
+            }
+
             int lines = 0;
-            foreach (char ch in File.ReadAllText(filePath)) if (ch == '\n') lines++;
+            foreach (byte x in onDisk) if (x == (byte)'\n') lines++;
             var result = new JObject
             {
-                ["file_path"] = filePath,
+                ["file_path"] = fullPath,
                 ["format"] = "csv",
                 ["created"] = !existed,
                 ["rows_written"] = rows.Count,
                 ["total_lines_after"] = lines,
-                ["bytes"] = written.Length,
-                ["sha256"] = sha,
-                ["verified_by_reread"] = true
+                ["bytes"] = onDisk.Length,
+                ["sha256"] = Sha256Hex(onDisk),
+                ["encoding"] = encodingName,
+                ["delimiter"] = delimiter.ToString(),
+                ["newline"] = newline == "\n" ? "lf" : "crlf",
+                ["backup_path"] = backupPath == null ? JValue.CreateNull() : (JToken)backupPath,
+                ["replace_method"] = replaceNote,
+                ["verified_by_reread"] = true,
+                ["verified_means"] = "The file was re-read after the replace and is byte-for-byte the original followed by " +
+                                     "the appended rows (SHA-256 compared). Text a spreadsheet would run as a formula was " +
+                                     "prefixed with an apostrophe."
             };
             ledger.Complete(decision, CommandResult.Ok(result));
             return result;
         }
 
-        /// <summary>RFC-4180: quote when the field carries a comma, quote or newline; double inner quotes.</summary>
-        internal static string CsvField(object value)
+        /// <summary>
+        /// Why format=csv may not write at this path, or null. Absolute local paths only (no
+        /// UNC: a share is also where Windows hands out the user's NTLM hash; no device
+        /// namespace; no alternate data stream), a .csv extension, a folder that already
+        /// exists, and nothing under a system or autostart location.
+        /// </summary>
+        internal static string CsvPathProblem(string filePath, IEnumerable<string> forbiddenRoots)
         {
-            if (value == null) return "";
-            string text = value is bool b ? (b ? "true" : "false")
-                : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
-            if (text.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0) return text;
-            return "\"" + text.Replace("\"", "\"\"") + "\"";
+            if (string.IsNullOrWhiteSpace(filePath)) return "file_path is required.";
+            string local = LocalPath.Problem(filePath, "file_path");
+            if (local != null) return "format=csv: " + local;
+            string full;
+            try { full = Path.GetFullPath(filePath); }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+            { return "file_path is not a valid path: " + ex.Message; }
+            if (full.IndexOf(':', 2) >= 0)
+                return "file_path names an alternate data stream ('" + full + "'); format=csv writes plain files only.";
+            if (!string.Equals(Path.GetExtension(full), ".csv", StringComparison.OrdinalIgnoreCase))
+                return "format=csv writes only files ending in .csv; '" + full + "' does not.";
+            foreach (string root in forbiddenRoots ?? new string[0])
+            {
+                if (string.IsNullOrWhiteSpace(root)) continue;
+                string r = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (full.StartsWith(r + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    return "'" + full + "' is under " + r + ", a system or autostart folder this tool never writes into.";
+            }
+            string dir = Path.GetDirectoryName(full);
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                return "The folder '" + dir + "' does not exist, and format=csv does not create folders.";
+            return null;
         }
+
+        /// <summary>Folders a CSV append never writes into: autostart, Windows, Program Files, ssh keys.</summary>
+        internal static IEnumerable<string> ForbiddenCsvRoots()
+        {
+            var roots = new List<string>();
+            foreach (Environment.SpecialFolder f in new[]
+            {
+                Environment.SpecialFolder.Startup, Environment.SpecialFolder.CommonStartup,
+                Environment.SpecialFolder.Windows, Environment.SpecialFolder.System, Environment.SpecialFolder.SystemX86,
+                Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86,
+                Environment.SpecialFolder.CommonProgramFiles, Environment.SpecialFolder.CommonProgramFilesX86
+            })
+            {
+                string p = Environment.GetFolderPath(f);
+                if (!string.IsNullOrEmpty(p)) roots.Add(p);
+            }
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrEmpty(profile)) roots.Add(Path.Combine(profile, ".ssh"));
+            return roots;
+        }
+
+        /// <summary>One comma-delimited CSV cell: RFC-4180 quoting, formula text neutralised.</summary>
+        internal static string CsvField(object value) => CsvText.Field(value, ',');
 
         /// <summary>Zero-based column index to its spreadsheet letter: 0->A, 25->Z, 26->AA.</summary>
         internal static string ColumnLetter(int index)
@@ -360,19 +522,55 @@ namespace Horizun.Server
         // Package reading — resolve which worksheet part a sheet name maps to.
         // ---------------------------------------------------------------------
 
+        /// <summary>Largest single part a workbook may inflate to: 256 MB.</summary>
+        internal const long MaxEntryBytes = 256L << 20;
+        /// <summary>Largest the whole package may inflate to: 512 MB.</summary>
+        internal const long MaxTotalBytes = 512L << 20;
+        /// <summary>Inflated/compressed ratio no real worksheet reaches (checked past 1 MB inflated).</summary>
+        internal const long MaxRatio = 200;
+        private const long RatioFloorBytes = 1L << 20;
+
         /// <summary>Read every zip entry into an ordered name->bytes map (order preserved for a faithful rewrite).</summary>
         internal static List<KeyValuePair<string, byte[]>> ReadEntries(byte[] xlsxBytes)
+            => ReadEntries(xlsxBytes, MaxEntryBytes, MaxRatio, MaxTotalBytes);
+
+        /// <summary>
+        /// The bounded reader. 2026-10-08 audit: every entry used to be inflated whole with
+        /// CopyTo, so a few KB of crafted zip became gigabytes in memory. Bytes are now counted
+        /// while they stream, and an entry is refused the moment it passes the size cap or
+        /// inflates past maxRatio times its compressed size - before the rest is read.
+        /// </summary>
+        internal static List<KeyValuePair<string, byte[]>> ReadEntries(byte[] xlsxBytes, long maxEntryBytes, long maxRatio, long maxTotalBytes)
         {
             var entries = new List<KeyValuePair<string, byte[]>>();
+            long total = 0;
+            var chunk = new byte[81920];
             using (var ms = new MemoryStream(xlsxBytes, false))
             using (var zip = new ZipArchive(ms, ZipArchiveMode.Read))
             {
                 foreach (ZipArchiveEntry e in zip.Entries)
                 {
+                    long compressed = Math.Max(1, Math.Min(e.CompressedLength, xlsxBytes.Length));
                     using (var s = e.Open())
                     using (var buf = new MemoryStream())
                     {
-                        s.CopyTo(buf);
+                        long inflated = 0;
+                        int n;
+                        while ((n = s.Read(chunk, 0, chunk.Length)) > 0)
+                        {
+                            inflated += n;
+                            total += n;
+                            if (inflated > maxEntryBytes)
+                                throw new InvalidDataException("Package part '" + e.FullName + "' inflates beyond " + maxEntryBytes +
+                                                               " bytes; refused as a possible zip bomb. Nothing was read further.");
+                            if (inflated > RatioFloorBytes && inflated / compressed > maxRatio)
+                                throw new InvalidDataException("Package part '" + e.FullName + "' inflates more than " + maxRatio +
+                                                               ":1 (compression ratio) - refused as a possible zip bomb. Nothing was read further.");
+                            if (total > maxTotalBytes)
+                                throw new InvalidDataException("The package inflates beyond " + maxTotalBytes +
+                                                               " bytes in total; refused as a possible zip bomb.");
+                            buf.Write(chunk, 0, n);
+                        }
                         entries.Add(new KeyValuePair<string, byte[]>(e.FullName, buf.ToArray()));
                     }
                 }
@@ -492,6 +690,21 @@ namespace Horizun.Server
 
         internal static JObject Handle(JObject args, DurableCommandLedger ledger,
                                        CancellationToken cancellationToken)
+            => Handle(args, ledger, cancellationToken, startFresh: false, replaceExisting: false);
+
+        /// <summary>
+        /// The same lock, ledger, backup, temp-and-replace and two read-backs, but the rows go
+        /// into a NEW workbook (sheet = args.sheet) that takes the place of whatever is at the
+        /// path: horizun_budget_compare's report. An existing file is replaced only when
+        /// replaceExisting is true, and that is decided again UNDER THE LOCK; its bytes need
+        /// not be a workbook, because they are backed up and replaced, never parsed.
+        /// </summary>
+        internal static JObject WriteNewWorkbook(JObject args, DurableCommandLedger ledger,
+                                                 CancellationToken cancellationToken, bool replaceExisting)
+            => Handle(args, ledger, cancellationToken, startFresh: true, replaceExisting: replaceExisting);
+
+        private static JObject Handle(JObject args, DurableCommandLedger ledger,
+                                      CancellationToken cancellationToken, bool startFresh, bool replaceExisting)
         {
             cancellationToken.ThrowIfCancellationRequested();
             string filePath = (string)args?["file_path"];
@@ -500,6 +713,10 @@ namespace Horizun.Server
 
             if (string.IsNullOrEmpty(filePath))
                 throw new ArgumentException("file_path is required.");
+            // Before the ledger and before the first File.Exists: a UNC path is an SMB
+            // sign-in, a drive- or root-relative one lands in the server's working folder.
+            string notLocal = LocalPath.Problem(filePath, "file_path");
+            if (notLocal != null) throw new ArgumentException(notLocal + " Nothing was written.");
             if (!(rowsTok is JArray rowsArr) || rowsArr.Count == 0)
                 throw new ArgumentException("rows is required and must be a non-empty array of arrays.");
 
@@ -535,7 +752,7 @@ namespace Horizun.Server
             // be invented), rows append under RFC-4180 quoting, and the evidence is
             // the re-read file: bytes, sha256 and the line count afterwards.
             string format = ((string)args?["format"] ?? "xlsx").ToLowerInvariant();
-            if (format == "csv") return HandleCsv(args, filePath, rows, idempotencyKey, ledger);
+            if (format == "csv") return HandleCsv(args, filePath, rows, idempotencyKey, ledger, cancellationToken);
             if (format != "xlsx")
                 throw new ArgumentException("format must be xlsx or csv.");
 
@@ -546,6 +763,7 @@ namespace Horizun.Server
             bool createIfMissing = args["create_if_missing"] != null &&
                                    args["create_if_missing"].Type == JTokenType.Boolean &&
                                    (bool)args["create_if_missing"];
+            if (startFresh) createIfMissing = true;
             string newSheetName = string.IsNullOrEmpty(sheetName) ? DefaultNewSheetName : sheetName;
             if (!File.Exists(filePath))
             {
@@ -595,6 +813,7 @@ namespace Horizun.Server
             DurableCommandDecision decision = null;
             bool writeStarted = false;
             bool created = false;
+            bool keepTemp = false;
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -604,7 +823,7 @@ namespace Horizun.Server
                 // key in doubt forever, so the one thing a caller should obviously do
                 // (wait and retry with the same key) would be permanently refused.
                 string fingerprint = RequestFingerprint.OfOperation(
-                    ToolName, LedgerScopeOf(args), args, "idempotency_key");
+                    ToolName, LedgerScopeOf(args) + (startFresh ? "|new-workbook" : ""), args, "idempotency_key");
                 decision = ledger.Claim(idempotencyKey, ToolName, fingerprint);
 
                 if (decision.Outcome == DurableCommandOutcome.Replay) return Replay(decision.ReplayResult);
@@ -615,12 +834,17 @@ namespace Horizun.Server
                 created = !File.Exists(filePath);
                 if (created && !createIfMissing)
                     throw new FileNotFoundException("Workbook not found: " + filePath + ". Nothing was created.");
+                if (startFresh && !created && !replaceExisting)
+                    throw new ToolRefusal("A file now exists at " + filePath + " and replacing it was not allowed. Nothing was touched.");
                 original = created ? MinimalWorkbook(newSheetName) : File.ReadAllBytes(filePath);
-                if (original.Length < 4 || original[0] != 0x50 || original[1] != 0x4B) // "PK"
+                // A fresh workbook is built from the minimal package; the file it replaces is
+                // backed up and never parsed, so it need not be a workbook at all.
+                byte[] basePackage = startFresh ? MinimalWorkbook(newSheetName) : original;
+                if (basePackage.Length < 4 || basePackage[0] != 0x50 || basePackage[1] != 0x4B) // "PK"
                     throw new InvalidDataException("Not an .xlsx (OPC/zip) file — refusing to write. First bytes are not a zip signature.");
 
                 List<KeyValuePair<string, byte[]>> entries;
-                try { entries = ReadEntries(original); }
+                try { entries = ReadEntries(basePackage); }
                 catch (Exception ex) { throw new InvalidDataException("File is not a readable .xlsx package: " + ex.Message); }
 
                 if (!entries.Any(kv => kv.Key == "xl/workbook.xml"))
@@ -684,12 +908,26 @@ namespace Horizun.Server
                     // there is safely terminal; a failure from here on is not knowable, and the
                     // ledger must be left in doubt rather than recording an outcome.
                     writeStarted = true;
-                    replaceNote = ReplaceFile(tmp, filePath);
+                    try { replaceNote = ReplaceFile(tmp, filePath, backupPath); }
+                    catch (IOException ex)
+                    {
+                        // The verified new workbook stays where the message says it is.
+                        keepTemp = true;
+                        // File.Replace without a backup name leaves the destination as it
+                        // was when it fails; prove that against the bytes read under the
+                        // lock, and record the outcome as KNOWN rather than in doubt.
+                        bool unchanged;
+                        try { unchanged = Sha256Hex(File.ReadAllBytes(filePath)) == Sha256Hex(original); }
+                        catch (IOException) { unchanged = false; }
+                        catch (UnauthorizedAccessException) { unchanged = false; }
+                        if (unchanged) ledger.Complete(decision, CommandResult.Fail(ex.Message));
+                        throw;
+                    }
                 }
 
                 // THE FILE, not the bytes we hoped we wrote. VerifyReadBack above proved
                 // the produced package was correct IN MEMORY; it says nothing about what
-                // survived File.Replace or the Copy fallback. Claiming verified=true off
+                // survived File.Replace. Claiming verified=true off
                 // the in-memory check was claiming a property of the wrong artefact.
                 onDisk = File.ReadAllBytes(filePath);
                 if (Sha256Hex(onDisk) != Sha256Hex(produced))
@@ -723,7 +961,7 @@ namespace Horizun.Server
             }
             finally
             {
-                ReleaseWorkbookLock(lockHandle, lockPath, tmp);
+                ReleaseWorkbookLock(lockHandle, lockPath, keepTemp ? null : tmp);
             }
 
             var response = new JObject
@@ -740,8 +978,12 @@ namespace Horizun.Server
                 ["backup_path"] = backupPath == null ? JValue.CreateNull() : (JToken)backupPath,
                 ["backup_note"] = created
                     ? "No backup: this call created the workbook, so there was no earlier file to preserve."
-                    : "The workbook as it was before this append was copied to backup_path, in the Horizun state " +
-                      "folder rather than beside your file. Copy it back over file_path to undo the append.",
+                    : startFresh
+                        ? "The file that was at file_path was copied to backup_path, in the Horizun state folder, and then " +
+                          "replaced by a new workbook. Copy it back over file_path to undo."
+                        : "The workbook as it was before this append was copied to backup_path, in the Horizun state " +
+                          "folder rather than beside your file. Copy it back over file_path to undo the append.",
+                ["replaced_with_new_workbook"] = startFresh && !created,
                 ["replace_method"] = replaceNote,
                 ["bytes_before"] = created ? 0 : original.Length,
                 ["bytes_after"] = onDisk.Length,
@@ -847,26 +1089,26 @@ namespace Horizun.Server
         }
 
         /// <summary>
-        /// Atomic replace where the platform supports it, with a stated fallback. The
-        /// reason for the fallback is returned rather than discarded: "we used the
-        /// non-atomic path" is exactly what someone reading an incident needs.
+        /// Atomic replace, or a failure that says where everything is. There used to be a
+        /// File.Copy fallback: a reader holding the workbook without FILE_SHARE_DELETE
+        /// (Excel itself, an indexer) makes Replace fail while Copy still succeeds, so the
+        /// user's file was rewritten in place, non-atomically, and the call reported
+        /// success (audit 2026-10-08). Now nothing is copied over it.
         /// </summary>
-        private static string ReplaceFile(string tmp, string destination)
+        private static string ReplaceFile(string tmp, string destination, string backupPath)
         {
             try
             {
                 File.Replace(tmp, destination, null);
                 return "File.Replace (atomic where the filesystem supports it)";
             }
-            catch (IOException ex)
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
             {
-                File.Copy(tmp, destination, true);
-                return "File.Copy fallback, because File.Replace failed: " + ex.Message;
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                File.Copy(tmp, destination, true);
-                return "File.Copy fallback, because File.Replace was not permitted: " + ex.Message;
+                throw new IOException(
+                    "The workbook at " + destination + " could not be replaced (" + ex.Message + "), usually because " +
+                    "another program holds it open. It was NOT rewritten in place. The verified new workbook is at " +
+                    tmp + " and the copy taken before this call is at " + backupPath + ". Close the other program and " +
+                    "send the call again with a new idempotency_key, or put the new workbook in place by hand.", ex);
             }
         }
 

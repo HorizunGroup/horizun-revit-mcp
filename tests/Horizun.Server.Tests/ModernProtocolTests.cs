@@ -280,7 +280,8 @@ namespace Horizun.Server.Tests
             // The same bounded head initialize sends: clients truncate long instructions,
             // and the full guidance is the resource the head names.
             JObject result = DiscoverHandler.Handle(RequestEnvelope.Read("server/discover", ModernMeta()));
-            Assert.Equal(ServerInstructions.Head, (string)result["instructions"]);
+            // The head for the surface served (no HORIZUN_SCHEMA_MODE here: the default).
+            Assert.Equal(ServerInstructions.HeadFor(SchemaMode.Default), (string)result["instructions"]);
         }
 
         [Fact]

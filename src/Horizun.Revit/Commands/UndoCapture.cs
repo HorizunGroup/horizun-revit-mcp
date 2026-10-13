@@ -173,6 +173,12 @@ namespace Horizun.Revit.Commands
                         Element el = null; try { el = doc.GetElement(Rid.Make(id)); } catch { }
                         d[e.Op + ":" + p.Name + ":" + key] = (JToken)ParameterState(ResolveParameter(el, key)) ?? JValue.CreateNull();
                     }
+                    else if (e.Op == "vary_between_groups")
+                    {
+                        InternalDefinition def = null;
+                        try { def = (doc.GetElement(Rid.Make(id)) as ParameterElement)?.GetDefinition(); } catch { }
+                        d[e.Op + ":" + p.Name] = def == null ? (JToken)JValue.CreateNull() : new JObject { ["varies"] = def.VariesAcrossGroups };
+                    }
                     else d[e.Op + ":" + p.Name] = (JToken)State(doc, id) ?? JValue.CreateNull();
                 }
             return d;
@@ -218,6 +224,14 @@ namespace Horizun.Revit.Commands
                 case "tag_head":
                     foreach (long id in e.ElementIds)
                         ((IndependentTag)doc.GetElement(Rid.Make(id))).TagHeadPosition = X(e.Before[id.ToString(CultureInfo.InvariantCulture)]["head"]);
+                    break;
+                case "vary_between_groups":
+                    foreach (long id in e.ElementIds)
+                    {
+                        InternalDefinition def = (doc.GetElement(Rid.Make(id)) as ParameterElement)?.GetDefinition();
+                        if (def == null) throw new InvalidOperationException("parameter definition " + id + " no longer exists");
+                        def.SetAllowVaryBetweenGroups(doc, (bool)e.Before[id.ToString(CultureInfo.InvariantCulture)]["varies"]);
+                    }
                     break;
                 case "parameter":
                     foreach (long id in e.ElementIds)

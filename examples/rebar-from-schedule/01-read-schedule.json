@@ -1,0 +1,20 @@
+{
+  "tool": "horizun_excel_read_rows",
+  "title": {
+    "en": "Read the detail schedule",
+    "es": "Leer la cartilla de despiece"
+  },
+  "about": {
+    "en": "Reads the synthetic schedule: one row per member (mark, section, top, bottom, side bars, stirrups, hooks, cover). Turning those rows into the section_rules of 02 is the reader's step - the notation of a real schedule (3#5, E#3 c/0.10) is read by a person or by a deterministic interpreter, never guessed by this bridge.",
+    "es": "Lee la cartilla sintética: una fila por elemento (marca, sección, superior, inferior, laterales, estribos, ganchos, recubrimiento). Convertir esas filas en las section_rules de 02 es el paso de quien lee: la notación de una cartilla real (3#5, E#3 c/0.10) la lee una persona o un intérprete determinista, nunca la adivina este puente."
+  },
+  "next": "02-plan-reinforcement.json",
+  "files": [
+    "cartilla-sintetica.xlsx"
+  ],
+  "arguments": {
+    "file_path": "C:/proyectos/demo/estructura/cartilla-sintetica.xlsx",
+    "sheet": "Cartilla",
+    "max_rows": 200
+  }
+}

@@ -29,7 +29,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
@@ -139,10 +139,19 @@ namespace Horizun.Revit.Commands
             JArray reversibleRows;
             using (var group = new TransactionGroup(doc, txName))
             {
-                group.Start();
+                // A START THAT DID NOT START IS CHECKED, not assumed (audit 2026-10-08, 6.18).
+                if (group.Start() != TransactionStatus.Started)
+                    return CommandResult.FailWithDetail("the transaction group did not start; nothing was changed.",
+                        new JObject { ["state"] = "not_started" });
                 using (var tx = new Transaction(doc, txName))
                 {
-                    tx.Start();
+                    if (tx.Start() != TransactionStatus.Started)
+                    {
+                        Guard.RollbackResult rbNotStarted = Guard.RollBack(group);
+                        return CommandResult.FailWithDetail("the transaction did not start; nothing was changed.",
+                            new JObject { ["state"] = rbNotStarted.Confirmed ? "not_started" : "uncertain",
+                                          ["transaction_group_status"] = rbNotStarted.StatusName });
+                    }
                     try
                     {
                         Apply(doc, sheet, items);

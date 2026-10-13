@@ -232,6 +232,7 @@ begin
   begin
     Args := '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
             ExpandConstant('{app}\server\client-tools\complete-install.ps1') + '"' +
+            ' -ServerPath "' + ExpandConstant('{app}\server\{#AppExeName}') + '"' +
             ' -Client ' + ExpandConstant('{param:HORIZUNCLIENT|Both}') + ' ' +
             ExpandConstant('{param:HORIZUNNOLIVE|}');
     Exec(Shell, Args, ExpandConstant('{app}'), SW_HIDE, ewNoWait, Code);
@@ -880,9 +881,6 @@ begin
         else FailedYears := FailedYears + Years[I] + ' (server deployment failed; add-in left unchanged), ';
       end;
 
-    { The server is on disk now - not a moment earlier. }
-    if ServerInstalled then StartClientHelpers;
-
     if ServerInstalled and ((not FoundAny) or (FailedYears = '')) then
     begin
       if WriteDeploymentManifests then
@@ -894,6 +892,13 @@ begin
     end
     else if ServerInstalled then
       RollbackDeployment;
+
+    { The server is on disk, verified and committed now - not a moment earlier.
+      These helpers register it with Claude and Codex; started before the
+      verification, they registered a payload that a failed verify then rolled
+      back. RollbackDeployment clears ServerInstalled, so a rolled-back install
+      starts nothing. }
+    if ServerInstalled then StartClientHelpers;
 
     { Old installers staged plugin payloads permanently under the application
       directory. It is not live; the new installer extracts to a private temp. }

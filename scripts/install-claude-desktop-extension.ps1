@@ -65,6 +65,9 @@ param(
     [switch]$Rollback,
     # Write under a running Claude Desktop anyway. It will probably be lost.
     [switch]$Force,
+    # Keep other entries of this product (retired names, same executable under
+    # another name) instead of removing them when the configuration is written.
+    [switch]$KeepOtherEntries,
     [string]$PackagePath,
     [string]$ServerPath,
     [string]$Json,
@@ -74,6 +77,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'mcp-clients.lib.ps1')
+. (Join-Path $PSScriptRoot 'mcp-legacy-registrations.lib.ps1')
 . (Join-Path $PSScriptRoot 'mcpb-manifest.lib.ps1')
 . (Join-Path $PSScriptRoot 'mcp-stdio.lib.ps1')
 . (Join-Path $PSScriptRoot 'integration-status.lib.ps1')
@@ -204,14 +208,14 @@ if ($Remove) {
         else {
             $backup = "$($cd.config_path).horizun-bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N')
             Copy-Item -LiteralPath $cd.config_path -Destination $backup -Force
-            $cfg = Get-Content -LiteralPath $cd.config_path -Raw | ConvertFrom-Json
-            $before = @($cfg.PSObject.Properties.Name)
-            $cfg.mcpServers.PSObject.Properties.Remove($NAME)
-            $out = $cfg | ConvertTo-Json -Depth 100
-            $null = $out | ConvertFrom-Json
-            Set-Content -LiteralPath $cd.config_path -Value $out -Encoding UTF8
-            $after = Get-Content -LiteralPath $cd.config_path -Raw | ConvertFrom-Json
-            $lost = @($before | Where-Object { $_ -notin @($after.PSObject.Properties.Name) })
+            # One member removed from the text; nothing else re-serialised, no BOM.
+            $raw = Read-HorizunUtf8Text $cd.config_path
+            $before = @(Get-HorizunJsonTopNames $raw)
+            $out = Remove-HorizunMcpServerEntry $raw $NAME
+            $null = Get-HorizunJsonRoot $out
+            Write-HorizunUtf8Text $cd.config_path $out
+            $after = @(Get-HorizunJsonTopNames (Read-HorizunUtf8Text $cd.config_path))
+            $lost = @($before | Where-Object { $_ -notin $after })
             if ($lost.Count -gt 0) {
                 Copy-Item -LiteralPath $backup -Destination $cd.config_path -Force
                 Act 'remove the configuration entry' $false ("it would have removed " + ($lost -join ', ') + " - restored the backup")
@@ -371,17 +375,17 @@ if ($writeConfig -or $Configure) {
     }
     else {
         try {
-            $cfg = if ($cd.config_exists) { Get-Content -LiteralPath $cd.config_path -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
-            $beforeTop = @($cfg.PSObject.Properties.Name)
-            if (-not $cfg.PSObject.Properties['mcpServers']) {
-                $cfg | Add-Member -NotePropertyName 'mcpServers' -NotePropertyValue ([pscustomobject]@{}) -Force
-            }
-            $beforeServers = @($cfg.mcpServers.PSObject.Properties.Name)
+            # Edited as text, one member at a time, read and written as BOM-less
+            # UTF-8: a re-serialised document under 5.1 came back ANSI-misread, with
+            # a BOM, and refused outright when two keys differed only in case.
+            $raw = if ($cd.config_exists) { Read-HorizunUtf8Text $cd.config_path } else { "{`n}`n" }
+            $beforeTop = @(Get-HorizunJsonTopNames $raw)
+            $beforeServers = @(Get-HorizunMcpServerNames $raw)
 
             # ALREADY EXPANDED, deliberately. cmd.exe expands %LOCALAPPDATA% and
             # this app does not, so a configuration written with the variable
             # points at a path that does not exist and the client says nothing.
-            $entry = [pscustomobject]@{ command = $ServerPath; args = @() }
+            $entry = [ordered]@{ command = $ServerPath; args = @() }
 
             $backup = $null
             if ($cd.config_exists) {
@@ -393,14 +397,13 @@ if ($writeConfig -or $Configure) {
                 if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
             }
 
-            $cfg.mcpServers | Add-Member -NotePropertyName $NAME -NotePropertyValue $entry -Force
-            $out = $cfg | ConvertTo-Json -Depth 100
-            $null = $out | ConvertFrom-Json     # never replace a config with one that will not parse
-            Set-Content -LiteralPath $cd.config_path -Value $out -Encoding UTF8
+            $out = Set-HorizunMcpServerEntry $raw $NAME $entry
+            $null = Get-HorizunJsonRoot $out     # never replace a config with one that will not parse
+            Write-HorizunUtf8Text $cd.config_path $out
 
-            $after = Get-Content -LiteralPath $cd.config_path -Raw | ConvertFrom-Json
-            $afterTop = @($after.PSObject.Properties.Name)
-            $afterServers = @($after.mcpServers.PSObject.Properties.Name)
+            $afterText = Read-HorizunUtf8Text $cd.config_path
+            $afterTop = @(Get-HorizunJsonTopNames $afterText)
+            $afterServers = @(Get-HorizunMcpServerNames $afterText)
             $lostTop = @($beforeTop | Where-Object { $_ -notin $afterTop })
             $lostServers = @($beforeServers | Where-Object { $_ -notin $afterServers })
 
@@ -413,7 +416,7 @@ if ($writeConfig -or $Configure) {
                 if ($backup) { Copy-Item -LiteralPath $backup -Destination $cd.config_path -Force }
                 Act 'write mcpServers.horizun-revit' $false 'the entry was not there after writing - restored the backup'
             }
-            elseif ($after.mcpServers.$NAME.command -ne $ServerPath) {
+            elseif ((Get-HorizunMcpServerCommand $afterText $NAME) -ne $ServerPath) {
                 if ($backup) { Copy-Item -LiteralPath $backup -Destination $cd.config_path -Force }
                 Act 'write mcpServers.horizun-revit' $false 'the entry came back naming a different command - restored the backup'
             }
@@ -425,6 +428,56 @@ if ($writeConfig -or $Configure) {
         }
         catch { Act 'write mcpServers.horizun-revit' $false $_.Exception.Message }
     }
+}
+
+# --- the same product under another name ------------------------------------------
+# An earlier install may have left `horizun` (the retired name) or this same
+# executable under another name in the same file: two entries, two instances.
+# Removed here, in this file only, with a backup and a read-back; any other
+# server is left exactly as it is. A running Claude Desktop is a warning, not a
+# failure: the installation itself is fine and the cleanup is repeated next run.
+if (-not $KeepOtherEntries -and $cd.config_path -and (Test-Path -LiteralPath $cd.config_path -PathType Leaf)) {
+    try {
+        # Strict UTF-8 in, one member removed at a time by the scanner, UTF-8 WITHOUT a
+        # BOM out through a temporary file and a move - the same path that writes the
+        # entry above. Never ConvertFrom-Json / ConvertTo-Json / Set-Content: under 5.1
+        # that re-encodes the file, adds a BOM and reformats every other server.
+        $legacyRaw = Read-HorizunUtf8Text $cd.config_path
+        $legacyFound = @(Get-HorizunJsonLegacyEntries -Text $legacyRaw -CurrentName $NAME -ServerPath $ServerPath)
+        foreach ($k in @($legacyFound | Where-Object { $_.skipped })) {
+            Say "kept '$($k.name)': a retired name, but it launches another program" 'Yellow'
+        }
+        $legacyTargets = @($legacyFound | Where-Object { $_.remove })
+        if ($legacyTargets.Count -gt 0) {
+            $legacyList = ($legacyTargets | ForEach-Object { "$($_.name) [$($_.reason)]" }) -join ', '
+            if ($cd.running -and -not $Force) {
+                Say "legacy entries NOT removed ($legacyList): Claude Desktop is RUNNING and would restore them. Close it and run this again." 'Yellow'
+            }
+            else {
+                $legacyNamesBefore = @(Get-HorizunMcpServerNames $legacyRaw)
+                $legacyTopBefore = @(Get-HorizunJsonTopNames $legacyRaw)
+                $legacyOut = $legacyRaw
+                foreach ($t in $legacyTargets) { $legacyOut = Remove-HorizunMcpServerEntry $legacyOut $t.name }
+                # Parse what is about to be written BEFORE replacing the original.
+                $null = Get-HorizunJsonRoot $legacyOut
+                $legacyBackup = "$($cd.config_path).horizun-bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N')
+                Copy-Item -LiteralPath $cd.config_path -Destination $legacyBackup -Force
+                Write-HorizunUtf8Text $cd.config_path $legacyOut
+                $legacyAfterText = Read-HorizunUtf8Text $cd.config_path
+                $legacyNamesAfter = @(Get-HorizunMcpServerNames $legacyAfterText)
+                $legacyGone = @($legacyTargets | ForEach-Object { $_.name })
+                $legacyLost = @($legacyNamesBefore | Where-Object { $_ -notin $legacyNamesAfter -and $_ -notin $legacyGone }) +
+                              @($legacyTopBefore | Where-Object { $_ -notin @(Get-HorizunJsonTopNames $legacyAfterText) })
+                $legacyLeft = @($legacyGone | Where-Object { $_ -in $legacyNamesAfter })
+                if ($legacyLost.Count -gt 0 -or $legacyLeft.Count -gt 0) {
+                    Copy-Item -LiteralPath $legacyBackup -Destination $cd.config_path -Force
+                    Act 'remove legacy entries' $false 'the result was not what was expected - restored the backup and changed nothing'
+                }
+                else { Act ("removed legacy entries: $legacyList; backup " + (Split-Path -Leaf $legacyBackup)) $true $null }
+            }
+        }
+    }
+    catch { Act 'remove legacy entries' $false $_.Exception.Message }
 }
 
 # --- record the state, and name the one step nobody else can take ----------------
@@ -451,7 +504,7 @@ if ($problems.Count -eq 1 -and $blockedByRunningApp) {
     # The only thing in the way is a window that is open.
     $state = 'pending_user_action'
     $detail = 'Claude Desktop is open, so nothing was written to its configuration - the app rewrites that file from memory when it exits and the edit would have been lost. The installation itself is fine.'
-    $pending = 'Close every Claude Desktop window, then run "Conectar Horizun con Claude Desktop" from the Start menu, in the Horizun folder. It finishes on its own.'
+    $pending = 'Close every Claude Desktop window, then run: powershell -ExecutionPolicy Bypass -File "' + $PSCommandPath + '". It finishes on its own.'
 }
 elseif ($problems.Count -gt 0) {
     $state = 'failed'

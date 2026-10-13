@@ -3,6 +3,986 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v3.0.0
+
+### Field defects
+
+- Isolated IronPython dependencies from other add-ins on .NET 8 and .NET Framework 4.8. Health now reports `not_authorized`, `not_loadable` with cause, `cold`, or `warm`. A synthetic conflicting add-in was exercised in Revit 2026.
+- Corrected CAD discovery wording: Revit geometry extraction alone does not read DWG text, while a readable source DWG through AutoCAD can provide TEXT/MTEXT. `horizun_cad_extract` offers a paged detail plan, source status, coverage and explicit gaps. The available field copy had an embedded import and no readable source DWG, so full text, hatch and original-source coverage remain unproven.
+- Added group duplicate detection, annotation previews by view, position-preserving level change, equivalent tag recreation on type change, rotated and mirrored placement from a pattern, and a session annotation report. Synthetic probes ran in Revit 2024 and 2026. Live dimension-loss coverage and reporting of operations beyond type change remain pending.
+- Added a Python preflight warning for `FilteredElementCollector(doc, viewId, linkId)`, a typed linked-view candidate scan without that overload, and process or recent WER dump evidence in job status. The scan does not prove final visibility when crop, phases, design options or link display settings are unresolved.
+
+- A column section's cover now participates in the smallest declared cover of its into union, alongside cover_rules; a 40 mm column layer through a footing declaring 75 mm remains valid (RebarIntoCoverTests, live J8 pending).
+- Hooked rows at a stirrup's hooks corner accept only the declared corner seat in plan, apply and audit; a crossing_order move beyond that seat removes the allowance (RebarAuditRulesTests).
+
+Major release over 2.1.6. The 2.1.7, 2.2.0 and 2.3.0 candidates were never published; their work ships together here, so this section is their three changelogs in one. **Bridge protocol 3** (2.1.6 was protocol 2): a 3.0.0 server and a 2.1.x add-in refuse each other, so update both halves together, as the installer does. The Breaking items are in the 2.2.0 part below.
+
+### Additional 3.0.0 fixes and interoperability
+
+### 3.0.0 phase 3B (the backlog after 2.3.0: Core, commands and steel)
+
+Each fix was exercised with a red-first test.
+
+Remaining #12 limitation (3.1, M): projection corrects the plane used in sections and elevations, but a model-axis bounding box stays conservative in a rotated plan. Two 100 x 20 screen rectangles 110 units apart at 45 degrees still produce overlapping projected model boxes. `TagOverlapRulesTests.Model_axis_boxes_remain_conservative_in_a_rotated_plan` pins this counterexample; exact annotation contours are needed to remove that false positive. The #12 change below is partial, not a full resolution.
+
+- **#13 `ifcVersion` is compared by schema family.** The IDS run took a declared `IFC4` and a file `IFC4X3_ADD2` (and the other way round) for one schema, because it compared by prefix in both directions. It now compares `IfcDeliveryRules.SchemaFamily` of both, as the delivery gate already did: IFC4 against IFC4X3 is `NotDecidable` with the FILE_SCHEMA note. Tests: `IdsTests.IFC4_and_IFC4X3_are_different_schemas`.
+- **#18 The `horizun_manage_cad_links add` token binds every import option.** `custom_scale`, `colors`, `orient_to_view`, `visible_layers`, `visible_layers_only`, `current_view_only` and `auto_correct_almost_vertical` were outside it, so the apply could link at another scale or with other layers than the rehearsal showed. The token's scope is now every key the option reader reads, and the resolved plan carries the declared options. Test: `Backlog3BWiringTests.The_cad_add_token_binds_every_import_option` (holds the scope to the reader's own keys).
+- **#42 A BCF viewpoint carries the Guid its markup names.** The `VisualizationInfo` Guid was new on every export and matched nothing in `<Viewpoints Guid>`, so readers that link the two found no camera. IDS and coordination exports now write the topic's stable viewpoint Guid in both, and the IDS re-read refuses an archive where they differ. Tests: `BcfViewpointGuidTests`.
+- **#43 An IFC rectangle profile whose `Position` does not resolve is refused**, instead of being placed at the profile's origin without a word. An absent `Position` (`$`) is still the origin. Tests: `IfcGeometryTests.A_rectangle_whose_position_does_not_resolve_is_refused`.
+- **#44 Mixed units in a foreign quantity no longer spoil a budget line.** A quantity whose rows carry two units made every line of its code `unit_incompatible`, even when the line is fed by another quantity in its own unit. Mixed units still refuse a line when they are in the quantity that could feed it, or in the pinned one. Tests: `BudgetComparisonRulesTests.Mixed_units_*`.
+- **#45 Product texts write their numbers invariant.** On a Spanish system a tolerance read "2,5%", a delta "0,25 mm", an overlap "12,5 mm" (`PairTally.Headline`, `LinkSurveyRules`, `WarningRootCauseRules`), and two CAD open junctions could share one key (`CadOpenJunctions`). Tests: `ProductTextCultureTests`.
+- **#46 A schedule date keeps the day it was written on.** `ScheduleImport` moved an offset date to UTC before truncating it, so a task at `2026-10-10T00:30+02:00` started on the 9th in the 4D. Tests: `ScheduleImportDateTests`.
+- **#47 An xlsx row or column past the worksheet's limits is refused** (rows 1 to 1 048 576, columns A to XFD). The row attribute padded the sheet without a bound, and `r="2000000000"` exhausted memory; a long column reference could wrap an int. Tests: `XlsxWorkbookTests.A_row_or_column_past_the_sheet_limits_is_refused`.
+- **#48 The quality-history key is lower case and keeps what it cuts.** It was cut at 80 characters and kept the case on a file system that ignores it, so two projects could write one history. A key longer than 80 characters now ends in a digest of the whole name; such a project starts a new history file. Tests: `QualityHistoryTests`.
+- **#49 A ramp's built slope runs along its long side**, not the diagonal of its plan box (which added the width and read a straight ramp flatter). Only the measurement's note uses it. Tests: `RampBuiltSlopeTests`.
+- **#50 A crosshatch fill pattern reads its second grid back**: angle (the first grid's plus 90 degrees, compared modulo pi) and spacing. Only grid 0 was verified. Tests: `FillGridRulesTests`. Live probe pending (see below).
+- **#51 `manage_cad_links add` and `repoint` judge their commit and load.** `add` ignored the transaction status; `repoint` ignored it and the `LoadResult`, and verified on the path alone. Test: `Backlog3BWiringTests.Cad_add_and_repoint_judge_their_commit_and_load`.
+- **#12 The tag overlap check measures what is on screen.** `TagOverlapCheck` compared the model X/Y of each `get_BoundingBox(view)`: in a section or an elevation every tag box is flat in model Y and the overlap was always 0 ("clean" by construction), and in a rotated plan side-by-side tags could read as overlapping. The box's corners, through its own transform, are projected onto the view's right and up directions. Feeds `spatial_check` and `horizun_verify_changes`. Tests: `TagOverlapRulesTests` (sections, transforms, the wiring). Live probe pending.
+- **#14 An audit narrowed by `host_ids` lists no orphans from other hosts.** A bar of a zone, mat or section rule in a host outside the list expands under that host's id, which the narrowed audit never expanded, so it read as an orphan and the audit could never agree. (The `chunk` path already skipped other pieces' hosts since L10.) Test: `Backlog3BWiringTests.A_host_ids_audit_reads_orphans_only_in_its_hosts`.
+- **#15 and #16 were already resolved by L10 (`92a48b93`)** and are now pinned: a chunked apply seals every bar with the WHOLE set's digest (`Sha256Of(request.requirement_set)`), so the whole set's audit does not read each piece as `stale_requirement_set`; and the cut's inventory is read by the chunking itself with BuiltInCategory names, the form selectors use, not `query_model`'s localized names. Tests: `Backlog3BWiringTests.A_piece_is_sealed_with_the_whole_sets_digest`, `The_cut_inventory_names_categories_as_selectors_do`.
+- **#17 A recorded plan never reaches another command.** A command that recorded its plan and then refused (token, document, failure) left the thread-static plan for the next command on the thread, whose dry run published it as its `change_preview` and said its token was bound to it. The dispatcher clears it around every command it runs, and `apply_corrections` / `execute_plan` never stamp a child's plan as theirs. Test: `Backlog3BWiringTests.A_recorded_plan_never_outlives_its_command`.
+- **#19 `relinquish_all` counts checkouts with two filtered collectors.** A collector with no filter throws in Revit, so the census came back `Unreadable=1` and `fully_relinquished` could never be true. Test: `Backlog3BWiringTests.The_relinquish_census_uses_filtered_collectors`. Live probe pending.
+- **#20 `slab_shape` reads vertex Position as model coordinates.** An offset reading selected by agreement with the requested result could accept even a single unchanged vertex. Points and crease ends use the absolute reading throughout; the per-point alternative remains diagnostic evidence only. Tests: `ArchitecturalEditRulesTests.One_edit_reads_every_vertex_with_one_convention`, `An_unmoved_vertex_cannot_choose_the_reading_that_would_pass_it`, and the wiring. Live probe pending.
+- **#29 `run-year-matrix -SkipBuild` cannot file one year's add-in as another's.** The add-in carries `AssemblyMetadata("HorizunRevitYear", <year>)`, and `Assert-HorizunBuiltYear` (`horizun-deploy.lib.ps1`) refuses a DLL built for another year, or with no stamp, in the development session and before the matrix starts a Revit (`build_year_mismatch`). The TFM guard could not tell 2023 from 2024 nor 2025 from 2026. Tests: `scripts/deployment-security.tests.ps1`.
+- **#30 A naming profile's regex runs with a 250 ms limit.** A catastrophic pattern froze Revit inside `model_scan`. A name whose check times out is the finding `regex_timed_out` - not judged, never a pass. Test: `NamingProfileTests.A_catastrophic_regex_times_out_and_the_name_is_not_passed` (red: 20 s and still running).
+- **#31 A stranded wall profile is measured by its ends, not its centre.** A profile edited to run past one end of the wall moved its centre and read as drift; `realign_wall_sketch` moved it and verified with the same metric. A move shifts both ends by one amount; one end on the wall's is an edit (not stranded); both off by different amounts is stranded and not correctable (no translation is chosen). Tests: `WallSketchDriftRulesTests`. Live probe pending.
+- **#32 Receipt redaction runs over the values, not the serialized line.** JSON doubles every backslash of a path, so a pattern written for the path never matched and the account name stayed in the receipt. A pattern that does not compile still withholds the receipt. Test: `ReceiptLedgerTests.A_path_pattern_redacts_the_path_as_the_reply_carried_it`.
+- **#33 `manage_links change_path` says it opens every workset.** The reload used `new WorksetConfiguration()`, which opens the worksets the link had closed, and said nothing. Revit cannot report the configuration a link was loaded with (measured 2026-09-04), so it cannot be carried over: the configuration is now explicit (`OpenAllWorksets`) and the dry run and the reply carry `worksets_after: "all_open"` with what it means. Test: `Backlog3BWiringTests.Change_path_says_it_opens_every_workset`.
+- **#52 `isolate_elements` is verified only when everything else was hidden.** The requested ids being visible is true before any isolate, and an earlier temporary mode satisfied the mode check, so a call that did nothing read verified. Every collectable candidate is checked; an unreadable hideability check fails verification. Test: `Backlog3BWiringTests.An_isolate_checks_that_everything_else_was_hidden`. Live probe pending.
+- **#53 Cutting a piece again keeps the original `source_selector`.** The narrowed selector replaced it. Test: `RequirementSetChunksTests.Cutting_a_piece_again_keeps_the_original_selector`.
+- **#54 The canonical section-rule example is one the bridge accepts.** It put two layers on the bottom face over the same stretch (`layers_coincide`) and a bastón `from_mm: 0` with no end cover. It now lays the extra bar `between` the two bottom bars, from the start with the end cover kept, and the example is run as written. Tests: `SectionRuleDocExampleTests`.
+- **#56 A stirrup zone count past an int is refused with `notation_bad_number`**, instead of throwing `OverflowException` out of `RebarNotation`. Test: `RebarNotationTests.A_zone_count_past_any_int_is_refused_with_a_code`.
+- **#57 A mark whose schedule lines state `weight_kg` only in part says so** (`weight_not_compared`: "only N of M lines"), instead of dropping the mark's weight silently. Test: `RebarReconcileTests.A_mark_whose_lines_state_weight_only_in_part_says_so`.
+- **Phase 0 deferred:** the partial classifier treated shallow intersections with straight stirrup legs as bend seats. Its synthetic fixture contained no bend. The classifier and its unverified tests were removed; reliable classification needs bend evidence and per-bar classification before set-pair aggregation. Existing refusals and error reporting stay intact.
+- **To 3.1: #21**, sequential corrections need a binding shared by every permitted child, including children that publish no `plan_resolved` fingerprint. The partial recheck skipped those children and was removed; it did not resolve the finding.
+- **To 3.1: #55** (the bend set-back applied to side bars, and the hook pass lowering the whole top row). The top row is one rebar set on one line, so its corner bars and its middle bars cannot sit at different heights without splitting the set, and the corner positions are the ones the stage 1c audit measured against the drawn bars in the earlier validation. Changing them offline could break that agreement; it needs Revit.
+
+Live probes for the matrix: `scripts/live/backlog-3b-matrix.md` and `scripts/live/verify-backlog-3b.ps1` (prepared disposable fixtures), plus `run-year-matrix.ps1 -SkipBuild` against a bin built for another year (#29). All remain pending live.
+### 3.0.0, phase 2: interoperability (exchange manifests, model identity, the correction cycle)
+
+Owner decisions D0 (model identity) and D1 (one server per app in each client) approved 2026-10-12. Built
+without a Revit (the owner's was open): the add-in half compiles for 2023-2027 with no warnings and is
+NOT live-measured yet - `scripts/live/verify-interop-identity.ps1` is its probe for the final matrix.
+See [docs/INTEROP.md](docs/INTEROP.md) for the public protocol and client workflow.
+
+- **`horizun.exchange/0`, the manifest of a cross-app hop** (Core `ExchangeManifest`, schema
+  `schemas/horizun.exchange.v0.schema.json`). It wraps an existing format, lives at
+  `<exchange_root>/<kind>/<exchange_id>/exchange.hzx.json` beside a copy of the payload, and is written
+  LAST: payload copied under a temporary name, moved without overwriting, re-hashed; then the manifest,
+  then the whole exchange re-verified. Payload without a manifest, or a manifest whose payload has not
+  arrived, is `not_delivered`. `verified` requires `host_verified: true`; anything else reads as
+  `self_reported_verified` at best, and a chain is as strong as its weakest hop. The exchange root is
+  LOCAL by default (`%USERPROFILE%\.horizun\exchange\<project>`), a conservative decision taken for the owner.
+  Tests: `ExchangeManifestTests`.
+- **New host-resident tool `horizun_exchange`** (toolsets coordination, interoperability; external
+  effect only on request): `emit` (dry_run by default; a wrap made by the server is capped at
+  `self_reported_verified` and keeps the producer's `verified` as `state_capped_from`), `verify`
+  (delivery, sha256, effective state, identity against the registry, `may_continue`),
+  `correction_plan_check` and `correction_plan_reverify`. tools/list +3,937 bytes (483,077 -> 487,014 of
+  524,288); ledger regenerated. Tests: `InteropToolTests`.
+- **Model identity, decision D0** (Core `ModelIdentity`). A `model_ref` binds strong evidence in the order
+  `creation_guid`, `central_guid`, `cloud_model_guid`, `unique_document_guid`; the first key both sides
+  carry decides, and a weaker key that agrees with a ruled-out model is reported as `evidence_conflict`.
+  Project Information never matches by itself. Evidence read on Revit 2023 is always
+  `identity_proven: false` (`identity_unprovable_2023`, the code `horizun_model_diff` already uses).
+  `get_document_info` publishes it as `model_identity` (contract text changed, so the hash changes).
+  Tests: `ModelIdentityTests`.
+- **The project registry, `project-integrations.json`** (schema `horizun.project-integrations/0`, beside
+  `project-context.json`): `horizun_project_context` operations `integrations`, `register_model` (dry_run by
+  default; refuses a model with no strong key and a second model with the same binding evidence; writes
+  atomically, re-reads, needs `full_write`) and `resolve_model` (refuses to match without strong evidence or
+  against an ambiguous registry). The caller's `identity_proven` is ignored and recomputed.
+- **Review plans enter `horizun_apply_corrections correction_plan`**: typed rehearsal, token bound
+  to document and child model facts, re-rehearsal before apply, then fresh reads of ALL targets after
+  the final step. A later overwrite is persistent. Explicit parameter writes and revision actions
+  without clouds; no Python, CSV/sequence or placeholders. Per-step transactions; PDF re-review
+  remains pending. Relayed reconciliation is capped at `self_reported_verified`, `host_verified:false`.
+  Real parameter-read object shapes and red-first tests; `verify-interop-corrections.ps1` pending live.
+- **Exchange verification fails closed** on uncheckable model identity, missing method/host flag and
+  duplicate/reserved payload names. Dot-only project codes cannot escape the exchange directory.
+  Red-first `ExchangeManifestTests`.
+- **Offline tests isolate state**: disposable job/Excel roots; profile-precedence tests supply the
+  known-folder API's real string shape while source guards retain the production lookup. No owner
+  state/configuration is written, and no assertion is removed.
+- **Sensitive scan keeps every rule while avoiding empty term checks**: the OR of the same escaped
+  private terms prefilters neutral lines; matching lines retain every per-term governance exception,
+  overlap and original line number. Red-first CPU regression: 12k lines / 64 terms took 34.2 CPU s.
+  `scan-sensitive.performance.tests.ps1` also requires both case-insensitive findings at line 12001.
+- **The review -> correction -> re-review cycle, server reconciliation** (Core `ReviewCorrectionPlan`). A
+  horizun-review `plan_correcciones_revit` plan is checked (Python never, every step rehearses, every
+  `<...>` placeholder named with its resolver) and, after the approved applies, reconciled target by target
+  against the PLAN's own values from the typed replies the bridge re-read: `corrected`,
+  `confirmed_by_reread_only`, `persistent` (also when the applied value drifted from the plan),
+  `not_applied` (a rehearsal), `not_verifiable` (no row, a truncated reply). The reply says it re-derives,
+  it does not read the model again, and that only horizun-review's delta closes a PDF finding. Tests:
+  `ReviewCorrectionPlanTests` (red first).
+- **Prompt `cross-app-coordination`**: the agent as the only bus - preflight of peers and duplicates,
+  one intake (WHAT / WHICH / HOW, one correlation_id), approval per stage, owner order, three-layer
+  verification, one closing row per hop with the weakest state as the global one. Prompts: 30.
+
+### Steel geometry, crossing and audit fixes
+
+- `crossing_order` declares which rule stays and which moves; the plan rechecks cover, containment and overlap after displacement, and the audit verifies the built position. Without a declared order, the bridge does not choose one.
+- The reinforcement apply and audit share geometry comparison. A bar moved by Revit is no longer reported verified merely because its length matches. `hold_ends` can preserve declared endpoints when Revit constraints would move them.
+- Open arc chains, hook orientation, drawn hook cover, bend-aware corner overlap, duplicate bars, whole-model steel review and fabric mass are measured against drawn geometry. Ambiguous or unreadable cases remain named refusals.
+- The operations pane opens only through its ribbon button and adapts to a narrow docked panel.
+- Red-first tests cover these changes; synthetic live probes are listed in the steel capability matrix.
+### Server, installer and CI backlog (stage 3, part A)
+
+The findings come from the post-2.3.0 backlog; the fixes are grouped by area.
+
+#### The repair_memory quarantine is enforced
+
+Calls the owner quarantined are refused before they reach the add-in.
+
+- **A quarantine refuses the call it was set on (backlog #4).** 2.1.7 made `quarantine` stop promising a refusal nothing enforced: a failure shape is the failure's own message, known only after the call fails. What is known before a call runs is the call, so `observe` and `quarantine` now take `call_arguments`, the failing call's arguments, and keep only a hash of their normalised form (keys sorted at every depth, `idempotency_key`, `confirmation_token` and `_meta` left out, an integral number written as an integer). No argument value reaches the file. While the shape is quarantined, the tools/call path refuses that call before a task is created or anything is routed to Revit. The refusal is an error result with `structuredContent.code = call_quarantined`, the shape, the reason, who set it and when, `ran: false`, and a `remedy` naming `operation=release shape=…`. Any other argument value, `dry_run: true` included, is a different call and runs. `quarantine` reports `refuses_calls`, and with no call recorded it says that it refuses nothing. The gate reads the memory without the mutex and caches it by size and write time. A damaged memory refuses nothing and is not moved aside, and `horizun_repair_memory` is never refused, because it is how a quarantine is lifted. The 500-entry bound keeps quarantines and their fingerprints. Tests: `RepairMemoryCallGateTests` and `QuarantineWireTests` (the real server over stdio, under an empty data root, red first).
+
+#### The server's queue and pipe
+
+How cancellation and the pipe behave under load.
+
+- **`tasks/cancel` no longer stalls the server while a submission holds the task (backlog #22).** It is answered on the server's reader thread and took the task's mutex with no bound, while `Submit` holds that mutex for its whole round trip to Revit (up to 600 s): nothing else was answered meanwhile. The wait is now bounded (1 s, like `tasks/get`); a busy task gets its cancellation deferred to a background thread, which records it and asks Revit for the removal as soon as the submission lets go - by then with the job id it lacked. An unknown task id is still refused on the call. Test: `TaskCancellationTests.Tasks_cancel_answers_promptly_while_a_submission_holds_the_task` (red first).
+- **A request claimed after its own raise was refused no longer looks like an ordinary failure when its wait expires (backlog #38).** When Revit refused a request's `Raise()` but the UI thread had already claimed it through another raise, the dispatcher waited and ignored whether the wait ended: a command still running came back as "produced no result". It now says the command STARTED and is STILL RUNNING, with `never_started: false`, `still_running: true` and `transaction_status: unknown` (`RequestGate.AwaitClaimed`). Tests: `RequestGateTests.A_claimed_request_whose_wait_expires_is_reported_still_running_not_failed`, `A_claimed_request_that_finishes_returns_its_own_result` (red first).
+- **A cancel that overtakes its request stops it (backlog #36).** The cancel travels on its own connection and could reach the add-in while the request was still being read and authenticated, before the gate: it was answered "finished or left the queue" and the request then ran. The gate now remembers the last 64 ids cancelled before it saw them and refuses such a request on arrival, with the never-started proof; wire ids are fresh per send, so this can only stop work. The reply says `refused_on_arrival`, and the server tells the caller both readings instead of only "it finished". Out of reach: `horizun_submit_job` is admitted on the pipe thread without the gate, and its jobs are cancelled by id (`__horizun_cancel_job`). Tests: `RequestGateTests.A_cancel_that_arrives_before_its_request_refuses_the_request_on_arrival`, `An_early_cancel_refuses_only_its_own_id_and_only_once`, `Early_cancels_are_remembered_within_a_bound`, `TransportFailureDetailTests.A_cancel_answered_not_found_names_the_refusal_on_arrival` (red first).
+- **Pipe writes have a deadline on both ends (backlog #37).** The bridge's pipe has no buffer, so a write completes only when the other end reads; when the add-in refused a request as `TooLong` it stopped reading and wrote its refusal, while the server was still blocked writing the request: both ends stuck, with no timeout, holding a connection slot until Revit closed. The server now refuses a request over the contract's `MaxRequestBytes` before sending anything, reads while it writes (a valid pre-dispatch refusal envelope (null id, success=false, nonempty error) that arrives before the request was read whole is returned as never dispatched, `request_may_have_been_submitted: false`) and abandons a write nobody reads after 35 s. The add-in writes its replies through `LineWriter` with a deadline (5 s for a refusal of an unread request, 60 s for a reply) and closes the connection past it. A closed pipe, malformed line or unrelated reply keeps the execution outcome unknown. Tests: `PipeWriteBoundTests` (server, including three additional red-first uncertainty cases) and `LineWriterTests` (add-in) (red first).
+
+#### Paths, containers, procedures and Power BI
+
+What the server reads and writes on the machine.
+
+- **A Power BI selection read that names no document returns no keys** (backlog #24). `horizun_selection_exchange` `read` without `document_fingerprint` handed back the keys whatever model was open, although the contract returns no keys to a read from another document. It now returns `keys: []` with `document_unidentified` saying to pass the fingerprint `horizun_health` reports. Test: `PowerBiSelectionStoreTests.A_read_that_names_no_document_returns_no_keys` (red first); the existing store test now reads with the fingerprint it published.
+- **A Power BI push cancelled before sending is recorded as not sent** (backlog #40). A cancellation after the key was claimed and before the request was sent was reported as `in_doubt`, and the record was never completed, so a retry met an open claim for rows that never left the machine. The cancellation is now checked before the send, completed in the ledger as a failure ("No rows were sent"), and a retry with the same key replays it. Test: `PowerBiPushTests.CancellationBeforeSending_IsRecordedAsNotSentRatherThanInDoubt` (red first).
+- **A procedure run and the script promotion registry are locked across processes** (backlog #35). `horizun_run_procedure` serialised a run with a Monitor and `horizun_promote_script` with a `lock`, both inside one server, so Claude's and Codex's servers could load the same record and advance the same step twice. Both now also take a named `Local\` mutex derived from the record's path (`HostFileMutex`, the idea of `RepairMemory.MutexName`): a run is refused at once when another process holds it (waiting would dispatch the next step), the registry after a bounded wait, and the refusal names the path. Tests: `ProcedureResumeTests.A_run_held_by_another_process_is_refused_and_dispatches_nothing`, `ScriptPromotionLockTests` (red first; the second holder is a separate Mutex on another thread).
+
+- **The xlsx reader round-trip test keeps its backups in its own temporary data root.** Its shipping-writer fixture used the real owner data root; the full Server suite exposed the attempted write outside the test sandbox. It now uses `ExcelBackupRoot`, as the other workbook fixtures do. Test: `ExcelReadRowsTests.The_round_trip_reads_what_the_shipping_writer_wrote` (failed before isolation).
+- **No path a client sends reaches a network share (backlog #23).** Only the CSV writer refused UNC and device paths; `excel_read_rows`, which `read_only` allows, opened `\\host\share\x.xlsx` and Windows signed in to that host as the user, handing it the NTLM hash. One rule, `LocalPath`, now runs on the string before the first file-system call in the xlsx reader and writer, the CSV writer, `catalog_lookup`, `project_context`, `ids_from_loin`, the information containers (`file_path`, `file_paths`, `root`, `states`, `project_context_path`), `budget_compare` (`model_rows_path`, `baseline.file_path`, `outputs.excel.file_path`), `export_bc3`, `read_schedule` and the ISO evaluation of the model explanation. It refuses `\\host`, `//host`, the mixed `\/` and `/\` spellings the CSV check missed, `\\?\`, `\\.\` and `\??\`. Test: `LocalPathTests` (red first).
+- **A full path means a drive, a colon and a separator (backlog #41).** `Path.IsPathRooted` accepted `C:x.json` (relative to drive C's current folder) and `\x.bc3` (relative to the current drive), so `project_context`, `export_bc3` and `ids_from_loin` read or wrote wherever the server's working folder pointed. The same `LocalPath` rule refuses both forms everywhere it applies. Test: `LocalPathTests` (red first).
+- **`inspect` stops at `max_files` and reports what it could not read (backlog #34).** It listed and sorted every file of a state folder before applying the cap, and one subfolder without permission threw out of the whole call. The walk is now lazy, in the same order as before (each folder sorted on its own, a subfolder by its name and separator), so nothing past the cap is listed; an unreadable folder is named in the state's new `unreadable_folders`, the state is `complete: false` and its coverage says why. Junctions and symbolic links are not followed. Tests: `Inspect_names_a_subfolder_it_cannot_read_instead_of_failing_the_whole_call`, `Inspect_stops_at_max_files_without_walking_the_rest_of_the_tree` (red first), `Inspect_walks_in_the_same_order_as_one_sort_of_every_path`.
+- **A transition's destination stays inside the next state's folder (backlog #39).** With `file_name=name_status_revision` the status and the revision become part of the file name, but only the fields were checked for `\` and `/`; a permissive revision pattern let `P01\..\..\x` carry the copy out of the state folder. The core validation now refuses a status or revision with a character Windows forbids in file names whenever they enter the name (the same rule names `horizun_export`'s file), and `transition` refuses any destination that does not resolve to a file name inside the target folder. Test: `Transition_never_builds_a_destination_outside_the_state_folder` (red first).
+
+#### Installer and CI
+
+Client registration, the source install and the release gates.
+
+- **A Codex table is found under any valid TOML spelling (backlog #25).** `toml-section.lib.ps1` matched the header text exactly, so `[mcp_servers."horizun-revit"]`, a spaced or literal-quoted key or a header with a trailing comment was not found: registration appended a second table, and Codex refuses a file that defines one twice. The same test took a commented header after ours (`[profiles.x] # c`) for a key line and deleted that table on replace. Headers are now parsed into keys (quotes, spaces, comments, multi-line strings); registration also refuses and restores if the file would end with the table twice, and removal verifies by table, not by text. Test: `register-client.tests.ps1` (red first).
+- **A Node warning on stderr no longer fails the Claude legacy cleanup under Windows PowerShell 5.1 (backlog #26).** `& $cli mcp remove ... 2>&1` under `Stop` turned the first stderr line of the real `claude.cmd` into a terminating error after the CLI had already removed the entry, and that removal was not put back. The CLI's output is captured under `Continue` and its exit code is the verdict; anything that still throws restores the pass backup first. Test: `register-client-legacy.tests.ps1`, a `.cmd` stand-in that writes a Node deprecation warning to stderr (red first under 5.1).
+- **CI runs the client-registration suites under both hosts (backlog #27).** `register-client`, `register-client-legacy` and `client-config-encoding` said "run it under both" but ran only under pwsh 7, while the installed helpers run under `powershell.exe`. `ci.yml` and `pr.yml` now run them with the ChatGPT tunnel suite in one step over `powershell.exe` and `pwsh`. Test: `public-consistency.tests.ps1` (red first).
+- **The live release gate certifies the build of its own job (backlog #28).** `run-release-live-gate.ps1` took the INSTALLED manifest as expected whenever one existed and never compared its commit with the run's, so on the shared runner another install could be certified. CI now passes `-Manifest dist/stage/manifest.json -ExpectedCommit ${{ github.sha }}`, and the gate refuses a manifest of another commit before any fixture, process or Revit is touched. Test: `public-consistency.tests.ps1`, the workflow pin and the gate run against a manifest of another commit and of the expected one (red first).
+- **The source install stages the Claude Desktop helper and its libraries (backlog #58).** `install.ps1` ran `client-tools\install-claude-desktop-extension.ps1` behind a `Test-Path` but never copied it (nor `mcp-clients`, `mcpb-manifest`, `mcp-stdio`, `integration-status` and `process` libraries), so the Claude Desktop step silently never ran; `pack.ps1` already shipped them. Test: `install-arguments.tests.ps1`, which proves the staged list closed over every helper install.ps1 runs and everything they load (red first).
+- **One registration pass takes one backup per file (backlog #59).** The Claude legacy cleanup and the add each took a backup of `~/.claude.json`, so `-Rollback`, which restores the newest, put back the state between the two. A pass now reuses its first backup for every step. Test: `register-client-legacy.tests.ps1`, one backup and a byte-exact `-Rollback` (red first).
+- **A client that reopens during the quiet window and stays open is `registration_pending` (backlog #60).** `complete-install.ps1` registered anyway when that wait reached its deadline, which wrote underneath the client or was refused and counted as a failed resume attempt. It now records `registration_pending`, exits 3 and counts nothing. Test: `install-completion.tests.ps1` (red first).
+### Schema on demand: the `tools/list` facade (phase 1 of 3.0.0)
+
+Design, measurements and client trials: `docs/plans/lazy-schema-3.0.md`.
+
+#### Optional schema surface
+
+- **`full` remains the default; `facade` is opt-in with `HORIZUN_SCHEMA_MODE=facade`.** `horizun_health` stays visible with three server-only tools: `horizun_list_tools` lists reachable names, `horizun_describe_tool` returns exact tool or variant schemas, and `horizun_call_tool` dispatches the same typed call. Direct tool names and the full 2.x-style list remain available by default. The isolated Codex battery could not authenticate (401), and Claude had no quota, so no real agent completion comparison justifies changing the default.
+- **Measured over stdio, 2026-10-12** (`{"tools":[...]}` UTF-8 bytes; tokens = ceil(characters/4)): `safe_write` 417,545 B (~104k) -> 4,045 B (~1.0k); `unsafe_code` 478,423 B -> 4,045 B; `unsafe_code` + Python 483,087 B (~121k) -> 4,045 B. On demand: `horizun_list_tools` structured payload 21,136 B in `safe_write`, 23,186 B in `unsafe_code`, 23,370 B with Python. Reproduce with `scripts/schema-facade-probe.ps1`; it explicitly decodes stdout as UTF-8.
+- **The facade is the same call, not a second implementation.** `horizun_call_tool` is unwrapped at dispatch into the `tools/call` it stands for, so validation against the exact schema, `schema_help` (failing path + exact-schema URI), the permission profile and toolset gates, task augmentation, progress and cancellation are the direct call's own code. A tool the profile or a toolset switches off is not listed, is described `callable: false` with the gate's own reason, and is refused through the facade with the same text as directly.
+- **The contract hash does not move.** The three meta-tools are server-only, not contract rows: a 3.0 server and an add-in from the same contract keep accepting each other. The facade has its own `facade_hash`, reported with the mode, the contract hash and the measured size of `tools/list` in the new `horizun_health.schema_mode` and in `horizun://build/identity`.
+- **What the facade loses**, and `full` keeps: the per-tool `_meta.ui` of the MCP Apps (`horizun_clash` and the five impact previews) and per-tool annotations in `tools/list` (`horizun_call_tool` carries the strongest; `horizun_describe_tool` returns each tool's `effect` and `destructive`).
+- `initialize` and `server/discover` send the instructions head for the surface served: in facade mode rule 7 names the three tools (2,041 of 2,048 B). `notifications/tools/list_changed` still watches the reachable set, so a client is told to list again.
+- **The guidance resource follows the active schema mode too.** `horizun://guidance/typed-first` now explains the facade when it is served, instead of incorrectly claiming every tool schema is in `tools/list`; full-mode guidance remains identical. Its stdio regression test failed before this fix.
+- **Facade inputs obey their published nonnullable types.** Explicit `null` for `toolset`, `variant`, or inner `arguments` is refused; omitting optional fields still works. The partial implementation accepted these values contrary to its schema; a new regression test failed before the fix. Profile and toolset restrictions are also checked through the actual stdio dispatcher.
+- Tests: `SchemaFacadeTests`, `SchemaFacadeWireTests` (red reproduced before integration: 4 of 6 wire tests failed; nullable regression: 1 failed before the fix). Codex CLI 0.162.0-alpha.17.2 with isolated `CODEX_HOME` recognizes both temporary configurations but has no login; the authorized stdio fallback listed, described and called `horizun_target` in both modes and all measured profiles. Claude Code was not run. `scripts/live/schema-facade.ps1` is **pending live**, syntax-checked only; no Revit was used.
+
+### Steel (stage 1 of 3.0.0)
+
+The gap matrix the stage works from is `docs/plans/acero-3.0-matriz.md`.
+
+#### L1 - steel that crosses from one element to another
+
+- **`into: [element ids]` on `reinforcement_rules` and section layers.** A dowel from the footing into the column, a beam bar anchored in the column, a column bar lapped into the storey above: the bars are hosted in one element and declared into others, and containment is measured against the UNION of the host and those elements - by the plan, by the apply's post-commit check and by the audit, which all report `measured_against` (host first).
+  - The face two elements share is clipped out of the boundary (concrete on both sides); two faces in one plane facing the same way stay a boundary (air on that side of both); elements that overlap are one solid.
+  - The cover held is the smallest declared by any of the elements.
+  - Every element must be a closed solid; an open one is refused as `into_union_not_measurable`, never measured against the host alone. (Non-convex elements: see below.)
+  - New refusals: `into_element_not_found`, `into_names_the_host`, `into_needs_a_single_host` (into names ONE host's neighbours; a rule matching several hosts is refused, for section rules too).
+  - A section layer that declares `into` may start below its host (`from_mm` < 0) and end past it; without `into` both are refused as before.
+- **`anchorage: [{ element_id, min_length_mm }]`** (section layers add `end: start | end`, so a lapped layer checks only the piece at that end): the length of the bar's centreline inside that element's solid, clipped exactly (Cyrus-Beck against its faces), the set anchored as well as its least-anchored bar.
+  - The plan measures the declared centreline and refuses `anchorage_short`; short with a hook declared is `decided_after_commit`.
+  - The apply re-measures on the bar Revit drew, hooks included (`checks.anchorage`), and the audit reports a new finding, `anchorage_short`.
+  - Unmeasurable is `anchorage_not_measured`, never met.
+- **Dowels coordinated with the column bars, and continuity between storeys, are one lapped layer**: the layer runs from inside the footing to inside the column above, the lap at the joint makes the dowel and the column bar, and the existing lap check (`lap_insufficient`, overlap and distance across) is the coordination. A dowel declared as its own rule is measured for containment and anchorage; its lap with another rule's bars is not paired (`undeclared_lap` stays in `not_checked`).
+- Tests: `UnionContainmentTests`, `AnchorageCheckTests`, `RebarIntoSchemaTests` (red first).
+- **Joined elements that are not convex are measured, not refused.** Measured on a real model (Revit 2024): every bar crossing from a beam cut by round columns, or into a notched footing, was refused as `into_union_not_measurable`.
+  - Inside-ness was already each element's winding number. The distance to air near a joint is now the nearest face point confirmed to be beside air (exact), or 2562 rays followed to where they leave the union, times cos 2.73 degrees: never more than the true clearance, short of it by at most 0.11 mm at 100 mm and 0.17 mm at 150 mm. A gap between two elements no wider than the chord tolerance is a seam, not air.
+  - The anchored length in a non-convex element is cut at every crossing of its triangles, each piece judged by its winding number: exact for a closed mesh.
+  - A union of convex elements is measured exactly as before. `how_measured` and `containment.joints` publish the method, the bound and the seam width.
+  - Speed, measured: 100 bars sampled every 25 mm across a beam-column joint of 492 triangles in about 4 s; 50 bars across 4812 triangles in about 13 s.
+  - A boundary that cannot be read now names the element and its diagnosis, once; it used to say only "the host boundary was not available", twice.
+  - Tests: `NonConvexUnionTests`, `BoundaryUnavailableWordingTests` (red first).
+
+#### L2 - columns
+
+- **Crossties** (`ties` on a section rule): one single-leg tie at every intermediate bar of a named layer, from stirrup leg to stirrup leg, beside the stirrup, at the stirrups' zone stations, with declared hooks.
+  - Measured: a two-point tie declared `left` is drawn `right` (the apply reports it unverified); declared `right` it is built as declared.
+  - Revit carries a 135 degree hooked end on along the bar by half a diameter. The audit accepts exactly that at a hooked end of an open bar, as the info finding `hook_end_extension`.
+- **Bayoneta** (`crank: { at_mm, run_mm, inward_mm }` on a layer): the bar moves inward over a declared run and carries on, usually `into` the column above.
+  - Refusals: `crank_outside_the_bar`, `crank_with_laps_not_implemented`, and a perimeter crank (four faces).
+- **Circular columns.**
+  - The section is read off a cylindrical solid.
+  - `face: ring` lays N ≥ 3 bars evenly round inside the hoop, each its own single bar.
+  - Face layers on a circle are `section_not_rectangular`; a ring on a box is `ring_needs_a_circular_section`.
+- **Arcs in `curve_mm`** (`{ through }`, a three-point arc).
+  - Measured on Revit 2024: a single arc between two points builds and reads back; every chain with an arc fails inside `Rebar.CreateFromCurves` with an internal error, closed circles included. Those are refused in the plan as `arc_chain_not_buildable_from_curves`.
+  - **The circular hoop and the spiral therefore move to L7** (placed rebar shapes, e.g. `M_SP`).
+- **Confinement zones in columns** measured live: 100 over 600 mm at each end and 200 between, symmetric, with the ties following them.
+- **The audit's length check is now exact.**
+  - Revit's `TotalLength` is rounded per bar (measured 3 × 3770 against 3 × 3767.85; the API states the rule in display units), so RebarFacts publishes `measured.bar_centreline_length_mm` and the audit compares that.
+  - A bent bar's prediction subtracts R(2·tan(θ/2) − θ) per corner, R = inside bend radius + half the bar (measured: an L in 16M is 2366.2 mm).
+- **Live:** `verify-rebar-column-detail` K1-K7 7/7 in Revit 2024 and 2026.
+- Tests: `SectionTiesCrankTests`, `RebarArcsAndCircularTests`, `RebarHookEndExtensionTests`, `RebarBentLengthTests`.
+
+#### L3 - foundations
+
+- **Measured live, with the rules that already existed:**
+  - a combined footing with two-way bottom and top mats;
+  - a pile cap with bottom and top mats and bars on its side faces (mats with horizontal face normals);
+  - a strip footing under a bearing wall (the wall foundation is a valid host);
+  - a foundation beam below the level (section rule with stirrups).
+- **Piles: `axis: "vertical"` on a section rule.** A point-placed STRUCTURAL FOUNDATION is then framed as a vertical member. Only when the rule says so: P0 #8 still refuses every footing that does not, and the probe checks both.
+- **A mat over a host with no common cover.**
+  - Measured: a strip footing's bottom is "cast against earth" at 75 mm and its sides 40, and a layer declared 74 mm under the bottom was drawn at 82.95 mm (75 + half a 16M bar).
+  - The resolver now reads the cover of the exposed face the mat lies under, and a layer whose surface would sit inside it is refused as `mat_offset_below_the_face_cover`, instead of Revit moving it in silence.
+- **A closed bar is not bent at the corner it starts and ends at.** Measured: a hookless closed 10M stirrup of 190.5 × 490.5 mm measures 1330.13 mm, which is three bends of R = 24.75, not four. The audit's length prediction now bends three corners.
+- **Live:** `verify-rebar-foundations` G1-G8 8/8 in Revit 2024 and 2026.
+- Tests: `MatRulesTests` (face cover), `SectionPointHostTests` (axis), `RebarBentLengthTests` (closed bar).
+
+#### L4 - slabs
+
+- **Mat windows: `run` and `spread` on a mat component** (`{ from_mm, to_mm }` from the host's own extents).
+  - `run` limits where the bars run along their direction: top bars over a support line (negativos).
+  - `spread` limits where the array marches: a band.
+  - A window inside the host's covers or past the host is `mat_window_outside_the_host`.
+- **Measured live, with existing rules:**
+  - a slab with an opening (mat with `openings: omit`);
+  - a ribbed slab (joists as beams with section rules, the topping with a temperature mesh);
+  - a drop panel (a thicker floor under the slab, with its own mat).
+- **New named refusals (L8 items):**
+  - **`host_not_structural`:** a floor or wall whose structural flag is off is refused with the parameter's name, instead of the generic `host_ineligible`.
+  - **`section_cover_below_the_host_cover`:** a section rule whose declared cover, or zone cover, is below the host's common cover. Measured: joists with a 40 mm cover reinforced from a declared 25 came out with the stirrup array 30 mm short and the bars moved - Revit holds hosted bars to the host's cover.
+- **Live:** `verify-rebar-slabs` H1-H9 9/9 in Revit 2024.
+- Tests: `MatWindowTests`, `SectionTiesCrankTests` (cover below host).
+
+#### L5 - walls
+
+- **Boundary elements: `wall_boundary_rules`.** `{ id, host: { element_ids: [one wall] }, end: start | end, length_mm, cover, layers, stirrups, ties, mark, required }` - a section rule whose section is the wall's end region: U up the wall, V along it over `length_mm` from the declared end, W across the thickness. The layers, laps, `into`, cranks, stirrups and ties are the section rule's, read by the same parser, and the ids are `<id>#h<wall id>#<layer>` / `...#stirrups`.
+  - Refused by name: `wall_boundary_longer_than_the_wall`, `wall_boundary_too_short_for_its_bars` (two covers, two stirrup legs and the largest bar, with the arithmetic), `wall_boundary_host_is_not_a_wall`; a wall that is not a box is `section_not_rectangular`. The resolver reports them as `wall_boundary_rule_refused`.
+  - In the schema: a host other than exactly one element id, and a missing or bad `end` or `length_mm`, are refused with their path.
+- **Hooks at the ends of a mat's bars: `start_hook` / `end_hook` on a mat component** (`{ hook_type, orientation }`, declared hook types). Only ends at the host's edges carry them; a bar an opening trims keeps them on its outer ends. A full-thickness U return (a hairpin) is not a hook and stays a `reinforcement_rules` curve.
+- **Retaining walls and tanks need no new schema**: a mat per face (`face_normal` ± the wall's normal), starter bars from the footing with `into`. A Core test pins two opposite-face mats on one wall standing apart.
+- **Live:** `verify-rebar-walls` W1-W5 5/5 in Revit 2024 and 2026 (boundary elements at both ends, two-face mat, dowels from the footing). Not yet measured: a wall at a join, and a horizontal's 180 degree hook toward the other face.
+- Tests: `WallBoundaryTests`, `WallMatTests` (red first).
+
+#### L9 - marks and bending schedule (live: the schedule probe Y6, Revit 2024 and 2026)
+
+- **One mark, one bar: `bar_mark_duplicate` is replaced by `bar_mark_conflict`.** Measured live before this lot: the audit raised an error whenever two sets carried the same schedule mark, and Revit itself numbers identical bars with the same Rebar Number, so probes S3, L4 and Z4/Z5 had to excuse the code.
+  - Sets are now grouped by mark and each is compared with the first of its mark: bar type and shape by id (exact), and one bar's length (`bar_centreline_length_mm`, else `total_length_mm / quantity`) within the set's `tolerances.length_mm`.
+  - The same bar under one mark is not a finding; those marks are listed in the audit's `summary.marks_shared`.
+  - A different bar under one mark is `bar_mark_conflict` (error), with `differences` naming every property that differs, both sets and both values. A property that would not read, with nothing proved different, is `unreadable` about `bar_mark_conflict` (unknown), never "the same bar".
+  - The live probes no longer excuse a mark code (`verify-rebar-sections`, `-bastones`, `-laps`, `-geometry`); `verify-rebar` R4 accepts either `bar_mark_conflict` or a `marks_shared` entry.
+- **`horizun_query_structure mode=bending_schedule`: the cartilla, derived from the model.**
+  - Input: `element_ids` / `host_id` as in `mode=quantities`, `density_kg_per_m3` and `density_source` REQUIRED (refused as `density_required` before a bar is read), and optional `length_tolerance_mm` (default 0, exact).
+  - Output: one row per mark - bar type, nominal diameter, shape, `segments_mm` read off `centreline_points_as_declared_mm` (collinear points merged), hooks per end, bars, one bar's length and its source, total length, total kg, sets, rebar and host ids - plus `totals_by_diameter`, `totals_by_host` and `totals`, marked `derived_from_model` with a `not_included` list (area and path reinforcement, fabric, linked models, hook dimensions, cut lengths, variable-length sets).
+  - A mark over different bars is split into one row per bar and named in `mark_conflicts`, never averaged. A value that would not read is a null total with a `_counted` number beside it, never a zero.
+  - Kilograms are Revit's measured volume times the declared density, the same volume `mode=quantities` weighs.
+  - The aggregation is pure Core (`RebarBendingSchedule`, with `RebarMarkIdentity` shared by the audit), so the schedule and the audit cannot disagree about what a mark covers. The Revit side gathers RebarFacts rows only, through the same scope reader `mode=quantities` and `mode=reconcile` use.
+- **Not measured yet:** no live run. The kilograms rest on Revit's `Rebar.Volume`, whose diameter (nominal or model) was not measured here.
+- Contract: the `horizun_query_structure` schema gains `bending_schedule` and `length_tolerance_mm`, and the audit's description names `bar_mark_conflict`. Tool contract hash `96cc159db781d8108e837912` -> `863cc2dab94cd229335a2f4f`. The tools/list ledger was re-recorded through `HORIZUN_UPDATE_TOOLS_LEDGER=1`: query_structure +373 B, audit_reinforcement -1 B, all 123 tools 473,981 -> 474,353 B (headroom 49,935 B); no budget assertion changed. `docs/inventory.json` was not regenerated.
+- Tests: `RebarMarkConflictTests`, `RebarBendingScheduleTests` (red first: 30 of 30 failed against stubs).
+
+#### L4b - area, path and fabric reinforcement (live: all three, `verify-rebar-systems` in Revit 2023-2027 at 0a411522; the disposable fixtures carry Revit's default area and path types, created once for the fixture - the bridge still creates no types)
+
+- **Three new arrays in `horizun.structural-requirements/1`**, strict-keyed like the rest: `area_rules` (outline, major direction, area reinforcement type, the active layers each with bar type and spacing), `path_rules` (open polyline, path reinforcement type, declared `flip`, primary bars with bar type, spacing and length) and `fabric_rules` (outline, major direction AND its origin, fabric area and sheet types, optional cover offset).
+  - One host, by element id. Every number and name declared; type names matching two types are refused as ambiguous.
+  - Outline: three or more points, none repeated, one plane, an area, no self-crossing. Path: two or more, open, one plane. Major direction (and fabric origin) in that plane.
+  - Layer words follow Revit: `top_*`/`bottom_*` on a floor, `exterior_*`/`interior_*` on a wall, never mixed or translated. `major_direction_origin_mm` was added to the fabric rule because the sheets are laid out from it and nothing else in the rule says where.
+- **Plan**: new `area`, `path` and `fabric` rows beside `reinforcement`. The outline's corners and the path's points must lie on ONE face of the host's own boundary (`boundary_not_on_a_host_face`, `boundary_outside_the_host_face`), the major direction in it (`major_direction_not_in_the_host_face`), the host a floor or wall (`system_host_not_a_floor_or_wall`) whose layer words match (`area_layer_not_on_this_host`), and every type resolved (`area_reinforcement_type_*`, `path_reinforcement_type_*`, `fabric_area_type_*`, `fabric_sheet_type_*`, `_not_found` / `_ambiguous`). All published in `refusal_codes`.
+- **Apply**: in the same transaction after the rebar sets; undeclared area layers built inactive, no hooks, path alternating bars off; provenance written on the system element by the same store as bars. After the commit every parameter it set is read back (layers, spacings, bar types, hooks, direction, path length, sheet type, origin, cover offset, mark) and the system must have produced at least one RebarInSystem (fabric: one sheet), or the row is `verified: false` and success is not claimed.
+- **Audit**: systems matched by provenance and the same parameters compared (`system_parameter_differs`). Not compared, and named in `not_checked`: `area_reinforcement_geometry`, `path_reinforcement_geometry`, `path_reinforcement_flip`, `fabric_sheet_layout`, `area_reinforcement_layout_rule`.
+- API names checked by reflection on RevitAPI.dll 2023, 2024 and 2027 and read from RevitAPI.xml 2027 (`*_FRONT_*` is "Exterior", `*_BACK_*` "Interior", `DIR_1` "Major"); the add-in compiles with 0 warnings for 2023-2027. **Nothing here has been run in Revit yet.**
+- Tests: `SystemReinforcementTests` (red first).
+
+#### Stage 1b - the bars of area and path reinforcement are in the takeoff (live: Revit 2025 and 2027 at 44c14c73, `verify-rebar-systems` 7/7 and `verify-rebar-acceptance` 11/11 in each)
+
+- **Fixed: `horizun_query_structure` mode=quantities, mode=reconcile and mode=bending_schedule left out the bars of area and path reinforcement and still said `complete`.** They collected `Rebar` sets only; a system's bars are `RebarInSystem` elements, so a slab's area and path steel was missing from the takeoff, the schedule and the reconciliation under the one word that promises nothing is missing.
+  - The three modes read ONE scope (`RebarScope`, Core): rebar sets, described as before with `"system": null`, and every `RebarInSystem`, read into Revit-free facts and turned by `RebarSystemBars.Row` into the same row shape (bar type with both diameters, shape, quantity, Revit's own total length and volume, one bar's centreline, schedule mark, host) plus `"system": { "kind": "area" | "path", "id" }`. A row that would not read completely makes the coverage partial with its reason (`rebar_in_system`).
+  - `element_ids` may name an area or path reinforcement element, which scopes to its bars (`scope.system_ids_expanded`); a bar named both ways is read once. An id that is no reinforcement, or not in the document, is named in `scope.ids_not_read` and in the coverage (`element_ids`, partial) instead of being dropped. `host_id` keeps the sets and system bars of that host; a bar whose host would not read is a `host` reason.
+  - **Fabric is named, never silently absent.** A fabric sheet's steel is a mass from its type, not a bar volume the declared density weighs, so it is not added in: fabric in scope (on `host_id`, when given) is a `fabric` reason naming each element and the coverage is partial.
+  - The takeoff counts system rows per group and in total as `sets_from_systems`; the scope publishes `bar_sets_in_scope`, `system_bars_in_scope`, `fabric_in_scope`. The bending schedule schedules system bars under their mark, names their systems on each line (`systems`), and no longer lists area and path reinforcement in `not_included` (fabric stays). Reconcile compares the same takeoff, so a mark only the system bars carry is `not_in_schedule`.
+  - Docs: STRUCTURAL-REQUIREMENT-SET.md, "Steel in scope" under the bending schedule, and the area/path section. Contract: the `horizun_query_structure` description says so; tools/list unchanged (the description is abridged there), ledger not re-recorded.
+  - **Measured live, Revit 2025 and 2027:** an area system's takeoff by its id 29 bars / 87 m and a path system's 10 bars / 12 m, each equal to its own bars re-read by parameter, coverage complete; the slab's takeoff 54 bars = mat 15 + 39 system bars, `sets_from_systems` 3, coverage partial with 3 `fabric` reasons (fabric was on the slab); the schedule over the slab 54 bars on 3 system lines. Acceptance A5/A6 with B5's system bars in the hand count: Floors 233/233 bars, 2831.5 kg against 2833.4 by hand (-0.07 %), coverage complete.
+  - Live probes: `verify-rebar-systems` Y7 (each system's takeoff by its id against its own bars re-read by parameter, the slab's takeoff = mat + system bars, coverage complete - partial naming fabric when fabric is on the slab - and the schedule over the slab with the same bars); `verify-rebar-acceptance` A5/A6 now include B5's area and path bars in the hand count and A5 requires a complete coverage.
+- Tests (red first: 15 of 30 failed against stubs): `RebarSystemBarsTests` (Core); `RebarBendingScheduleTests` now asserts area and path are no longer `not_included`.
+
+#### L7 - placed shapes, couplers, per-face cover (live: `verify-rebar-placed` P1-P5 5/5, Revit 2024 and 2026)
+
+- **Circular hoops and spirals, placed from a rebar shape** (`shape_placement` on a circular section rule's stirrups: `shape`, `kind: lapped_circle | spiral`, and for a spiral `pitch_mm`, `base_finishing_turns`, `top_finishing_turns`, none defaulted).
+  - The shape is judged by its definition (`RebarShapeDefinitionByArc` and its `Type`), never its name: `shape_is_not_a_circle`, `shape_is_not_a_spiral`, `shape_definition_unreadable`. On a section that is not circular: `shape_placement_needs_a_circular_section`.
+  - A lapped circle is one placed hoop per zone station (`...#<zone>#s<k>`, layout single); a spiral is one zone laid out single, one placed spiral over the zone's length.
+  - Built with `Rebar.CreateFromRebarShape`, hooks cleared, fitted with `ScaleToBox` (box = centreline diameter + one bar, as documented) or `ScaleToBoxFor3D`, spiral pitch, turns and height set from the declaration.
+  - Re-read: the tessellated drawn centreline against the radius, plane/station or height (`placement_centreline`), the shape's diameter/radius constraint parameter (`placement_size_parameter`), the spiral's four parameters (`spiral_parameters`). Audit: `placed_shape_differs`; the lap's start angle and length are in `not_checked`.
+  - A chain with an arc declared as curves is still `arc_chain_not_buildable_from_curves`; a single arc between two points builds, as measured, and needed nothing new.
+- **Couplers** (`laps: [{ at_mm | at_ratio, coupler_type_name }]`): collinear pieces meeting at the station, joined end to start by `RebarCoupler.Create`; `coupler_type_not_found` / `coupler_type_ambiguous`; a layer mixing couplers and overlaps, or `toward` beside a coupler, is refused. Re-read with `GetCouplerId` on both bars, the coupler's type and `CouplerLinkTwoBars`. The audit now checks `missing_coupler` and `coupler_type_differs` (removed from `not_checked`; `coupler_incompatible` stays).
+- **Cover on one face** (`face: { normal: [x, y, z] }` on a cover rule): every exposed planar face whose outward normal is the declared one gets the cover type (`SetCoverType`), found again inside the transaction and re-read face by face; `cover_face_not_found` lists the normals the host has. Per-face rules do not feed containment's single cover.
+- **Free-form bars** stay not implemented: a non-planar centreline is `curve_not_planar`, whose message now says why (`CreateFreeForm` gives a bar with no shape or layout to verify).
+- RebarFacts publishes `coupler_readable` per end. New Revit-free code: `PlacedShapes`, `CoverFaceRules`, `RebarAuditRules.CheckCoupler`.
+- Tests (red first): `PlacedShapeTests`, `SectionCouplerAndFaceCoverTests`; two existing tests updated to the new truth (a face word is still refused; `missing_coupler` is now checked). Add-in builds 2023, 2024, 2026, 2027 with 0 warnings. Nothing measured live yet.
+
+#### L10 - scale, notation, comparison (live: XL 8/8, Revit 2023-2027 at 0a411522)
+
+- **Large sets in pieces: `chunk` on `horizun_plan_reinforcement`, `horizun_apply_reinforcement` and `horizun_audit_reinforcement`.** `chunk: { by: level | host_type, hosts_per_piece (1-2000), piece_index, partition_sha256 }` runs ONE piece of the set, so a building of tens of thousands of bars becomes N calls a caller submits with `horizun_submit_job` and polls with `horizun_job_status`.
+  - The command reads the hosts every selector reaches with the resolver's own host selection and cuts them with `RequirementSetChunks.Split` (now wired to a tool); each rule of the piece keeps its `source_selector`.
+  - Every reply names the cut: `chunk.partition_sha256` (the set's sha256, the dimension, the size and every piece's hosts), `piece_count`, `next_piece_index`, the piece's hosts and its own sha256.
+  - The apply REQUIRES the digest (`chunk_partition_required`, and the refusal does not hand it back); a cut that moved between two calls of a loop is `chunk_partition_changed`. Also `chunk_bad_request` (including `chunk` with `host_ids`) and `chunk_piece_out_of_range`.
+  - The token binds `chunk`; provenance keeps the WHOLE set's sha256, so a whole-set audit later does not call the pieces' bars stale; the audit of a piece judges orphans in its own hosts only.
+  - Calls without `chunk` mean what they meant before. The recommended loop is in `docs/STRUCTURAL-REQUIREMENT-SET.md`.
+- **`horizun_query_structure mode=parse_notation`** (`lines: [...]`, 1-5000 strings): each schedule cell read by `RebarNotation` into bars, length and spacing or zones in mm, or refused with its code; one refused line never stops the rest, and a request that is not a list of strings is `notation_lines_not_usable`. Reads no model.
+- **`horizun_query_structure mode=compare_bars`: bar-by-bar comparison** of two sets of bars of the active model (`element_ids_a` or `host_id_a` against `element_ids_b` or `host_id_b`), under `bar_tolerances: { identical_mm, near_mm, length_mm }` - required, no defaults.
+  - A bar is one position of a set that carries a bar: position 0's drawn centreline offset by `GetBarPositionTransform`, as the apply and the audit place it. A free-form set of several positions is reported `unreadable`, not guessed.
+  - `RebarBarComparison` (Core): mean point-to-segment distance between centrelines, sampled both ways and the larger kept, and the length difference; same NOMINAL diameter only.
+  - One-to-one greedy pairing, identical pairs first, then by distance (documented as not a global optimum). Each bar of A is `identical`, `near` or `unmatched` (with its nearest same-diameter bar of B, however far, and which bar of A took it); B's leftover bars are listed. Verdict `identical` / `incomplete` / `differences_found`; rows paged by `offset` / `max_rows`.
+  - Measured offline: 20 000 bars a side paired in about one second (uniform grid over the boxes; nothing that could match is pruned).
+- **XL fixture and probe** (live: 8/8 in Revit 2023-2027): `scripts/live/verify-rebar-xl.ps1` builds 320 beams (about 20 500 bars from one section rule), plans every piece, applies and audits each through `horizun_submit_job`, and records seconds per piece against ceilings declared in its header.
+- **Schedule cards from DWG and vector PDF:** `horizun_read_schedule` reads extracted DWG entities and vector PDF primitives with PdfPig 0.1.13, returning rows and named refusals for ambiguity.
+- **Contract:** new keys `chunk` (plan, apply, audit), `lines`, `element_ids_a`, `element_ids_b`, `host_id_a`, `host_id_b`, `bar_tolerances`, and the two modes. tools/list grew +2,899 B (ledger re-recorded with `HORIZUN_UPDATE_TOOLS_LEDGER=1`; headroom 47,408 B).
+- Tests (red first): `RequirementSetPieceTests`, `RebarNotationLinesTests`, `RebarBarComparisonTests` (Core); `SteelScaleContractTests` (Server).
+
+#### Declared hook lengths (live: `verify-rebar-hooklen` 6/6, Revit 2023-2027 at 0a411522)
+
+- **`lengths_mm` on a `hook_types` entry**: `{ "<bar_types id>": mm }`, Revit's Hook Length of that hook on that bar type ("stirrup #3 with 135° hooks of .10" is `{ "N3": 100 }`). It is Revit's own measure, not the straight tail: measured on Revit 2024, 100 on a 10M 135° stirrup hook draws a 71.18 mm tail,. Until now the set could only name a `RebarHookType`, and the extension was whatever the bar type carried.
+  - Refused with their path (`hook_types['H135'].lengths_mm['N3']`): an undeclared bar type id, a value that is zero, negative, not finite or not a number, `lengths_mm` on a `none: true` hook, an empty or non-object `lengths_mm`, and two entries giving one pair of type names two lengths.
+- **It changes a TYPE.** Revit keeps the length on the bar type, once per hook type (`SetAutoCalcHookLengths` / `SetHookLength`). Read by reflection over the five installed `RevitAPI.dll`: the same members in 2023 to 2027, so no per-year code.
+  - `horizun_plan_reinforcement` lists every declared pair in a top-level `bar_type_changes`: current length (auto-calculated or fixed), declared length, `change`, and a sentence that every bar of that type with that hook takes it. A pair already fixed at the declared length is `change: false`; an auto-calculated one is a change even at the same number.
+  - `horizun_apply_reinforcement` lists the same pairs in the rehearsal, writes them in the same transaction before any bar is built, and re-reads every pair after the commit (`bar_type_changes`: requested, before, read, verified). A pair that does not read back fixed at the declared length fails the verification; a bar or hook type name that resolves to nothing or to two types is a refusal (`kind: bar_type_change`). The token binds each pair's current state.
+  - `horizun_audit_reinforcement` compares each pair once (`hook_lengths`) and reports the new finding `hook_length_differs` (error) for a different or auto-calculated length, `unreadable` when it could not be read.
+- Tests (red first): `HookLengthTests` (Core) - parsing and refusals, and the plan, re-read and audit comparison on the row the Revit reader builds (`HookLengthRules.ReadRow`).
+
+#### L10 - reading schedule cards (offline: synthetic PDF/DWG/primitive fixtures and 67 real PDF sheets read for counts only; the DWG route on a real file is not measured)
+
+- **`horizun_read_schedule`** (new tool, host-resident, read-only; toolsets `structure` and `interoperability`): reads reinforcement schedule SHEETS into rows, bar notation and self-checks, and proposes the beam cards as a `horizun.structural-requirements/1` set. Exactly one source per call: `file_path` (a vector PDF), `cad_entities` + `cad_text_anchor` (the entities `horizun_cad_extract` returns for a DWG) or `primitives`. See docs/STRUCTURAL-REQUIREMENT-SET.md, "Reading schedule cards".
+  - **One pure reader**, `ScheduleCards` (Core): segments, polylines and positioned texts in drawing millimetres, every window a multiple of the callout's text height. Beam cards (framed card, title = mark, axis labels, `n#k L=x.xx` over its line, hooks walked along the bar's colour - a tick or a bend of chords and a leg, read as 90/135/180 - zones `60e#3` over `c/.30`, `11@.08`, `14#3@.07`, `SON n`, `Son n Vigas`, `B=.. H=..` as written), wall cards (turned callouts beside their bars, level lines, `n#k` with `c/.20`) and bending tables (header texts DECLARED by the caller in `table.columns`; no header dictionary compiled in). Every callout goes through F3 `RebarNotation`.
+  - **Declared, never inferred:** `scale` (`scale_not_declared`) and `tolerances { length_mm, zone_span_mm }` (`tolerances_not_declared`).
+  - **Refused by name:** `callout_without_line`, `callout_two_lines_equally_close`, `line_claimed_by_two_callouts`, `callout_notation_refused` (with `notation_code`), `hook_ambiguous`, `zone_spacing_missing`, `zone_bar_not_stated`, `horizontal_bar_spacing_missing`, `level_without_line`, `card_frame_not_found`, `card_frame_shared`, `card_kind_ambiguous`, `sheet_has_no_text` (no OCR), `text_formatting_not_read` (MTEXT codes), `cad_text_anchor_not_declared`, the `table_*` codes, and the tool's own `source_not_declared`, `file_not_found`, `pdf_not_readable`, `page_out_of_range`, `too_many_pages`.
+  - **Self-checks, each `pass` / `fail` / `not_run`:** `bar_length_matches_callout` (drawn line plus hook legs at the scale vs L), `zone_count_matches_its_length` ((n-1) x s vs the dimension line), `stirrups_sum_to_stated_total`, `zones_fill_axis_span`, `levels_agree_with_scale`, `table_row_total_matches`, `table_rows_sum_to_total`, `cards_match_stated_count`.
+  - **The proposal is all or nothing:** each beam card one `section_rules` entry keyed by `mark`, `host_length` layers per face, measured zones; the caller names the bar and hook types. A card with a refusal or a failed check, a baston, a one-end hook or asymmetric zones (unless `card_left_is_host_start`), an unread face or an undeclared type stops the whole proposal, and every reason is listed in `requirement_set_not_proposed`. Held to `StructuralRequirementSet.Load` by the tests.
+  - **PDF primitives** (`SchedulePdf`, server): stroked lines with their colour, letters joined into texts; curves and fills counted and left out. MEASURED: PdfPig 0.1.13 already reports a `/Rotate 90` page in its displayed frame, so no rotation is applied (applying one turned every title on its side).
+  - **Real sheets, read-only, counts only:** 67 PDFs of one project (none of their content is in the repository). On the beam-card sheets of the style above: 14 to 20 cards per sheet found, every zone read passed its count check, bar lengths mostly within 50 mm; a second drafting style (zones that state no bar) is refused zone by zone. No real set was proposed whole. Figures in the L10 report.
+- **Dependency: PdfPig 0.1.13** (Apache-2.0), owner-approved, in the SERVER only - the exact version the add-in already pinned. `src/Horizun.Server/packages.lock.json`, THIRD-PARTY-NOTICES.md, `scripts/sbom.ps1` (every server NuGet package is now a PURL component with its licence, read from the published deps; an unknown package fails the SBOM) and `scripts/pack.ps1` (every server package's runtime assemblies must be staged) were updated; `scripts/sbom.tests.ps1` asserts the PdfPig package and assemblies are Apache-2.0.
+- **Contract:** new tool `horizun_read_schedule`; the contract hash changes (server and add-in update together). tools/list grew +3,979 B (ledger re-recorded with `HORIZUN_UPDATE_TOOLS_LEDGER=1`; headroom 43,059 B).
+- **Still to measure live:** a real schedule DWG through `horizun_cad_extract` (where the extractor's text point sits for the justifications a schedule uses, MTEXT, colours and layers), and a proposed set planned and applied against real beams.
+- Tests (red first): `ScheduleCardReaderTests` (Core, 50) on synthetic sheets (`ScheduleCardFixtures`); `ReadScheduleToolTests` (Server, 11) on synthetic vector PDFs drawn by `SyntheticPdf`, including a `/Rotate 90` page and a page with no text layer.
+
+#### hold_ends - the ends where the plan put them (stage 1b, lot 3; live: E2/E3 Revit 2023-2027, acceptance B1)
+
+- **`hold_ends`** (root bool, or per rule, overriding the set's; off unless asked). The apply re-pins a bar's handles to fixed distances from its host faces and steps them until the drawn bar is within 1 mm of the plan at every vertex, before the commit; after the commit it re-reads every held bar and reports `checks.hold_ends` (`before_mm`, `after_commit_mm`, `verified`). A bar that cannot be held fails the verification. Closed, coupled and placed bars are not held (`applicable: false`). A non-boolean `hold_ends` is refused with its path. See docs/STRUCTURAL-REQUIREMENT-SET.md, "Holding the ends where the plan put them".
+- Revit 2025 already has the target-element constraint API (the old pair is obsolete there); 2025-2027 use it, 2023-2024 the old one.
+- Tests (red first): `HoldEndsTests` (Core). Live: `verify-rebar-holdends` E2/E3 in all five years; E1 not assessable (the synthetic fixture does not make Revit snap).
+
+#### More than one coupler per layer (stage 1b, lot 5; live: P6 Revit 2023-2027, acceptance B2)
+
+- The refusal `coupled_layer_has_more_than_one_splice` is gone: a layer splits into one piece per stretch, and a middle piece is coupled at both ends (end 0 into the coupler before it, end 1 into the one after it). Measured live: `verify-rebar-placed` P6 (Revit 2024, and the five-year matrix) and acceptance B2 (2025, 2027).
+- Tests (red first): `A_layer_with_two_couplers_has_a_middle_piece_coupled_at_both_of_its_ends` (Core).
+
+#### overlapping_bar - bars of different rules against each other (live: `verify-rebar-overlap` 6/6, Revit 2023-2027 at 0a411522; acceptance B3)
+
+- **Measured live, Revit 2024 and 2026:** a wall's horizontals laid through a boundary element's stirrups were pushed by Revit until they touched them, and the array came out 12.5 mm short. Revit moves a bar that crosses another and says nothing. Until now `overlapping_bar` sat in `not_checked`: no check looked at two sets against each other.
+- **`clearances` on the requirement set:** `{ between_rules_mm, crossing_mm, pairs: [{ rules: [a, b], min_clear_mm }] }`. These are the minimum clear distances between bar SURFACES, declared and never compiled in.
+  - `between_rules_mm` holds bars that run alongside (within 45 degrees).
+  - `crossing_mm` holds bars that cross. It is 0 unless declared, because crossing bars are tied in contact.
+  - A pair overrides `between_rules_mm` for two declared rule ids.
+  - Refused by path: values that are negative, not finite, not a number or over 500 mm; an unknown key; a pair that does not name two DECLARED rules (`reference_not_declared`); a pair without `min_clear_mm`.
+  - A chunked piece keeps only the pairs whose two rules it still carries.
+- **Without `clearances` only intersections are checked.** These are surfaces that interpenetrate beyond `tolerances.length_mm`. The reply says so (`checked: intersections_only`).
+- **Geometry.** Each bar is its centreline polyline (arcs sampled) at every position of its set, with the MODEL diameter. The closest distance between segments is exact; the clear distance is that distance less both radii. The broad phase is a grid: segments are cut into pieces no longer than a cell, and each pair of pieces is measured once, in the lowest cell their boxes share.
+- **Excused, each with a test:**
+  - bars of one set or one layout (the zones of a stirrup zone rule, the pieces of a mat component);
+  - the pieces of a declared lap (in contact, D4) or a declared coupler (end to end);
+  - a cage's stirrups and ties against its own longitudinal bars, and its stirrups against its ties (same section or wall boundary rule, same host);
+  - hooks. The plan's centrelines carry none; the audit cuts the hook off the drawn bar where the hook-free centreline ends.
+  - Excused contacts are counted in `excused`. Two longitudinal bars of one cage, two ties, another cage's bars, starter bars declared as their own rule, and another mat's layers are all checked.
+- **Plan and apply (`horizun_plan_reinforcement`, `horizun_apply_reinforcement`)** refuse BOTH sets of a clash, before anything is written. `bars_intersect` is a clash through each other; `bars_closer_than_declared_clearance` is a clash under the declared clearance; `overlap_not_evaluable` means no model diameter.
+  - Each refused row carries `overlaps`: the other rule and host, the worst clear distance, the point, alongside or crossing, and the number of bar pairs.
+  - The reply's `overlap_check` publishes what was checked, the clearances, the counts, the broad phase and the excuses.
+  - A refusal, not a warning: a warning would let the apply build steel that Revit then moves.
+- **Audit (`horizun_audit_reinforcement`)** reports the new finding `overlapping_bar` (error), one per pair of sets. It names both rule ids, both bar ids, the clear distance, the required clearance, the point, the kind, the relation and the number of bar pairs.
+  - The bars are the ones the model carries: the drawn centreline at every position Revit says exists.
+  - A set that cannot be measured is `unreadable` about `overlapping_bar`, never a pass.
+  - The reply carries `overlaps`.
+- **`not_checked`:** `overlapping_bar` is out. `duplicate_bar` stays: two sets laid as the same bar are not looked for as such, and where they are different rules `overlapping_bar` reports them. `overlap_with_unattributed_bar` is new: bars no rule of the set built are not compared.
+- **The rows now publish `belongs_to`:** the declared rule, the layout, the cage and its part in it, and the declared lap or coupler. The section, wall boundary, stirrup zone and mat expansions set it.
+- **Speed, measured at a desk:** 21,721 bars in 2,001 sets (ten storeys: 30 x 30 m slabs with four mat layers, 49 caged columns) and 51,121 segments took 1,281,368 exact tests, against about 1.3 billion for all pairs, in 0.85 s.
+- **Live probe:** `scripts/live/verify-rebar-overlap.ps1`, 6/6 in Revit 2023-2027. Its first runs failed on the harness, not the product: the column cage's stirrups lacked the host's cover, the beam bar ran through a corner bar outside the beam, and an empty `unreadable` list was counted as one.
+  - O1/O2: a beam bar into a caged column. Declared through the column's corner bar, the plan refuses both sets. Placed between two stirrup stations on the column's centre line, under a declared 25 mm clearance, it plans, applies and audits with no `overlapping_bar`.
+  - O3/O4: a wall mat against a boundary element. Run through it as measured, with no clearances, it is refused, and the reply says only intersections were checked. Kept out of the region under 25 mm, it plans, applies and audits clean.
+  - O5/O6: a second beam and column. Planned as one set, the pair is refused. Built as two separate sets, the audit of the whole reports `overlapping_bar` on the same pair (with `crossing_mm` 5, so a bar Revit pushed into contact is a finding too).
+- **`verify-rebar-walls.ps1` changed:** its mat horizontals ran end to end through the boundary regions, across the boundary's vertical corner bars (6.5 mm apart against 12.75 mm of radii), and the plan now refuses that. They now stop 480 mm from the wall's ends.
+- Tests (red first): `RebarOverlapTests` (Core).
+
+#### Bars that follow the face of sloped and variable-thickness slabs (live: `verify-rebar-slabface` 4/4, Revit 2023-2027 at 0a411522; acceptance B4)
+
+- **`follow_face: { planarity_mm, min_facet_mm }` on a mat component, and `into: [ids]` on a mat rule.** Measured on a real roof (two floors, a flat strip and a 6% slope meeting at a break), whose bars a flat mat could not lay. Its top and bottom bars run across both pieces bent at the break, and its bars across the slope are each at their own height. The geometry is read from the host meshes the bridge already reads; nothing casts rays.
+  - The face is the outermost envelope, along `face_normal`, of the facing triangles of the host and the `into` elements, merged into planar facets within `planarity_mm`.
+  - Each bar is that face cut at its station, every facet's plane moved inward by `offset_from_face_mm` along its own normal. It bends where two offset planes meet: the higher in a valley, the lower under a ridge, so the cover is the cover to the face it lies under on both sides. On the roof that is 1.199 mm past the break for the top bars and 1.199 mm before it for the bottom ones.
+  - Bends appear only at real breaks. The ends are the face's extent at that station less the end cover.
+  - Stations whose polylines are the same, translated, are one Revit set (a run); every other station is its own, a single when alone. A component covered by one run keeps its plain id and layout; otherwise the ids are `#run1`, `#run2`, ... (`#segN` after a trim), deterministic, for the audit.
+  - Each set is hosted by the element most of it lies on and declared `into` the others, so containment is measured against their union. Each hosting element's cover is held as a flat mat's host is.
+  - Hooks stay on the ends at the face's edge, on bent bars too. The `openings` policy applies to the face's holes (found per element) exactly as on a flat mat.
+  - The plan row carries `follow_face`: the polyline, the facets with their normals and deviation, the stations, host and into.
+  - New refusals, each with its measurement: `face_steps_under_the_bar`, `face_not_planar_enough_to_follow` (a bend at a curved face's tessellation, or at a curved face the mesh did not attribute), `face_facet_too_small_to_follow`, `no_face_under_the_bar`, `no_face_to_follow`, `mat_into_needs_follow_face`, `follow_face_not_usable`. In the set: a missing or non-positive `planarity_mm` / `min_facet_mm`, an unknown key, and `into` naming the host.
+  - Verification and containment are unchanged: each built bar is compared with its planned polyline as any bent bar is.
+- **The host mesh now says which triangles came from a curved face** (`HostMesh.CurvedTriangles`, filled where it is read off Revit and carried through the weld and the crack repair), so a follower can tell a tessellation from a break.
+- **A flat mat is unchanged.** The ring chaining it uses for openings is shared with the follower and keeps its messages.
+- **Live probe:** `scripts/live/verify-rebar-slabface.ps1`, 4/4 in Revit 2023-2027 (T1 the roof's top, T2 its bottom with 180° hooks, T3 a variable-thickness slab made with a variable-layer floor type and `horizun_slab_shape`, T4 the `into` refusal).
+- **Contract:** unchanged (the set's keys are not in the tool schema); tools/list ledger not re-recorded.
+- Tests (red first): `MatFollowFaceTests` (Core).
+
+### The former 2.3.0 candidate
+
+Minor release over 2.2.0: reinforcement from a detail schedule (F1-F3: section rules, bastones, laps, the bar notation of a schedule and large sets cut into jobs), the `local` toolset for local or short-context models, a `tools/list` that no longer pays for the same argument text once per tool, with a budget test that keeps it from growing back, and a registration that removes the product's own duplicate entries from each MCP client. Tool contract hash `96cc159db781d8108e837912` (2.2.0: `714d1a9ad33dbf3fd90afc6b`); bridge protocol 3, unchanged - a 2.2.0 add-in and a 2.3.0 server refuse each other by contract hash, so update both together, as always.
+
+#### L6 - stairs
+
+- **A stair is reinforced through what it is made of:** the waist is a structural floor sloped with `horizun_slab_shape`, each landing is a structural floor, and both are reinforced with `mat_rules`. The mat is measured on its face (see below).
+- **A stair element named as a host follows Revit.** Measured on Revit 2024 and 2026: Revit accepts a cast-in-place stair as a host, and a bar inside its solid is planned like any other. A stair Revit refuses is reported as `stair_not_a_rebar_host`, with the way out.
+- **Live:** `verify-rebar-stairs` T1 to T3.
+
+#### A bar exactly on the plane its normal declares
+
+- **Rounding noise is squared away; a bar off its plane is refused by name.** Measured on Revit 2024 (a validation fixture): an oblique column bar whose points had been rounded to 0.001 mm made `Rebar.CreateFromCurves` fail with "An internal error has occurred". The points were 0.0005 mm off the plane perpendicular to the declared normal. The same bar at 0 degrees, where rounding keeps the points in the plane, was built.
+- The plan moves the declared points (and arc through-points) onto that plane, through their mean height, when none is further than 0.01 mm from it.
+- Further than 0.01 mm, it is `curve_off_its_normal_plane`, with the distance.
+- A normal lying in the bar's own plane keeps its own refusal.
+- Tests: `NormalPlaneTests`.
+
+#### Cracks in Revit's triangulation
+
+- **A solid whose triangulation leaves a crack is closed rather than refused.** Measured on Revit 2024: a round column in a real model came back with 108 triangles and 4 edges not used once in each direction. Two of its faces tessellate a shared curved edge differently.
+- A loop of open edges no wider than the chord tolerance the mesh already declares is closed with triangles that run its edges the other way round. The width is 4 × area / perimeter.
+- The mesh's `source` says how many cracks were closed and how wide the widest was. A wider opening is a real hole and is still refused by name.
+- Tests: `MeshRepairTests`.
+
+#### Live measurement of the offline lots (Revit 2024 and 2026)
+
+Every rebar probe was run on Revit 2024 and 2026 at `b2514846`. That is 13 probes per year: 77 checks passed, 0 failed, and 2 were recorded as fixture missing. The fixture-missing checks are the area and path reinforcement types the template does not carry.
+
+What the live probes found, and what changed because of it:
+
+- **A column raised off its level was rolled back** (L8). Asked for base +3000 and a 3000 mm height on the first level, `horizun_create_elements` set the base first. That left the column 0 mm tall, Revit posted "Column height is not 0.0", and the error survived to the commit even though the next step made the column valid. The top is now set first whenever the wanted top lies above the current base (`ColumnConstraintOrder`).
+- **The end boundary element's corner bars sat 3.96 mm off the plan** (L5). The stirrups at both ends of the wall were identical except for the hooks' second pass. At the start, the hooks' corner rests against the wall's end face, both legs lie on the cover, and Revit laid the pass along the same leg. At the end, the corner fell inside the wall with one leg free, and Revit moved the pass half a stirrup along it, taking the corner bars with it. The end region's stirrup now starts at the corner against the wall's end face, with the same winding.
+- **A revolved round column was refused as not circular** (L7). Its end caps' centre vertices sit a hair off the axis and were read as a 0 mm radius. A vertex within the slack of the axis is now treated as on it. The refusal of a curved section that is not round now names the measured extents, the spread of radii and the slack.
+- **A stair's waist slab could not be meshed** (L6). For a sloped structural floor made with `horizun_slab_shape`, a mat's extents were taken over the whole solid, whose vertical end cuts reach past the face along the slope. The first bar was laid outside and refused. A mat is now measured on its face when that face is the host's only plane facing that way. A stepped host keeps the whole solid, so containment still refuses a bar over the lower step.
+- **A straight set's length is compared against the centreline Revit drew** (L6), not `TotalLength`. Revit rounds `TotalLength` per bar by the host's rebar rounding: a 4432.1 mm bar reads 4430, and nine bars came out 19 mm "short". Revit's figure stays in `revit_reports_mm`, beside `measured_centreline_mm`.
+- **Couplers leave a gap** (L7). Measured: a 56 mm CPL16M left the second piece 12 mm short of the station, and no type parameter predicts the gap.
+  - A coupled end is now held to what a coupled splice is: it lies on the declared line and inside the coupler's body, with the declared station inside the body too.
+  - The distance the end moved is the trim. The apply reports it as `coupled_end_trim_mm`, and the audit as `coupled_end_seated` (info).
+  - Length and shape are compared from the trimmed end.
+  - Revit seats a coupler at end 0 of both bars, and reverses a bar that offers it end 1, in either order. So the piece before the station is now declared from the station back, with the layer's start hook on its end, turned the other way.
+  - ~~A layer with more than one coupler is refused~~ - superseded in stage 1b: two or more couplers per layer are built, the middle pieces coupled at both ends (see below).
+- **The row at the stirrup hooks' corner may seat in either pass** (L10, measured in Revit 2024 and 2026).
+  - Revit's own tie-break decides which leg the hooks' second pass lies along. Identical beams in one model came out either way depending on their position.
+  - The corner bar seats in that pass's bend, so the row lands either 0 or 3.964 mm off the plan.
+  - Only that row now carries `hook_corner_seat_mm`, which is half a stirrup. Within it the audit reports `hook_corner_seat` as info; past it, the deviation is still `geometry_differs`.
+  - This is the same kind of allowance as decision D1 (the hook opening, accepted within one diameter at the hook corner), and the owner may reverse it.
+- **A system type the document lacks** (L4b): the refusal names the types the document has, or says it has none of that kind. Measured: Revit 2024's metric template has no area or path reinforcement type at all, and this bridge does not create types.
+- **Measured, not changed:**
+  - A bar that crosses another is pushed out by Revit until the two touch. A wall's horizontals laid through the boundary stirrups came out 12.5 mm short.
+  - Alone on a wall, the same side cover was honoured to the millimetre: 48, 52, 54.25, 56 and 64 mm were each laid as asked.
+  - Bars of different rules were not checked against each other (`overlapping_bar` in `not_checked`). They are now: see "overlapping_bar" above.
+
+#### Client registration
+
+- **Registering the MCP no longer leaves duplicate entries of the same product.** A machine that once carried the product as `horizun` ended with two entries launching the same `horizun-mcp.exe` (measured: Codex with `[mcp_servers.horizun]` and `[mcp_servers.horizun-revit]` side by side). `register-client.ps1` and `install-claude-desktop-extension.ps1` now remove, before registering, the entries of THIS product under another name: the retired names `horizun` and `horizun-next` when they launch a `horizun-mcp` executable, and any name that runs the very executable being registered. Everything else is left alone; a retired name that launches another program is kept and reported, and the run says what it removed. Codex: the table and its subtables are cut in the same write that adds the entry, after a dated backup, and the result is proved to be the original minus those tables (and to still parse when a Python with `tomllib` is at hand) or nothing is written. Claude Code: through `claude mcp remove <old> --scope user`, never a hand edit of `~/.claude.json`; without the CLI the command to run is printed, and project-scoped leftovers are reported. Claude Desktop: removed one member at a time with a backup, skipped with a notice while the app runs. `-KeepOtherEntries` opts out. Every read and write of `.claude.json`, `config.toml` and `claude_desktop_config.json` on these paths goes through the strict UTF-8 reader and the BOM-less, atomic writer of the 2.2.0 audit fixes: the BOM-keeping writer and the `ConvertFrom-Json` / `Set-Content -Encoding UTF8` path the change first carried are gone, so no path can put a BOM back or re-encode a non-ASCII name. `scripts/register-client-legacy.tests.ps1` (temporary profile, stand-in `claude` CLI, child processes under the same PowerShell as the suite) passes under 5.1 and 7; one case runs each client twice with a config holding a non-ASCII name - with an old `horizun` entry and without it - and requires the two results to be the same bytes, without a BOM (red against the change as first written). Not measured: a real Claude Code CLI and a real Claude Desktop.
+
+#### Toolsets
+
+- **`local`: a toolset for local or short-context models.** `HORIZUN_TOOLSETS=local` advertises core, reading (document facts, element listing and queries, model scan, quantities, view capture, navigation, model diff) and six typed writes (parameters, create, transform, delete, views, undo) - about a fifth of the full list: MEASURED 17 tools and 99,771 characters at the default `safe_write` profile (capture_view appears at `full_write`). It never carries the Python surface (a test fails if a tool from `unsafe_code` is added), and a budget test fails above the measurement + 10 %. `horizun_health.toolsets` now also names the toolsets a selection leaves out (`toolsets_not_active`) and how many tools are not advertised (`tools_not_advertised`). Toolset membership is not part of the contract hash, which does not change; the tools/list ledger records the new pack. docs/CLIENTS.md shows how to set it per client.
+
+#### Tools list
+
+- **Short forms for argument texts repeated across tools.** `target_document` (three wordings), `confirmation_token` (two) and the four cooperative-reading arguments of `horizun_list_elements`, `horizun_query_model` and `horizun_model_scan` were advertised word for word in 3 to 8 tools each. The advertised copy now shows a short form that keeps REQUIRED and every argument name; the contract, its hash (`ddabd733db91755296bf1634`) and `horizun://contract/tools` keep every word. MEASURED (every contract row, UTF-8): `tools/list` 475,800 -> 473,188 bytes (-2,612). A budget test now fails when the list grows past 473,188 bytes + 3 %, when a description of 100+ characters is repeated in three or more tools without a short form, or when a short form drops REQUIRED or an argument name. The optional schema facade is documented in `docs/plans/lazy-schema-3.0.md`; `full` remains the default.
+
+#### Reinforcement from a detail schedule (F1)
+
+- **F3: the bar notation of a schedule, read without guessing.** `RebarNotation.Parse` (Core, pure) reads `4#5`, `4#5 L=6.20`, `2#4+1#5`, `4Ø16`, `E#3 c/0.10` and `E#3 1@0.05 10@0.10 R@0.20` into bars, a length and a spacing or zones in millimetres; a decimal comma (es-CO) is read as `MeasuredNumber` reads it, and `1,234` is refused as ambiguous. Everything else is refused with a code (`notation_unrecognized`, `notation_bad_number`, `notation_rest_not_last`, ...). Not yet wired to a tool.
+- **F3: a large requirement set cut into pieces for `horizun_submit_job`.** `RequirementSetChunks.Split` (Core, pure) groups the hosts a set targets by level or by host type (category and type name), at most N per piece, and returns one loadable set per piece with every rule narrowed to that piece's element ids - its other filters kept, matched exactly as the resolver reads a selector - and reports rules that target nothing and element ids the inventory does not hold. The live XL measurement (20 000+ bars) is pending. Every rule of every piece keeps its original selector as `host.source_selector` (provenance, never matched on); the loader accepts it, the section expansion carries it and `horizun_audit_reinforcement` echoes it per row.
+- **A closed stirrup with hooks at both ends no longer reads as reshaped (D1, option A).** Revit's as-declared form of such a stirrup is OPEN at its first corner, that corner moved half the stirrup's diameter - where it lays the overlapping hooks; MEASURED 4.75 mm for a 10M stirrup, alike in Revit 2024, 2025, 2026 and 2027. The audit reported it as two `geometry_differs` errors (closed vs open, 4.75 mm). It now accepts exactly that: both open ends within one bar diameter of the declared first corner, published as an info finding `hook_corner_opening` with the opening measured; every other point is compared as before, a stirrup without hooks at both ends or open by more than a diameter is still an error (tests `A_hooked_closed_stirrup_open_at_its_first_corner_agrees_and_says_so`, `The_hook_opening_is_not_an_allowance_anywhere_else`).
+- **Section rules: reinforcement declared relative to the host's section.** A
+  structural requirement set may now carry `section_rules`: faces (`top`, `bottom`,
+  `left`, `right`, `perimeter`), counts, bar types, extents and a perimeter stirrup with
+  zones, for every member a selector picks — selectors now also take `mark` and
+  `level`. The resolver measures each host's frame off its own solid (straight members
+  along their line, inclined ones on the slope, columns up their height) and expands
+  the rule into ordinary reinforcement and stirrup zone rules (`<id>#h<element>#<layer>`),
+  so plan, apply, audit and provenance are unchanged. A member that is not a
+  rectangular prism, or whose cover cannot be read, is refused by name. See
+  docs/STRUCTURAL-REQUIREMENT-SET.md.
+- **Rebar audit: hookless ends reported as turning the wrong way.** Revit reports an
+  orientation for a bar end with no hook, decided by the curve and the normal, and the
+  audit compared it with the declared default — two `orientation_differs` per straight
+  set (measured live). Only a hooked end is compared now.
+- **Rebar audit: every bar a zone, mat or section built read as an orphan.** The orphan
+  check knew only the set's top-level `reinforcement_rules`, so bars recorded under an
+  expanded id (`<zone rule>#<zone>`, a mat component, a section layer) were reported as
+  `rule_built_nothing` by their own set. It now knows every id the resolver expanded.
+  Measured live on the section-rule probe; the existing zone probe had been accepting
+  that finding as known.
+- **Rebar apply: a correct straight set refused for the orientation of a hookless end.**
+  The apply's re-read compared the termination orientation at ends with no hook, as the
+  audit did; both now skip it (one rule, `OrientationApplies`). Measured live: four straight
+  16M sets read back exactly and were refused for it.
+- **Columns: `span: host_length` and section rules on members placed at a point.** A
+  stirrup zone rule could measure its run only along a location curve, so a column's
+  ties needed a typed `span_mm`. A member placed at a point now measures its height off
+  its own solid (base to top, offsets applied), and section rules lay a column's bars
+  and ties in its own section (up its height, the facing as the section's up).
+- **Rebar audit: a set of one bar reported as partly audited.** Revit will not report an
+  array length or a side for a single bar, and the audit filed both as `unreadable`
+  (measured live on a column's single face bars). They are not compared for a single
+  bar now, as the first/last-bar flags already were not.
+- **`horizun_query_structure mode=reconcile`: the model against its detail schedule.**
+  Pass the schedule (`mark`, `bar_type` or `diameter_mm`, `count`, `length_mm` of each
+  bar, optional `weight_kg`) and declared `tolerances` (`length_pct` required,
+  `weight_pct` optional); every bar in scope is read and compared mark by mark — count
+  exactly, total length and weight within the tolerances — and each mark only one side
+  has is named (`missing_in_model`, `not_in_schedule`). Weight is compared only with a
+  declared density and its source, as in `mode=quantities`. Tool contract: new mode and
+  arguments.
+- **Bastones: bars laid from one end of a member.** A section rule layer may extend
+  `{ from: start | end, run_mm | run_ratio }`: extra bars over a support region, a
+  declared length or a share of the member's measured length (0.25 = L/4), the end
+  cover kept; a run longer than the member is refused by name.
+- **A perimeter baston keeps its run.** A `perimeter` layer is split into its top and bottom pairs, and the split copied every extent field but the F2.2 run, so `extend: {from, run_mm}` on a perimeter layer failed when it was expanded. The run is copied now (test `A_perimeter_baston_keeps_its_run_on_every_face`).
+- **Laps (F2.1).** A section rule layer may be spliced: `laps: [{ at_mm | at_ratio, length_mm | length_db }]`, the length in mm or in bar diameters with the caller's multiplier (no code's lap length is compiled in). The layer becomes pieces `...#p1`, `#p2`… overlapping by the declared length; only its own ends keep their terminations. The pieces are not collinear (owner decision D4): every other piece sits one bar diameter across, in contact, toward the inside of the section, or the outside when `toward: "outside"` is asked; a moved piece that would leave the bars' cage is `lap_offset_does_not_fit`, and the laps of one layer name one direction. The audit measures each declared lap off the two centrelines the model returns - `lap_insufficient` when the overlap is short or the pieces do not stand at the declared distance across (one diameter; a collinear pair fails) - lists them in `laps` with `declared_across_mm` and `measured_across_mm`, and publishes `undeclared_lap` in `not_checked` for splices nobody declared. `stagger`, continuity between spans and between storeys are not laid (tests `SectionLapTests`).
+- **Two layers on one face no longer stand in each other.** Every layer on a face is spread across the same width, so a continuous pair and bastones on the same face, overlapping along the member, were planned onto the same positions. The plan now refuses that as `layers_coincide`; bastones from each end, which do not overlap, still share a face (tests `Two_layers_on_one_face_over_the_same_stretch_are_refused`, `Bastones_from_each_end_share_a_face`).
+
+#### Pre-release review (2026-10-10)
+
+- **A section rule on a footing is refused instead of laid as a column.** A host placed at a point was framed as a column - its axis up world Z, its facing as the section's up - whatever it was: a `{face: bottom, count: 5}` rule on an isolated footing laid short vertical bars inside a side face, which the plan accepted and the audit agreed with. Only a structural column is framed that way now; any other point-placed host is refused (`section_rule_refused`, "not a structural column") and pointed at `mat_rules`. `SectionPointHostTests` (red before the fix); live probe F3 in `verify-rebar-columns-footings.ps1`.
+- **`host_ids` only intersects for section rules too.** The 2.1.7 fix covered cover, reinforcement, stirrup-zone and mat rules; a section rule (new in this release) whose hosts all lie outside `host_ids` is now skipped as well, instead of refused. `HostNarrowingTests` covers the section path (red before the fix).
+
+### The former 2.2.0 candidate
+
+Minor release over 2.1.7: the culture, atomic-write, protocol, command-verification and DWG findings of the 2026-10-08 audit of v2.1.6 that 2.1.7 held back. **Bridge protocol 3** (2.1.7 was protocol 2) and tool contract hash `714d1a9ad33dbf3fd90afc6b` (2.1.7: `6d489de376b5e194786333e8`; D5, the model_diff identity fields, the guard-argument wording and the repair_memory quarantine wording each moved it): the server and the add-in must be updated together, which the installer already does. Arguments are unchanged except where an entry below says otherwise.
+
+#### Breaking
+
+- **Bridge protocol 3.** `tasks/cancel` now really cancels queued work through a new authenticated control message, `__horizun_cancel_job` (see "Protocol and concurrency" below). A 2.2.0 server refuses a 2.1.x add-in and a 2.1.x server refuses a 2.2.0 add-in: the reply names both contract hashes and nothing is sent. There is no partial deployment. `horizun_job_status` can report the new state `cancelled`, which a client that switched on the state names must accept.
+- **`horizun_coordination operation=show` reports `elements_painted_requested` in the dry run too.** The apply already said `elements_painted_requested` (6.10 above); the dry run still said `elements_painted`, a name that read as paint that happened when it counts the overrides asked for. A client that reads `elements_painted` from the dry run must read `elements_painted_requested`; what was verified is `overrides_applied` and `shown`. The contract says so, so the tool contract hash changes (`06f6099f32f59ceed40b8377` → `b8a1a5e2b760c6a47022ecd5`).
+- **Three writing tools no longer describe their guard arguments as a delete.** `horizun_write_params_verified`, `horizun_set_keynote` and `horizun_family_apply` carried `horizun_delete_verified`'s `target_document` and `confirmation_token` text word for word ("the document to delete from", "nothing is deleted"). They now say "the document to write to" and "nothing is written". Arguments, validation and behaviour are unchanged; the text is part of the contract, so the contract hash moves (`ddabd733db91755296bf1634` -> `5663f2c49479ebbd280926f4`; with the 2.1.7 repair_memory wording merged in, `714d1a9ad33dbf3fd90afc6b`) and a server and add-in of different builds refuse each other as for any contract change. A test keeps the delete wording on `horizun_delete_verified` only.
+
+#### Culture and dates — audit of v2.1.6 (2026-10-08)
+
+- **A decimal comma read as ten times the value.** Requirement-set numeric
+  operators (`gt`, `gte`, `lt`, `lte`, `between`) and planimetry rule values parsed
+  with `NumberStyles.Any`, which takes `1,5` as fifteen (and `(5)` as -5). Measured
+  text is now read by one helper: invariant form, or a single unambiguous decimal
+  comma (`1,5`, `0,125`); text that reads equally as a thousands group (`1,234`),
+  carries both separators, currency or parentheses is "not a number" and cannot
+  pass a numeric bar. `equals`, `not_equals` and `in_list` against a numeric rule
+  value compare by value, and against `true`/`false` match a Yes/No parameter's
+  stored `1`/`0` - they used to compare with the rule value's current-culture text
+  (`"1,5"`, `"True"`) and never matched on a Spanish machine.
+- **JSON values turned into current-culture text before being compared.** The CAD
+  audit and the CAD update compared a rule's parameter value (`1.5` → `"1,5"`,
+  `true` → `"True"`) with the element's display text (`"1,5 m"`, `"Sí"`), so a
+  number or a boolean the rule wrote could never agree and was reported as edited
+  by somebody. The reader now keeps the STORED value (the double in internal
+  units, the Yes/No integer, invariant) beside the display text, and agreement is
+  decided by the rule value's type, the way `horizun_write_params_verified` writes
+  it. An access-profile threshold given as a JSON number was refused as "no
+  numeric value" on a Spanish machine; export preset options were passed as
+  `"0,5"`. *Pending live verification* of the reader change in Revit.
+- **Timestamps re-formatted when a store was read back.** The diagnostics snapshot
+  store, the undo journal, the coordination ledger and the repair memory read their
+  own files with `JObject.Parse`, which turns ISO 8601 text into dates. The
+  snapshot then re-hashed `...56.1234560Z` as `...56.123456Z` and refused its own
+  file as `hash_mismatch` (whenever the fraction ended in 0), and every timestamp
+  read back as `12/31/2026 23:00:00`: `undo last` took December 2026 for newer
+  than January 2027, the coordination BCF `CreationDate` stopped being an
+  `xs:dateTime`, and the repair memory trimmed the wrong entries. They now read
+  with dates left as text and order timestamps by instant.
+- **A Spanish schedule CSV lost its progress.** A semicolon-separated schedule (what
+  a Spanish-locale Excel writes) had its `percent_complete` `37,5` rejected as
+  "not a number": the separator was detected, the decimal comma that goes with it
+  was not. A `;` file now reads a decimal comma; a cell with both marks is still
+  rejected rather than guessed.
+- **`horizun_write_params_verified tabular_source` compared a number and wrote
+  text.** With `decimal_separator` declared, a cell such as `1,5` was compared with
+  the model as 1.5, but the op carried the raw text to `SetValueString`, which
+  parses with the document's own decimal symbol - so it could land as 15 or be
+  refused. Such a cell is now written as the number it was compared as: converted
+  from the parameter's display unit to internal units for a Double parameter, the
+  integer for an Integer one. *Pending live verification* in Revit.
+
+#### Atomic writes — audit of v2.1.6 (2026-10-08)
+
+- **A corrupt repair memory was silently replaced by an empty one.**
+  `horizun_repair_memory` read a file that did not parse as an empty memory, and
+  the next write saved that emptiness over it - every recorded remedy lost without
+  a word. The file is now moved aside as `<file>.corrupt-<utc>`, kept unchanged,
+  and named in the reply's `memory_problem`; if it cannot be moved aside nothing is
+  written. Saves are atomic, and a named mutex spans processes, so Claude's and
+  Codex's servers no longer interleave their load-modify-save cycles.
+- **Durable records written straight over themselves, or through a shared
+  temporary.** The CAD update-operation and CAD link-load records were written
+  directly over the live file (a crash left half a record); the Power BI selection
+  channel deleted the live selection before moving a fixed `<file>.tmp` into place;
+  and the procedure-run record used a fixed `<file>.tmp` that two writers shared.
+  All now write through a temporary file of their own and swap it in, waiting out
+  a concurrent swap instead of failing. Procedure-run locks no longer distinguish
+  run ids that differ only in case (they name one file on Windows), and a Power BI
+  selection `channel` of `""` is refused instead of becoming a file called `.json`.
+- **`horizun_excel_write_rows` rewrote a held workbook in place.** When another
+  program held the workbook without delete sharing (Excel itself, an indexer),
+  `File.Replace` failed and a `File.Copy` fallback rewrote the user's file in
+  place, non-atomically, and reported success. There is no fallback now: the call
+  fails, the workbook is untouched, and the message names the verified new
+  workbook (kept as the temporary file) and the backup. When the workbook is
+  proved unchanged the idempotency key records the failure instead of staying in
+  doubt.
+
+#### Protocol and concurrency — audit of v2.1.6 (2026-10-08)
+
+- **`tasks/cancel` did not cancel.** It recorded the request and its status
+  message said queued work "is removed before it starts", but nothing asked Revit
+  to remove it, so a queued task ran anyway. It now sends the add-in a new
+  authenticated control message, `__horizun_cancel_job`, which takes the durable
+  job out of the queue if it has not started and finishes its record as
+  `cancelled`; the task becomes `cancelled` only then. A job already running, an
+  unanswered request or a submission Revit has not acknowledged yet is reported as
+  exactly that (`cancellation_answer`), never as cancelled. `horizun_job_status`
+  knows the `cancelled` state. **Bridge protocol 3:** server and add-in move
+  together, as the contract hash already required.
+- **"NEVER STARTED" could be said of a request that was running.** When a modal
+  dialog or a timeout made the add-in give up on a queued request, it decided
+  "never started" from a read of the request taken before removing it, and Revit's
+  UI thread could claim the request in between; on a timeout, a request that
+  finished in that same instant was reported as timed out. The removal now answers
+  whether it really removed the request (decided under the queue's lock), only then
+  is "never started" said, with a structured `never_started` beside it, and a
+  request that finished returns its real result. The server decides on that flag
+  (and on the transport's `cancelled_before_start`), no longer on the wording.
+  *Pending live verification* in Revit.
+- **A finished result was replaced by "cancelled".** When a cancellation arrived
+  while a tool call was completing, the server discarded the result it already had
+  and answered "cancelled - it may still be running in Revit", hiding work that had
+  happened and inviting a second write. A returned result is now delivered as
+  such; it is answered as cancelled only when the result itself proves the request
+  never started.
+- **Smaller protocol and concurrency defects from the same audit.** A task whose
+  submission may have reached Revit (sent, no answer) was declared failed and lost
+  its idempotency key; it now stays working and `tasks/result` reconciles it by
+  replaying the same key. `tasks/get` no longer blocks the server's reader thread
+  while another call holds the task (it reports the last recorded state after at
+  most one second). A `notifications/cancelled` sent with an `id` is answered
+  `-32600` instead of being left unanswered. The add-in keeps four pipe
+  connections for control messages, so cancellation and status still get through
+  when every ordinary connection is held by a queued command. A refused
+  `ExternalEvent.Raise()` now withdraws only its own request or job, instead of
+  failing every other one as "never ran". *Add-in changes pending live
+  verification* in Revit.
+- **Queued tool calls starved the server's thread pool.** Each tool call blocked a
+  thread-pool thread for its whole round trip to Revit, and each pipe read blocked
+  a second one, so a queue of calls slowed the server's own timers, heartbeats and
+  replies. Those waits now run on dedicated threads.
+- **One connection too many froze the bridge.** Found live on 2026-10-08: the
+  add-in's pipe has no buffer, and with every connection slot taken the listener
+  thread wrote its "too many connections" refusal before reading the request; the
+  client was writing its request at the same moment, both writes blocked, and the
+  listener stopped accepting anyone until that client went away. Refusals are now
+  answered on a bounded thread of their own that reads the request first; past
+  that bound the connection is closed unanswered. The listener never blocks.
+- **Every never-started result carries the structured proof.** The cancel control,
+  the shutdown drain and the shutting-down refusal answered "NEVER STARTED" in
+  words only, which the server no longer trusts; they now carry `never_started`.
+
+#### Command verification — audit of v2.1.6 (2026-10-08)
+
+- **`horizun_deliver_ifc` left the model modified.** The IFC exporter writes export
+  bookkeeping and needs an open transaction; `horizun_export` already rolls that back
+  inside an isolation group, but the delivery command committed it. It now exports
+  inside the same group, rolled back once the file is on disk, and reports
+  `model_isolation` (and `model_changes` when Revit's own flag proves the document
+  unchanged) exactly like `horizun_export`.
+- **CAD and IFC applies reported provenance they had not proved.** `horizun_apply_cad_plan`,
+  `horizun_apply_cad_update` and `horizun_apply_ifc_plan` marked a provenance row
+  `written: true` the moment the record was set, before the transaction committed and
+  with its commit status ignored. A row is now `written` only after the commit
+  returned `Committed` and the record read back off the element; every row carries
+  `written_state` (`read_back` / `not_written`), and a commit that does not land
+  leaves every row `written: false` with the status named.
+- **`horizun_quantities` takeoffs sent internal units under the declared label.** A
+  parameter takeoff converted a number only when its spec was exactly Length, Area or
+  Volume; any other measured spec (a rebar length, a mass, a force) went out in Revit's
+  internal units labelled with the declared unit. It is now converted to the declared
+  unit (m, mm, cm, ft, in, m2, ft2, m3, ft3, l, kg, t, N, kN, kg/m), or the reading is
+  refused as `invalid` when the unit is unknown or does not measure that spec. The
+  volume fallback reads a parameter named "Volume" only when it measures a volume.
+- **IDS: sibling `xs:pattern` facets are alternatives.** XML Schema ORs the patterns of
+  one restriction step; the evaluator required every one, so a value that followed one
+  of two declared conventions failed. One match now satisfies; with no match, a pattern
+  that could not be evaluated makes the result undecidable rather than a failure.
+- **IDS pre-check compared Revit's internal units against SI bounds.** The model
+  pre-check of `horizun_deliver_ifc` / IDS validation read a length in feet and a Yes/No
+  as 1/0, so a 3 m wall failed "<= 3.5" at 9.84 and every boolean requirement failed. A
+  measured value is now converted to the SI unit the IFC carries (m, m², m³, rad, kg,
+  N, Pa…) and a Yes/No reads TRUE/FALSE, as in the file evaluator; a measured value no
+  SI unit fits is reported as not established instead of compared raw.
+
+- **Plans from IFC and CAD placed elements off their storey under an elevated base
+  point.** `horizun_plan_from_ifc` (wall and column base offsets) and
+  `horizun_plan_from_cad` (heights declared above a storey, opening sill and head
+  heights) used `Level.Elevation`, which is measured from the level type's elevation
+  base, against geometry in the internal frame. With the project base point raised,
+  every derived offset was wrong by that height. They now use `Level.ProjectElevation`.
+- **`horizun_manage_schedules` removed the wrong fields and filtered lengths in feet.**
+  `remove_fields` resolved each `field_index` after the previous removal, so removing
+  positions 1 and 2 of A,B,C,D removed B and D; every entry is now resolved against the
+  schedule as it stands before the first removal, and two entries naming one field are
+  refused. A filter's `number_value` was handed to Revit in internal units (3000 on a
+  length field meant 3000 ft); it is now read in the unit the field measures — mm for a
+  length, m2 for an area, m3 for a volume, as given when unitless — and any other measured
+  field is refused (tool contract: `number_value` describes this).
+- **`horizun_transform_elements`: a correct copy of a wall with a door failed, and a
+  failed check left no undo.** Copying or arraying a host copies its inserts, and the
+  check demanded exactly one created element per source, so it failed after the commit.
+  Elements hosted (directly or through another) on a copy are now counted as dependents
+  and named (`dependent_created_ids`); anything else Revit made is named as unexplained
+  and still fails. The copies of hosted elements must be hosted on a face
+  (`hosted_copies_off_host`). The inverse for `horizun_undo` is recorded as soon as the
+  commit lands, so a batch that fails its check after committing still carries `undo`.
+- **`horizun_write_params_verified` changed parameter definitions without saying so.**
+  `allow_vary_between_groups` defaulted to true, so writing a value into a group member
+  silently let that parameter vary between group instances for the whole project. It now
+  defaults to **false** (behaviour change): a write to a group member whose parameter does
+  not vary is refused before anything is written. When the caller allows it, the change is
+  listed in `definition_changes`, re-read after the commit, and `horizun_undo` reverts it
+  (values first, then the definition). `tabular_source.category` takes one exact OST_
+  name, as `sequence.category` does: numbers and comma lists are refused.
+- **`horizun_coordination operation=show` reported a view as applied with its colours
+  refused.** The verdict looked at the view alone; overrides were read back on a sample
+  of 30. Every override is now read back, and the outcome is applied only when the view
+  exists, its section box is active at the asked extent and every override landed
+  (`shown`, `overrides_requested`, `overrides_applied`, `overrides_not_applied`).
+  `elements_painted` (which counted requests) is replaced by
+  `elements_painted_requested`; the postcondition is `overrides_applied`.
+- **`horizun_undo` refused to undo the first write of a text parameter.** Restoring a
+  never-written text parameter writes "" (Revit cannot unset a string), and the re-read
+  compared "" with the recorded null, so the undo rolled itself back. For a text
+  parameter state the two are now one state; nothing else is compared more loosely.
+  Measured live while probing the definition-change undo.
+
+- **`horizun_model_diff` says when "one project" is not proven (owner decision 2026-10-10, option B).** MEASURED in Revit 2023: two different projects made from one Autodesk template share their Project Information identity, and `compare` reported them as 276 elements unchanged, with no warning. Revit 2023 has no document creation GUID to tell them apart, so the comparison still runs, and `compare` and `colorize` now carry `project_identity_kind` (`creation` | `project_info`), `identity_proven` (true only for a creation GUID, Revit 2024+) and, when false, `warnings` with the code `identity_unprovable_2023`; a colorize applied unproven says so in `verified_means`. The contract text names the fields, so the hash changes (tests `A_creation_guid_proves_the_identity`, `Project_information_alone_proves_nothing_and_says_so`).
+- **Wall split: three checks that were reported but not enforced.** A pinned wall's
+  re-pin was attempted and never re-read — it now is, and a wall that did not take the
+  pin back fails the conversion (`verify_pin_not_restored`). The carrier's joins to
+  elements outside the split are now held to the ones it had before; a join it gained
+  is a refusal. A continuous footing's curve digest, reported before and after, is now
+  compared when the carrier did not move.
+- **`horizun_navigate` answered success with a selection that did not read back.** The
+  re-read flags `host_elements_verified` / `link_instances_verified` were reported beside
+  an ordinary reply; a false one now makes the call fail, with the same payload.
+- **`horizun_model_diff` compared two different projects, and keyed parameters by a
+  translated name.** Snapshots of two projects (different Project Information) are now
+  refused instead of reporting every element as added and deleted; a side whose project
+  identity cannot be read is refused too. Parameters are keyed by their BuiltInParameter
+  or shared GUID (project parameters keep their own name), so a model opened in another
+  Revit language no longer reports every built-in value as changed. Snapshot schema is
+  now `horizun.model-diff-snapshot/2`; a `/1` snapshot is refused with "take both again".
+- **Sleeves could cut a foundation without the structural opt-in.** `horizun_resolve_clash`
+  sleeves treated framing and columns as structural hosts by category, but not
+  structural foundations; a footing now needs the same opt-in.
+- **`horizun_navigate` refused every linked selection after the 6.12 fix.** The selection was read back with `Selection.GetElementIds()`, believed to report a linked element's link instance; measured in Revit 2026, it reports nothing for an element in a link, so `link_instances_verified` was always false and the new refusal failed every linked `selections` call. The selection is now read back by reference (`Selection.GetReferences()`), the way it was set: a linked element is verified as its link instance AND the element inside it, and `linked_elements_verified` is now a real check that the call requires. Contract text updated (Core `SelectionReadBack`, tests `SelectionReadBackTests`; live probe `verify-command-verification-t3b.ps1`).
+- **`horizun_model_diff` told two projects apart by an element the template hands to every project.** The 6.13 identity was the ProjectInformation element's UniqueId; measured live in Revit 2024 and 2027, a project made from Autodesk's template and another model from the same template share it, so two different projects still compared as one. The identity is now the document's creation GUID (`Document.CreationGUID`, Revit 2024+; kept by copies of the same project), with the ProjectInformation UniqueId only on Revit 2023; identities of two different kinds are refused rather than compared (Core `ModelDiffRules.ProjectIdentity`, tests `ModelDiffComparableTests`).
+
+- **`horizun_manage_revisions` wrote `issued` in the middle of its edits.** Revit locks an
+  issued revision, so creating one with `issued: true` and a description, sheets or clouds
+  failed on whatever came after, and an issued revision could never be updated. `issued`
+  is now written after every other edit, and an issued revision whose update states
+  `issued` is un-issued first (and issued again if asked).
+- **`horizun_cad_connect` assumed its transition type changes committed.** The tried and
+  the chosen transition types were committed without reading the status, and the type
+  was never read back. Both now commit through the guard and re-read the fitting's type;
+  a type that did not stick is a refused transition, not a fitted one.
+- **`horizun_plan_annotations` read its layout defaults in the caller's units.** The
+  defaults (offset 15, chain separation 15, clearance 10, displacement 1200 model / 30
+  paper) are millimetres but were taken in `units`, so with `units: "m"` a dimension was
+  planned 15 m off its element. They are now converted from millimetres; the tool
+  contract says so.
+- **Failure words that contradicted their state, and starts never checked.**
+  `horizun_mep_routing` said "was rolled back" beside `state: uncertain`; the headline now
+  follows the measured rollback. `horizun_pack_sheets` and `horizun_model_diff
+  operation=colorize` did not check that their transaction (group) started; a start that
+  did not happen now fails before anything is attempted.
+- **`horizun_cad_connect` wrote a drawn transition's numbers in the machine's culture.** On an es-CO machine the `means` sentence read "Revit's 241,4 mm fitting … (tolerance 25,4 mm)" beside fields carrying 241.4 and 25.4 (measured live). The sentence is built in Core with invariant numbers (`CadTransitionWords`, tests `CadTransitionWordsTests` under es-CO).
+
+#### DWG and geometry — audit of v2.1.6 (2026-10-08)
+
+- **DWG INSUNITS: four codes converted to the wrong size.** 8 (microinches) read as mils,
+  13 (microns) as nanometres, 14 (decimetres) as 0.1 mm instead of 100 mm and 17
+  (gigametres) as 1e9 mm instead of 1e12. The table now follows the DXF reference for
+  every code 1–24 (including miles, kilometres, ångströms, nanometres, astronomical and
+  US survey units); unitless and unknown codes are still refused.
+- **CAD audit: a curved wall built as drawn read as a quarter of its length.** The built
+  arc's sweep was taken as |a1 − a0|, so a 270° arc read as 90° and its extent was
+  reported different. The audit now reads the built arc's own sweep (its length over its
+  radius); without it, of the two arcs through the ends the one that agrees with the
+  drawn orientation is read. A minor arc built for a drawn major one is still reported.
+- **DWG reader: arc angles read as degrees.** The AutoCAD extractor writes the entity
+  list's angles, which are radians (a DXF *file* stores degrees; `entget` does not), and
+  the reader converted them as degrees — a real extraction's 3.141593..4.712389 became an
+  arc of 1.57°. Arcs from the extractor are now read in radians. Found while working the
+  lote 7 arc findings, on a cached real extraction.
+- **`horizun_acc_upload_status` misread accented file names.** The Desktop Connector log
+  was decoded as Latin-1, so a name like "Sección" read as "SecciÃ³n" and never matched.
+  It is decoded as UTF-8 now — measured on real connector logs: every non-ASCII name in
+  them is valid UTF-8.
+- **DWG reader: mirrored entities read in the wrong place.** ARC, CIRCLE, LWPOLYLINE,
+  INSERT and TEXT are written in their own object coordinate system, and a mirrored one
+  (extrusion 0,0,−1) was read as if its coordinates were world — a mirrored arc landed
+  reflected on the other side of the drawing. The extractor now records the extrusion
+  direction when it is not +Z and the reader converts with the DXF Arbitrary Axis
+  Algorithm; a mirrored INSERT becomes a reflection with its turn reversed, and a tilted
+  extrusion (no plan angle) is named in the reading.
+- **Nested blocks placed off by their parent's base point.** Placements and definition
+  points ignored the block definition's base point (group 10), so a block based anywhere
+  but its origin placed its nested symbols shifted by that point. The extractor now
+  records each definition's base point and placement subtracts it; extractions made
+  before it read as the origin, as before.
+
+#### Smaller fixes
+
+- **Messages no longer carry numbers in the machine's culture.** A rounded decimal concatenated into a reply or refusal followed the Revit thread's culture, so on an es-CO machine a sentence said `241,4 mm` beside a field carrying 241.4 (measured live in `horizun_cad_connect`, fixed there separately). Twenty-seven such sites in twelve commands (code-check travel, element creation, framing, line styles, MEP routing, structure planning, wall split) now format with the invariant culture; a source check (`MessageNumbersInvariantTests`) fails the build on a new one. Concatenation of a non-rounded double is not covered by that check.
+
+- **Every script reads the same under Windows PowerShell 5.1 as under PowerShell 7.** Ten scripts held non-ASCII text (an em dash, an ellipsis) without a byte-order mark; 5.1 reads such a file as the ANSI code page, where the third byte of an em dash is a closing double quote, so `verify-optimization-live.ps1` (which declares 5.1) could not even be parsed there. They now carry a UTF-8 BOM, and `scripts/script-encoding.tests.ps1` (in CI) fails on any script with non-ASCII bytes and no BOM. `dwg-state.tests.ps1` aborted under 5.1 at the first refusal it exists to observe, because 5.1 turns a native command's stderr into a terminating error under `Stop`; its generator call now runs under `Continue`. Both suites pass under 5.1 and 7.
+
+#### Pre-release review (2026-10-10)
+
+- **Text that looks like a date reaches Revit as the same text.** Every hop parsed with Newtonsoft's default, which turns ISO 8601 text into a DateTime: an argument `"2026-10-10T12:00:00+02:00"` reached the command as `10/10/2026 05:00:00` (this machine's zone, invariant culture), was written to the parameter like that, and the re-read compared against the same converted value, so it was reported verified. The stdin reader, both ends of the pipe, the dispatcher and the 95 commands that parse their own `paramsJson` now use `JsonText.ParseObject`, which keeps text as text. `WireDateTextTests` pins the parse and fails on any wire hop that converts again (red before the fix). No contract change.
+- **`hz-call.ps1` sends the arguments it was given.** It parsed them with `ConvertFrom-Json` - which under PowerShell 6+ turns ISO 8601 text into a DateTime - and sent that object back out, so `"2026-10-10T12:00:00+02:00"` left the helper as `"2026-10-10T05:00:00-05:00"` before the server saw it. Found while measuring the wire fix live: the helper reproduced the defect on its own. The arguments are still validated, and are now sent as text. `hz-call.tests.ps1` records what a fake server receives (red before the fix).
+
+### The former 2.1.7 candidate
+
+Patch release over 2.1.6 (tool contract: the descriptions of excel_write_rows format and replace, and what a repair_memory quarantine does, changed, so the contract hash changes to `6d489de376b5e194786333e8`; no argument added or removed; bridge protocol unchanged). It carries the security and installer findings of the 2026-10-08 audit of v2.1.6, and the guard that keeps a link's load-state change from crashing Revit when one of its elements is selected (owner decision 2026-10-10; no contract change); the culture, atomic-write, protocol, command-verification and DWG findings are held for 2.2.0 because the protocol change does not fit a patch.
+
+#### Security — audit of v2.1.6 (2026-10-08)
+
+- **`horizun_excel_write_rows format=csv` wrote any file anywhere.** It accepted any
+  extension, created missing folders and appended free text, so a `.bat` in the
+  Startup folder was one call away without Python permission. It now writes only an
+  absolute local `.csv` into a folder that already exists, refuses UNC/device paths,
+  alternate data streams and the Startup, Windows, Program Files and `.ssh` folders,
+  and goes through the workbook path's lock, backup, temp-and-replace and on-disk
+  re-read. Text starting with `= + - @`, tab or CR gets a leading apostrophe. An
+  append keeps the file's encoding (UTF-8, UTF-8 with BOM, Windows-1252; a character
+  the file cannot hold is refused, never written as `?`), delimiter (a `;` file gets
+  `;` and decimal commas) and line ending. Reply fields `encoding`, `delimiter`,
+  `newline`, `backup_path`, `replace_method`.
+- **`horizun_cde_cloud provider=opencde` sent the token wherever the arguments
+  said.** The bearer token went to any `server_url` and to whatever Documents API
+  base that server advertised. The token now belongs to the server named in the new
+  `HORIZUN_OPENCDE_SERVER_URL`; a `server_url` naming another is refused before any
+  request (it may be omitted), and a Documents API on another host receives the
+  token only if listed in `HORIZUN_OPENCDE_ALLOWED_HOSTS` — otherwise nothing is sent
+  there and the reply is `coverage_complete: false` with the reason. **Behaviour
+  change:** an existing OpenCDE setup must add `HORIZUN_OPENCDE_SERVER_URL`.
+- **`horizun_budget_compare` ignored `denied_tools`.** Its Excel and Power BI
+  destinations called `horizun_excel_write_rows` / `horizun_power_bi_push`
+  directly, so an owner who denied either still had it run. Each destination now
+  asks that tool's own admission first and is `skipped` with
+  `skip_reason: denied_by_owner` (nothing sent or written) when refused. The Excel
+  report is no longer a bare overwrite with a backup left beside the file: the new
+  workbook replaces the old one under the workbook lock via temp-and-replace, the
+  backup goes to the Horizun state folder, and `overwrite_policy` is checked again
+  under the lock.
+- **Reading an .xlsx inflated every part whole.** `horizun_excel_read_rows` (and the
+  write path's own reader) copied each zip entry into memory with no bound, so a
+  few kilobytes of crafted package became gigabytes. Parts are now counted while
+  they stream and refused past 256 MB each, 512 MB in total, or a 200:1
+  inflated/compressed ratio (checked once a part passes 1 MB).
+- **Content safety let several invisible characters through.** Variation selectors
+  (U+FE00–FE0F, U+E0100–E01EF — enough to hide ASCII one byte per character), the
+  soft hyphen, the combining grapheme joiner, the Hangul fillers, U+2065–206F and
+  the invisible musical formatting characters now become visible `[U+XXXX]` tokens
+  like the rest. One text/emoji presentation selector right after a visible
+  character is kept, so `❤️` is unchanged.
+
+#### Installer — audit of v2.1.6 (2026-10-08)
+
+- **The Run-key sweep never removed anything.** `complete-install.ps1` enumerated
+  the properties of a one-element array (`Length`, `Count`, …) instead of the Run
+  key's value names, on Windows PowerShell 5.1 and PowerShell 7 alike — so stale
+  resume entries were never swept and `-CancelPending` (which the uninstaller
+  calls) left every `HorizunMCPCompleteInstall-*` entry behind. It now reads the
+  key's value names. A generation that ends `registration_failed`,
+  `verification_failed` or `completion_failed` retries at sign-in at most three
+  times and then removes its own entry; the state records `resume_attempts`,
+  `resume_attempts_max` and `resume_cleared`. New test
+  `scripts/install-run-entries.tests.ps1` runs against a throwaway key under
+  `HKCU:\Software\HorizunTest`, never the real Run key.
+- **Registering corrupted the client's configuration under Windows PowerShell
+  5.1.** `register-client.ps1` and the Claude Desktop helper read
+  `~/.claude.json` / `claude_desktop_config.json` without an encoding (ANSI on
+  5.1: `José` → `JosÃ©`), re-serialised the whole document and wrote it back with
+  a BOM; and `ConvertFrom-Json` refused keys that differ only in case — routine in
+  `~/.claude.json`, one project entry per spelling of a path — so registration,
+  and the `verify-install.ps1` check right after it, failed on exactly the
+  machines that had used Claude most. A new `scripts/json-member.lib.ps1` edits
+  only the `mcpServers.<name>` member in the text: strict UTF-8 in (a file that is
+  not UTF-8 is refused and left alone), BOM-less UTF-8 out through a temp file and
+  a move, every other byte unchanged. The Codex TOML edit keeps the file's own
+  line endings and encoding the same way, and every reader (`verify-install`,
+  `verify-clients`, `mcp-clients.lib`) uses the same scanner. New test
+  `scripts/client-config-encoding.tests.ps1`: add then remove leaves the file
+  byte-identical, under 5.1 and 7.
+- **Setup handed the clients a server it had not verified yet.** The Inno
+  installer started the Claude/Codex registration helpers before writing the
+  deployment manifests and verifying the installed payload, so a verification
+  that failed and rolled back left the clients registered against the rolled-back
+  files. The helpers now start only after the payload is verified and committed,
+  and never after a rollback.
+- **Smaller installer defects from the same audit.** `install-release.ps1` waited
+  on Setup with `Start-Process -Wait`, which waits for the whole process tree, so
+  the bootstrap hung for as long as the completion helper Setup leaves running
+  waited for a client or for Revit; it now waits for Setup's own process and
+  returns its exit code. The server location is read from Setup's uninstall
+  record (`InstallLocation`) instead of assumed, and Setup hands
+  `complete-install.ps1` the real `-ServerPath` (which, installed, also finds its
+  sibling server). "Is Claude running" is decided by executable path and command
+  line (`scripts/client-process.lib.ps1`): Claude Desktop's own process no longer
+  blocks Claude Code's registration, and an open Claude Code is no longer reported
+  as Claude Desktop. Messages that named Start-menu shortcuts Setup never created
+  now print the real command. `install-release.ps1` is kept pure ASCII (5.1 read
+  its accented text as ANSI; a BOM would break `irm` use) and its usage names the
+  `& ([scriptblock]::Create((irm ...))) -AllowUnsigned` form, since `irm | iex`
+  cannot pass `-AllowUnsigned`. `scripts/mcpb-portability.tests.ps1` gained a BOM:
+  under 5.1 its UTF-8 `Ñ` (`C3 91`) read as a typographic quote and the file did
+  not parse.
+
+#### Live harness
+
+- **verify-live sent probes whose prerequisite was missing.** `Needs` was only checked when reporting, after the probe had run, so "close the open source before loading its detached closed-workset copy" closed the write document even when the closed-workset paths were never discovered, and the whole write tier then stayed shut (measured live in Revit 2026). A probe whose prerequisite is empty is no longer sent; it is reported not_covered as before (`scripts/verify-live.gates.ps1`, `scripts/verify-live-gates.tests.ps1`).
+- **verify-live opened an `-OldFile` saved by the running Revit version.** That is no upgrade: in Revit 2023 `HZ_OLD_2023` opened, became the active document and took the write tier with it. The file's version is read from its header first (typed `inspect`, nothing opened); when it is the running version the probe is not_covered with the reason `fixture_same_version`.
+- **A Revit crash during a live run is classified, never passed.** Every probe after the crash used to come back UNVERIFIED. verify-live now reads the Autodesk crash dumps written since the run started and files those probes under one verdict. `revit_crash_autodesk_adp` is the known Revit 2027 crash in `AdpSDKCore.dll+0x11b98` off the main thread; it exits 4, and the run is repeated. `revit_crash_unclassified` is any other dump or no dump; it exits 1 (docs/RELEASE-POLICY.md, "Revit 2027 ADP crash").
+
+#### Links
+
+- **Unloading or reloading a link with one of its elements selected crashed Revit.** MEASURED 2026-10-10 in Revit 2026: after `horizun_navigate` selected an element inside a link (by reference, as it must), `horizun_manage_links` unload or reload of that link committed and Revit died about three seconds later (0xC0000005 in RevitDB.dll, on the main thread) - three times, deterministically; the same reload with nothing selected did not. `unload`, `reload` and `change_path` now drop the selection references INTO that link first (the link instance and everything else stay selected) and report how many in `selection_references_cleared` (tests `A_link_change_drops_only_the_references_into_that_link`; live: the same sequence now leaves Revit running).
+
+#### Pre-release review (2026-10-10)
+
+- **A machine with only Claude Desktop no longer ends the installation in `registration_failed`.** Setup, the release bootstrap and `install.ps1` ask the completion helper for `-Client Both`, which skipped the "no client" path: register-client's "neither Claude Code nor Codex is configured" (exit 2) became `registration_failed`, exit 1, and a Run entry relaunched the hidden helper at the next three logons. It now reads as `failed_no_client` (exit 2), names the Claude Desktop helper, and removes its resume entry. `install-run-entries.tests.ps1` covers it under 5.1 and 7 (red before the fix).
+- **The release bootstrap reads the completion state instead of assuming it.** `install-release.ps1` printed "complete or safely scheduled" and exited 0 whenever Setup's finisher had written any status in the last seconds, `registration_failed` included. It now reads `state`: a failure stops the bootstrap with the status file named, `failed_no_client` gives the "start the client once" instructions, and an unknown state is not taken as success. `install-release-helpers.tests.ps1` covers the mapping under 5.1 and 7 (red before the fix).
+- **A repair_memory quarantine no longer claims a refusal that never happened.** The tool and its contract said "calls matching this exact shape are now REFUSED", but nothing refused anything - and nothing could: a failure shape is the failure's own message, known only once a call has failed. A quarantine now says what it is: the shape is marked do-not-retry, and `advice` on it answers `quarantine` with the reason, who set it, when, and `operation=release` to lift it. The 500-entry bound kept the most recently seen shapes whatever their state, so newer observations could drop a quarantine or a validated remedy; those are now kept ahead of the bound. The contract description changed, so the hash is `6d489de376b5e194786333e8`. `RepairMemoryQuarantineTests` (red before the fix). Refusing an identical call before it runs would need an argument fingerprint per shape: proposed for 2.4.0.
+- **create_elements binds a CSV's placements to its token.** With `tabular_source`, the plan hash covered `units` and `elements` only, and each `family_instance` row of the resolved plan recorded type, level and host but not where: a file whose rows kept their count, type and level but moved to other coordinates (or another file at the same path) was applied with the rehearsal's token, although the code comment promised it would refuse as stale. The hash now includes `tabular_source`, and every planned row records `start_mm`, `end_mm` and `rotation_deg`. `PlanHashFieldTests` pins both (red before the fix). No contract change.
+- **resolve_clash binds the network it will move.** The apply's token covered only the proposals' text and `clearance_mm`, while the connected network was worked out again at apply time and nothing recorded where its members were: a fitting connected after the rehearsal widened what moved, and a pipe already moved by hand was moved again by the same vector. The rehearsal now records the resolved plan - every member, its finding, mode, vector and location - and the apply recomputes it and refuses a different one as a stale plan. `PlanHashFieldTests` pins it (red before the fix). No contract change.
+- **`host_ids` only intersects, as the contract says.** A cover, reinforcement, stirrup-zone or mat rule whose hosts all lay outside `host_ids` was refused as `host_not_found` ("no element in this document matches"), and one required refusal aborts the whole apply: a set applied to the beams of one floor wrote nothing, and the audit of that floor reported differences on a correct model. Such a rule is now skipped; a rule that matches nothing in the document is still refused. `HostNarrowingTests` (red before the fix). No contract change.
+- **An IFC whose header contains the word "data" no longer loses its schema.** The STEP reader started the data section at the first "DATA" anywhere in the text, ignoring case, so a header carrying the word - a file named `Datacenter.ifc` in FILE_NAME, an author, an originating system - was cut before FILE_SCHEMA: the schema read as null, and with it `ifc_schema` in plan_from_ifc and validate_ids and the IDS `ifcVersion` check. Checked first on 24 IFC files the bridge exported from Revit 2024-2026: their headers ('ODA SDAI') do not contain the word, so a Revit export trips it only through its own file name. The data section is now the `DATA;` keyword after the header's `ENDSEC;`. `IfcHeaderSectionTests` (red before the fix).
+- **IDS reads an IFC4 door's or window's PredefinedType, not the attribute after it.** The evaluator took the first enumeration among an entity's last three attributes; for IFC4 IfcDoor and IfcWindow that is OperationType or PartitioningType, so `PredefinedType=DOOR` failed a door that is a door ("is 'SINGLE_SWING_LEFT'"). Where the schema chain is known the attribute is now read at its real position, and an unset one is reported as unset rather than replaced by the next enumeration. `IdsPredefinedTypeTests` (red before the fix).
+- **IDS compares a measure as a number.** A property value such as `IFCLENGTHMEASURE(2100.)` was indexed as the text "2100." (the reader asked for text before number, and text returns an unquoted token as written), so an IDS simpleValue of 2100, or an enumeration of numbers, failed on a string compare; ranges kept working, which hid it. Numbers are now read first; a quoted label stays text. `IdsNumericValueTests` (red before the fix).
+
 ## v2.1.6 — 2026-10-03
 
 Patch release over 2.1.5 (tool contract: new optional arguments and reply fields; nothing removed; still 123 tools). It gathers the defects found by two live exercises on copies of the exercise and Autodesk sample models in Revit 2026: the «Comité de obra» run of 2026-10-01 and the «Control 4D/5D con agentes» course rehearsal of 2026-10-03. Each fix was unit-tested offline and replayed live in Revit 2026 on its own branch; the 2023–2027 release gate runs on this tag.

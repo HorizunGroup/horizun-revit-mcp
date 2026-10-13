@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // THE IDS RUN: requirements → evaluation → findings → identified elements →
@@ -430,13 +430,15 @@ namespace Horizun.Revit.Core
             string fileSchema = ifc == null ? null : ifc.SchemaIdentifier;
             if (string.IsNullOrWhiteSpace(fileSchema) || specification.IfcVersions.Count == 0) return null;
 
-            string normalised = fileSchema.Trim().ToUpperInvariant().Replace("-", "_");
+            // Compared by schema FAMILY (IFC2X3, IFC4, IFC4X3), never by prefix: every IFC4X3
+            // identifier also starts with IFC4, so a prefix test either way took IFC4 and
+            // IFC4X3 for one schema. IFC4X3_ADD2 files write FILE_SCHEMA as IFC4X3_ADD2 or
+            // IFC4X3; both are the IFC4X3 family.
+            string fileFamily = IfcDeliveryRules.SchemaFamily(fileSchema);
             foreach (string declared in specification.IfcVersions)
             {
-                string want = declared.Trim().ToUpperInvariant();
-                if (normalised.StartsWith(want, StringComparison.Ordinal)) return null;
-                // IFC4X3_ADD2 files write FILE_SCHEMA as IFC4X3_ADD2, and some write IFC4X3.
-                if (want.StartsWith(normalised, StringComparison.Ordinal)) return null;
+                string want = IfcDeliveryRules.SchemaFamily(declared);
+                if (want != null && string.Equals(want, fileFamily, StringComparison.Ordinal)) return null;
             }
 
             return "this specification declares ifcVersion " + string.Join(", ", specification.IfcVersions) +

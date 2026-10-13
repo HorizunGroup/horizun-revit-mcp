@@ -387,6 +387,21 @@ namespace Horizun.Revit.Core
         /// <summary>Rotation in radians, for text and block instances.</summary>
         public double? RotationRadians;
 
+        /// <summary>
+        /// For a text read from the DWG: TEXT or MTEXT, and what places its point. TEXT: the
+        /// point is the baseline start; 72/73 are the horizontal and vertical justification
+        /// and the alignment point the one they name. MTEXT: the point is the insertion point
+        /// at the attachment (1..9, top-left to bottom-right) of a box TextBoxMm wide and high.
+        /// Null when the reader did not carry them (a reading made before they were recorded).
+        /// </summary>
+        public string TextType;
+
+        /// <summary>The entity's own true colour (#rrggbb, DXF 420) when it has one; null for an ACI or BYLAYER colour.</summary>
+        public string TrueColor;
+        public int? TextJustifyH, TextJustifyV, TextAttachment;
+        public CadPoint? TextAlignmentPoint;
+        public double? TextBoxWidthMm, TextBoxHeightMm;
+
         /// <summary>For a block instance: the name of the definition it REFERENCES - for a
         /// dynamic block that is the anonymous "*U11" AutoCAD generated and renumbers on edit.</summary>
         public string BlockName;
@@ -476,6 +491,10 @@ namespace Horizun.Revit.Core
         /// <summary>True when an edge this reading does not decode (ellipse, spline) cut a loop short.</summary>
         public bool HatchLoopsPartial;
 
+        private static JArray P3(CadPoint p) => new JArray(Math.Round(p.X, 4, MidpointRounding.AwayFromZero),
+                                                          Math.Round(p.Y, 4, MidpointRounding.AwayFromZero),
+                                                          Math.Round(p.Z, 4, MidpointRounding.AwayFromZero));
+
         public JObject ToJson()
         {
             var o = new JObject { ["id"] = Id, ["kind"] = Kind };
@@ -493,11 +512,26 @@ namespace Horizun.Revit.Core
                                             Math.Round(Arc.Centre.Y, 4, MidpointRounding.AwayFromZero),
                                             Math.Round(Arc.Centre.Z, 4, MidpointRounding.AwayFromZero)),
                     ["radius_mm"] = Math.Round(Arc.RadiusMm, 4, MidpointRounding.AwayFromZero),
-                    ["clockwise"] = Arc.Clockwise
+                    ["clockwise"] = Arc.Clockwise,
+                    // Where the arc starts, passes and ends: without them a reader of this JSON knows the
+                    // circle an arc lies on, not the arc - a bar's bend drawn as an ARC could not be
+                    // followed (measured on real schedule DWGs, horizun_read_schedule).
+                    ["start"] = P3(Arc.Start), ["middle"] = P3(Arc.Middle), ["end"] = P3(Arc.End)
                 };
             if (Text != null) o["text"] = Text;
             if (TextHeightMm.HasValue) o["text_height_mm"] = Math.Round(TextHeightMm.Value, 3, MidpointRounding.AwayFromZero);
             if (RotationRadians.HasValue) o["rotation_radians"] = Math.Round(RotationRadians.Value, 6, MidpointRounding.AwayFromZero);
+            if (TrueColor != null) o["color_rgb"] = TrueColor;
+            if (TextType != null)
+            {
+                o["text_type"] = TextType;
+                if (TextJustifyH.HasValue) o["text_justify_h"] = TextJustifyH.Value;
+                if (TextJustifyV.HasValue) o["text_justify_v"] = TextJustifyV.Value;
+                if (TextAlignmentPoint.HasValue) o["text_alignment_point"] = P3(TextAlignmentPoint.Value);
+                if (TextAttachment.HasValue) o["text_attachment"] = TextAttachment.Value;
+                if (TextBoxWidthMm.HasValue) o["text_box_width_mm"] = Math.Round(TextBoxWidthMm.Value, 4, MidpointRounding.AwayFromZero);
+                if (TextBoxHeightMm.HasValue) o["text_box_height_mm"] = Math.Round(TextBoxHeightMm.Value, 4, MidpointRounding.AwayFromZero);
+            }
             if (BlockName != null) o["block_name"] = BlockName;
             if (EffectiveName != null)
             {

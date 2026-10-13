@@ -10,9 +10,13 @@
 //   * Credentials never cross tool arguments and never leave through a reply or a
 //     log line. They come from fixed environment names or from the user's own token
 //     file under the Horizun data root, and they are sent ONLY to hosts the caller
-//     cannot redirect: developer.api.autodesk.com for APS, the named OpenCDE server
-//     and the Documents API base it itself advertised. A pagination link or a
-//     server-provided URL pointing anywhere else is refused before the request.
+//     cannot redirect: developer.api.autodesk.com for APS; for OpenCDE, only the
+//     server configured in HORIZUN_OPENCDE_SERVER_URL beside the token (a server_url
+//     argument naming any other is refused before a request), and a Documents API
+//     base that server advertises only when it is on that server's host or on a host
+//     the owner listed in HORIZUN_OPENCDE_ALLOWED_HOSTS. The arguments alone never
+//     decide where a token goes. A pagination link or a server-provided URL pointing
+//     anywhere else is refused before the request.
 //   * A call budget is a hard stop, not a hint. When it is spent the reader stops
 //     and says coverage is incomplete; it never pretends the rest was empty.
 //   * 429 and transient 5xx are retried with backoff (Retry-After honoured, capped);

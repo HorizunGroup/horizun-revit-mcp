@@ -190,8 +190,8 @@ namespace Horizun.Revit.Core
         public CommandResult Invoke(string wireId, string name, string paramsJson, int timeoutMs)
         {
             if (_shuttingDown)
-                return CommandResult.Fail("Revit is shutting down. '" + name +
-                    "' was not queued and NEVER RAN; nothing was executed or written.");
+                return CommandResult.FailWithDetail("Revit is shutting down. '" + name +
+                    "' was not queued and NEVER RAN; nothing was executed or written.", RequestGate.NeverStartedDetail());
 
             if (name == null || !_commands.ContainsKey(name))
             {
@@ -213,6 +213,13 @@ namespace Horizun.Revit.Core
                 Log.Warn($"'{name}' refused: {refusal}");
                 return CommandResult.Fail(refusal);
             }
+            if (req.CancelledBeforeStart)
+            {
+                // Its cancel overtook it on the control connection (backlog #36): refused on
+                // arrival, never queued, no event raised.
+                Log.Warn($"'{name}' refused on arrival: its cancellation arrived first; it never started");
+                return req.Result;
+            }
 
             if (req.AheadAtAdmission > 0)
                 Log.Info($"'{name}' queued as ticket {req.Ticket} behind {req.AheadAtAdmission} request(s)");
@@ -231,27 +238,31 @@ namespace Horizun.Revit.Core
             RaiseAttemptResult raise = RaiseWithBoundedRetry("initial ExternalEvent raise for '" + name + "'");
             if (!raise.Scheduled)
             {
-                // Denied/unknown means this ExternalEvent will not produce a callback.
-                // Wake every ordinary and async waiter now; leaving older entries behind
-                // would turn one definitive refusal into a row of ten-minute timeouts.
-                int failed = _gate.FailQueued(
-                    "Revit refused the shared ExternalEvent before this queued request started. It NEVER RAN.");
-                AsyncPump.FailEverythingWaiting(
-                    "Revit refused the shared ExternalEvent before this queued job started. It NEVER RAN.",
-                    message => Log.Warn(message));
+                // THIS request's raise was refused, so THIS request is withdrawn. The
+                // others were admitted by raises that were accepted, and failing them all
+                // on one refusal (as this did) reported work as never run that Revit was
+                // still going to service (audit 2026-10-08). Withdrawn under the gate's
+                // lock: if the UI thread claimed it after all, it is not reported as never run.
+                bool withdrawn = _gate.Abandon(req);
                 clock.Stop();
                 Log.Warn($"'{name}' NOT QUEUED: Revit kept answering Raise() with {raise.Outcome} " +
-                         $"for {raise.Attempts} attempt(s); " +
-                         $"closed {failed} ordinary waiter(s)");
-                return CommandResult.Fail(
+                         $"for {raise.Attempts} attempt(s); this request " + (withdrawn ? "was withdrawn" : "had already been claimed"));
+                if (!withdrawn)
+                {
+                    // Claimed by a callback that another raise produced: it runs, and its
+                    // result is what this caller gets.
+                    return RequestGate.AwaitClaimed(req, name, timeoutMs);
+                }
+                return CommandResult.FailWithDetail(
                     $"Revit refused to queue '{name}': Raise() returned {raise.Outcome} after " +
-                    $"{raise.Attempts} bounded attempt(s). Nothing was done, and nothing " +
-                    "will be - no callback is coming, so this is reported now instead of after the " +
+                    $"{raise.Attempts} bounded attempt(s). It NEVER STARTED: it was withdrawn from the queue and " +
+                    "nothing was done, so this is reported now instead of after the " +
                     $"{timeoutMs} ms timeout. " +
                     (raise.Outcome == RaiseOutcome.Denied
                         ? "Repeated Denied usually means Revit is closing down or the bridge's external event has been " +
                           "disposed. If Revit is still open, restart it to reload the add-in."
-                        : $"Raise() itself reported {raise.Outcome}."));
+                        : $"Raise() itself reported {raise.Outcome}."),
+                    new Newtonsoft.Json.Linq.JObject { ["never_started"] = true, ["transaction_status"] = "not_started" });
             }
 
             // The wait, in slices. One flat Wait(timeoutMs) used to be the whole story,
@@ -284,9 +295,17 @@ namespace Horizun.Revit.Core
                 if (declaredModal != null) break;
             }
 
+            // The modal was declared from a read of Started taken BEFORE the removal; the
+            // UI thread may have claimed the request in between. Only a removal proven
+            // under the gate's lock may say "never started" (audit 2026-10-08).
+            if (!completed && declaredModal != null && !_gate.Abandon(req))
+            {
+                declaredModal = null;
+                completed = req.Wait(0);
+            }
+
             if (!completed && declaredModal != null)
             {
-                _gate.Abandon(req);
                 Log.Warn($"'{name}' REMOVED FROM QUEUE after {waitedSoFarMs} ms: Revit is on modal dialog " +
                          declaredModal + " and the request never started");
                 // Re-probed once more for the structured detail: the persistence check
@@ -297,6 +316,8 @@ namespace Horizun.Revit.Core
                 // in every measured case; if it has already changed, detail.dialog_window
                 // reflects that rather than inventing continuity with 'declaredModal'.
                 JObject modalDetail = ModalProbe.DescribeModalDetail()?.ToJson();
+                JObject neverStartedDetail = new JObject { ["never_started"] = true, ["transaction_status"] = "not_started" };
+                if (modalDetail != null) neverStartedDetail["modal_dialog"] = modalDetail;
                 return CommandResult.FailWithDetail(
                     "Revit has a MODAL DIALOG open: " + declaredModal + ". '" + name + "' was queued but Revit " +
                     "does not service the bridge until the dialog is answered by a human, so the request was " +
@@ -306,29 +327,44 @@ namespace Horizun.Revit.Core
                     "about a second apart, so it is not one the bridge auto-cancels during a command - it " +
                     "predates this request. Answer or close it in the Revit UI (check every monitor: it can " +
                     "open on another screen) and retry.",
-                    modalDetail == null ? null : new JObject { ["modal_dialog"] = modalDetail });
+                    neverStartedDetail);
+            }
+
+            bool removedBeforeStart = false;
+            if (!completed)
+            {
+                // Proven under the gate's lock, not read from Started before it. And a
+                // request that finished between the last slice and this point returns its
+                // REAL result instead of a timeout.
+                removedBeforeStart = _gate.Abandon(req);
+                if (!removedBeforeStart && req.Wait(0)) completed = true;
             }
 
             if (!completed)
             {
-                _gate.Abandon(req);
                 // The probe again, once, for the final message: a modal seen here could
                 // not be declared above (the request had started, or it never persisted),
                 // but naming what is on screen right now beats "may be waiting".
                 ModalDialogInfo modalNowDetail = ModalProbe.DescribeModalDetail();
                 string modalNow = modalNowDetail?.ToSummaryLine();
                 Log.Warn($"'{name}' TIMED OUT after {timeoutMs} ms - Revit busy or on a modal dialog" +
-                         (req.Started ? " (it is still running; its result will be discarded)" : " (it never started)"));
+                         (removedBeforeStart ? " (it never started)" : " (it is still running; its result will be discarded)"));
+                var timeoutDetail = new JObject
+                {
+                    ["never_started"] = removedBeforeStart,
+                    ["transaction_status"] = removedBeforeStart ? "not_started" : "unknown"
+                };
+                if (modalNowDetail != null) timeoutDetail["modal_dialog"] = modalNowDetail.ToJson();
                 return CommandResult.FailWithDetail(
                     $"'{name}' timed out after {timeoutMs} ms. Revit may be busy or waiting on a modal dialog. " +
-                    (req.Started
-                        ? "The command is STILL RUNNING inside Revit - it cannot be cancelled from here, and whatever " +
-                          "it does will complete unseen. Nothing else can run until it returns."
-                        : "It was removed from the FIFO queue before Revit started it, so nothing was done.") +
+                    (removedBeforeStart
+                        ? "It was removed from the FIFO queue before Revit started it, so nothing was done."
+                        : "The command is STILL RUNNING inside Revit - it cannot be cancelled from here, and whatever " +
+                          "it does will complete unseen. Nothing else can run until it returns.") +
                     (modalNow != null
                         ? " Revit is showing a modal dialog RIGHT NOW: " + modalNow + "."
                         : ""),
-                    modalNowDetail == null ? null : new JObject { ["modal_dialog"] = modalNowDetail.ToJson() });
+                    timeoutDetail);
             }
 
             clock.Stop();
@@ -398,14 +434,14 @@ namespace Horizun.Revit.Core
 
         private static Newtonsoft.Json.Linq.JObject ReceiptRequest(string paramsJson)
         {
-            try { return string.IsNullOrWhiteSpace(paramsJson) ? null : Newtonsoft.Json.Linq.JObject.Parse(paramsJson); }
+            try { return string.IsNullOrWhiteSpace(paramsJson) ? null : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch { return null; }
         }
 
         private CommandResult SubmitJobWithoutWaitingForUi(string name, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             CommandContract contract = Contract.Find(name);
@@ -441,6 +477,7 @@ namespace Horizun.Revit.Core
             string admittedJobId = null;
             try
             {
+                DocumentGate.ClearResolvedPlan();
                 result = _commands[name].Execute(null, paramsJson);
                 if (result != null && result.Success)
                 {
@@ -448,12 +485,18 @@ namespace Horizun.Revit.Core
                     RaiseAttemptResult raise = RaiseWithBoundedRetry("async submission raise");
                     if (!raise.Scheduled)
                     {
-                        AsyncPump.FailEverythingWaiting(
-                            "Revit refused the ExternalEvent after task admission. It NEVER RAN.",
-                            m => Log.Warn(m));
-                        result = CommandResult.Fail("The task record was created, but Revit refused the callback " +
-                            "that would execute it (" + raise.Outcome + " after " + raise.Attempts +
-                            " attempt(s)). The queued job was closed as not_started.");
+                        // THIS job is withdrawn; the jobs already waiting were admitted by
+                        // raises Revit accepted and are not this refusal's to fail (audit
+                        // 2026-10-08). If a callback already claimed it, it runs.
+                        AsyncWork withdrawn;
+                        if (AsyncQueue.TryRemove(admittedJobId, out withdrawn))
+                        {
+                            try { withdrawn.Record?.Finish("not_started", "Revit refused the ExternalEvent after task admission. It NEVER RAN."); }
+                            catch (Exception ex) { Log.Warn("async admission: the record of " + admittedJobId + " could not be finished: " + ex.Message); }
+                            result = CommandResult.Fail("The task record was created, but Revit refused the callback " +
+                                "that would execute it (" + raise.Outcome + " after " + raise.Attempts +
+                                " attempt(s)). The queued job was withdrawn and closed as not_started.");
+                        }
                     }
                 }
                 if (result == null) result = CommandResult.Fail("horizun_submit_job produced no result.");
@@ -466,6 +509,7 @@ namespace Horizun.Revit.Core
             }
             finally
             {
+                DocumentGate.ClearResolvedPlan();
                 try { _idempotency.Complete(claim, result); }
                 catch (Exception ex)
                 {
@@ -522,7 +566,7 @@ namespace Horizun.Revit.Core
                 }
 
                 JObject request;
-                try { request = string.IsNullOrWhiteSpace(req.ParamsJson) ? new JObject() : JObject.Parse(req.ParamsJson); }
+                try { request = string.IsNullOrWhiteSpace(req.ParamsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(req.ParamsJson); }
                 catch { request = null; } // the command owns its normal invalid-JSON error
 
                 CommandContract contract = Contract.Find(req.Name);
@@ -615,7 +659,9 @@ namespace Horizun.Revit.Core
                         // Core/CooperativeRead.cs. A loop that never asks is unaffected,
                         // and a write is never allowed to ask at all.
                         CooperativeRead.Abandoned = () => req.Abandoned;
-                        req.Result = cmd.Execute(app, req.ParamsJson);
+                        DocumentGate.ClearResolvedPlan();
+                        try { req.Result = cmd.Execute(app, req.ParamsJson); }
+                        finally { DocumentGate.ClearResolvedPlan(); }
                         // What the command left changed in the model gets the spatial
                         // coherence check (Core/SpatialAfterWrite.cs); reads cost nothing.
                         SpatialAfterWrite.Attach(req.Name, changes, req.Result);
@@ -858,9 +904,11 @@ namespace Horizun.Revit.Core
                         Job.Ambient = work.Record;
                         using (var changes = new ChangeWatch(app?.Application))
                         {
+                            DocumentGate.ClearResolvedPlan();
                             try { result = cmd.Execute(app, work.ParamsJson); SpatialAfterWrite.Attach(work.Command, changes, result); ResponseSummaryRules.ApplyToResult(work.Command, work.ParamsJson, result); }
                         finally
                         {
+                            DocumentGate.ClearResolvedPlan();
                             Job.Ambient = null;
                             CaptureDocument(app);
                             object said = watch.Report();
@@ -1144,10 +1192,12 @@ namespace Horizun.Revit.Core
             using (var watch = new Interference(app))
             {
                 CommandResult r = null;
+                DocumentGate.ClearResolvedPlan();
                 try { r = cmd.Execute(app, step.Arguments.ToString(Newtonsoft.Json.Formatting.None)); }
                 catch (Exception ex) { r = CommandResult.Fail(ex.GetType().Name + ": " + ex.Message); }
                 finally
                 {
+                    DocumentGate.ClearResolvedPlan();
                     object said = watch.Report();
                     if (said != null)
                     {

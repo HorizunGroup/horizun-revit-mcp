@@ -346,5 +346,50 @@ namespace Horizun.Core.Tests
             Assert.Equal(0, RebarAuditRules.Reach(null));
             Assert.Equal(0, RebarAuditRules.Reach(new List<double[]>()));
         }
+
+        // D1, option A (owner, measured 4.75 mm alike in Revit 2024-2027): a stirrup declared
+        // CLOSED with a hook at both ends comes back from Revit's as-declared form OPEN at its
+        // first corner, the corner moved half the stirrup's diameter. Accepted only there and
+        // only within one stirrup diameter, published as data, never absorbed elsewhere.
+        private static List<double[]> HookedSquare(double half, double gap)
+        {
+            return new List<double[]>
+            {
+                new double[] { 0, -half + gap, -half },
+                new double[] { 0, half, -half },
+                new double[] { 0, half, half },
+                new double[] { 0, -half, half },
+                new double[] { 0, -half, -half + gap }
+            };
+        }
+
+        [Fact]
+        public void A_hooked_closed_stirrup_open_at_its_first_corner_agrees_and_says_so()
+        {
+            var f = new JArray();
+            RebarAuditRules.CompareGeometry(f, "E1", 7, Square(110), HookedSquare(110, 4.75), true, 1.0, 0, true, 9.5);
+            Assert.DoesNotContain(f, x => (string)x["severity"] == RebarSeverity.Error);
+            JObject info = (JObject)f.Single(x => (string)x["code"] == RebarFinding.HookCornerOpening);
+            Assert.Equal(RebarSeverity.Info, (string)info["severity"]);
+            Assert.Equal(4.75, (double)info["observed"], 3);
+        }
+
+        [Fact]
+        public void The_hook_opening_is_not_an_allowance_anywhere_else()
+        {
+            // Without hooks at both ends: the open shape and the moved corner stay errors.
+            var noHooks = new JArray();
+            RebarAuditRules.CompareGeometry(noHooks, "E1", 7, Square(110), HookedSquare(110, 4.75), true, 1.0, 0, false, 9.5);
+            Assert.Contains(noHooks, x => (string)x["code"] == RebarFinding.GeometryDiffers && (string)x["severity"] == RebarSeverity.Error);
+            // Open by more than one stirrup diameter: still an error.
+            var wide = new JArray();
+            RebarAuditRules.CompareGeometry(wide, "E1", 7, Square(110), HookedSquare(110, 20), true, 1.0, 0, true, 9.5);
+            Assert.Contains(wide, x => (string)x["code"] == RebarFinding.GeometryDiffers && (string)x["severity"] == RebarSeverity.Error);
+            // The opening accepted, a leg moved elsewhere is still found.
+            List<double[]> moved = HookedSquare(110, 4.75); moved[2] = new double[] { 0, 110, 130 };
+            var elsewhere = new JArray();
+            RebarAuditRules.CompareGeometry(elsewhere, "E1", 7, Square(110), moved, true, 1.0, 0, true, 9.5);
+            Assert.Contains(elsewhere, x => (string)x["code"] == RebarFinding.GeometryDiffers && (string)x["severity"] == RebarSeverity.Error);
+        }
     }
 }

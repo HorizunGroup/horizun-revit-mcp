@@ -26,6 +26,15 @@ namespace Horizun.Server
     {
         private static readonly object Gate = new object();
 
+        /// <summary>
+        /// The registry is changed ACROSS PROCESSES too (backlog #35): Claude's and Codex's
+        /// servers each load, change and save the same manifests, and the Gate above only
+        /// orders the calls of one of them. Every operation takes a named mutex on the
+        /// registry root, waited out for at most this long before refusing.
+        /// </summary>
+        internal const string MutexScope = "Promotions";
+        internal static TimeSpan MutexWait = TimeSpan.FromSeconds(10);
+
         public static JObject Handle(JObject arguments, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -33,7 +42,13 @@ namespace Horizun.Server
             string nowUtc = DateTime.UtcNow.ToString("o");
 
             lock (Gate)
+            using (HostFileMutex held = HostFileMutex.TryAcquire(MutexScope, ScriptPromotion.Root(), MutexWait))
             {
+                if (held == null)
+                    throw new ToolRefusal(
+                        "Another Horizun process is updating the script promotion registry at " +
+                        ScriptPromotion.Root() + " and did not finish within " + MutexWait.TotalSeconds +
+                        " s. Nothing was read or written; try again.");
                 switch (operation)
                 {
                     case "list": return List();

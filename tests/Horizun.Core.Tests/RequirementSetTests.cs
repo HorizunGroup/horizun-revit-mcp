@@ -227,6 +227,88 @@ namespace Horizun.Core.Tests
             Assert.False(set.Passes(rule, false, "120"));
         }
 
+        // ---- 2026-10-08 audit: culture. "1,5" used to read as 15 (NumberStyles.Any
+        // takes the comma as a thousands separator), and equals/in_list compared
+        // against the RULE value's current-culture text. ---------------------------
+
+        private static void UnderEachCulture(Action check)
+        {
+            var saved = System.Globalization.CultureInfo.CurrentCulture;
+            try
+            {
+                foreach (string c in new[] { "en-US", "es-CO" })
+                {
+                    System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo(c);
+                    check();
+                }
+            }
+            finally { System.Globalization.CultureInfo.CurrentCulture = saved; }
+        }
+
+        [Fact]
+        public void A_decimal_comma_is_never_read_as_ten_times_the_value()
+        {
+            UnderEachCulture(() =>
+            {
+                RequirementSet set = Load(Valid());
+                var lt2 = new Requirement { Operator = "lt", Value = new JValue(2.0) };
+                Assert.True(set.Passes(lt2, true, "1,5"));      // 1.5 < 2, not 15
+                Assert.True(set.Passes(lt2, true, "0,125"));
+                Assert.True(set.Passes(lt2, true, "1.5"));
+                var gt10 = new Requirement { Operator = "gt", Value = new JValue(10.0) };
+                Assert.False(set.Passes(gt10, true, "1,5"));
+            });
+        }
+
+        [Fact]
+        public void An_ambiguous_grouping_is_not_numeric_rather_than_guessed()
+        {
+            UnderEachCulture(() =>
+            {
+                RequirementSet set = Load(Valid());
+                var gte = new Requirement { Operator = "gte", Value = new JValue(1.0) };
+                // 1,234 is 1234 in en-US and 1.234 in es-CO; 1.234,5 / 1,234.5 carry both
+                // separators. None of them can PASS a numeric bar on a guess.
+                Assert.False(set.Passes(gte, true, "1,234"));
+                Assert.False(set.Passes(gte, true, "1.234,5"));
+                Assert.False(set.Passes(gte, true, "1,234.5"));
+                Assert.False(set.Passes(gte, true, "(5)"));     // NumberStyles.Any read this as -5
+                Assert.False(set.Passes(gte, true, "$5"));
+            });
+        }
+
+        [Fact]
+        public void Equals_against_a_number_compares_numbers_not_culture_text()
+        {
+            UnderEachCulture(() =>
+            {
+                RequirementSet set = Load(Valid());
+                var eq = new Requirement { Operator = "equals", Value = new JValue(1.5) };
+                Assert.True(set.Passes(eq, true, "1.5"));
+                Assert.True(set.Passes(eq, true, "1,5"));
+                Assert.False(set.Passes(eq, true, "15"));
+                var ne = new Requirement { Operator = "not_equals", Value = new JValue(1.5) };
+                Assert.False(set.Passes(ne, true, "1.5"));
+                var list = new Requirement { Operator = "in_list", Value = new JArray(0.5, 1.5) };
+                Assert.True(set.Passes(list, true, "1.5"));
+            });
+        }
+
+        [Fact]
+        public void Equals_against_a_boolean_matches_revit_yes_no()
+        {
+            UnderEachCulture(() =>
+            {
+                RequirementSet set = Load(Valid());
+                // A Yes/No parameter is read as its stored integer: "1" or "0".
+                var yes = new Requirement { Operator = "equals", Value = new JValue(true) };
+                Assert.True(set.Passes(yes, true, "1"));
+                Assert.False(set.Passes(yes, true, "0"));
+                var no = new Requirement { Operator = "equals", Value = new JValue(false) };
+                Assert.True(set.Passes(no, true, "0"));
+            });
+        }
+
         [Fact]
         public void Not_empty_distinguishes_absent_from_blank()
         {

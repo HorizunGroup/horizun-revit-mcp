@@ -1,0 +1,43 @@
+{
+  "tool": "horizun_query_structure",
+  "title": {
+    "en": "Reconcile the model with the schedule's bar list",
+    "es": "Conciliar el modelo con el despiece de la cartilla"
+  },
+  "about": {
+    "en": "Reads every bar in scope and compares it with the schedule's bar list (sheet Despiece), mark by mark: count exactly, total length and weight within the tolerances you declare. Weight needs a density and its source, both yours; this bridge carries none.",
+    "es": "Lee cada barra en alcance y la compara con el despiece de la cartilla (hoja Despiece), marca por marca: cantidad exacta, longitud total y peso dentro de las tolerancias que usted declara. El peso necesita una densidad y su fuente, ambas suyas; este puente no trae ninguna."
+  },
+  "arguments": {
+    "mode": "reconcile",
+    "schedule": [
+      {
+        "mark": "A1",
+        "bar_type": "16M",
+        "count": 3,
+        "length_mm": 5920,
+        "weight_kg": 27.9
+      },
+      {
+        "mark": "A2",
+        "bar_type": "16M",
+        "count": 2,
+        "length_mm": 5920,
+        "weight_kg": 18.6
+      },
+      {
+        "mark": "E1",
+        "bar_type": "10M",
+        "count": 40,
+        "length_mm": 1620,
+        "weight_kg": 35.7
+      }
+    ],
+    "tolerances": {
+      "length_pct": 1.0,
+      "weight_pct": 2.0
+    },
+    "density_kg_per_m3": 7850,
+    "density_source": "the project's specification (replace with yours)"
+  }
+}

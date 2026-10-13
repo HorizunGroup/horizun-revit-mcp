@@ -25,6 +25,9 @@ param(
 
     [string]$Fixtures = (Join-Path $env:USERPROFILE '.horizun\release-runner-fixtures.json'),
     [string]$Manifest,
+    # The commit this run built (CI passes github.sha). When given, a manifest
+    # stamped with any other commit is refused before Revit is touched.
+    [string]$ExpectedCommit,
     [string]$Server,
     [string]$Json,
     [int]$StartupTimeoutSec = 600,
@@ -55,6 +58,12 @@ $repo = Split-Path -Parent $PSScriptRoot
 # proves it matches the bytes on disk, and its Commit is what pairs the halves.
 # dist\stage remains the fallback for a release-artifact run, where the staged
 # payload IS what gets installed.
+#
+# CI NAMES ITS OWN. On the shared release runner the installed manifest is
+# whatever the last install left - possibly another build - so the workflow
+# passes -Manifest dist\stage\manifest.json (the job's own package) and
+# -ExpectedCommit github.sha. The hashes verify-live checks then come from what
+# this job built, and a manifest of another commit is refused (backlog #28).
 if (-not $Manifest) {
     $installedManifest = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\manifest.json'
     $Manifest = if (Test-Path -LiteralPath $installedManifest) { $installedManifest }
@@ -128,6 +137,20 @@ function Wait-ForHealth([datetime]$deadline) {
     throw "Revit $Year did not publish a healthy Horizun bridge within $StartupTimeoutSec seconds."
 }
 
+# Which build this run certifies is settled first, before any fixture, process or
+# Revit is looked at. -ValidateFixturesOnly certifies nothing and needs no build.
+if (-not $ValidateFixturesOnly) {
+    $null = Require-File $Manifest 'release manifest'
+    $null = Require-File $Server 'installed MCP server'
+    try { $manifestDoc = Get-Content $Manifest -Raw | ConvertFrom-Json }
+    catch { throw "Release manifest is not valid JSON: $($_.Exception.Message)" }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedCommit) -and
+        -not [string]::Equals(([string]$manifestDoc.Commit).Trim(), $ExpectedCommit.Trim(), [StringComparison]::OrdinalIgnoreCase)) {
+        throw ("REFUSING: the release manifest $Manifest was built from commit '{0}', not the expected '{1}'. " -f $manifestDoc.Commit, $ExpectedCommit) +
+              'This run must certify the build it made, not whatever is installed on the runner.'
+    }
+}
+
 if (-not (Test-Path -LiteralPath $Fixtures -PathType Leaf)) {
     throw "Release-runner fixtures are missing: $Fixtures. Copy docs/release-runner-fixtures.example.json outside the repository and fill it in."
 }
@@ -172,10 +195,6 @@ if ($ValidateFixturesOnly) {
     exit 0
 }
 
-$null = Require-File $Manifest 'release manifest'
-$null = Require-File $Server 'installed MCP server'
-try { $manifestDoc = Get-Content $Manifest -Raw | ConvertFrom-Json }
-catch { throw "Release manifest is not valid JSON: $($_.Exception.Message)" }
 $addin = $manifestDoc.Plugins | Where-Object { [int]$_.Year -eq $Year } | Select-Object -First 1
 if (-not $addin) { throw "The release manifest has no Revit $Year payload." }
 if ([string]::IsNullOrWhiteSpace([string]$manifestDoc.Commit) -or

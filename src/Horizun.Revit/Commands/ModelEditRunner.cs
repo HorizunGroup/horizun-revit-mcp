@@ -64,7 +64,7 @@ namespace Horizun.Revit.Commands
             Func<JObject, string> validate, Func<Document, JObject, double, ArchModelEdit> plan)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             string invalid = validate(request);
             if (invalid != null) return CommandResult.Fail(invalid);

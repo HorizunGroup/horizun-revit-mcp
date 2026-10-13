@@ -67,7 +67,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             string op = (request.Value<string>("operation") ?? "").Trim().ToLowerInvariant();
@@ -174,7 +174,7 @@ namespace Horizun.Revit.Commands
                         ["transaction_group_status"] = groupRollback.HasValue ? groupRollback.Value.StatusName : "Error"
                     };
                     if (ex is VerificationFailed vf) detail["postconditions"] = vf.Check.ToJson();
-                    return CommandResult.FailWithDetail("The " + op + " change failed and was rolled back: " + ex.Message, detail);
+                    return CommandResult.FailWithDetail(PlanFailure.FailedChange(op, (string)detail["state"], ex.Message), detail);
                 }
             }
             final = plan.Verify(doc);

@@ -394,6 +394,98 @@ namespace Horizun.Server.Tests
             Assert.Contains("re-sent automatically", (string)doubtDest["evidence"]["note"]);
         }
 
+        // ---- 2026-10-08 audit: the owner's denied_tools must hold through this tool too. ----
+
+        [Fact]
+        public void A_denied_power_bi_push_is_never_called_and_the_excel_destination_still_runs()
+        {
+            File.WriteAllText(HorizunPaths.SettingsPath(),
+                @"{""permission_profile"":""full_write"",""denied_tools"":[""horizun_power_bi_push""]}");
+            string baseline = Baseline(new object[] { "A-1", "Muro", "m3", 1.0, null, null });
+            string output = Path.Combine(_dir, "report.xlsx");
+            int calls = 0;
+            JObject reply = BudgetCompare.Handle(new JObject
+            {
+                ["model_rows"] = TakeoffReply(Row("1", "A-1", 1)),
+                ["baseline"] = BaselineArgs(baseline),
+                ["outputs"] = new JObject
+                {
+                    ["excel"] = new JObject { ["file_path"] = output },
+                    ["power_bi"] = new JObject { ["dataset_id"] = "11111111-1111-1111-1111-111111111111", ["table"] = "Budget", ["dry_run"] = true }
+                },
+                ["idempotency_key"] = "run-" + Guid.NewGuid().ToString("N")
+            }, ExcelTestLedger.New(), _ => { calls++; return new JObject(); }, CancellationToken.None);
+
+            Assert.Equal(0, calls);
+            JObject pbi = reply["destinations"].OfType<JObject>().Single(d => (string)d["destination"] == "power_bi");
+            Assert.Equal("skipped", (string)pbi["status"]);
+            Assert.Equal("denied_by_owner", (string)pbi["skip_reason"]);
+            Assert.Contains("denied_tools", (string)pbi["reason"]);
+            JObject excel = reply["destinations"].OfType<JObject>().Single(d => (string)d["destination"] == "excel");
+            Assert.Equal("written", (string)excel["status"]);
+        }
+
+        [Fact]
+        public void A_denied_excel_write_rows_touches_no_file()
+        {
+            File.WriteAllText(HorizunPaths.SettingsPath(),
+                @"{""permission_profile"":""full_write"",""denied_tools"":[""horizun_excel_write_rows""]}");
+            string baseline = Baseline(new object[] { "A-1", "Muro", "m3", 1.0, null, null });
+            string output = Path.Combine(_dir, "report.xlsx");
+            File.WriteAllText(output, "keep me");
+            JObject reply = BudgetCompare.Handle(new JObject
+            {
+                ["model_rows"] = TakeoffReply(Row("1", "A-1", 1)),
+                ["baseline"] = BaselineArgs(baseline),
+                ["outputs"] = new JObject { ["excel"] = new JObject { ["file_path"] = output, ["overwrite_policy"] = "replace" } },
+                ["idempotency_key"] = "run-" + Guid.NewGuid().ToString("N")
+            }, ExcelTestLedger.New(), _ => new JObject(), CancellationToken.None);
+
+            JObject excel = (JObject)reply["destinations"][0];
+            Assert.Equal("skipped", (string)excel["status"]);
+            Assert.Equal("denied_by_owner", (string)excel["skip_reason"]);
+            Assert.Equal("keep me", File.ReadAllText(output));
+            Assert.Equal(new[] { output }, Directory.GetFiles(_dir, "report.xlsx*"));
+        }
+
+        [Fact]
+        public void A_replayed_key_does_not_blank_the_report_it_already_wrote()
+        {
+            string baseline = Baseline(new object[] { "A-1", "Muro", "m3", 1.0, null, null });
+            string output = Path.Combine(_dir, "replay.xlsx");
+            var ledger = ExcelTestLedger.New();
+            var args = new JObject
+            {
+                ["model_rows"] = TakeoffReply(Row("1", "A-1", 1)),
+                ["baseline"] = BaselineArgs(baseline),
+                ["outputs"] = new JObject { ["excel"] = new JObject { ["file_path"] = output, ["overwrite_policy"] = "replace" } },
+                ["idempotency_key"] = "run-" + Guid.NewGuid().ToString("N")
+            };
+            BudgetCompare.Handle(args, ledger, _ => new JObject(), CancellationToken.None);
+            byte[] first = File.ReadAllBytes(output);
+            BudgetCompare.Handle((JObject)args.DeepClone(), ledger, _ => new JObject(), CancellationToken.None);
+            Assert.Equal(first, File.ReadAllBytes(output));
+        }
+
+        [Fact]
+        public void The_replaced_report_backup_lives_in_the_state_folder_not_beside_the_file()
+        {
+            string baseline = Baseline(new object[] { "A-1", "Muro", "m3", 1.0, null, null });
+            string output = Path.Combine(_dir, "beside.xlsx");
+            File.WriteAllText(output, "old");
+            JObject reply = BudgetCompare.Handle(new JObject
+            {
+                ["model_rows"] = TakeoffReply(Row("1", "A-1", 1)),
+                ["baseline"] = BaselineArgs(baseline),
+                ["outputs"] = new JObject { ["excel"] = new JObject { ["file_path"] = output, ["overwrite_policy"] = "replace" } },
+                ["idempotency_key"] = "run-" + Guid.NewGuid().ToString("N")
+            }, ExcelTestLedger.New(), _ => new JObject(), CancellationToken.None);
+            JObject excel = (JObject)reply["destinations"][0];
+            Assert.Equal("written", (string)excel["status"]);
+            Assert.StartsWith(_settingsRoot, (string)excel["replaced_backup_path"]);
+            Assert.Equal(new[] { output }, Directory.GetFiles(_dir, "beside.xlsx*"));
+        }
+
         private sealed class RecordingHandler : HttpMessageHandler
         {
             private readonly Func<HttpRequestMessage, HttpResponseMessage> _answer;

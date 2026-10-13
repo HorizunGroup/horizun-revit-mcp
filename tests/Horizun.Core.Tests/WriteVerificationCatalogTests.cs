@@ -46,6 +46,7 @@ namespace Horizun.Core.Tests
         {
             // partial class CaptureViewCommand
             { "CaptureViewOptions.cs", new[] { "horizun_capture_view" } },
+            { "ApplyCorrectionsCommand.Review.cs", new[] { "horizun_apply_corrections" } },
             // partial class LinkScheduleCommand: operation=write and operation=status_view
             { "LinkScheduleWrite.cs", new[] { "horizun_link_schedule" } },
             // partial class ManageLinksCommand

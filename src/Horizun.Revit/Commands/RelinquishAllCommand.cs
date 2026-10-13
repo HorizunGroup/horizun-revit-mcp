@@ -39,7 +39,7 @@ namespace Horizun.Revit.Commands
             JObject req = null;
             try
             {
-                req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
+                req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
                 expectedTitle = req.Value<string>("expected_document");
             }
             catch (Exception ex)
@@ -182,7 +182,16 @@ namespace Horizun.Revit.Commands
         {
             var result = new ElementOwnershipCensus();
             ICollection<ElementId> ids;
-            try { ids = new FilteredElementCollector(doc).ToElementIds(); }
+            // TWO FILTERED COLLECTORS (backlog #19). A collector with no filter at all throws in
+            // Revit ("one filter must be applied"), so the census came back Unreadable=1 and
+            // fully_relinquished could never be true. Types and instances together are every
+            // element, as before.
+            try
+            {
+                var all = new List<ElementId>(new FilteredElementCollector(doc).WhereElementIsElementType().ToElementIds());
+                all.AddRange(new FilteredElementCollector(doc).WhereElementIsNotElementType().ToElementIds());
+                ids = all;
+            }
             catch
             {
                 result.Unreadable = 1;

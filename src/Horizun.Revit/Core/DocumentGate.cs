@@ -304,6 +304,16 @@ namespace Horizun.Revit.Core
         /// <summary>Called by a command's dry run once it knows WHAT it resolved.</summary>
         public static void RecordResolvedPlan(ResolvedPlan plan) { _pendingPlan = plan; }
 
+        /// <summary>
+        /// Forget any plan a command recorded and did not stamp (backlog #17). A command that
+        /// records its plan and then refuses - the token, the document, a failure - never reaches
+        /// StampConfirmation, and the thread-static plan waited for the NEXT command on the
+        /// thread: its dry run published another command's plan as its change_preview and said
+        /// the token was bound to it. The dispatcher calls this around every command it runs, and
+        /// a command that runs children calls it before stamping its own reply.
+        /// </summary>
+        public static void ClearResolvedPlan() { _pendingPlan = null; }
+
         public static void StampConfirmation(object data, GateResult gate, string commandName,
                                              string planHash, bool dryRun, string limitNote = null)
         {

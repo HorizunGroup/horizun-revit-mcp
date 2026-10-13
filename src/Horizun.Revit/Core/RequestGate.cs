@@ -28,6 +28,9 @@ namespace Horizun.Revit.Core
     {
         public const int MaxDepth = 16;
 
+        /// <summary>How many early cancels (an id cancelled before it reached the gate) are remembered.</summary>
+        public const int MaxEarlyCancels = 64;
+
         public sealed class Request
         {
             public long Ticket;
@@ -58,6 +61,11 @@ namespace Horizun.Revit.Core
         private readonly int _maxDepth;
         private long _nextTicket;
         private Request _inFlight;
+
+        // Ids cancelled before they reached the gate (backlog #36), oldest first. Bounded:
+        // a cancel for a request that already FINISHED lands here too and is never consumed.
+        private readonly LinkedList<string> _earlyCancelOrder = new LinkedList<string>();
+        private readonly HashSet<string> _earlyCancels = new HashSet<string>(StringComparer.Ordinal);
 
         public RequestGate(int maxDepth = MaxDepth)
         {
@@ -106,6 +114,30 @@ namespace Horizun.Revit.Core
         {
             lock (_lock)
             {
+                // The cancel came first (backlog #36): it travels on its own connection and
+                // can overtake this request while it is still being read and authenticated.
+                // Refused on arrival, with the same never-started proof as a queued removal.
+                if (wireId != null && _earlyCancels.Remove(wireId))
+                {
+                    _earlyCancelOrder.Remove(wireId);
+                    var cancelled = new Request
+                    {
+                        Ticket = ++_nextTicket,
+                        WireId = wireId,
+                        Name = name,
+                        ParamsJson = paramsJson,
+                        QueuedUtc = DateTime.UtcNow,
+                        Abandoned = true,
+                        CancelledBeforeStart = true,
+                        Result = CommandResult.FailWithDetail("'" + name + "' was cancelled before it reached Revit's " +
+                            "command queue: the cancellation arrived first, so the request was refused on arrival. It " +
+                            "NEVER STARTED: nothing was executed and nothing was written.", NeverStartedDetail())
+                    };
+                    cancelled.Signal();
+                    refusal = null;
+                    return cancelled;
+                }
+
                 if (_pending.Count >= _maxDepth)
                 {
                     refusal = "Revit's command queue is full: " + _pending.Count + " of " + _maxDepth +
@@ -171,10 +203,16 @@ namespace Horizun.Revit.Core
         /// <summary>
         /// The local pipe worker stopped waiting. Remove work that has not started;
         /// already-running work is only marked because Revit cannot interrupt it.
+        ///
+        /// Returns TRUE only when the request is proven never to have started - removed
+        /// here, or already removed by the cancel control. Decided under the same lock
+        /// as Take, so it cannot disagree with the UI thread: a caller that read Started
+        /// a moment earlier and then abandoned used to report "NEVER STARTED" for a
+        /// request Take had claimed in between (audit 2026-10-08).
         /// </summary>
-        public void Abandon(Request r)
+        public bool Abandon(Request r)
         {
-            if (r == null) return;
+            if (r == null) return false;
             lock (_lock)
             {
                 r.Abandoned = true;
@@ -184,6 +222,7 @@ namespace Horizun.Revit.Core
                     r.Node = null;
                     r.CancelledBeforeStart = true;
                 }
+                return r.CancelledBeforeStart && !r.Started;
             }
         }
 
@@ -215,8 +254,8 @@ namespace Horizun.Revit.Core
                         r.Node = null;
                         r.Abandoned = true;
                         r.CancelledBeforeStart = true;
-                        r.Result = CommandResult.Fail("Cancelled while waiting in Revit's command queue. It NEVER " +
-                            "STARTED: nothing was executed and nothing was written.");
+                        r.Result = CommandResult.FailWithDetail("Cancelled while waiting in Revit's command queue. It NEVER " +
+                            "STARTED: nothing was executed and nothing was written.", NeverStartedDetail());
                         r.Signal();
                         detail = "cancelled_before_start";
                         return true;
@@ -230,10 +269,60 @@ namespace Horizun.Revit.Core
                     return false;
                 }
 
+                // Not here: it finished, or it has not ARRIVED yet. Which cannot be told, so
+                // the id is remembered and refused if it does arrive - wire ids are fresh
+                // per send, so this can stop a request that would have run after its cancel
+                // and nothing else.
+                if (_earlyCancels.Add(wireId))
+                {
+                    _earlyCancelOrder.AddLast(wireId);
+                    while (_earlyCancelOrder.Count > MaxEarlyCancels)
+                    {
+                        _earlyCancels.Remove(_earlyCancelOrder.First.Value);
+                        _earlyCancelOrder.RemoveFirst();
+                    }
+                }
                 detail = "not_found_or_finished";
                 return false;
             }
         }
+
+        /// <summary>
+        /// The answer for a request whose OWN raise Revit refused, but which the UI thread
+        /// had already claimed through another raise (Abandon returned false): it runs,
+        /// and its result is what the caller gets.
+        ///
+        /// The wait's answer is READ (backlog #38). It used to be ignored, so a command
+        /// still running when the wait expired came back as an ordinary "produced no
+        /// result" failure - nothing saying it had started and may still be writing.
+        /// </summary>
+        public static CommandResult AwaitClaimed(Request req, string name, int timeoutMs)
+        {
+            if (!req.Wait(timeoutMs))
+                return CommandResult.FailWithDetail(
+                    "'" + name + "' timed out after " + timeoutMs + " ms. Revit refused to queue this request's own " +
+                    "ExternalEvent raise, but the UI thread had already claimed it through another one, so it " +
+                    "STARTED. The command is STILL RUNNING inside Revit - it cannot be cancelled from here, and " +
+                    "whatever it does will complete unseen. Do not resend it assuming nothing happened.",
+                    new JObject
+                    {
+                        ["never_started"] = false,
+                        ["still_running"] = true,
+                        ["transaction_status"] = "unknown"
+                    });
+            return req.Result ?? CommandResult.Fail("'" + name + "' produced no result.");
+        }
+
+        /// <summary>
+        /// The structured proof a never-started result carries. The server decides
+        /// "never started" on this field alone, never on the wording (audit 2026-10-08),
+        /// so every path that removes a request before it starts must attach it.
+        /// </summary>
+        public static Newtonsoft.Json.Linq.JObject NeverStartedDetail() => new Newtonsoft.Json.Linq.JObject
+        {
+            ["never_started"] = true,
+            ["transaction_status"] = "not_started"
+        };
 
         /// <summary>Fail and wake everything that is still waiting during shutdown.</summary>
         public int FailQueued(string reason)
@@ -247,7 +336,7 @@ namespace Horizun.Revit.Core
                     _pending.RemoveFirst();
                     r.Node = null;
                     r.CancelledBeforeStart = true;
-                    r.Result = CommandResult.Fail(reason);
+                    r.Result = CommandResult.FailWithDetail(reason, NeverStartedDetail());
                     wake.Add(r);
                 }
             }

@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     Tests for the host-resident catalog leaf resolver. It LINKS the single source
@@ -17,6 +17,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\src\Horizun.Server\WerDumpEvidence.cs" Link="WerDumpEvidence.cs" />
     <ProjectReference Include="..\..\src\Horizun.Server\Horizun.Server.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
@@ -72,6 +73,14 @@
          code reads rather than a file next to the test. -->
     <Compile Include="..\..\src\Horizun.Server\ProjectContext.cs" Link="ProjectContext.cs" />
     <Compile Include="..\..\src\Horizun.Server\ModelExplainIso.cs" Link="ModelExplainIso.cs" />
+    <!-- The one rule for client-supplied paths (local drive only, no UNC or device). -->
+    <Compile Include="..\..\src\Horizun.Server\LocalPath.cs" Link="LocalPath.cs" />
+    <!-- 3.0.0 interoperability: the registry operations of project_context and horizun_exchange. -->
+    <Compile Include="..\..\src\Horizun.Server\ProjectIntegrationsTool.cs" Link="ProjectIntegrationsTool.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ExchangeTool.cs" Link="ExchangeTool.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModelIdentity.cs" Link="ModelIdentity.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ExchangeManifest.cs" Link="ExchangeManifest.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReviewCorrectionPlan.cs" Link="ReviewCorrectionPlan.cs" />
     <EmbeddedResource Include="..\..\schemas\project-context.v1.schema.json" LogicalName="Horizun.Schemas.project-context.v1.schema.json" />
     <!-- LOIN -> IDS and the bSDD lookup, with the resources under the server's logical
          names and the IDS reader the generated file is proved with. -->
@@ -83,6 +92,7 @@
     <EmbeddedResource Include="..\..\schemas\ids\xmlschema-subset.xsd" LogicalName="Horizun.Schemas.xmlschema-subset.xsd" />
     <EmbeddedResource Include="..\..\schemas\ids\ifc-entities.txt" LogicalName="Horizun.Schemas.ifc-entities.txt" />
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
+    <Compile Include="..\..\src\Horizun.Server\CsvText.cs" Link="CsvText.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelReadRows.cs" Link="ExcelReadRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />
     <!-- The budget comparison and the rules it runs, so the Excel destination can be
@@ -104,7 +114,10 @@
          the privacy one: that nothing specific survives normalisation, and that a message
          the redactor could not clean is never written at all. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\RepairMemory.cs" Link="RepairMemory.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\InvariantText.cs" Link="InvariantText.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AtomicFile.cs" Link="AtomicFile.cs" />
     <Compile Include="..\..\src\Horizun.Server\RepairMemoryTool.cs" Link="RepairMemoryTool.cs" />
+    <Compile Include="..\..\src\Horizun.Server\QuarantineGate.cs" Link="QuarantineGate.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptPromotion.cs" Link="ScriptPromotion.cs" />
     <Compile Include="..\..\src\Horizun.Server\ScriptPromotionTool.cs" Link="ScriptPromotionTool.cs" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiSelection.cs" Link="PowerBiSelection.cs" />
@@ -198,9 +211,13 @@
          ScriptInvocation: without these two the project did not compile, so
          every test in it was silent rather than passing. -->
     <Compile Include="..\..\src\Horizun.Server\ProcedureRun.cs" />
+    <Compile Include="..\..\src\Horizun.Server\NeverStartedProof.cs" />
     <Compile Include="..\..\src\Horizun.Server\SharedRecordFile.cs" />
+    <Compile Include="..\..\src\Horizun.Server\HostFileMutex.cs" Link="HostFileMutex.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptInvocation.cs" />
     <Compile Include="..\..\src\Horizun.Server\Tools.cs" Link="Tools.cs" />
+    <!-- The schema facade (3.0.0): the mode, the three meta-tools and the call unwrap. -->
+    <Compile Include="..\..\src\Horizun.Server\SchemaFacade.cs" Link="SchemaFacade.cs" />
     <!-- The contract schema check: the advertised-schema equivalence proof and schema_help judge arguments with the same rules. -->
     <Compile Include="..\..\src\Horizun.Server\ContractSchemaCheck.cs" Link="ContractSchemaCheck.cs" />
     <Compile Include="..\..\src\Horizun.Server\ContractVariants.cs" Link="ContractVariants.cs" />
@@ -212,10 +229,20 @@
     <!-- The toolset measurement behind horizun://session/toolsets and health. -->
     <Compile Include="..\..\src\Horizun.Server\ToolsetReport.cs" Link="ToolsetReport.cs" />
     <Compile Include="..\..\src\Horizun.Server\Log.cs" Link="Log.cs" />
+    <!-- horizun_read_schedule (acero 3.0, L10): the tool, its PDF primitive reader, the Core
+         reader and notation it runs, and the SYNTHETIC sheets the Core tests draw - linked, so
+         the PDF route is held against the very same fixtures read as primitives. -->
+    <Compile Include="..\..\src\Horizun.Server\ReadScheduleTool.cs" Link="ReadScheduleTool.cs" />
+    <Compile Include="..\..\src\Horizun.Server\SchedulePdf.cs" Link="SchedulePdf.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleCards.cs" Link="ScheduleCards.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RebarNotation.cs" Link="RebarNotation.cs" />
+    <Compile Include="..\Horizun.Core.Tests\ScheduleCardFixtures.cs" Link="ScheduleCardFixtures.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- The server's PDF reader for horizun_read_schedule; the exact version the server pins. -->
+    <PackageReference Include="PdfPig" Version="0.1.13" />
     <!-- The recipe-backed tools carry their geometry in Python that ships beside the
          add-in. A syntax error in one of those files cannot be caught by the C#
          compiler and would otherwise surface the first time a user calls the tool,

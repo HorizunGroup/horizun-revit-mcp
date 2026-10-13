@@ -54,7 +54,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             Document doc = app.ActiveUIDocument?.Document;
@@ -1219,9 +1219,10 @@ namespace Horizun.Revit.Commands
 
                         row["level_id"] = Rid.Value(level.Id);
                         // A run's declared height is relative to THIS storey; only here is
-                        // the storey known. Resolved to absolute Z and the key removed.
+                        // the storey known. Resolved to absolute Z and the key removed. ProjectElevation:
+                        // geometry's frame, never the elevation base's (audit 2026-10-08, 6.6).
                         double levelElevationMm = 0;
-                        try { levelElevationMm = CadUnits.FeetToMm(level.Elevation); } catch { }
+                        try { levelElevationMm = CadUnits.FeetToMm(level.ProjectElevation); } catch { }
                         CadConversionPlanRules.ResolveOffsetFromLevel(row, levelElevationMm);
 
                         // A WALL, A SLAB OR A COLUMN STANDS ON ITS STOREY, not at the drawing's Z. The
@@ -1718,7 +1719,7 @@ namespace Horizun.Revit.Commands
                        "NOTHING was planned. Treating them as absolute would cut the hole wherever that wall " +
                        "happens to be, on a row that verifies.";
 
-            double baseMm = CadUnits.FeetToMm(storey.Elevation);
+            double baseMm = CadUnits.FeetToMm(storey.ProjectElevation);
             try
             {
                 Parameter offset = host.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
@@ -1736,7 +1737,7 @@ namespace Horizun.Revit.Commands
             row["heights_measured_from"] = new JObject
             {
                 ["level"] = SafeName(storey),
-                ["level_elevation_mm"] = Math.Round(CadUnits.FeetToMm(storey.Elevation), 4),
+                ["level_elevation_mm"] = Math.Round(CadUnits.FeetToMm(storey.ProjectElevation), 4),
                 ["wall_base_offset_included"] = true,
                 ["means"] = "sill_height_mm and head_height_mm are heights above the floor, which is what a " +
                             "person means by them. Revit takes an absolute Z, so the storey this wall stands " +

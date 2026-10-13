@@ -107,6 +107,8 @@ namespace Horizun.Revit.Core
         public const string VerifyDependencyRelation = "verify_dependency_relation";
         public const string VerifyDependencyGeometry = "verify_dependency_geometry";
         public const string VerifyJoinNotRestored = "verify_join_not_restored";
+        /// <summary>The carrier or a layer wall did not take the pin back (audit 2026-10-08, 6.11).</summary>
+        public const string VerifyPinNotRestored = "verify_pin_not_restored";
         public const string ProvenanceVerificationFailed = "provenance_verification_failed";
         public const string VerifySiblingSetIncomplete = "verify_sibling_set_incomplete";
 
@@ -147,7 +149,7 @@ namespace Horizun.Revit.Core
             VerifyInsertHost, VerifyInsertPlacement, VerifyInsertSubcomponents,
             VerifyOpeningMissing, VerifyJoinMissing, VerifyJoinDisjoint, VerifyJoinUnexpected, VerifyParameterMismatch,
             VerifyUnexpectedWarning, VerifyDependencyIdentity, VerifyDependencyRelation,
-            VerifyDependencyGeometry, VerifyJoinNotRestored, ProvenanceVerificationFailed,
+            VerifyDependencyGeometry, VerifyJoinNotRestored, VerifyPinNotRestored, ProvenanceVerificationFailed,
             VerifySiblingSetIncomplete,
             VerifyFoundationRelation, VerifyFoundationGeometry, VerifyRebarIdentity, VerifyRebarLayout,
             RebarOutsideCoreCarrier, VerifyReinforcementMembers,

@@ -59,8 +59,9 @@ namespace Horizun.Server
             if (key.Length > 200) throw new ToolRefusal("idempotency_key must be at most 200 characters. Nothing was written.");
 
             string path = (string)args["bc3_path"];
-            if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path))
+            if (string.IsNullOrWhiteSpace(path))
                 throw new ToolRefusal("bc3_path must be an absolute path. Nothing was written.");
+            path = LocalPath.Require(path, "bc3_path", " Nothing was written.");
             if (!string.Equals(Path.GetExtension(path), ".bc3", StringComparison.OrdinalIgnoreCase))
                 throw new ToolRefusal("bc3_path must end in .bc3. Nothing was written.");
             string dir = Path.GetDirectoryName(Path.GetFullPath(path));
@@ -278,6 +279,7 @@ namespace Horizun.Server
                 throw new ToolRefusal("Pass exactly one of model_rows or model_rows_path (a horizun_quantities mode='takeoff' reply or its rows). Nothing was written.");
             if (fromPath)
             {
+                rowsPath = LocalPath.Require(rowsPath, "model_rows_path", " Nothing was written.");
                 if (!File.Exists(rowsPath)) throw new ToolRefusal("model_rows_path not found: " + rowsPath);
                 try { tok = JToken.Parse(File.ReadAllText(rowsPath, Encoding.UTF8)); }
                 catch (Exception ex) when (ex is IOException || ex is JsonException)

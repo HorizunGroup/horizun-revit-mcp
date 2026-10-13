@@ -74,6 +74,7 @@ namespace Horizun.Revit.Commands
                     {
                         s.ArcCentre = Mm(arc.Center);
                         s.ArcRadiusMm = CadUnits.FeetToMm(arc.Radius);
+                        try { if (arc.Radius > 0) s.ArcSweepRadians = arc.Length / arc.Radius; } catch { }
                     }
                 }
                 else
@@ -166,11 +167,24 @@ namespace Horizun.Revit.Commands
                     }
                     if (p == null) continue;
 
-                    string value = p.StorageType == StorageType.String
-                        ? p.AsString()
-                        : p.AsValueString() ?? p.AsString();
+                    // The STORED value is what a write is compared with - the double
+                    // in internal units, the Yes/No integer - written invariant; the
+                    // display text (units, UI language) is kept beside it. Comparing
+                    // the display text alone meant a number or a boolean the rule wrote
+                    // could never agree (audit 2026-10-08).
+                    string value;
+                    switch (p.StorageType)
+                    {
+                        case StorageType.String: value = p.AsString(); break;
+                        case StorageType.Integer: value = p.AsInteger().ToString(System.Globalization.CultureInfo.InvariantCulture); break;
+                        case StorageType.Double: value = p.AsDouble().ToString("R", System.Globalization.CultureInfo.InvariantCulture); break;
+                        case StorageType.ElementId: value = Rid.Value(p.AsElementId()).ToString(System.Globalization.CultureInfo.InvariantCulture); break;
+                        default: value = p.AsValueString() ?? p.AsString(); break;
+                    }
                     if (value == null) { s.ParametersUnreadable.Add(name); continue; }
                     s.ParameterValues[name] = value;
+                    string shown = p.StorageType == StorageType.String ? value : p.AsValueString();
+                    if (shown != null) s.ParameterDisplay[name] = shown;
                 }
                 catch { s.ParametersUnreadable.Add(name); }
             }

@@ -150,6 +150,17 @@ namespace Horizun.Revit.Core
         /// written", "nothing was purged"), and it is only ever stated when the rollback is
         /// CONFIRMED.
         /// </summary>
+        /// <summary>
+        /// The headline of a failed change, worded by the state the rollback was MEASURED in:
+        /// "was rolled back" only when it was confirmed. The words said rolled back beside
+        /// state=uncertain (audit 2026-10-08, 6.18).
+        /// </summary>
+        public static string FailedChange(string what, string state, string why) =>
+            state == "rolled_back"
+                ? "The " + what + " change failed and was rolled back: " + why
+                : "The " + what + " change failed and its rollback could NOT be confirmed (state " + (state ?? "unknown") +
+                  "); inspect the model: " + why;
+
         public static string SingleTransactionOutcome(bool attempted, string statusName, string nothingKept)
         {
             if (!attempted)

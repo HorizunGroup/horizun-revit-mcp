@@ -61,6 +61,46 @@ namespace Horizun.Server.Tests
             Assert.Equal(smuggled, ContentSafety.Restore(clean));
         }
 
+        // ---- 2026-10-08 audit: invisibles that used to pass. ----------------------------
+
+        [Theory]
+        [InlineData(0x00AD)] [InlineData(0x034F)] [InlineData(0x115F)] [InlineData(0x1160)] [InlineData(0x3164)]
+        [InlineData(0xFFA0)] [InlineData(0x2065)] [InlineData(0x206A)] [InlineData(0x206F)]
+        [InlineData(0xFE00)] [InlineData(0xFE0D)] [InlineData(0xE0100)] [InlineData(0xE01EF)] [InlineData(0x1D173)]
+        public void Further_invisible_characters_become_visible_tokens(int codePoint)
+        {
+            string hidden = "Muro" + char.ConvertFromUtf32(codePoint) + "A";
+            string shown = ContentSafety.Neutralize(hidden, out int replaced);
+            Assert.Equal(1, replaced);
+            Assert.Contains("[U+" + codePoint.ToString(codePoint > 0xFFFF ? "X5" : "X4") + "]", shown);
+        }
+
+        [Fact]
+        public void Ascii_smuggled_in_variation_selectors_is_neutralised()
+        {
+            // "hi" encoded one byte per selector, the way the published smuggling demos do it:
+            // bytes 0-15 -> U+FE00..FE0F, 16-255 -> U+E0100..E01EF, hung off one visible letter.
+            var sb = new System.Text.StringBuilder("X");
+            foreach (byte b in System.Text.Encoding.ASCII.GetBytes("hi"))
+                sb.Append(b < 16 ? char.ConvertFromUtf32(0xFE00 + b) : char.ConvertFromUtf32(0xE0100 + b - 16));
+            string shown = ContentSafety.Neutralize(sb.ToString(), out int replaced);
+            Assert.Equal(2, replaced);
+            Assert.StartsWith("X[U+E01", shown);
+        }
+
+        [Fact]
+        public void A_run_of_presentation_selectors_is_neutralised_but_one_after_a_symbol_is_kept()
+        {
+            string heart = "Revisado ❤️";
+            Assert.Same(heart, ContentSafety.Neutralize(heart, out _));
+            string text = "Revisado ❤︎";
+            Assert.Same(text, ContentSafety.Neutralize(text, out _));
+            ContentSafety.Neutralize("A️️︎", out int replaced);
+            Assert.Equal(2, replaced);
+            ContentSafety.Neutralize("️start", out int leading);
+            Assert.Equal(1, leading);
+        }
+
         [Fact]
         public void Ordinary_text_including_accents_emoji_and_cjk_is_returned_unchanged()
         {

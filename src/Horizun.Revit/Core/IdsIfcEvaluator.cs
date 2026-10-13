@@ -256,11 +256,15 @@ namespace Horizun.Revit.Core
                 return enumeration;
             }
 
-            string text = IfcStepReader.Text(trimmed);
-            if (text != null) return text;
-
+            // NUMBER BEFORE TEXT (backlog P0 #11). Text returns an unquoted token exactly as
+            // written, so asking it first indexed IFCLENGTHMEASURE(2100.) as "2100." and a
+            // simpleValue of 2100 failed on a string compare. A quoted text is never a
+            // number, so this order cannot shadow a real label.
             double? number = IfcStepReader.Number(trimmed);
             if (number.HasValue) return number.Value.ToString("R", CultureInfo.InvariantCulture);
+
+            string text = IfcStepReader.Text(trimmed);
+            if (text != null) return text;
 
             return null;
         }
@@ -455,6 +459,20 @@ namespace Horizun.Revit.Core
         public static string PredefinedTypeOf(Index index, IfcEntity entity)
         {
             if (entity == null || entity.Attributes == null || entity.Attributes.Count == 0) return null;
+
+            // WHERE THE SCHEMA PUTS IT, when the chain is known (backlog P0 #10). The tail
+            // heuristic below read an IFC4 IfcDoor's OperationType and an IfcWindow's
+            // PartitioningType, because both follow PredefinedType. A known position that is
+            // unset ($) is unset - it is not a reason to read the next enumeration instead.
+            int known = IdsExpress.PositionOf(index?.FileSchema, entity.Type, "PredefinedType");
+            if (known >= 0 && known < entity.Attributes.Count)
+            {
+                string declared = IfcStepReader.Enumeration(entity.At(known));
+                if (declared == null) return null;
+                if (string.Equals(declared, "USERDEFINED", StringComparison.OrdinalIgnoreCase))
+                    return IfcStepReader.Text(entity.At(4)) ?? declared;
+                return declared;
+            }
 
             for (int i = entity.Attributes.Count - 1; i >= 0 && i >= entity.Attributes.Count - 3; i--)
             {

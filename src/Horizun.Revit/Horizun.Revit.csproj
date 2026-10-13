@@ -92,6 +92,13 @@
   <!-- The root the paths are mapped from. Without this, DeterministicSourcePaths
        errors out asking for a SourceRoot instead of silently doing nothing, which
        is the behaviour we want from it. -->
+  <!-- THE YEAR THIS BUILD IS FOR, in the assembly (backlog #29). bin is shared across years and
+       the TFM cannot tell 2023 from 2024 nor 2025 from 2026; horizun-deploy.lib.ps1
+       (Assert-HorizunBuiltYear) reads this before a development session loads the DLL. -->
+  <ItemGroup>
+    <AssemblyMetadata Include="HorizunRevitYear" Value="$(RevitYear)" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- NORMALISED. An unnormalised root ("...\src\Horizun.Revit\..\..\") is not a
          prefix of the document paths the compiler records, so the mapping only

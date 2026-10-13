@@ -1712,7 +1712,7 @@ namespace Horizun.Revit.Core
             if (t.Type == JTokenType.Integer || t.Type == JTokenType.Float) return t.Value<double>();
             double parsed;
             if (t.Type == JTokenType.String &&
-                double.TryParse((string)t, NumberStyles.Any, CultureInfo.InvariantCulture, out parsed))
+                MeasuredNumber.TryParse((string)t, out parsed))
                 return parsed;
             return null;
         }

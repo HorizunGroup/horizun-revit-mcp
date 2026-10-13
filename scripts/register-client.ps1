@@ -54,10 +54,25 @@ param(
     # strict so a misspelled/missing config is not silently ignored.
     [switch]$SkipMissingClients,
     [switch]$WhatIfOnly,
-    [string]$Json
+    [string]$Json,
+    # By default, registering also removes what an earlier name or install left
+    # behind FOR THIS PRODUCT in the same client (the retired names `horizun` and
+    # `horizun-next`, or any other name pointing at the same executable), so two
+    # entries can never launch two instances. This keeps them instead - what you
+    # want to run two builds side by side on purpose.
+    [switch]$KeepOtherEntries,
+    # Claude Code CLI used to remove legacy user-scope entries. ~/.claude.json is
+    # rewritten by Claude Code while it runs, so it is never edited by hand for a
+    # removal. Default: `claude` on PATH. A test seam as much as an override.
+    [string]$ClaudeCli
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'toml-section.lib.ps1')
+# Client configuration is edited member by member as strict, BOM-less UTF-8 text,
+# never re-serialised: see the header of that file for what the old way broke.
+. (Join-Path $PSScriptRoot 'json-member.lib.ps1')
+. (Join-Path $PSScriptRoot 'client-process.lib.ps1')
+. (Join-Path $PSScriptRoot 'mcp-legacy-registrations.lib.ps1')
 
 if ($Name -notmatch '^[A-Za-z0-9_-]{1,64}$') {
     Write-Host 'Name must contain only ASCII letters, digits, underscore or hyphen (1..64 characters).' -ForegroundColor Red
@@ -84,7 +99,9 @@ if ($Client -eq 'Both' -and $SkipMissingClients) {
         Write-Host "    $codexConfig"
         Write-Host ''
         Write-Host '  If what you use is the Claude DESKTOP app, this is the wrong helper:' -ForegroundColor Cyan
-        Write-Host '  run "Conectar Horizun con Claude Desktop" from the Start menu instead.' -ForegroundColor Cyan
+        # Setup creates no Start-menu shortcut for this; name the command that exists.
+        Write-Host '  run this instead:' -ForegroundColor Cyan
+        Write-Host ('    powershell -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'install-claude-desktop-extension.ps1') + '"') -ForegroundColor Cyan
         Write-Host '  If you do use Claude Code or Codex, start it once so it writes its'
         Write-Host '  configuration file, close it, and run this again.'
         Write-Host ''
@@ -126,16 +143,120 @@ if (-not $Rollback -and -not $Remove) {
     }
 }
 
+# ONE BACKUP PER FILE PER PASS. -Rollback restores the newest backup, so a second
+# one taken mid-pass (after the legacy removal, before the add) made -Rollback put
+# back that intermediate state instead of the file as it was before this run
+# (backlog #59). Every step of the pass restores from this one backup too.
+$passBackups = @{}
 function Backup($path) {
     if (-not (Test-Path $path)) { return $null }
+    $key = [IO.Path]::GetFullPath($path).ToLowerInvariant()
+    if ($passBackups.ContainsKey($key) -and (Test-Path -LiteralPath $passBackups[$key])) { return $passBackups[$key] }
     $b = "$path.horizun-bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N')
     Copy-Item $path $b -Force
+    $passBackups[$key] = $b
     return $b
 }
 
+# One entry per file. The deferred completion restores a failed registration from
+# this list by comparing each file's hash with the one recorded here, so two
+# writes to the same file must collapse into one that keeps the OLDEST backup and
+# the NEWEST hash.
+function Add-SuccessfulWrite($client, $path, $backup) {
+    $hash = (Get-FileHash $path -Algorithm SHA256).Hash
+    $prev = $successfulWrites | Where-Object { $_.Path -eq $path } | Select-Object -First 1
+    if ($prev) { $prev.CurrentHash = $hash; return }
+    $successfulWrites.Add([pscustomobject]@{ Client = $client; Path = $path; Backup = $backup; CurrentHash = $hash }) | Out-Null
+}
+
+function Warn-Action($client, $what, $detail) {
+    $actions.Add([pscustomobject]@{ client = $client; action = $what; ok = $true; detail = $detail }) | Out-Null
+    Say ("{0,-7} {1} - {2}" -f $client, $what, $detail) 'Yellow'
+}
+
+# --- legacy entries of this product: Claude Code ---------------------------------
+#
+# Looks at ~/.claude.json read-only and removes through `claude mcp remove`, never
+# by editing the file: Claude Code rewrites it from memory while it runs, and a
+# hand edit is the one that gets lost. Only user-scope entries are removed; an
+# entry scoped to a project is reported with the command that removes it.
+function Remove-ClaudeLegacyEntries {
+    $raw = Read-HorizunUtf8Text $claudeConfig
+    $found = @(Get-HorizunJsonLegacyEntries -Text $raw -CurrentName $Name -ServerPath $ServerPath)
+    $targets = @($found | Where-Object { $_.remove })
+    foreach ($k in @($found | Where-Object { $_.skipped })) {
+        Say "Claude  kept '$($k.name)': a retired name, but it launches another program" 'Yellow'
+    }
+    foreach ($proj in @(Get-HorizunJsonProjectNames $raw)) {
+        foreach ($e in @(Get-HorizunJsonLegacyEntries -Text $raw -Project $proj -CurrentName $Name -ServerPath $ServerPath | Where-Object { $_.remove })) {
+            Warn-Action 'Claude' "project-scope '$($e.name)' in $proj NOT removed" `
+                "it launches this product too; from that folder run: claude mcp remove $($e.name) --scope local (or --scope project)"
+        }
+    }
+    if ($targets.Count -eq 0) { Say 'Claude  no legacy entry of this product' 'DarkGray'; return }
+
+    $list = ($targets | ForEach-Object { "$($_.name) [$($_.reason)]" }) -join ', '
+    if ($WhatIfOnly) { Act 'Claude' "would remove legacy: $list" $true $null; return }
+
+    $cli = $ClaudeCli
+    if (-not $cli) {
+        $c = Get-Command claude -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($c) { $cli = $c.Source }
+    }
+    if ($cli -and -not (Test-Path -LiteralPath $cli)) { $cli = $null }
+    if (-not $cli) {
+        foreach ($t in $targets) {
+            Warn-Action 'Claude' "legacy '$($t.name)' NOT removed" "the claude CLI was not found; run: claude mcp remove $($t.name) --scope user"
+        }
+        return
+    }
+
+    $before = @(Get-HorizunMcpServerNames $raw)
+    $backup = Backup $claudeConfig
+    try {
+        foreach ($t in $targets) {
+            # The real CLI is a Node program: it writes warnings to stderr and
+            # still exits 0. Under Windows PowerShell 5.1, `2>&1` with Stop turns
+            # the first stderr line into a terminating error AFTER the CLI already
+            # removed the entry (backlog #26). The exit code is the verdict, so the
+            # stream is captured under Continue and Stop applies again right after.
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $null = & $cli mcp remove $t.name --scope user 2>&1
+                $code = $LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $previousPreference }
+            if ($code -ne 0) {
+                Warn-Action 'Claude' "legacy '$($t.name)' NOT removed" "claude mcp remove exited $code; run it by hand: claude mcp remove $($t.name) --scope user"
+            }
+        }
+    }
+    catch {
+        # Whatever the CLI already removed goes back: a removal that the pass
+        # then reports as failed must not stay behind.
+        if ($backup -and (Test-Path -LiteralPath $backup)) { Copy-Item -LiteralPath $backup -Destination $claudeConfig -Force }
+        throw
+    }
+    $after = @(Get-HorizunMcpServerNames (Read-HorizunUtf8Text $claudeConfig))
+    $gone = @($targets | Where-Object { $_.name -notin $after } | ForEach-Object { $_.name })
+    $lost = @($before | Where-Object { $_ -notin $after -and $_ -notin $gone })
+    if ($lost.Count -gt 0) {
+        Copy-Item $backup $claudeConfig -Force
+        Act 'Claude' 'remove legacy entries' $false ("the CLI also removed " + ($lost -join ', ') + ' - restored the backup')
+        return
+    }
+    if ($gone.Count -gt 0) {
+        Act 'Claude' ("removed legacy: " + ($gone -join ', ') + "; backup $(Split-Path -Leaf $backup)") $true $null
+        Add-SuccessfulWrite 'Claude' $claudeConfig $backup
+    }
+}
+
 function ClientIsRunning($which) {
-    $pattern = if ($which -eq 'Claude') { '(?i)^claude' } else { '(?i)^codex' }
-    return @(Get-Process | Where-Object { $_.ProcessName -match $pattern }).Count -gt 0
+    # Claude CODE owns ~/.claude.json; Claude Desktop's own process does not. The
+    # name "claude" is both, so the decision is made on path and command line.
+    $kind = if ($which -eq 'Claude') { 'ClaudeCode' } else { 'Codex' }
+    return Test-HorizunClientRunning $kind
 }
 
 # --- targeted removal ----------------------------------------------------------
@@ -153,18 +274,16 @@ if ($Remove) {
         }
         else {
             try {
-                $cfg = Get-Content $claudeConfig -Raw | ConvertFrom-Json
-                $present = $cfg.mcpServers -and ($Name -in @($cfg.mcpServers.PSObject.Properties.Name))
+                $raw = Read-HorizunUtf8Text $claudeConfig
+                $present = $Name -cin @(Get-HorizunMcpServerNames $raw)
                 if (-not $present) { Act 'Claude' 'entry already absent' $true $null }
                 elseif ($WhatIfOnly) { Act 'Claude' "would remove mcpServers.$Name" $true $null }
                 else {
+                    $out = Remove-HorizunMcpServerEntry $raw $Name
+                    $null = Get-HorizunJsonRoot $out
                     $backup = Backup $claudeConfig
-                    $cfg.mcpServers.PSObject.Properties.Remove($Name)
-                    $out = $cfg | ConvertTo-Json -Depth 100
-                    $null = $out | ConvertFrom-Json
-                    Set-Content -Path $claudeConfig -Value $out -Encoding UTF8
-                    $after = Get-Content $claudeConfig -Raw | ConvertFrom-Json
-                    if ($after.mcpServers -and ($Name -in @($after.mcpServers.PSObject.Properties.Name))) {
+                    Write-HorizunUtf8Text $claudeConfig $out
+                    if ($Name -cin @(Get-HorizunMcpServerNames (Read-HorizunUtf8Text $claudeConfig))) {
                         Copy-Item $backup $claudeConfig -Force
                         Act 'Claude' 'remove the entry' $false 'entry remained after writing; backup restored'
                     }
@@ -188,7 +307,8 @@ if ($Remove) {
         }
         else {
             try {
-                $lines = @(Get-Content $codexConfig)
+                $shape = Read-HorizunTextLines $codexConfig
+                $lines = $shape.Lines
                 $header = "[mcp_servers.$Name]"
                 $range = Get-HorizunTomlTableRange $lines $header $Name
                 $startIdx = if ($range) { $range.Start } else { -1 }
@@ -200,8 +320,8 @@ if ($Remove) {
                     if ($startIdx -gt 0) { $new += $lines[0..($startIdx-1)] }
                     if ($endIdx -lt $lines.Count) { $new += $lines[$endIdx..($lines.Count-1)] }
                     $backup = Backup $codexConfig
-                    Set-Content -Path $codexConfig -Value $new -Encoding UTF8
-                    if ((Get-Content $codexConfig -Raw) -match [regex]::Escape($header)) {
+                    Write-HorizunTextLines $codexConfig $new $shape
+                    if (Get-HorizunTomlTableRange @((Read-HorizunTextLines $codexConfig).Lines) $header $Name) {
                         Copy-Item $backup $codexConfig -Force
                         Act 'Codex' 'remove the entry' $false 'table remained after writing; backup restored'
                     }
@@ -263,31 +383,26 @@ if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Claude')) {
     }
     else {
         try {
-            $raw = Get-Content $claudeConfig -Raw
-            $cfg = $raw | ConvertFrom-Json
-            if (-not $cfg.mcpServers) { $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force }
-
-            $existing = @($cfg.mcpServers.PSObject.Properties.Name)
-            $entry = [pscustomobject]@{ command = $ServerPath; args = @(); env = [pscustomobject]@{} }
+            if (-not $KeepOtherEntries) { Remove-ClaudeLegacyEntries }
+            $raw = Read-HorizunUtf8Text $claudeConfig
+            $existing = @(Get-HorizunMcpServerNames $raw)
+            $entry = [ordered]@{ command = $ServerPath; args = @(); env = @{} }
 
             if ($WhatIfOnly) {
                 Act 'Claude' "would set mcpServers.$Name (leaving $($existing.Count) existing entries untouched)" $true $null
             }
             else {
-                $backup = Backup $claudeConfig
-                $cfg.mcpServers | Add-Member -NotePropertyName $Name -NotePropertyValue $entry -Force
-
-                # Depth matters: the default is 2 and this file nests far deeper.
-                # A shallow write turns whole objects into the literal text
-                # "System.Object[]" and destroys the rest of the configuration.
-                $out = $cfg | ConvertTo-Json -Depth 100
+                # ONE MEMBER, NOT THE DOCUMENT. Only the span of mcpServers.<Name> is
+                # inserted or replaced; every other byte of the file is kept.
+                $out = Set-HorizunMcpServerEntry $raw $Name $entry
 
                 # Parse what we are about to write BEFORE replacing the original.
                 # A config that does not parse is a client that starts with none.
-                $null = $out | ConvertFrom-Json
-                Set-Content -Path $claudeConfig -Value $out -Encoding UTF8
+                $null = Get-HorizunJsonRoot $out
+                $backup = Backup $claudeConfig
+                Write-HorizunUtf8Text $claudeConfig $out
 
-                $after = @((Get-Content $claudeConfig -Raw | ConvertFrom-Json).mcpServers.PSObject.Properties.Name)
+                $after = @(Get-HorizunMcpServerNames (Read-HorizunUtf8Text $claudeConfig))
                 $lost = @($existing | Where-Object { $_ -notin $after })
                 if ($lost.Count -gt 0) {
                     Copy-Item $backup $claudeConfig -Force
@@ -299,7 +414,7 @@ if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Claude')) {
                 }
                 else {
                     Act 'Claude' "added '$Name'; $($existing.Count) existing entries intact; backup $(Split-Path -Leaf $backup)" $true $null
-                    $successfulWrites.Add([pscustomobject]@{ Client = 'Claude'; Path = $claudeConfig; Backup = $backup; CurrentHash = (Get-FileHash $claudeConfig -Algorithm SHA256).Hash }) | Out-Null
+                    Add-SuccessfulWrite 'Claude' $claudeConfig $backup
                 }
             }
         }
@@ -321,15 +436,28 @@ if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Codex')) {
     }
     else {
         try {
-            $lines = @(Get-Content $codexConfig)
+            $shape = Read-HorizunTextLines $codexConfig
+            $lines = $shape.Lines
             $header = "[mcp_servers.$Name]"
-            $range = Get-HorizunTomlTableRange $lines $header $Name
+
+            # Legacy entries of THIS product go in the same edit as the new one:
+            # one backup, one write, one verification.
+            $legacyRemoved = @()
+            $workLines = $lines
+            if (-not $KeepOtherEntries) {
+                $cleanup = Remove-HorizunTomlLegacySections -Lines $lines -CurrentName $Name -ServerPath $ServerPath
+                foreach ($k in @($cleanup.Skipped)) {
+                    Say "Codex   kept '$($k.Name)': a retired name, but it launches another program" 'Yellow'
+                }
+                if ($cleanup.Error) { throw "legacy cleanup refused, nothing written: $($cleanup.Error)" }
+                $legacyRemoved = @($cleanup.Removed)
+                $workLines = @($cleanup.Lines)
+            }
+
+            $range = Get-HorizunTomlTableRange $workLines $header $Name
             $startIdx = if ($range) { $range.Start } else { -1 }
 
-            $block = @(
-                '',
-                "# Horizun MCP - added by scripts/register-client.ps1.",
-                "# Registered BESIDE the existing servers, which are untouched.",
+            $body = @(
                 $header,
                 ('command = ' + (ConvertTo-Json -InputObject ([string]$ServerPath) -Compress)),
                 'args = []',
@@ -343,41 +471,79 @@ if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Codex')) {
             if ($startIdx -ge 0) {
                 # Replace the existing table: from its header to the next
                 # top-level table header, so its keys are not left orphaned under
-                # the new one.
+                # the new one. The explanatory comment is written only when the
+                # table is first added, so a re-run does not stack copies of it.
                 $endIdx = $range.EndExclusive
                 $new = @()
-                if ($startIdx -gt 0) { $new += $lines[0..($startIdx - 1)] }
-                $new += $block
-                if ($endIdx -lt $lines.Count) { $new += $lines[$endIdx..($lines.Count - 1)] }
-            }
-            else { $new = $lines + $block }
-
-            if ($WhatIfOnly) {
-                Act 'Codex' ("would " + $(if ($startIdx -ge 0) { 'replace' } else { 'append' }) + " $header") $true $null
+                if ($startIdx -gt 0) { $new += $workLines[0..($startIdx - 1)] }
+                $new += $body
+                if ($endIdx -lt $workLines.Count) {
+                    # Keep the separator the table had before the next one.
+                    if ($workLines[$endIdx - 1].Trim() -eq '') { $new += '' }
+                    $new += $workLines[$endIdx..($workLines.Count - 1)]
+                }
             }
             else {
+                $new = @($workLines) + @('', '# Horizun MCP - added by scripts/register-client.ps1.',
+                    '# Registered BESIDE the existing servers, which are untouched.') + $body
+            }
+
+            $removedText = ($legacyRemoved | ForEach-Object { "$($_.Name) [$($_.Reason)]" }) -join ', '
+            $unchanged = (($new -join "`n") -ceq ($lines -join "`n"))
+
+            if ($WhatIfOnly) {
+                $verb = if ($unchanged) { 'keep (already registered)' } elseif ($startIdx -ge 0) { 'replace' } else { 'append' }
+                Act 'Codex' ("would $verb $header" + $(if ($legacyRemoved.Count) { "; would remove legacy: $removedText" } else { '' })) $true $null
+            }
+            elseif ($unchanged) {
+                Act 'Codex' "'$Name' already registered as written; no legacy entry; nothing changed" $true $null
+            }
+            else {
+                # TOML check before anything is written: when a Python with
+                # tomllib is at hand, a file that parsed must still parse.
+                if ($legacyRemoved.Count -gt 0) {
+                    $was = Test-HorizunTomlWithPython -Lines $lines
+                    if ($was -eq $true) {
+                        $now = Test-HorizunTomlWithPython -Lines $new
+                        if ($now -eq $false) { throw 'the result would not parse as TOML - nothing written' }
+                    }
+                }
+
                 $backup = Backup $codexConfig
-                Set-Content -Path $codexConfig -Value $new -Encoding UTF8
+                Write-HorizunTextLines $codexConfig $new $shape
 
                 # Structural check. Not a TOML parse - there is none here - but it
                 # catches the failures this edit can actually cause: the table
-                # missing, or another server's table lost.
-                $afterText = Get-Content $codexConfig -Raw
-                $othersBefore = @($lines | Where-Object { $_.Trim() -match '^\[mcp_servers\.[^.\]]+\]$' } | ForEach-Object { $_.Trim() })
-                $othersAfter = @(Get-Content $codexConfig | Where-Object { $_.Trim() -match '^\[mcp_servers\.[^.\]]+\]$' } | ForEach-Object { $_.Trim() })
-                $lost = @($othersBefore | Where-Object { $_ -notin $othersAfter })
+                # missing, another server's table lost, or a legacy table left.
+                $afterLines = @((Read-HorizunTextLines $codexConfig).Lines)
+                $namesBefore = @(Get-HorizunTomlMcpSections -Lines $lines | ForEach-Object { $_.Name })
+                $namesAfter = @(Get-HorizunTomlMcpSections -Lines $afterLines | ForEach-Object { $_.Name })
+                $removedNames = @($legacyRemoved | ForEach-Object { $_.Name })
+                $lost = @($namesBefore | Where-Object { $_ -notin $namesAfter -and $_ -notin $removedNames })
+                $left = @($removedNames | Where-Object { $_ -in $namesAfter })
 
-                if ($afterText -notmatch [regex]::Escape($header)) {
+                if ($Name -notin $namesAfter) {
                     Copy-Item $backup $codexConfig -Force
                     Act 'Codex' 'add the entry' $false 'the table was not there after writing - restored the backup'
+                }
+                elseif (@($namesAfter | Where-Object { $_ -ceq $Name }).Count -ne 1) {
+                    # Codex refuses a file that defines one table twice, and then
+                    # loads none of its servers (backlog #25).
+                    Copy-Item $backup $codexConfig -Force
+                    Act 'Codex' 'add the entry' $false "the file would define [mcp_servers.$Name] more than once - restored the backup"
                 }
                 elseif ($lost.Count -gt 0) {
                     Copy-Item $backup $codexConfig -Force
                     Act 'Codex' 'add the entry' $false ("it would have removed " + ($lost -join ', ') + " - restored the backup")
                 }
+                elseif ($left.Count -gt 0) {
+                    Copy-Item $backup $codexConfig -Force
+                    Act 'Codex' 'add the entry' $false ("legacy table(s) remained after writing: " + ($left -join ', ') + " - restored the backup")
+                }
                 else {
-                    Act 'Codex' "added '$Name'; $($othersAfter.Count) server table(s) present; backup $(Split-Path -Leaf $backup)" $true $null
-                    $successfulWrites.Add([pscustomobject]@{ Client = 'Codex'; Path = $codexConfig; Backup = $backup; CurrentHash = (Get-FileHash $codexConfig -Algorithm SHA256).Hash }) | Out-Null
+                    if ($legacyRemoved.Count -gt 0) { Act 'Codex' "removed legacy: $removedText" $true $null }
+                    Act 'Codex' "added '$Name'; $($namesAfter.Count) server table(s) present; backup $(Split-Path -Leaf $backup)" $true $null
+                    Add-SuccessfulWrite 'Codex' $codexConfig $backup
                 }
             }
         }

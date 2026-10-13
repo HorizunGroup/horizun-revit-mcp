@@ -220,12 +220,86 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_text_says_whether_it_is_text_or_mtext_and_what_places_its_point()
+        {
+            // Measured on real schedule DWGs: every text was an MTEXT attached top-left, its point
+            // up to 0.8 of its height above the baseline - which the reading used not to say.
+            var lines = new List<string>
+            {
+                "H\tinsunits\t4",
+                T("E", "*Model_Space", "T1", "TEXT", "TX", "10", "20", "0", "2.5", "0", "2#5 L=3.00", "1", "0", "25", "20", "0"),
+                T("E", "*Model_Space", "T2", "MTEXT", "TX", "10", "40", "0", "2.5", "0", "3#4 L=2.00", "1", "30", "3.3", "1", "0", "0"),
+                T("E", "*Model_Space", "T3", "TEXT", "TX", "10", "60", "0", "2.5", "0", "OLD"),
+                "H\tdone\t1"
+            };
+            List<CadIrEntity> e = CadDwgExtract.Parse(lines).Entities;
+            Newtonsoft.Json.Linq.JObject t = e[0].ToJson(), m = e[1].ToJson(), old = e[2].ToJson();
+            Assert.Equal("TEXT", (string)t["text_type"]);
+            Assert.Equal(1, (int)t["text_justify_h"]);
+            Assert.Equal(0, (int)t["text_justify_v"]);
+            Assert.Equal(25, (double)t["text_alignment_point"][0], 6);
+            Assert.Equal("MTEXT", (string)m["text_type"]);
+            Assert.Equal(1, (int)m["text_attachment"]);
+            Assert.Equal(30, (double)m["text_box_width_mm"], 6);
+            Assert.Equal(3.3, (double)m["text_box_height_mm"], 6);
+            Assert.Equal(0, (double)m["rotation_radians"], 6);
+            // A dump made before the fields existed is not "left justified": it says nothing.
+            Assert.Null(old["text_type"]);
+        }
+
+        [Fact]
+        public void A_line_carries_its_own_colour_and_linetype_or_its_layer_s()
+        {
+            // Measured on real schedule DWGs: the bars are red by entity on a layer shared with
+            // every other detail line.
+            var lines = new List<string>
+            {
+                "H\tinsunits\t4",
+                T("L", "DETAIL", "3", "DASHED", "0"),
+                T("E", "*Model_Space", "L1", "LINE", "DETAIL", "0", "0", "0", "100", "0", "0", "1", ""),
+                T("E", "*Model_Space", "L2", "LINE", "DETAIL", "0", "10", "0", "100", "10", "0", "", ""),
+                T("E", "*Model_Space", "L3", "LINE", "DETAIL", "0", "20", "0", "100", "20", "0", "0", "CONTINUOUS"),
+                T("E", "*Model_Space", "L4", "LINE", "DETAIL", "0", "30", "0", "100", "30", "0"),
+                "H\tdone\t1"
+            };
+            List<CadIrEntity> e = CadDwgExtract.Parse(lines).Entities;
+            Assert.Equal(1, e[0].ColorIndex);           // its own
+            Assert.Equal("DASHED", e[0].Linetype);      // BYLAYER: the layer's
+            Assert.Equal(3, e[1].ColorIndex);           // BYLAYER: the layer's
+            Assert.Null(e[2].ColorIndex);               // BYBLOCK: the insert decides, not read here
+            Assert.Equal("CONTINUOUS", e[2].Linetype);
+            Assert.Null(e[3].ColorIndex);               // a dump made before the fields existed
+        }
+
+        [Fact]
+        public void An_arc_s_json_carries_where_it_starts_passes_and_ends()
+        {
+            // Centre and radius name a circle, not an arc: a reader of the JSON (horizun_read_schedule
+            // following a bar's bend) needs the arc's own points.
+            var lines = new List<string>
+            {
+                "H\tinsunits\t4",
+                T("E", "*Model_Space", "C1", "ARC", "E-LITE", "0", "0", "0", "100", "0", "1.570796"),
+                "H\tdone\t1"
+            };
+            Newtonsoft.Json.Linq.JObject arc = (Newtonsoft.Json.Linq.JObject)CadDwgExtract.Parse(lines).Entities.Single().ToJson()["arc"];
+            Assert.Equal(100, (double)arc["start"][0], 3);
+            Assert.Equal(0, (double)arc["start"][1], 3);
+            Assert.Equal(100 * Math.Sqrt(0.5), (double)arc["middle"][0], 3);
+            Assert.Equal(100 * Math.Sqrt(0.5), (double)arc["middle"][1], 3);
+            Assert.Equal(0, (double)arc["end"][0], 3);
+            Assert.Equal(100, (double)arc["end"][1], 3);
+        }
+
+        [Fact]
         public void An_arc_becomes_an_arc_and_not_two_chords()
         {
             var lines = new List<string>
             {
                 "H\tinsunits\t4",
-                T("E", "*Model_Space", "C1", "ARC", "E-LITE", "0", "0", "0", "100", "0", "90"),
+                // RADIANS: entget hands the extractor angles in radians (DXF files store degrees,
+                // the entity list does not). Measured on a real extraction: 3.141593, 4.712389.
+                T("E", "*Model_Space", "C1", "ARC", "E-LITE", "0", "0", "0", "100", "0", "1.570796"),
                 "H\tdone\t1"
             };
             CadIrEntity e = CadDwgExtract.Parse(lines).Entities.Single();
@@ -234,7 +308,24 @@ namespace Horizun.Core.Tests
             Assert.Equal(100, e.Arc.RadiusMm, 6);
             Assert.Equal(100, e.Arc.Start.X, 6);     // 0 degrees
             Assert.Equal(100, e.Arc.End.Y, 6);       // 90 degrees
-            Assert.Equal(Math.PI / 2, e.Arc.SweepRadians, 6);
+            Assert.Equal(Math.PI / 2, e.Arc.SweepRadians, 5);
+        }
+
+        [Fact]
+        public void A_half_circle_from_pi_to_three_halves_pi_is_a_quarter_turn_not_a_sliver()
+        {
+            // The values a real extraction carries. Read as degrees they were an arc of
+            // 1.57 DEGREES, from 3.14 to 4.71 (audit 2026-10-08, lote 7).
+            var lines = new List<string>
+            {
+                "H	insunits	4",
+                T("E", "*Model_Space", "C2", "ARC", "E-LITE", "0", "0", "0", "100", "3.141593", "4.712389"),
+                "H	done	1"
+            };
+            CadIrEntity e = CadDwgExtract.Parse(lines).Entities.Single();
+            Assert.Equal(-100, e.Arc.Start.X, 3);
+            Assert.Equal(-100, e.Arc.End.Y, 3);
+            Assert.Equal(Math.PI / 2, e.Arc.SweepRadians, 5);
         }
 
         [Fact]

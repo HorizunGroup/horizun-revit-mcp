@@ -63,7 +63,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
@@ -945,6 +945,8 @@ namespace Horizun.Revit.Commands
             List<JObject> candidates;
             if (!candidateIndex.TryGetValue(key, out candidates)) candidates = new List<JObject>();
 
+            // Held until the commit is known and each record read back (audit 2026-10-08, 6.2).
+            var ledger = new ProvenanceLedger();
             using (var t = new Transaction(doc, "Horizun: record CAD provenance"))
             {
                 t.Start();
@@ -1045,7 +1047,7 @@ namespace Horizun.Revit.Commands
                     {
                         string siblingWhy;
                         bool siblingOk = CadProvenanceStore.Write(sibling, p, out siblingWhy);
-                        provenanceRows.Add(new JObject
+                        var siblingRow = new JObject
                         {
                             ["element_id"] = Rid.Value(sibling.Id),
                             ["element_index"] = elementIndex,
@@ -1060,12 +1062,14 @@ namespace Horizun.Revit.Commands
                                 : "a sibling of element " + id + " did not take its provenance, so it is " +
                                   "ANONYMOUS while its siblings are not. Revit said: " +
                                   (string.IsNullOrWhiteSpace(siblingWhy) ? "(nothing)" : siblingWhy)
-                        });
+                        };
+                        provenanceRows.Add(siblingRow);
+                        if (siblingOk) ledger.Wrote(siblingRow, ReadBack(sibling, p));
                     }
 
                     string why;
                     bool ok = CadProvenanceStore.Write(created, p, out why);
-                    provenanceRows.Add(new JObject
+                    var stampRow = new JObject
                     {
                         ["element_id"] = id,
                         ["element_index"] = elementIndex,
@@ -1078,11 +1082,24 @@ namespace Horizun.Revit.Commands
                             : "the provenance entity did not land, so this element is created but ANONYMOUS " +
                               "and an incremental run will not recognise it. Revit said: " +
                               (string.IsNullOrWhiteSpace(why) ? "(nothing)" : why)
-                    });
+                    };
+                    provenanceRows.Add(stampRow);
+                    if (ok) ledger.Wrote(stampRow, ReadBack(created, p));
                 }
-                t.Commit();
+                TransactionStatus status;
+                try { status = t.Commit(); }
+                catch (Exception) { status = TransactionStatus.Error; }
+                ledger.Settle(status == TransactionStatus.Committed, status.ToString());
             }
         }
+
+        /// <summary>After the commit: does the element carry the record that was meant?</summary>
+        private static Func<string> ReadBack(Element element, CadProvenance meant) => () =>
+        {
+            string problem;
+            CadProvenance got = CadProvenanceStore.Read(element, out problem);
+            return ProvenanceLedger.CadDiffers(meant, got, problem);
+        };
 
         /// <summary>The element's own plan geometry, in mm, as committed.</summary>
         private static List<CadPoint> PlanGeometry(Element e)

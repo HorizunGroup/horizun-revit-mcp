@@ -54,6 +54,17 @@ namespace Horizun.Revit.Commands
         /// <summary>The tool name, as a constant: the helpers below are static and cannot read the property.</summary>
         internal const string ToolName = "horizun_manage_cad_links";
 
+        /// <summary>
+        /// What the add token binds: the operation, the file, the view, and EVERY import option
+        /// BuildOptions reads (backlog #18). A test holds this list to BuildOptions' own reads.
+        /// </summary>
+        internal static readonly string[] AddTokenScope =
+        {
+            "operation", "file_path", "view_id", "allow_duplicate",
+            "units", "placement", "colors", "current_view_only", "orient_to_view", "visible_layers_only",
+            "auto_correct_almost_vertical", "custom_scale", "visible_layers"
+        };
+
         public string Name => ToolName;
 
         public string Description =>
@@ -62,7 +73,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             string operation = (request.Value<string>("operation") ?? "").Trim().ToLowerInvariant();
@@ -219,7 +230,10 @@ namespace Horizun.Revit.Commands
             // that will host it, the bytes of the file, and the options that decide
             // where the drawing lands. A token bound to the words of a request
             // would survive somebody replacing the file between rehearsal and apply.
-            string hash = DocumentGate.PlanHash(request, "operation", "file_path", "view_id");
+            // EVERY OPTION THAT DECIDES WHAT LANDS (backlog #18): scale, colours, orientation and
+            // layers were outside the token, so the apply could run at another scale or with
+            // other layers than the rehearsal showed. AddTokenScope is every key BuildOptions reads.
+            string hash = DocumentGate.PlanHash(request, AddTokenScope);
             var resolved = new ResolvedPlan();
             resolved.Elements.Add(new PlannedElement
             {
@@ -233,7 +247,8 @@ namespace Horizun.Revit.Commands
                     { "units", declared.Value<string>("units") ?? "" },
                     { "placement", declared.Value<string>("placement") ?? "" },
                     { "this_view_only", (declared.Value<bool?>("this_view_only") == true).ToString() },
-                    { "already_linked", already.Count.ToString(CultureInfo.InvariantCulture) }
+                    { "already_linked", already.Count.ToString(CultureInfo.InvariantCulture) },
+                    { "options", declared.ToString(Newtonsoft.Json.Formatting.None) }
                 }
             });
 
@@ -284,12 +299,20 @@ namespace Horizun.Revit.Commands
 
             ElementId created = ElementId.InvalidElementId;
             bool linked;
+            TransactionStatus addStatus;
             using (var t = new Transaction(doc, "Horizun: link a CAD drawing"))
             {
                 t.Start();
                 linked = doc.Link(path, options, view, out created);
-                t.Commit();
+                addStatus = t.Commit();
             }
+            // THE COMMIT'S OWN ANSWER (backlog #51): it was ignored, so a link whose transaction
+            // did not commit was re-read and reported as added.
+            if (addStatus != TransactionStatus.Committed)
+                return CommandResult.FailWithDetail(
+                    "the link transaction ended '" + addStatus + "', not Committed, so nothing is claimed as added. " +
+                    "Revit rolled it back or left it pending; read the document before trying again.",
+                    new JObject { ["state"] = "refused", ["transaction_status"] = addStatus.ToString() });
             if (!linked || created == ElementId.InvalidElementId)
                 return CommandResult.Fail(
                     "Revit refused to link '" + Path.GetFileName(path) + "' and gave no element back. Nothing " +
@@ -558,12 +581,20 @@ namespace Horizun.Revit.Commands
             if (refusal != null) return refusal;
 
             LinkLoadResult outcome;
+            TransactionStatus repointStatus;
             using (var t = new Transaction(doc, "Horizun: repoint a CAD link"))
             {
                 t.Start();
                 outcome = type.LoadFrom(target);
-                t.Commit();
+                repointStatus = t.Commit();
             }
+            // THE COMMIT AND THE LOAD DECIDE TOO (backlog #51), as they do for reload: a repoint
+            // whose transaction did not commit, or whose load did not succeed, is not verified
+            // because the path happens to read right.
+            bool repointCommitted = repointStatus == TransactionStatus.Committed;
+            bool repointLoaded;
+            try { repointLoaded = outcome != null && LinkLoadResult.IsCodeSuccess(outcome.LoadResult); }
+            catch { repointLoaded = false; }
 
             JObject after;
             string verifyError = Measure(doc, facts.ElementId, out after);
@@ -573,6 +604,7 @@ namespace Horizun.Revit.Commands
             string nowPath = after.Value<string>("external_path");
             bool arrived = !string.IsNullOrEmpty(nowPath) &&
                            string.Equals(NormalisePath(nowPath), NormalisePath(target), StringComparison.OrdinalIgnoreCase);
+            bool repointVerified = arrived && repointCommitted && repointLoaded;
             var result = new JObject
             {
                 ["operation"] = "repoint",
@@ -586,14 +618,17 @@ namespace Horizun.Revit.Commands
                 ["points_at_requested_file"] = arrived,
                 ["geometry_fingerprint_before"] = beforePrint,
                 ["geometry_fingerprint_after"] = Fingerprint(doc, facts.ElementId),
-                ["host_verified"] = arrived,
-                ["verified_by"] = "the link's resolved path was re-read from the model after the commit and " +
-                                  "compared with the path that was asked for.",
+                ["host_verified"] = repointVerified,
+                ["transaction_status"] = repointStatus.ToString(),
+                ["load_succeeded"] = repointLoaded,
+                ["verified_by"] = "the transaction committed, LoadFrom answered a success, and the link's resolved " +
+                                  "path was re-read from the model after the commit and compared with the path " +
+                                  "that was asked for.",
                 ["api_limits"] = ApiLimits()
             };
             // A REPOINT IS A LOAD TOO - of a different file, which is exactly how a revision arrives. Without
             // this the coherence of every plan after a repoint would read as unknown.
-            if (arrived) result["load_recorded"] = RecordLoad(doc, facts.ElementId, after, "horizun_manage_cad_links repoint");
+            if (repointVerified) result["load_recorded"] = RecordLoad(doc, facts.ElementId, after, "horizun_manage_cad_links repoint");
             if (!arrived)
                 result["disagreement"] = new JObject
                 {
@@ -603,7 +638,9 @@ namespace Horizun.Revit.Commands
                     ["means"] = "Revit accepted the call and the link resolves somewhere else. host_verified is " +
                                 "false; do not treat this as done."
                 };
-            ApplicationOutcome.StampApplied(result, "Committed", 1, 1, (arrived ? 1 : 0), 0, (arrived ? 0 : 1), 0);
+            ApplicationOutcome.StampApplied(result, repointCommitted ? ApplicationOutcome.Committed : repointStatus.ToString(), 1,
+                                            repointCommitted && repointLoaded ? 1 : 0, repointVerified ? 1 : 0, 0,
+                                            repointVerified ? 0 : 1, 0);
             DocumentGate.StampConfirmation(result, gate, ToolName, hash, false);
             return CommandResult.Ok(result);
         }

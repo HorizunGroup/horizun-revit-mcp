@@ -134,23 +134,117 @@ namespace Horizun.Server
         /// status message, so a later poll shows that someone asked - rather than the
         /// request evaporating and the user concluding cancellation is unimplemented.
         /// </summary>
-        internal static void RequestCancellation(string taskId)
+        internal static void RequestCancellation(string taskId) =>
+            RequestCancellation(taskId, jobId => PipeClient.TryCancelJob(jobId, (int?)Job(jobId)?["pid"]));
+
+        /// <summary>What the add-in answered to "take this job out of your queue". Null = no answer.</summary>
+        internal sealed class JobCancelAnswer
         {
-            using (AcquireTaskMutex(taskId, CancellationToken.None))
+            public bool Removed;
+            public string State;
+        }
+
+        /// <summary>
+        /// The removal is now ASKED FOR (audit 2026-10-08: the status message promised it
+        /// and nothing ever sent it, so a queued job ran anyway). The task becomes
+        /// cancelled only through the job record the add-in finished as cancelled after
+        /// confirming the removal; a job already running, an unanswered request or a
+        /// submission not yet acknowledged is said to be exactly that, never "cancelled".
+        /// </summary>
+        internal static void RequestCancellation(string taskId, Func<string, JobCancelAnswer> cancelJob)
+        {
+            // An unknown or expired id is still refused ON THE CALL: that is an answer the
+            // caller needs, and reading the sidecar needs no mutex.
+            EnsureNotExpired(ReadRequired(taskId));
+
+            // BOUNDED (backlog #22). tasks/cancel is answered on the server's reader thread,
+            // and Submit holds this mutex for its whole round trip to Revit (up to the tool
+            // timeout); an unbounded wait here stalled every other message until it came
+            // back. When the task is busy the cancellation is DEFERRED, not dropped: a
+            // background thread records it and asks for the removal as soon as the task is
+            // free - by which time the submission has usually produced the job to remove.
+            IDisposable lease = TryAcquireTaskMutex(taskId, CancelWait);
+            if (lease == null)
+            {
+                Deferred(taskId, () => CancelUnderLease(taskId, cancelJob,
+                    AcquireTaskMutex(taskId, CancellationToken.None), deferred: true));
+                return;
+            }
+            CancelUnderLease(taskId, cancelJob, lease, deferred: false);
+        }
+
+        /// <summary>How long tasks/cancel waits for another call holding the task before deferring.</summary>
+        internal static TimeSpan CancelWait = TimeSpan.FromSeconds(1);
+
+        private static void CancelUnderLease(string taskId, Func<string, JobCancelAnswer> cancelJob,
+                                             IDisposable lease, bool deferred)
+        {
+            string jobId;
+            using (lease)
             {
                 JObject record = ReadRequired(taskId);
-                EnsureNotExpired(record);
-                string status = (string)record["status"];
-                if (IsTerminal(status)) return;     // terminal is terminal; nothing to ask for
+                if (Expired(record)) return;
+                if (IsTerminal((string)record["status"])) return;     // terminal is terminal; nothing to ask for
 
                 record["cancellation_requested_at"] = DateTimeOffset.UtcNow.ToString("O");
-                record["status_message"] =
-                    "Cancellation was requested. This is cooperative: work still waiting in the bridge queue is " +
-                    "removed before it starts, but a command already running on Revit's UI thread cannot be " +
-                    "interrupted and will finish. The status will reach a terminal state either way.";
+                jobId = (string)record["job_id"];
+                record["status_message"] = string.IsNullOrWhiteSpace(jobId)
+                    ? "Cancellation was requested before Revit acknowledged the submission, so there is no queued job " +
+                      "to remove yet. If Revit admits it, it will run; the status will reach a terminal state either way."
+                    : "Cancellation was requested; asking Revit to remove the queued job before it starts.";
                 record["last_updated_at"] = DateTimeOffset.UtcNow.ToString("O");
                 Write(record);
             }
+            if (string.IsNullOrWhiteSpace(jobId)) return;
+
+            // Outside the task mutex: a pipe round trip must not block every poll of this task.
+            JobCancelAnswer answer = null;
+            try { answer = cancelJob?.Invoke(jobId); } catch { answer = null; }
+
+            // The answer is recorded under the mutex too, and on the reader thread that wait
+            // is bounded the same way: busy means the recording moves to the background.
+            IDisposable second = deferred
+                ? AcquireTaskMutex(taskId, CancellationToken.None)
+                : TryAcquireTaskMutex(taskId, CancelWait);
+            if (second == null)
+            {
+                Deferred(taskId, () => RecordCancelAnswer(taskId, answer, AcquireTaskMutex(taskId, CancellationToken.None)));
+                return;
+            }
+            RecordCancelAnswer(taskId, answer, second);
+        }
+
+        private static void RecordCancelAnswer(string taskId, JobCancelAnswer answer, IDisposable lease)
+        {
+            using (lease)
+            {
+                JObject record = ReadRequired(taskId);
+                if (IsTerminal((string)record["status"])) return;
+                record["cancellation_answer"] = answer == null ? "unanswered" : answer.State;
+                record["status_message"] =
+                    answer == null
+                        ? "Cancellation was requested, but Revit could not confirm removing the job (no answer from the " +
+                          "bridge - Revit closed, an older add-in, or a timeout). It may still run; nothing is claimed."
+                    : answer.Removed
+                        ? "Removed from Revit's queue before it started, on request. Nothing ran."
+                        : "Cancellation was requested, but the job was no longer waiting in Revit's queue (" + answer.State +
+                          "): it is running or has finished, and work on Revit's UI thread cannot be interrupted. It will " +
+                          "reach a terminal state on its own.";
+                record["last_updated_at"] = DateTimeOffset.UtcNow.ToString("O");
+                Write(record);
+            }
+        }
+
+        /// <summary>A background thread that never keeps the process alive and never throws into it.</summary>
+        private static void Deferred(string taskId, Action work)
+        {
+            var thread = new Thread(() =>
+            {
+                try { work(); }
+                catch (Exception ex) { Log.Error("Deferred cancellation of task " + taskId + " failed", ex); }
+            })
+            { IsBackground = true, Name = "horizun-task-cancel" };
+            thread.Start();
         }
 
         /// <summary>Has someone asked for this task to stop? Read by the modern tasks/get.</summary>
@@ -256,6 +350,26 @@ namespace Horizun.Server
                           ", but submission acknowledgement was incomplete; polling the job record."
                         : "Queued in Revit as durable job " + jobId + ".";
                 }
+                else if ((bool?)response?["isError"] == true &&
+                         (response?["structuredContent"] as JObject)?["request_may_have_been_submitted"]?.Type == JTokenType.Boolean &&
+                         (bool)response["structuredContent"]["request_may_have_been_submitted"])
+                {
+                    // THE SUBMISSION MAY HAVE REACHED REVIT: the request was written and no
+                    // answer came back. Declaring the task failed and dropping its key (as
+                    // this did) lost the only handle to a job that may now be running (audit
+                    // 2026-10-08). It stays working, with its arguments and key, and the next
+                    // tasks/result replays the SAME key - which returns the job Revit created,
+                    // or queues it for the first time if it never arrived.
+                    latest["status"] = "working";
+                    latest["status_message"] =
+                        "Submission outcome unknown: the request was sent to Revit and no acknowledgement came back. " +
+                        "Nothing is assumed; tasks/result reconciles it by replaying the same idempotency key.";
+                    latest["submission_uncertain_at"] = now.ToString("O");
+                    latest["last_updated_at"] = now.ToString("O");
+                    Write(latest);
+                    Replace(record, latest);
+                    return;
+                }
                 else if ((bool?)response?["isError"] == true)
                 {
                     latest["status"] = "failed";
@@ -282,15 +396,54 @@ namespace Horizun.Server
             }
         }
 
+        /// <summary>How long a description waits for another call holding the task (a submission's round trip).</summary>
+        internal static TimeSpan DescribeWait = TimeSpan.FromSeconds(1);
+
         private static JObject Describe(JObject record)
         {
             string taskId = (string)record["task_id"];
-            using (AcquireTaskMutex(taskId, CancellationToken.None))
+            // BOUNDED. tasks/get is answered on the server's reader thread, and Submit holds
+            // this mutex for its whole round trip to Revit; an unbounded wait here stalled
+            // every other message until the submission came back (audit 2026-10-08). When
+            // the task is busy, its last durable state is reported as it stands - read, not
+            // refreshed, nothing written - and the next poll refreshes it.
+            IDisposable lease = TryAcquireTaskMutex(taskId, DescribeWait);
+            if (lease == null)
+            {
+                JObject snapshot = ReadRequired(taskId);
+                return new JObject
+                {
+                    ["taskId"] = (string)snapshot["task_id"],
+                    ["status"] = (string)snapshot["status"] ?? "working",
+                    ["statusMessage"] = ((string)snapshot["status_message"] ?? "") +
+                                        " (Another call is updating this task right now; this is its last recorded state.)",
+                    ["createdAt"] = ParseInstant(snapshot["created_at"], "created_at").ToString("O"),
+                    ["lastUpdatedAt"] = ParseInstant(snapshot["last_updated_at"], "last_updated_at").ToUniversalTime().ToString("O"),
+                    ["ttl"] = (long)snapshot["ttl"],
+                    ["pollInterval"] = PollIntervalMs
+                };
+            }
+            using (lease)
             {
                 JObject latest = ReadRequired(taskId);
                 Replace(record, latest);
                 return DescribeLocked(record);
             }
+        }
+
+        private static IDisposable TryAcquireTaskMutex(string taskId, TimeSpan wait)
+        {
+            var mutex = new Mutex(false, "Local\\Horizun.McpTask." + taskId);
+            try
+            {
+                bool held;
+                try { held = mutex.WaitOne(wait); }
+                catch (AbandonedMutexException) { held = true; }
+                if (held) return new MutexLease(mutex);
+                mutex.Dispose();
+                return null;
+            }
+            catch { mutex.Dispose(); throw; }
         }
 
         private static JObject DescribeLocked(JObject record)

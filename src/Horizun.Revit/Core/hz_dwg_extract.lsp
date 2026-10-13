@@ -188,18 +188,44 @@
                       (hz-n 40 ed) "\t" (hz-n 50 ed) "\t"
                       (hz-str 2 ed) "\t" (hz-str 1 ed)) f))
 
+;;; THE EXTRUSION DIRECTION, when it is not +Z (audit 2026-10-08, lote 7). ARC,
+;;; CIRCLE, LWPOLYLINE, INSERT and TEXT are written in their own OCS; a mirrored
+;;; one has 210 = (0 0 -1) and its coordinates are reflected. The reader turns
+;;; OCS into world with the Arbitrary Axis Algorithm. Its own form: a script form
+;;; must stay on one line under the length accoreconsole completes.
+(defun hz-ocs (f typ h ed / n210)
+  (setq n210 (cdr (assoc 210 ed)))
+  (if (and n210 h (member typ '("ARC" "CIRCLE" "LWPOLYLINE" "INSERT" "TEXT"))
+           (not (equal n210 '(0.0 0.0 1.0) 1e-9)))
+    (hz-wl (strcat "X\t" h "\t" (hz-pt n210)) f)))
+
+;;; The entity's own colour (62, and 420 when it is a true colour) and linetype (6),
+;;; empty when BYLAYER. Measured on real schedule DWGs: the bars share their layer with
+;;; every other detail line, and the dashed outlines are told apart only by linetype.
+(defun hz-app (ed)
+  (strcat "\t" (hz-n 62 ed) "\t" (hz-str 6 ed) "\t" (hz-n 420 ed)))
+
+;;; TEXT: 10 is the baseline start whatever the justification; 72/73 are the horizontal
+;;; and vertical justification and 11 the alignment point they name. MTEXT: 10 is the
+;;; insertion point AT ITS ATTACHMENT (71, 1..9 top-left to bottom-right), 42/43 the box
+;;; the text fills, 11 its direction. Measured on real schedule DWGs: without them a
+;;; reader cannot put an MTEXT back on its baseline.
+(defun hz-txt (f base ed typ)
+  (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
+                      (hz-n 40 ed) "\t" (hz-n 50 ed) "\t" (hz-str 1 ed) "\t"
+                      (if (= typ "TEXT")
+                          (strcat (hz-n 72 ed) "\t" (hz-n 73 ed))
+                          (strcat (hz-n 71 ed) "\t" (hz-n 42 ed) "\t" (hz-n 43 ed)))
+                      "\t" (hz-pt (cdr (assoc 11 ed)))) f))
+
 (defun hz-entity (f owner ed / typ h lay base)
   (setq typ (cdr (assoc 0 ed))
         h   (cdr (assoc 5 ed))
         lay (cdr (assoc 8 ed)))
+  (hz-ocs f typ h ed)
   (setq base (strcat "E\t" owner "\t" (if h h "") "\t" typ "\t" (hz-esc (if lay lay "")) "\t"))
   (cond
-    ((= typ "TEXT")
-     (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
-                         (hz-n 40 ed) "\t" (hz-n 50 ed) "\t" (hz-str 1 ed)) f))
-    ((= typ "MTEXT")
-     (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
-                         (hz-n 40 ed) "\t" (hz-n 50 ed) "\t" (hz-str 1 ed)) f))
+    ((member typ '("TEXT" "MTEXT")) (hz-txt f base ed typ))
     ((= typ "ATTDEF") (hz-attdef f base ed))
     ((= typ "INSERT")
      (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
@@ -208,14 +234,14 @@
                          (hz-str 2 ed) "\t" (hz-dyn-fields ed)) f))
     ((= typ "LINE")
      (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
-                         (hz-pt (cdr (assoc 11 ed)))) f))
+                         (hz-pt (cdr (assoc 11 ed))) (hz-app ed)) f))
     ((= typ "CIRCLE")
      (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t" (hz-n 40 ed)) f))
     ((= typ "ARC")
      (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t" (hz-n 40 ed) "\t"
-                         (hz-n 50 ed) "\t" (hz-n 51 ed)) f))
+                         (hz-n 50 ed) "\t" (hz-n 51 ed) (hz-app ed)) f))
     ((= typ "LWPOLYLINE")
-     (hz-wl (strcat base (hz-n 90 ed) "\t" (hz-n 70 ed) "\t" (hz-lwpts ed)) f))
+     (hz-wl (strcat base (hz-n 90 ed) "\t" (hz-n 70 ed) "\t" (hz-lwpts ed) (hz-app ed)) f))
     ((= typ "LEADER")
      (hz-wl (strcat base (hz-lwpts ed)) f))
     ((= typ "HATCH")
@@ -298,9 +324,12 @@
   (setq lst '())
   (setq blk (tblnext "BLOCK" T))
   (while blk
+    ;; THE BASE POINT (group 10): a block's contents are placed relative to it
+    ;; (audit 2026-10-08, lote 7). Fields 5-7 of the K record.
     (write-line (strcat "K\t" (hz-esc (cdr (assoc 2 blk))) "\t"
                         (itoa (cdr (assoc 70 blk))) "\t"
-                        (hz-esc (cdr (assoc 1 blk)))) f)
+                        (hz-esc (cdr (assoc 1 blk))) "\t"
+                        (hz-pt (cdr (assoc 10 blk)))) f)
     (setq lst (cons (cdr (assoc 2 blk)) lst))
     (setq blk (tblnext "BLOCK")))
 

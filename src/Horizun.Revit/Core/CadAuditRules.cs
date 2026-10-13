@@ -56,6 +56,12 @@ namespace Horizun.Revit.Core
         /// </summary>
         public CadPoint? ArcCentre;
         public double? ArcRadiusMm;
+        /// <summary>
+        /// The built arc's own sweep (its length over its radius), always positive. Two
+        /// endpoints and a centre fit a minor and a major arc alike; this says which one
+        /// was built. Null when Revit would not say.
+        /// </summary>
+        public double? ArcSweepRadians;
 
         /// <summary>
         /// How wide the element IS, in millimetres - a wall's thickness, a pipe's
@@ -123,6 +129,14 @@ namespace Horizun.Revit.Core
         /// parameter of every element would cost more than the audit.
         /// </summary>
         public Dictionary<string, string> ParameterValues =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        /// <summary>
+        /// The same parameters as Revit DISPLAYS them (AsValueString: units, Yes/No in the
+        /// UI language). ParameterValues holds the STORED value - the string, the integer,
+        /// the double in internal units, invariant - which is what a write is compared
+        /// with; the display text is kept for messages and for values written as text.
+        /// </summary>
+        public Dictionary<string, string> ParameterDisplay =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         /// <summary>Parameters a rule named that this element does not carry, or could not be read.</summary>
         public List<string> ParametersUnreadable = new List<string>();
@@ -715,7 +729,7 @@ namespace Horizun.Revit.Core
             foreach (CadParameterWrite write in c.Parameters ?? new List<CadParameterWrite>())
             {
                 if (write?.Parameter == null) continue;
-                string expected = write.Value?.ToString();
+                string expected = CadParameterValues.ExpectedText(write.Value);
                 if (expected == null) continue;
 
                 if (hit.ParametersUnreadable.Contains(write.Parameter, StringComparer.OrdinalIgnoreCase))
@@ -752,7 +766,8 @@ namespace Horizun.Revit.Core
                     continue;
                 }
 
-                if (!string.Equals(expected, actual, StringComparison.Ordinal))
+                hit.ParameterDisplay.TryGetValue(write.Parameter, out string shown);
+                if (!CadParameterValues.Agrees(write.Value, actual, shown))
                     audit.Findings.Add(new CadFinding
                     {
                         Code = CadFindingCode.ParameterDiffers,
@@ -1301,20 +1316,33 @@ namespace Horizun.Revit.Core
         /// same distinction as extent on a line: on the drawing's curve, but not
         /// spanning the same run of it.
         /// </summary>
-        private static double? ArcExtentDifference(CadCandidate c, CadAuditSubject s)
+        public static double? ArcExtentDifference(CadCandidate c, CadAuditSubject s)
         {
             if (c?.Arc == null || s?.Geometry == null || s.Geometry.Count < 2) return null;
             if (!s.ArcRadiusMm.HasValue || s.ArcRadiusMm.Value <= 0) return null;
             double drawnLength = c.Arc.RadiusMm * c.Arc.SweepRadians;
 
-            // The built arc's own sweep, from its ends about its own centre.
-            CadPoint centre = s.ArcCentre.Value;
-            double a0 = Math.Atan2(s.Geometry[0].Y - centre.Y, s.Geometry[0].X - centre.X);
-            double a1 = Math.Atan2(s.Geometry[s.Geometry.Count - 1].Y - centre.Y,
-                                   s.Geometry[s.Geometry.Count - 1].X - centre.X);
-            double sweep = Math.Abs(a1 - a0);
-            while (sweep > 2 * Math.PI) sweep -= 2 * Math.PI;
-            if (sweep > Math.PI && c.Arc.SweepRadians <= Math.PI) sweep = 2 * Math.PI - sweep;
+            // THE BUILT ARC'S ORIENTED SWEEP. |a1 - a0| read a 270 degree arc as 90 and
+            // reported a wall built exactly as drawn as a quarter of its length (audit
+            // 2026-10-08, lote 7). Revit's own sweep says which arc was built; without it,
+            // the two arcs through the ends are the counter-clockwise sweep from start to
+            // end and its complement, and the one that agrees with the drawn sweep is read.
+            double sweep;
+            if (s.ArcSweepRadians.HasValue && s.ArcSweepRadians.Value > 0)
+                sweep = s.ArcSweepRadians.Value;
+            else
+            {
+                if (!s.ArcCentre.HasValue) return null;
+                CadPoint centre = s.ArcCentre.Value;
+                double a0 = Math.Atan2(s.Geometry[0].Y - centre.Y, s.Geometry[0].X - centre.X);
+                double a1 = Math.Atan2(s.Geometry[s.Geometry.Count - 1].Y - centre.Y,
+                                       s.Geometry[s.Geometry.Count - 1].X - centre.X);
+                double ccw = a1 - a0;
+                while (ccw < 0) ccw += 2 * Math.PI;
+                while (ccw >= 2 * Math.PI) ccw -= 2 * Math.PI;
+                double cw = 2 * Math.PI - ccw;
+                sweep = Math.Abs(ccw - c.Arc.SweepRadians) <= Math.Abs(cw - c.Arc.SweepRadians) ? ccw : cw;
+            }
             double builtLength = s.ArcRadiusMm.Value * sweep;
             return Math.Abs(drawnLength - builtLength);
         }

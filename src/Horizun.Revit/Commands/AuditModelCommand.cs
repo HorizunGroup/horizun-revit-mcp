@@ -366,7 +366,7 @@ namespace Horizun.Revit.Commands
             JObject healthProfile = null;
             try
             {
-                var request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
+                var request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
 
                 // THE SAME RULES THE SCAN READS, not a second copy of them. This had
                 // the identical defects: a misspelt option accepted in silence, and

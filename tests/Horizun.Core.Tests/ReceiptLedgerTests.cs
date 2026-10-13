@@ -83,6 +83,24 @@ namespace Horizun.Core.Tests
         }
 
         /// <summary>
+        /// Backlog #32: the patterns ran over the SERIALIZED line, where every backslash of a
+        /// Windows path is doubled. A pattern written for the path as the reply carried it
+        /// never matched, and the account name left in the clear. They run over the values.
+        /// </summary>
+        [Fact]
+        public void A_path_pattern_redacts_the_path_as_the_reply_carried_it()
+        {
+            JObject r = ReceiptLedger.Build("t", true, null,
+                new JObject { ["document"] = @"C:\Users\someone\Proyecto\Torre.rvt" }, 0, 1, "1", Now);
+            Assert.True(ReceiptLedger.Append(_dir, r,
+                key => key == "receipt_redact_patterns" ? @"[""C:\\\\Users\\\\[^\\\\]+""]" : null, Now));
+            string line = File.ReadAllLines(Path.Combine(_dir, "receipts-2026-08-04.jsonl")).Single();
+            Assert.DoesNotContain("someone", line);
+            Assert.Contains("[redacted]", line);
+            Assert.Equal(@"[redacted]\Proyecto\Torre.rvt", (string)JObject.Parse(line)["document"]);
+        }
+
+        /// <summary>
         /// Retention acts only on day-files OLDER than today: the file being written is
         /// never a deletion candidate, so a mis-set policy can cost history but never
         /// the operation that just happened.

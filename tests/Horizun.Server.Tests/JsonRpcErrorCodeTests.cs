@@ -216,6 +216,19 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void A_cancellation_sent_as_a_request_is_answered_32600_not_left_hanging()
+        {
+            // notifications/cancelled is a NOTIFICATION. Sent with an id it is a request,
+            // and a request that is never answered leaves the client waiting forever
+            // (audit 2026-10-08).
+            var replies = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":\"c-1\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":\"x\"}}");
+            JObject err = FindError(replies, -32600);
+            Assert.True(err != null, "Expected -32600 for a cancellation carrying an id. Got: " + Codes(replies));
+            Assert.Equal("c-1", (string)err["id"]);
+        }
+
+        [Fact]
         public void An_unescaped_windows_path_is_answered_32700_with_the_backslash_hint()
         {
             var replies = Exchange(
@@ -311,7 +324,9 @@ namespace Horizun.Server.Tests
             // prove that initialize sends the head and not the full guidance.
             var init = ExchangeRaw(
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}");
-            Assert.Equal(ServerInstructions.Head, (string)init[0]["result"]["instructions"]);
+            // The head for the surface the server serves by default (3.0.0: SchemaMode.Default);
+            // full mode sends ServerInstructions.Head itself (SchemaFacadeWireTests).
+            Assert.Equal(ServerInstructions.HeadFor(SchemaMode.Default), (string)init[0]["result"]["instructions"]);
         }
 
         [Fact]
@@ -349,7 +364,7 @@ namespace Horizun.Server.Tests
             Assert.Equal(5, replies.Count);
             Assert.Equal(9, ((JArray)replies.Find(x => (int?)x["id"] == 11)["result"]["resources"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 12)["result"]["contents"]);
-            Assert.Equal(29, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
+            Assert.Equal(30, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 14)["result"]["messages"]);
             Assert.Equal(-32601, (int)replies.Find(x => (int?)x["id"] == 15)["error"]["code"]);
         }

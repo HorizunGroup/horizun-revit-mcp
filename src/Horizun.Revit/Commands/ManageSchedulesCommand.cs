@@ -45,7 +45,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -496,13 +496,13 @@ namespace Horizun.Revit.Commands
                     // Record the IDENTITY of every field actually removed. A positional entry
                     // (field_index) names nothing that survives the removal, so without this the
                     // re-read had nothing to look for and passed vacuously.
+                    // EVERY POSITION RESOLVED BEFORE THE FIRST REMOVAL: a field_index read after
+                    // a removal named whatever slid into that slot (audit 2026-10-08, 6.7).
                     var removed = new JArray();
-                    foreach (JToken t in (JArray)a["fields"])
-                    {
-                        ScheduleFieldId id = ResolveFieldId(target, (JObject)t);
+                    foreach (ScheduleFieldId id in ScheduleEditRules.ResolveThenRemove(
+                                 ((JArray)a["fields"]).OfType<JObject>(), t => ResolveFieldId(target, t),
+                                 id => definition.RemoveField(id)))
                         removed.Add(id.IntegerValue);
-                        definition.RemoveField(id);
-                    }
                     a["__removed_field_ids"] = removed;
                     return target;
                 }
@@ -682,7 +682,10 @@ namespace Horizun.Revit.Commands
                         {
                             double got2; try { got2 = filter.GetDoubleValue(); }
                             catch { try { got2 = filter.GetIntegerValue(); } catch { why = "filter " + i + "'s number could not be re-read"; return false; } }
-                            if (Math.Abs(got2 - entry.Value<double>("number_value")) > 1e-9)
+                            // Compared in the units Revit stores, the request converted the same way it
+                            // was written (audit 2026-10-08, 6.7).
+                            double want2 = InternalFilterNumber(schedule, filter.FieldId, entry.Value<double>("number_value"));
+                            if (Math.Abs(got2 - want2) > 1e-9)
                             { why = "filter " + i + "'s number value did not stick"; return false; }
                         }
                     }
@@ -981,6 +984,32 @@ namespace Horizun.Revit.Commands
                    string.Join(", ", matches.Select(m => Rid.Value(m.ParameterId))) + "); resolve by parameter_id.";
         }
 
+        /// <summary>
+        /// number_value in the unit its field measures (mm, m2, m3), converted to the internal
+        /// units Revit compares in; a measured field of any other kind is refused
+        /// (audit 2026-10-08, 6.7).
+        /// </summary>
+        private static double InternalFilterNumber(ViewSchedule schedule, ScheduleFieldId fieldId, double number)
+        {
+            ForgeTypeId spec = null;
+            try { spec = schedule.Definition.GetField(fieldId).GetSpecTypeId(); } catch { spec = null; }
+            bool measurable = false;
+            if (spec != null && !string.IsNullOrEmpty(spec.TypeId))
+                try { measurable = UnitUtils.IsMeasurableSpec(spec); } catch { measurable = false; }
+            bool Takes(ForgeTypeId unit) { try { return measurable && UnitUtils.IsValidUnit(spec, unit); } catch { return false; } }
+            string refusal;
+            string unit = ScheduleEditRules.FilterNumberUnit(measurable, Takes(UnitTypeId.Millimeters),
+                Takes(UnitTypeId.SquareMeters), Takes(UnitTypeId.CubicMeters), spec?.TypeId, out refusal);
+            if (refusal != null) throw new InvalidOperationException(refusal);
+            switch (unit)
+            {
+                case "millimeters": return UnitUtils.ConvertToInternalUnits(number, UnitTypeId.Millimeters);
+                case "square_meters": return UnitUtils.ConvertToInternalUnits(number, UnitTypeId.SquareMeters);
+                case "cubic_meters": return UnitUtils.ConvertToInternalUnits(number, UnitTypeId.CubicMeters);
+                default: return number;
+            }
+        }
+
         private static ScheduleFilter BuildFilter(ViewSchedule schedule, JObject entry)
         {
             ScheduleFieldId fieldId = ResolveFieldId(schedule, FilterFieldRef(entry));
@@ -988,7 +1017,7 @@ namespace Horizun.Revit.Commands
             if (entry["value"] != null) return new ScheduleFilter(fieldId, type, entry.Value<string>("value"));
             if (entry["number_value"] != null)
             {
-                double number = entry.Value<double>("number_value");
+                double number = InternalFilterNumber(schedule, fieldId, entry.Value<double>("number_value"));
                 // An integral value may target an integer parameter; Revit's typed
                 // constructors care. Try double first - the common case for lengths -
                 // and fall back to the integer form when Revit refuses the shape.

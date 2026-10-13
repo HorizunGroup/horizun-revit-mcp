@@ -42,7 +42,7 @@ namespace Horizun.Revit.Core
             documentTitle = null;
             var findings = new Dictionary<string, CoordinationFinding>(StringComparer.Ordinal);
             if (!File.Exists(path)) return findings;
-            JObject root = JObject.Parse(File.ReadAllText(path));
+            JObject root = JsonText.ParseObject(File.ReadAllText(path));
             documentTitle = root.Value<string>("document");
             if (root["findings"] is JObject block)
                 foreach (var property in block.Properties())

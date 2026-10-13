@@ -861,10 +861,17 @@ refused **before any request**.
   with the client credential in a Basic header. A 2-legged token sees only what the
   APS app is provisioned for in the ACC account (a custom integration).
 - `opencde`: `HORIZUN_OPENCDE_ACCESS_TOKEN`, an OAuth2 token issued by the server's
-  `oauth2_token_url`. This tool does not run the interactive authorization-code flow.
-- Tokens are sent only to `developer.api.autodesk.com`, or to the named OpenCDE
-  server and the Documents API base it advertised. A pagination or document link to
-  any other host is refused before the request.
+  `oauth2_token_url`, plus `HORIZUN_OPENCDE_SERVER_URL`, the one server that token
+  belongs to. `server_url` may be omitted (the configured server is used) and, when
+  given, must name that same server; anything else is refused before a request. If
+  the server advertises its Documents API on another host, list that host in
+  `HORIZUN_OPENCDE_ALLOWED_HOSTS` (comma or semicolon separated); an unlisted host
+  never receives the token and the reply says `coverage_complete: false` with the
+  reason. `list_states` needs no token and can still read any server's discovery
+  endpoints. This tool does not run the interactive authorization-code flow.
+- Tokens are sent only to `developer.api.autodesk.com`, or to the configured OpenCDE
+  server and the hosts listed beside it. A pagination or document link to any other
+  host is refused before the request.
 
 **Limits, stated.** The OpenCDE Documents API 1.0 cannot enumerate a project: document
 selection happens in the CDE's own web UI (`POST /select-documents` returns a browser

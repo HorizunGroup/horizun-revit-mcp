@@ -61,7 +61,10 @@ param(
     [int]$ConnectWaitSec = 0,
     [int]$FreshSec = 0,
     [int]$StartupGraceSec = -1,
-    [int]$ProbeTimeoutSec = 15
+    [int]$ProbeTimeoutSec = 15,
+    # ISO-8601 instant that replaces the clock ages are judged against. A test seam
+    # only; when used, the report carries it as evidence.clock_override_utc.
+    [string]$ClockUtc
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'mcp-clients.lib.ps1')
@@ -83,10 +86,15 @@ $healthUrlFile = Join-Path $StateRoot 'health.url'
 $logFile = Join-Path $StateRoot 'logs\tunnel-client.log'
 $advice = Get-HorizunTunnelDownloadAdvice
 
+$nowUtc = $null
+if ($ClockUtc) {
+    $nowUtc = [datetime]::Parse($ClockUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+}
 $actions = New-Object System.Collections.Generic.List[object]
 $problems = New-Object System.Collections.Generic.List[string]
 $blocked = New-Object System.Collections.Generic.List[string]
 $evidence = [ordered]@{}
+if ($ClockUtc) { $evidence.clock_override_utc = $ClockUtc }
 function Say($m, $c = 'Gray') { Write-Host "  $m" -ForegroundColor $c }
 function Act($what, $ok, $detail) {
     $actions.Add([pscustomobject]@{ action = $what; ok = [bool]$ok; detail = $detail }) | Out-Null
@@ -376,7 +384,7 @@ try {
                 $wait = if ($ConnectWaitSec -gt 0) { $ConnectWaitSec } else { (Get-HorizunTunnelFreshness -Settings $pollSettings).startup_grace_seconds }
                 $until = (Get-Date).AddSeconds($wait)
                 do {
-                    $c = Get-HorizunTunnelConnection -StateRoot $StateRoot -FreshSec $FreshSec -StartupGraceSec $StartupGraceSec
+                    $c = Get-HorizunTunnelConnection -StateRoot $StateRoot -FreshSec $FreshSec -StartupGraceSec $StartupGraceSec -NowUtc $nowUtc
                     if ($c.connected -or $c.process -ne 'running' -or $c.control_plane.state -eq 'stale') { break }
                     Start-Sleep -Seconds 2
                 } while ((Get-Date) -lt $until)
@@ -386,7 +394,7 @@ try {
 
     # ---- what is true now ----------------------------------------------------------
     $runtime = Get-HorizunTunnelRuntime -StateRoot $StateRoot
-    $conn = Get-HorizunTunnelConnection -StateRoot $StateRoot -Runtime $runtime -FreshSec $FreshSec -StartupGraceSec $StartupGraceSec
+    $conn = Get-HorizunTunnelConnection -StateRoot $StateRoot -Runtime $runtime -FreshSec $FreshSec -StartupGraceSec $StartupGraceSec -NowUtc $nowUtc
     $evidence.runtime_state = $runtime.state
     $evidence.connection = $conn
     $evidence.execute_python_granted_by_this = $false

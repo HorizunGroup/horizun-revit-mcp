@@ -138,7 +138,8 @@ namespace Horizun.Revit.Commands
                 solids++;
                 foreach (Face face in faces)
                 {
-                    if (!(face is PlanarFace)) mesh.AnyCurvedFace = true;
+                    bool curved = !(face is PlanarFace);
+                    if (curved) mesh.AnyCurvedFace = true;
 
                     Mesh tri;
                     try { tri = face.Triangulate(); } catch { continue; }
@@ -153,6 +154,7 @@ namespace Horizun.Revit.Commands
                     }
                     for (int i = 0; i < tri.NumTriangles; i++)
                     {
+                        if (curved) mesh.CurvedTriangles.Add(mesh.Triangles.Count);
                         MeshTriangle mt = tri.get_Triangle(i);
                         mesh.AddTriangle(baseIndex + (int)mt.get_Index(0),
                                          baseIndex + (int)mt.get_Index(1),
@@ -205,10 +207,13 @@ namespace Horizun.Revit.Commands
                 index[i] = at;
             }
 
-            foreach (int[] t in mesh.Triangles)
+            for (int ti = 0; ti < mesh.Triangles.Count; ti++)
             {
+                int[] t = mesh.Triangles[ti];
                 int a = index[t[0]], b = index[t[1]], c = index[t[2]];
                 if (a == b || b == c || a == c) continue;   // collapsed by the weld
+                // A CURVED FACE'S TRIANGLE stays one: a face a mat follows refuses to bend at it.
+                if (mesh.CurvedTriangles.Contains(ti)) welded.CurvedTriangles.Add(welded.Triangles.Count);
                 welded.AddTriangle(a, b, c);
             }
             return welded;
@@ -250,9 +255,20 @@ namespace Horizun.Revit.Commands
             HostMesh welded = Weld(raw, 1e-4);
 
             MeshDiagnosis d = SolidContainment.Diagnose(welded);
+            if (!d.Usable && d.OpenEdges > 0)
+            {
+                // CRACKS OF THE TRIANGULATION (measured, Revit 2024: a real round column with 4 open edges):
+                // closed when no wider than the chord tolerance the mesh already declares, and said in its Source.
+                HostMesh mended = MeshRepair.CloseCracks(welded, welded.ChordToleranceMm, out int closed, out double widest);
+                if (mended != null && closed > 0)
+                {
+                    MeshDiagnosis again = SolidContainment.Diagnose(mended);
+                    if (again.Usable) { welded = mended; d = again; }
+                }
+            }
             if (!d.Usable)
             {
-                why = "the boundary of element " + Rid.Value(host.Id) + " is not usable: " + d.Why;
+                why = SolidContainment.UnusableBoundaryWhy(Rid.Value(host.Id), d);
                 return null;
             }
             return welded;

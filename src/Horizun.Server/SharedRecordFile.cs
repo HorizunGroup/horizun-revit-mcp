@@ -31,22 +31,51 @@ namespace Horizun.Server
 
         public static string ReadAllText(string path) => Retry(() => File.ReadAllText(path));
 
-        /// <summary>Write through a temporary file and swap it in, so a reader never sees half a record.</summary>
+        /// <summary>
+        /// Write through a temporary file and swap it in, so a reader never sees half a
+        /// record. The temporary name is unique per write: a fixed "&lt;file&gt;.tmp" was
+        /// shared by two writers of one record, and one failed or swapped in the other's
+        /// bytes (audit 2026-10-08).
+        /// </summary>
         public static void WriteAtomically(string target, string text)
         {
-            string temporary = target + ".tmp";
-            File.WriteAllText(temporary, text, new UTF8Encoding(false));
+            string temporary = Horizun.Revit.Core.AtomicFile.TemporaryFor(target);
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                byte[] bytes = new UTF8Encoding(false).GetBytes(text ?? "");
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush(true);
+            }
             try { Swap(temporary, target); }
             catch { try { File.Delete(temporary); } catch { } throw; }
         }
 
-        /// <summary>Swap a fully written temporary file into place, waiting out a reader of the target.</summary>
-        public static void Swap(string temporary, string target) => Retry(() =>
+        /// <summary>
+        /// Swap a fully written temporary file into place, waiting out a reader of the
+        /// target - and another writer's swap, which makes the target vanish for an
+        /// instant (File.Replace renames it aside) and used to fail this one with
+        /// FileNotFoundException.
+        /// </summary>
+        public static void Swap(string temporary, string target)
         {
-            if (File.Exists(target)) File.Replace(temporary, target, null);
-            else File.Move(temporary, target);
-            return true;
-        });
+            DateTime until = DateTime.UtcNow + Patience;
+            int wait = 10;
+            while (true)
+            {
+                try
+                {
+                    if (File.Exists(target)) File.Replace(temporary, target, null);
+                    else File.Move(temporary, target);
+                    return;
+                }
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) &&
+                                           File.Exists(temporary) && DateTime.UtcNow < until)
+                {
+                    Thread.Sleep(wait);
+                    wait = Math.Min(wait * 2, 200);
+                }
+            }
+        }
 
         private static T Retry<T>(Func<T> io)
         {

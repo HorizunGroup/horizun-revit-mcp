@@ -45,6 +45,7 @@ and a new `idempotency_key`.
 | [`ifc-delivery/`](ifc-delivery/) | `horizun_deliver_ifc` with a TAB-separated Pset mapping ([`hz-delivery-psets.txt`](ifc-delivery/hz-delivery-psets.txt)) and an IDS 1.0 file ([`hz-delivery.ids`](ifc-delivery/hz-delivery.ids)) that match: `HZ_Delivery.Code` on every `IfcDuctSegment`. |
 | [`disciplines/`](disciplines/) | One call per discipline. Architecture: walls and a slab (`horizun_create_elements`). Structure: a stirrup plan from a requirement set (`horizun_plan_reinforcement`). MEP: a rectangular and a round duct (`horizun_create_elements`). Documentation: sheets to one PDF named as a container (`horizun_export`). |
 | [`dwg-revision-update/`](dwg-revision-update/) | A reproducible DWG revision cycle with its own synthetic fixture. |
+| [`rebar-from-schedule/`](rebar-from-schedule/) | A synthetic detail schedule to verified reinforcement: section rules per member mark, plan, apply, audit, and the model reconciled with the bar list. |
 
 ### QA/QC report template
 
@@ -92,6 +93,7 @@ ensayo y un `idempotency_key` nuevo.
 | [`ifc-delivery/`](ifc-delivery/) | `horizun_deliver_ifc` con un mapeo de Psets separado por TAB y un IDS 1.0 que coinciden: `HZ_Delivery.Code` en cada `IfcDuctSegment`. |
 | [`disciplines/`](disciplines/) | Una llamada por disciplina. Arquitectura: muros y losa (`horizun_create_elements`). Estructura: plan de estribos desde un conjunto de requisitos (`horizun_plan_reinforcement`). MEP: un ducto rectangular y uno circular (`horizun_create_elements`). Documentación: planos a un PDF con nombre de contenedor (`horizun_export`). |
 | [`dwg-revision-update/`](dwg-revision-update/) | Un ciclo reproducible de revisión de DWG con su propio fixture sintético. |
+| [`rebar-from-schedule/`](rebar-from-schedule/) | De una cartilla sintética a un refuerzo verificado: section rules por marca, plan, aplicación, auditoría y el modelo conciliado con el despiece. |
 
 ### Plantilla de informe QA/QC
 

@@ -27,7 +27,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             Document doc = app?.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
@@ -43,7 +43,7 @@ namespace Horizun.Revit.Commands
                 // Only layout distances scale; element/probe coordinates retain units.
                 foreach (string key in new[] { "offset", "chain_separation", "clearance", "max_displacement" })
                 {
-                    double defaultValue = key == "clearance" ? 10 : key == "max_displacement" ? (distanceSpace=="paper"?30:1200) : 15;
+                    double defaultValue = DeliveryLayoutRules.DefaultInUnits(key, distanceSpace, toFeet);
                     if (key == "chain_separation" && request[key] == null) continue;
                     request[key] = DeliveryLayoutRules.Distance(request.Value<double?>(key) ?? defaultValue,
                         toFeet, distanceView.Scale, distanceSpace) / toFeet;

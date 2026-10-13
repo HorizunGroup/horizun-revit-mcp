@@ -2,6 +2,26 @@
 
 Detail that does not belong in `tools/list` descriptions. One section per topic.
 
+## 3.0.0 discovery and exchange
+
+`full` is the default schema mode. With `HORIZUN_SCHEMA_MODE=facade`, use
+`horizun_list_tools` to find a reachable name, `horizun_describe_tool` to read
+its exact schema (or one variant), then `horizun_call_tool` to dispatch it.
+The same permission, toolset and contract validation applies to the inner
+typed call. `horizun_health.schema_mode` reports the active mode and facade
+hash. The [measured facade size and limitations](plans/lazy-schema-3.0.md)
+explain why it remains opt-in.
+
+`horizun_exchange` emits or checks a `horizun.exchange/0` manifest for a
+cross-application handoff, and checks or reverifies a correction plan from a
+review. A `model_ref` ties records to a model identity; the exchange cannot
+prove that another application performed its own work. Inspect the manifest,
+the reported evidence and the target document before a corrective write.
+
+`horizun_read_schedule` uses PdfPig 0.1.13 to read vector PDF schedule
+primitives. It can also consume DWG entities or caller-provided primitives.
+Rows that cannot be read unambiguously are refused instead of inferred.
+
 ## Advertised schemas and the contract
 
 `tools/list` advertises an **abridged copy** of each input schema; the contract
@@ -83,6 +103,8 @@ any of it fails naming the tool and the signed delta. To accept it deliberately,
 set `HORIZUN_UPDATE_TOOLS_LEDGER=1`, run `dotnet test tests/Horizun.Server.Tests
 -c Release --filter "FullyQualifiedName~ToolsListLedger"`, then review and commit the diff
 with the change that caused it (the rewrite fails once, and refuses under `CI`).
+
+**The `local` toolset** (`HORIZUN_TOOLSETS=local`) is the selection for local or short-context models: core, reading (`get_document_info`, `horizun_list_elements`, `horizun_query_model`, `horizun_model_scan`, `horizun_quantities`, `horizun_capture_view`, `horizun_navigate`, `horizun_model_diff`) and six typed writes (`horizun_write_params_verified`, `horizun_create_elements`, `horizun_transform_elements`, `horizun_delete_verified`, `horizun_manage_views`, `horizun_undo`). It is self-contained (no pack dependencies) and never carries the Python surface: `Local_never_carries_the_python_surface` fails the day a tool riding in `unsafe_code` is added to it. Historically measured on the 2.2.0 candidate at `safe_write`: 17 tools (capture_view is hidden by the profile), 99,771 characters; `Local_tools_list_stays_within_its_budget` fails above that + 10 %. How to set it per client: docs/CLIENTS.md.
 
 **Reserve levers** (measured on the prototype, not implemented): defer the
 discriminated branches behind the variant template plus a host-resident describe
@@ -554,11 +576,16 @@ comparando hojas, filas y cada celda con el plan antes de declarar `files_verifi
 | operation | needs | what is re-read after the commit |
 |---|---|---|
 | `list` | - (optional `type_id`, `max_rows`) | read only: every group type (kind `model` / `detail` / `attached_detail`), its instances, member ids (500 per instance), nested groups, parent group, attached detail group types |
+| `find_duplicates` | optional `type_id`, `max_rows` | read only: pairs by type and geometric position, with the level inferred from geometry |
+| `annotation_report` | - | read only: dependent tags and dimensions at risk, restored, or lost in this process and document |
 | `create` | `element_ids`, `name` | the group exists, its members equal `element_ids`, the type carries `name` |
 | `add_members` / `remove_members` | one `group_ids` entry (the reference), `element_ids`, `scope` when the type has other instances | the reference's members, the type name, whether the old type was deleted or kept, the new type's instance count, and every other instance |
 | `rename_type` | `type_id`, `name` | the name and an unchanged instance count |
 | `duplicate_type` | `type_id`, `name` | the new type's name, zero instances on it, the source's count unchanged |
 | `swap_type` | `group_ids`, target `type_id` | each instance's type and the target's instance count |
+| `change_group_type` | `group_ids`, target `type_id` | equivalent members and recreated tags; dimensions that cannot be restored are reported |
+| `set_group_level` | `group_ids`, `level_id`, `keep_position` | level, instance location and dependent annotations |
+| `place_group` | pattern `group_id` and target position | type, rotation, mirror, level, offset and workset; refused if geometry cannot be matched |
 | `ungroup` | `group_ids` | each group is gone and each former member exists outside any group |
 | `convert_to_link` | - | refused: `code: api_absent` |
 
@@ -578,6 +605,10 @@ the type has other instances the call must say `scope`:
   instances stay on the old type, untouched.
 
 A type with attached detail group types is refused: the regroup would orphan them.
+
+The dry run of deletion and member recreation enumerates dependent tags and
+dimensions by view. `annotation_report` currently records type changes in the
+current process; it is not yet a durable history of every group operation.
 
 **Convert to link.** `GroupType` offers `LoadFrom` and nothing that saves a group as
 a model, in every RevitAPI 2023–2027. Do it in Revit (select the group, Link).
@@ -1427,6 +1458,16 @@ of saves when Revit exposes them.
 
 - **Identity is the UniqueId.** An element in both sides is compared; otherwise
   it is added or deleted.
+- **Which project, and whether it is proven.** Two snapshots of different projects
+  are refused. A project is its document's creation GUID (Revit 2024+); Revit 2023
+  has none, so there it is the Project Information element's UniqueId - which every
+  project made from one Autodesk template shares (MEASURED: two new projects from
+  the same template compared as 276 unchanged). The comparison still runs, and
+  `compare` and `colorize` say what was proven: `project_identity_kind`
+  (`creation` or `project_info`), `identity_proven` (true only for a creation GUID)
+  and, when it is false, `warnings` with the code `identity_unprovable_2023`. A
+  colorize applied with `identity_proven: false` carries `verified_means`: the view
+  and its overrides are verified, not that they show one project's changes.
 - **Modified** means any of: type (family/type/type UniqueId), level, workset,
   phases, a move above `move_tolerance_mm` (default 1 mm; location first, else
   bounding-box centre, reported as `moved_mm`), geometry hash, or an instance
@@ -1485,7 +1526,7 @@ añadidos, borrados y modificados (parámetros antes/después, movimientos sobre
 tolerancia, cambios de tipo) por categoría, disciplina inferida y nivel, con
 paginación y exportación CSV/JSON. La identidad es el UniqueId; si el modelo fue
 re-creado se avisa y `heuristic_match` empareja por categoría/tipo/ubicación,
-marcando cada par como `inferred`. `colorize` es la única escritura: duplica una
+marcando cada par como `inferred`. La respuesta de `compare` y `colorize` dice si es el mismo proyecto PROBADO: `identity_proven` es true solo con el GUID de creación del documento (Revit 2024+); en Revit 2023 la identidad es la Project Information, que comparten todos los proyectos de una misma plantilla, así que sale `identity_proven: false`, `project_identity_kind: project_info` y una advertencia `identity_unprovable_2023` en `warnings`. `colorize` es la única escritura: duplica una
 vista y colorea con dry_run, token y relectura. `explain` resume solo hechos
 medidos y, con `project_context_path`, lo que falta para ISO 19650 según el mismo
 validador de `horizun_project_context`. `record_quality` y `quality_trend` llevan
@@ -3391,6 +3432,35 @@ The IFC case uses `IfcLinkSource` when given and otherwise exports its own IFC o
 write document, so every year is measured; a refusal passes only as
 `ifc_importer_unavailable` AND with that year's `Revit.IFC.Import.dll` really absent.
 
+## Elements inside links, and inside links of links
+
+An element that lives in a link is named by a PAIR: its id in its own document and the
+`RevitLinkInstance` in the host it is seen through - `selections: [{element_id,
+link_instance_id}]` in `horizun_navigate`, the `link_instance_id` every row of
+`horizun_query_model include_links=true` carries. A bare element id is refused: two
+documents can hold the same number.
+
+**A nested link has its own instance in the host.** MEASURED 2026-10-10 in Revit 2026:
+when model B is linked into the host and B itself attaches model C, Revit gives C its own
+`RevitLinkInstance` id in the host document, distinct from B's. `horizun_model_scan
+sections=federation` reports B with `nested_link_count` and C with `is_nested_link: true`;
+`horizun_query_model` lists C's elements under C's own (nested) instance id. Selecting C's
+element with that pair selects and verifies it by reference (`linked_elements_verified`).
+
+- **Use the instance the host reports for the row.** Never build the pair by hand from the
+  top-level link: the same element id through B's instance is looked up INSIDE B. When B has
+  no element with that id the call is refused ("no element with this id inside linked
+  document 'B'"); when B happens to have one, B's element is selected - which is what was
+  asked, and not what was meant.
+- **Only attached links nest.** A link added by `horizun_manage_links add` is an Overlay, and
+  Revit never carries an overlay into the model that links its host.
+- **An unloaded link is a link state, not a missing element.** A selection through an
+  instance whose document is not loaded is refused before anything is selected.
+- **Changing a link's load state drops the selection inside it.** `unload`, `reload` and
+  `change_path` first remove the selection references INTO that link and report how many in
+  `selection_references_cleared`: MEASURED in Revit 2026, a linked element held by reference
+  while its link was unloaded or reloaded crashed Revit a few seconds later.
+
 ## Sketch edits (`edit_sketch`) and the FIEBDC-3 budget export (`export_bc3`)
 
 ### `horizun_transform_elements` operation=`edit_sketch`
@@ -3608,3 +3678,33 @@ de escaparse, y también `%` y `&` en los códigos (FIEBDC los lee como porcenta
 declara los 6 decimales escritos. Exige `idempotency_key`: un reintento devuelve la
 respuesta registrada tras volver a calcular el hash del archivo. El archivo se verifica
 releyéndolo del disco antes de moverlo a su sitio.
+
+## 3.0.0 field workflows / flujos de campo
+
+`horizun_health.python_runtime` reports `not_authorized`, `not_loadable`
+(with a cause), `cold`, or `warm`. Isolation protects IronPython dependencies
+when another add-in loads a different Microsoft.Scripting version. Only the
+owner can authorize Python; a successful script is self-reported, never host
+verified.
+
+`horizun_cad_extract` can provide a paged `detail_plan` from Revit import
+geometry, including nested block paths, lines, arcs, polylines, layer mapping
+and gaps. `read_dwg_text` requires a readable source DWG and AutoCAD; source
+TEXT/MTEXT is refused by name when either is unavailable. Compare converted
+and source entity counts before declaring a detail complete. See
+[CAD-DETAIL-TRANSFER.md](CAD-DETAIL-TRANSFER.md).
+
+`horizun_manage_groups` previews dependent tags and dimensions by view before
+deletions and member recreation. `find_duplicates`, `set_group_level`,
+`change_group_type`, `place_group`, and `annotation_report` expose the measured
+result; dimensions that cannot be restored are reported. The session report
+currently covers type changes in the process.
+
+`horizun_manage_links operation=visible_elements` scans a linked document
+without the three-argument `FilteredElementCollector` overload. It reports
+candidates, exclusions and uncertain elements; `visibility_proven=false` when
+crop, phases, design options or link display settings remain unresolved.
+`horizun_execute_python` preflight warns about that overload, and
+`horizun_job_status` distinguishes a working Revit process from one that died
+with recent Windows crash-dump evidence. See
+[LINK-VISIBILITY-3.0.md](LINK-VISIBILITY-3.0.md).

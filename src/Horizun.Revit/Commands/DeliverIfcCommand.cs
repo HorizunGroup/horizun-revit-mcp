@@ -51,7 +51,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -242,7 +242,12 @@ namespace Horizun.Revit.Commands
 
             // ---- 2. the export ----------------------------------------------------
             FileStamp before = Stamp(ifcPath);
-            bool apiAccepted;
+            bool apiAccepted = false;
+            Exception exportFailure = null;
+            // The exporter commits export bookkeeping to the document. horizun_export rolls
+            // that back inside an isolation group; this command committed it and left the
+            // model modified (audit 2026-10-08, 6.1). Same group, same report, now here too.
+            ExportIsolation isolation = ExportIsolationRules.Isolates("ifc") ? ExportIsolation.Begin(app, doc, "ifc") : null;
             try
             {
                 var ifc = new IFCExportOptions
@@ -262,7 +267,8 @@ namespace Horizun.Revit.Commands
                 if (commonPsets.HasValue) ifc.AddOption("ExportIFCCommonPropertySets", commonPsets.Value ? "true" : "false");
                 if (internalPsets.HasValue) ifc.AddOption("ExportInternalRevitPropertySets", internalPsets.Value ? "true" : "false");
                 // The exporter writes export bookkeeping into the document and refuses without
-                // a transaction (measured on horizun_export, run 15).
+                // a transaction (measured on horizun_export, run 15). It commits inside the
+                // isolation group opened above, which is rolled back after the export.
                 using (var tx = new Transaction(doc, "Horizun: deliver IFC"))
                 {
                     tx.Start();
@@ -270,11 +276,22 @@ namespace Horizun.Revit.Commands
                     tx.Commit();
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) { exportFailure = ex; }
+            JObject isolationReport = null, provenChanges = null; string isolationHeadline = null;
+            if (isolation != null)
             {
-                return CommandResult.FailWithDetail("Revit IFC export failed: " + ex.Message,
-                    new JObject { ["external_files_may_exist"] = true, ["planned_file"] = ifcPath,
-                                  ["gates"] = IfcDeliveryRules.GatesJson(gates) });
+                ExportIsolationRules.Facts isolationFacts = isolation.End();
+                isolationReport = ExportIsolationRules.Report("ifc", isolationFacts);
+                isolationHeadline = ExportIsolationRules.Headline("ifc", isolationFacts);
+                provenChanges = ExportIsolationRules.ProvenModelChanges(isolationFacts);
+            }
+            JObject WithIsolation(JObject detail) { if (isolationReport != null) detail["model_isolation"] = isolationReport; return detail; }
+            if (exportFailure != null)
+            {
+                return CommandResult.FailWithDetail("Revit IFC export failed: " + exportFailure.Message +
+                    (isolationHeadline != null ? " " + isolationHeadline : ""),
+                    WithIsolation(new JObject { ["external_files_may_exist"] = true, ["planned_file"] = ifcPath,
+                                  ["gates"] = IfcDeliveryRules.GatesJson(gates) }));
             }
 
             FileStamp after = Stamp(ifcPath);
@@ -287,8 +304,8 @@ namespace Horizun.Revit.Commands
                                     "measured at " + ifcPath + ". Success is not claimed.";
                 gates.Add(exportGate);
                 return CommandResult.FailWithDetail(exportGate.Reason,
-                    new JObject { ["external_files_may_exist"] = true, ["planned_file"] = ifcPath,
-                                  ["gates"] = IfcDeliveryRules.GatesJson(gates), ["deliverable_ready"] = false });
+                    WithIsolation(new JObject { ["external_files_may_exist"] = true, ["planned_file"] = ifcPath,
+                                  ["gates"] = IfcDeliveryRules.GatesJson(gates), ["deliverable_ready"] = false }));
             }
             byte[] head, tail;
             string ifcSha;
@@ -441,10 +458,12 @@ namespace Horizun.Revit.Commands
                 ["ifc_parse_error"] = parseError,
                 ["precheck"] = precheckJson,
                 ["ids_validation"] = validationJson,
+                ["model_isolation"] = isolationReport,
                 ["verdict_basis"] = "deliverable_ready is the FILE's verdict: every requested non-advisory gate was decided " +
                     "by re-reading the exported IFC (and the BCF). The model precheck is advisory and never counts. " +
                     (ready ? "" : "The file stays at ifc_path and is NOT ready; 'blocking' names why.")
             };
+            if (provenChanges != null) result["model_changes"] = provenChanges;
             DocumentGate.StampConfirmation(result, gate, Name, planHash, false);
             return CommandResult.Ok(result);
         }

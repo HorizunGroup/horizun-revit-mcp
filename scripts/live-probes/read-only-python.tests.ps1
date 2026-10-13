@@ -15,7 +15,7 @@ function New-Fake([bool]$Disabled) {
     $call = {
         param($tool, $a)
         if ($Disabled) {
-            return & $reply $null $true 'horizun_execute_python is DISABLED ON THIS MACHINE. This is the safe default...'
+            return & $reply $null $true 'horizun_execute_python requires explicit permission_profile=unsafe_code and enable_execute_python=true in settings.json, OR a persistent owner grant made from Revit. It is OFF on a fresh install.'
         }
         if ($a.preflight -eq $true) {
             return & $reply ([pscustomobject]@{

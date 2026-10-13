@@ -159,10 +159,24 @@ namespace Horizun.Revit.Core
                         new[] {  halfX,  halfY, 0.0 },
                         new[] { -halfX,  halfY, 0.0 }
                     };
-                    string positionWhy;
-                    IfcTransform position = IfcPlacement.Axis(ifc, ifc.Resolve(profile.At(2)),
-                                                              lengthScale, out positionWhy)
-                                            ?? IfcTransform.Identity;
+                    // Position is OPTIONAL: absent ($) is the profile's own origin. Present and
+                    // unresolved (a dangling reference, or not an axis placement) is refused
+                    // rather than read as the identity (backlog #43): the rectangle would land at
+                    // the origin and nothing would say so.
+                    string positionToken = profile.At(2);
+                    bool positionAbsent = string.IsNullOrWhiteSpace(positionToken) || positionToken.Trim() == "$";
+                    IfcEntity positionEntity = positionAbsent ? null : ifc.Resolve(positionToken);
+                    string positionWhy = null;
+                    IfcTransform position = positionAbsent ? IfcTransform.Identity
+                        : positionEntity == null ? null
+                        : IfcPlacement.Axis(ifc, positionEntity, lengthScale, out positionWhy);
+                    if (position == null)
+                    {
+                        shape.Refusal = "the rectangle profile's Position (" + positionToken + ") does not resolve to an " +
+                                        "axis placement" + (positionWhy == null ? "." : ": " + positionWhy) +
+                                        " Placing it at the profile's origin instead would move the shape without saying so.";
+                        return shape;
+                    }
                     shape.Outer = new IfcLoop { Points = local.Select(position.Apply).ToList() };
                     return shape;
                 }

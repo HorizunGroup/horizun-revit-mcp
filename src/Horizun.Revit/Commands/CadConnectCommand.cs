@@ -72,7 +72,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
@@ -1021,14 +1021,9 @@ namespace Horizun.Revit.Commands
             o["worst_end_offset_mm"] = Math.Round(worst, 1);
             o["tolerance_mm"] = fitTolerance;
             o["fits"] = fits;
-            o["means"] = fits
-                ? "the transition sits where the drawing draws it (ends within " + fitTolerance + " mm), with the members' sizes at its ends"
-                : "the transition does not fit the drawn space: " +
-                  (!sizesMatch ? "its end sizes are not the members' sizes; " : "") +
-                  (!collinear ? "it is not on the drawn axis; " : "") +
-                  (worst > fitTolerance ? "Revit's " + Math.Round(fittingLength, 1) + " mm fitting puts an end " + Math.Round(worst, 1) +
-                                          " mm from where the drawing ends the " + j.Drawn["length_mm"] + " mm piece (tolerance " + fitTolerance + " mm); " : "") +
-                  "it was undone rather than moving the network to make it fit";
+            // INVARIANT numbers: concatenated here they followed the OS culture ("241,4 mm" on es-CO).
+            o["means"] = CadTransitionWords.Means(fits, sizesMatch, collinear, worst, fittingLength,
+                                                  j.Drawn.Value<double?>("length_mm") ?? double.NaN, fitTolerance);
             return o;
         }
 
@@ -1514,8 +1509,12 @@ namespace Horizun.Revit.Commands
                             doc.Regenerate();
                             centred = Math.Round(delta.GetLength() * 304.8, 2);
                         }
-                        tx.Commit();
+                        // COMMITTED AND RE-READ, never assumed (audit 2026-10-08, 6.16).
+                        Guard.Commit(tx, "Horizun: declared transition type");
                     }
+                    if (fitting.GetTypeId() != sym.Id)
+                        throw new InvalidOperationException("the fitting reads back as type " + Rid.Value(fitting.GetTypeId()) +
+                                                            ", not the declared " + Rid.Value(sym.Id));
                     check = TransitionCheck(j, trow, fitTolerance);
                 }
                 catch (Exception ex) { words = ex.Message; }
@@ -1582,8 +1581,11 @@ namespace Horizun.Revit.Commands
                         ElementTransformUtils.MoveElement(doc, fitting.Id, delta);
                         doc.Regenerate();
                     }
-                    tx.Commit();
+                    Guard.Commit(tx, "Horizun: best declared transition type");
                 }
+                if (fitting.GetTypeId() != bestSymbol.Id)
+                    throw new InvalidOperationException("the fitting reads back as type " + Rid.Value(fitting.GetTypeId()) +
+                                                        ", not the chosen " + Rid.Value(bestSymbol.Id));
             }
             catch (Exception ex)
             {

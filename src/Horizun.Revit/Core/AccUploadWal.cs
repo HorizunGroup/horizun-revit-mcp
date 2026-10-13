@@ -71,8 +71,11 @@ namespace Horizun.Revit.Core
 
         /// <summary>
         /// The WAL is a binary log: NUL bytes interleave the text. Strip them and
-        /// read the rest as Latin-1 - every byte is a character, nothing throws,
-        /// and the ASCII the pattern needs comes through untouched.
+        /// read the rest as UTF-8, replacing what is not text - nothing throws, and
+        /// the ASCII the pattern needs comes through untouched. MEASURED on real
+        /// connector logs (2026-10-08): every non-ASCII Name in them is valid UTF-8,
+        /// which Latin-1 turned into mojibake that no typed name could match
+        /// (audit 2026-10-08, lote 7).
         /// </summary>
         public static string Decode(byte[] raw)
         {
@@ -81,7 +84,7 @@ namespace Horizun.Revit.Core
             int n = 0;
             foreach (byte b in raw)
                 if (b != 0) kept[n++] = b;
-            return Encoding.GetEncoding("ISO-8859-1").GetString(kept, 0, n);
+            return new UTF8Encoding(false, false).GetString(kept, 0, n);
         }
 
         public static List<WalHit> Scan(string sourceFile, string decoded)

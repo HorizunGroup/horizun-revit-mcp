@@ -654,6 +654,14 @@ namespace Horizun.Revit.Core
                 return r;
             }
 
+            // PLACED HOOPS AND SPIRALS (acero 3.0, L7) are not a profile moved along with a layout:
+            // a lapped hoop is one placed bar per station, a spiral one placed bar over its zone.
+            if (rule.PlacementTemplate != null)
+            {
+                PlacedShapes.ExpandZones(rule, r, unit, expanded);
+                return r;
+            }
+
             foreach (StirrupZonePlan z in r.Zones)
             {
                 var moved = new List<double[]>(rule.ProfileMm.Count);
@@ -682,8 +690,21 @@ namespace Horizun.Revit.Core
                     Mark = string.IsNullOrWhiteSpace(z.Mark) ? rule.Mark : z.Mark,
                     Required = rule.Required,
                     AllowNewShape = rule.AllowNewShape,
+                    // ONE LAYOUT, every zone of it (overlapping_bar): the zone rule spaces these bars, so they
+                    // are not compared with each other; and they keep the declared rule and the cage they came from.
+                    OriginRuleId = rule.OriginRuleId ?? rule.Id,
+                    LayoutGroupId = rule.Id,
+                    CageId = rule.CageId,
+                    CageRole = rule.CageRole,
                     Raw = rule.Raw
                 };
+                // ARCS (L2) move with the profile: a circular hoop is the same two arcs at every station.
+                if (rule.ProfileArcThrough != null)
+                    foreach (KeyValuePair<int, double[]> arc in rule.ProfileArcThrough)
+                        rebar.ArcThrough[arc.Key] = new[]
+                        {
+                            arc.Value[0] + unit[0] * z.StartMm, arc.Value[1] + unit[1] * z.StartMm, arc.Value[2] + unit[2] * z.StartMm
+                        };
                 if (r.PredictedFromHostCover)
                 {
                     // WHAT WAS PREDICTED, carried with the rule. The apply compares

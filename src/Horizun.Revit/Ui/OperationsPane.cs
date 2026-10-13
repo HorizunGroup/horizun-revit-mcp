@@ -90,10 +90,12 @@ namespace Horizun.Revit.Ui
 
         public OperationsPane()
         {
-            var root = new Grid();
+            // A REAL BACKGROUND. Without one, Revit's dark host showed through every part of the pane that
+            // drew nothing - the black bands above and below the list (owner's photo, 2026-10-12).
+            var root = new Grid { Background = SystemColors.WindowBrush };
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(140) });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(3, GridUnitType.Star), MinHeight = 120 });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 60 });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             var header = new StackPanel { Orientation = Orientation.Vertical };
@@ -111,14 +113,13 @@ namespace Horizun.Revit.Ui
             Grid.SetRow(header, 0);
             root.Children.Add(header);
 
-            var columns = new GridView();
-            // What a person needs from a row: when, whether it changed their model, and
-            // WHAT it did - in words. The tool id and the raw receipt are in the detail.
-            columns.Columns.Add(Column(T("Hora", "When"), "When", 70));
-            columns.Columns.Add(Column(T("Resultado", "Result"), "State", 110));
-            columns.Columns.Add(Column(T("Qué se hizo", "What was done"), "Tool", 420));
-            columns.Columns.Add(Column(T("Documento", "Document"), "DocumentTitle", 150));
-            _rows.View = columns;
+            // ONE ROW PER OPERATION, AS WIDE AS THE PANE. What a person needs from a row: when, whether it
+            // changed their model, and WHAT it did - in words; the tool id and the raw receipt are in the
+            // detail. Four fixed columns (750 px) did not fit a side pane, so "what was done" sat off-screen
+            // behind a horizontal scroll bar (owner's photo, 2026-10-12): the row now wraps to the pane.
+            _rows.ItemTemplate = RowTemplate();
+            _rows.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+            ScrollViewer.SetHorizontalScrollBarVisibility(_rows, ScrollBarVisibility.Disabled);
             _rows.SelectionChanged += (s, e) => ShowDetail(_rows.SelectedItem as Row);
             Grid.SetRow(_rows, 1);
             root.Children.Add(_rows);
@@ -135,10 +136,11 @@ namespace Horizun.Revit.Ui
             Grid.SetRow(detailScroll, 2);
             root.Children.Add(detailScroll);
 
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8) };
+            // THE BUTTONS WRAP in a narrow pane instead of running off its edge.
+            var buttons = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 8, 8, 0) };
 
             _showAll.Content = T("Mostrar también consultas y ensayos", "Also show reads and rehearsals");
-            _showAll.Margin = new Thickness(0, 4, 12, 0);
+            _showAll.Margin = new Thickness(0, 4, 12, 4);
             _showAll.IsChecked = false;
             _showAll.Click += (s, e) => Refresh();
             buttons.Children.Add(_showAll);
@@ -148,13 +150,13 @@ namespace Horizun.Revit.Ui
             buttons.Children.Add(refresh);
 
             _cancelQueued.Content = T("Cancelar lo que no ha empezado", "Cancel what has not started");
-            _cancelQueued.Margin = new Thickness(8, 0, 0, 0);
+            _cancelQueued.Margin = new Thickness(8, 0, 0, 4);
             _cancelQueued.Padding = new Thickness(10, 3, 10, 3);
             _cancelQueued.Click += (s, e) => CancelQueued();
             buttons.Children.Add(_cancelQueued);
 
             _select.Content = T("Seleccionar en Revit", "Select in Revit");
-            _select.Margin = new Thickness(8, 0, 0, 0);
+            _select.Margin = new Thickness(8, 0, 0, 4);
             _select.Padding = new Thickness(10, 3, 10, 3);
             _select.IsEnabled = false;
             _select.Click += (s, e) => SelectRowElements();
@@ -162,17 +164,20 @@ namespace Horizun.Revit.Ui
 
             var caveat = new TextBlock
             {
-                Margin = new Thickness(10, 6, 0, 0),
+                Margin = new Thickness(8, 2, 8, 8),
                 TextWrapping = TextWrapping.Wrap,
                 Opacity = 0.75,
                 // The sentence that keeps the button honest, on the button's own row.
                 Text = T("Lo que ya se está ejecutando dentro de Revit no se puede interrumpir, ni siquiera desde Revit.",
                          "Work already running inside Revit cannot be interrupted by anyone, including Revit.")
             };
-            buttons.Children.Add(caveat);
+            // Under the buttons, at the pane's width: beside them it was squeezed into one word per line.
+            var footer = new StackPanel { Orientation = Orientation.Vertical };
+            footer.Children.Add(buttons);
+            footer.Children.Add(caveat);
 
-            Grid.SetRow(buttons, 3);
-            root.Children.Add(buttons);
+            Grid.SetRow(footer, 3);
+            root.Children.Add(footer);
 
             Content = root;
 
@@ -193,8 +198,10 @@ namespace Horizun.Revit.Ui
             // UI thread. The timer reads files; it never touches the Revit API, which is
             // why it is safe to run on a tick at all.
             _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-            _timer.Tick += (s, e) => Refresh();
+            _timer.Tick += (s, e) => { if (OperationsPanePolicy.Refreshes(IsVisible)) Refresh(); };
             _timer.Start();
+            // Shown again: read at once, not up to two seconds later.
+            IsVisibleChanged += (s, e) => { if (IsVisible) Refresh(); };
 
             Refresh();
         }
@@ -306,12 +313,42 @@ namespace Horizun.Revit.Ui
             return pairs.Distinct().Take(1000).ToList();
         }
 
-        private static GridViewColumn Column(string header, string path, double width) => new GridViewColumn
+        /// <summary>
+        /// A row: the time and the result on one line, what was done under it wrapped to the pane's width,
+        /// and the document dimmed below. Built in code, like the rest of the pane (no XAML).
+        /// </summary>
+        private static DataTemplate RowTemplate()
         {
-            Header = header,
-            Width = width,
-            DisplayMemberBinding = new System.Windows.Data.Binding(path)
-        };
+            var panel = new FrameworkElementFactory(typeof(StackPanel));
+            panel.SetValue(StackPanel.MarginProperty, new Thickness(2, 3, 2, 3));
+
+            var top = new FrameworkElementFactory(typeof(StackPanel));
+            top.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
+            var when = new FrameworkElementFactory(typeof(TextBlock));
+            when.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("When"));
+            when.SetValue(TextBlock.MarginProperty, new Thickness(0, 0, 8, 0));
+            when.SetValue(TextBlock.OpacityProperty, 0.75);
+            top.AppendChild(when);
+            var state = new FrameworkElementFactory(typeof(TextBlock));
+            state.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("State"));
+            state.SetValue(TextBlock.FontWeightProperty, FontWeights.SemiBold);
+            top.AppendChild(state);
+            panel.AppendChild(top);
+
+            var what = new FrameworkElementFactory(typeof(TextBlock));
+            what.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("Tool"));
+            what.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap);
+            panel.AppendChild(what);
+
+            var doc = new FrameworkElementFactory(typeof(TextBlock));
+            doc.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("DocumentTitle"));
+            doc.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap);
+            doc.SetValue(TextBlock.OpacityProperty, 0.65);
+            doc.SetValue(TextBlock.FontSizeProperty, 11.0);
+            panel.AppendChild(doc);
+
+            return new DataTemplate { VisualTree = panel };
+        }
 
         // =====================================================================
         // IDockablePaneProvider
@@ -324,6 +361,8 @@ namespace Horizun.Revit.Ui
             {
                 DockPosition = DockPosition.Right
             };
+            // NEVER SHOWN BY ITSELF (OperationsPanePolicy): only the ribbon button opens it.
+            data.VisibleByDefault = OperationsPanePolicy.VisibleByDefault;
         }
 
         // =====================================================================

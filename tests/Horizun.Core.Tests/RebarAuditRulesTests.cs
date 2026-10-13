@@ -69,6 +69,140 @@ namespace Horizun.Core.Tests
             return f.OfType<JObject>().Select(o => (string)o["code"]).ToList();
         }
 
+        // ------------------------------------------------- hook corner seat (L10)
+
+        private static JObject SeatExpected(double? seat)
+        {
+            JObject e = CoupledExpected();
+            e.Remove("coupled_ends");
+            e["rule_id"] = "VXL#h1#top";
+            e["curve_mm"] = JArray.Parse("[[0.0, 0.0, 0.0], [5920.0, 0.0, 0.0]]");
+            e["expected_total_steel_length_mm"] = 11840.0;
+            if (seat.HasValue) e["hook_corner_seat_mm"] = seat.Value;
+            return e;
+        }
+
+        private static JObject SeatObserved(double dz)
+        {
+            JObject o = CoupledObserved(199000.0);
+            o["terminations"] = JArray.Parse("[{ 'end': 0, 'hook_type_id': -1, 'hook_readable': true, 'has_hook': false }, { 'end': 1, 'hook_type_id': -1, 'hook_readable': true, 'has_hook': false }]".Replace('\'', '"'));
+            o["geometry"] = new JObject { ["centreline_points_mm"] = new JArray(new JArray(1.22, 0.0, dz), new JArray(5921.22, 0.0, dz)) };
+            o["measured"] = new JObject { ["bar_centreline_length_mm"] = 5920.0, ["total_length_mm"] = 11840.0 };
+            return o;
+        }
+
+        [Fact]
+        public void The_row_at_the_hooks_corner_may_seat_in_either_pass_and_says_so()
+        {
+            // The live case: 1.22 along and 3.77 down, 3.96 mm - inside half a 10M stirrup.
+            JArray f = RebarAuditRules.CompareBar(SeatExpected(4.75), SeatObserved(-3.77), Tol());
+            Assert.DoesNotContain(f.OfType<JObject>(), o => (string)o["severity"] != "info");
+            Assert.Contains(RebarFinding.HookCornerSeat, Codes(f));
+        }
+
+        [Fact]
+        public void A_row_without_the_seat_or_past_it_is_still_a_difference()
+        {
+            Assert.Contains(RebarFinding.GeometryDiffers, Codes(RebarAuditRules.CompareBar(SeatExpected(null), SeatObserved(-3.77), Tol())));
+            List<string> past = Codes(RebarAuditRules.CompareBar(SeatExpected(4.75), SeatObserved(-8.0), Tol()));
+            Assert.Contains(RebarFinding.GeometryDiffers, past);
+            Assert.DoesNotContain(RebarFinding.HookCornerSeat, past);
+        }
+
+        // A HOOKED ROW AT THE HOOKS' CORNER (second steel duel, 2026-10-12): the column's top#p1 carries a 90
+        // at its start and came out 3.964 mm off - the measured seat - and was refused, because the seat was
+        // only ever accepted on the hook-free comparison.
+        private static JObject HookedSeatExpected(double? seat)
+        {
+            JObject e = SeatExpected(seat);
+            e["terminations"] = JObject.Parse("{ 'start': { 'hook_type_id': 700, 'has_hook': true, 'orientation': 'left' }, 'end': { 'hook_type_id': -1, 'has_hook': false } }".Replace('\'', '"'));
+            return e;
+        }
+
+        private static JObject HookedSeatObserved(double dz)
+        {
+            JObject o = SeatObserved(dz);
+            o["terminations"] = JArray.Parse("[{ 'end': 0, 'hook_type_id': 700, 'hook_readable': true, 'has_hook': true, 'orientation': 'left' }, { 'end': 1, 'hook_type_id': -1, 'hook_readable': true, 'has_hook': false }]".Replace('\'', '"'));
+            o["geometry"] = new JObject { ["centreline_points_as_declared_mm"] = new JArray(new JArray(0.0, 0.0, dz), new JArray(5920.0, 0.0, dz)) };
+            return o;
+        }
+
+        [Fact]
+        public void A_hooked_row_at_the_hooks_corner_may_seat_too()
+        {
+            JArray f = RebarAuditRules.CompareBar(HookedSeatExpected(4.75), HookedSeatObserved(-3.964), Tol());
+            Assert.DoesNotContain(f.OfType<JObject>(), o => (string)o["severity"] != "info");
+            Assert.Contains(RebarFinding.HookCornerSeat, Codes(f));
+        }
+
+        [Fact]
+        public void A_hooked_row_without_the_seat_or_past_it_is_still_a_difference()
+        {
+            Assert.Contains(RebarFinding.GeometryDiffers, Codes(RebarAuditRules.CompareBar(HookedSeatExpected(null), HookedSeatObserved(-3.964), Tol())));
+            List<string> past = Codes(RebarAuditRules.CompareBar(HookedSeatExpected(4.75), HookedSeatObserved(-8.0), Tol()));
+            Assert.Contains(RebarFinding.GeometryDiffers, past);
+            Assert.DoesNotContain(RebarFinding.HookCornerSeat, past);
+        }
+
+        [Fact]
+        public void A_row_a_crossing_order_moved_off_the_corner_no_longer_touches_it()
+        {
+            // V-2's top rows, moved 17.5 mm down under V-1's: off the hooks' corner, so no seat to accept.
+            Assert.Null(RebarCrossing.SeatAfterMove(4.75, 17.5));
+            Assert.Equal(4.75, RebarCrossing.SeatAfterMove(4.75, 0).Value, 6);
+            Assert.Equal(4.75, RebarCrossing.SeatAfterMove(4.75, 3.0).Value, 6);
+            Assert.Null(RebarCrossing.SeatAfterMove(null, 17.5));
+        }
+
+        // ---------------------------------------------------- coupled ends (L7)
+
+        // The second piece of a 16M layer coupled with CPL16M at x = 199000, as Revit 2024 and 2026
+        // left it (bar 422788, coupler 422801): its start 12 mm into the coupler, 2948 mm per bar.
+        private static JObject CoupledExpected() => JObject.Parse(@"{
+              'rule_id': 'P4#h1#bot#p2', 'host_id': 1, 'style': 'standard', 'closed': false,
+              'bar_type': { 'id': 53673, 'name': '16M', 'nominal_diameter_mm': 16.0, 'model_diameter_mm': 16.0 },
+              'normal': { 'x': 0.0, 'y': 1.0, 'z': 0.0 },
+              'layout': { 'rule': 'fixed_number', 'number_of_bar_positions': 2, 'quantity': 2, 'array_length_mm': 204.1,
+                          'include_first_bar': true, 'include_last_bar': true, 'bars_on_normal_side': true },
+              'curve_mm': [[199000.0, -102.05, 2447.95], [201960.0, -102.05, 2447.95]],
+              'expected_total_steel_length_mm': 5920.0,
+              'coupled_ends': [0],
+              'terminations': { 'start': { 'hook_type_id': -1, 'has_hook': false }, 'end': { 'hook_type_id': -1, 'has_hook': false } }
+            }".Replace('\'', '"'));
+
+        private static JObject CoupledObserved(double startX) => JObject.Parse((@"{
+              'id': 422788, 'host': { 'id': 1, 'resolved': true },
+              'bar_type': { 'resolved': true, 'id': 53673, 'nominal_diameter_mm': 16.0, 'model_diameter_mm': 16.0 },
+              'style_horizun': 'standard',
+              'layout': { 'rule_horizun': 'fixed_number', 'number_of_bar_positions': 2, 'quantity': 2, 'array_length_mm': 204.1,
+                          'include_first_bar': true, 'include_last_bar': true, 'bars_on_normal_side': true,
+                          'normal': { 'x': 0.0, 'y': 1.0, 'z': 0.0 } },
+              'terminations': [
+                 { 'end': 0, 'hook_type_id': -1, 'hook_readable': true, 'has_hook': false, 'coupler_id': 422801, 'coupler_readable': true,
+                   'coupler_box_mm': { 'min': [198978.0, -113.05, 2436.95], 'max': [199034.0, 113.05, 2458.95] } },
+                 { 'end': 1, 'hook_type_id': -1, 'hook_readable': true, 'has_hook': false, 'coupler_id': -1, 'coupler_readable': true } ],
+              'geometry': { 'centreline_points_mm': [[START, -102.05, 2447.95], [201960.0, -102.05, 2447.95]] },
+              'measured': { 'bar_centreline_length_mm': LEN, 'total_length_mm': 5900.0 }
+            }").Replace("START", startX.ToString(System.Globalization.CultureInfo.InvariantCulture))
+               .Replace("LEN", (201960.0 - startX).ToString(System.Globalization.CultureInfo.InvariantCulture)).Replace('\'', '"'));
+
+        [Fact]
+        public void A_coupled_end_seated_inside_the_coupler_agrees_and_says_so()
+        {
+            JArray f = RebarAuditRules.CompareBar(CoupledExpected(), CoupledObserved(199012.0), Tol());
+            List<string> errors = f.OfType<JObject>().Where(o => (string)o["severity"] != "info").Select(o => (string)o["code"]).ToList();
+            Assert.True(errors.Count == 0, string.Join(" | ", f.OfType<JObject>().Select(o => (string)o["code"] + ":" + (string)o["why"])));
+            Assert.Contains(RebarFinding.CoupledEndSeated, Codes(f));
+        }
+
+        [Fact]
+        public void A_coupled_end_past_the_coupler_is_still_a_difference()
+        {
+            List<string> codes = Codes(RebarAuditRules.CompareBar(CoupledExpected(), CoupledObserved(199060.0), Tol()));
+            Assert.Contains(RebarFinding.LengthDiffers, codes);
+            Assert.DoesNotContain(RebarFinding.CoupledEndSeated, codes);
+        }
+
         // ------------------------------------------------------------- agrees
 
         [Fact]
@@ -129,6 +263,90 @@ namespace Horizun.Core.Tests
             Assert.Contains("end end", (string)one["why"]);
             Assert.Equal("right", (string)one["expected"]);
             Assert.Equal("left", (string)one["observed"]);
+        }
+
+        [Fact]
+        public void A_label_Revit_flipped_on_a_hook_DRAWN_as_declared_is_not_a_finding_and_says_so()
+        {
+            // MEASURED, Revit 2024 (anonymized regression case roof): a straight bar with 180 degree hooks declared 'left' at both ends
+            // drew them on the left (HookSide, from the drawn centreline) and GetHookOrientation read 'right'.
+            JObject o = Observed();
+            ((JArray)o["terminations"])[1]["orientation"] = "left";
+            ((JArray)o["terminations"])[1]["drawn_orientation"] = "right";
+            JArray f = RebarAuditRules.CompareBar(Expected(), o, Tol());
+            Assert.DoesNotContain(f.OfType<JObject>(), x => (string)x["code"] == RebarFinding.OrientationDiffers);
+            JObject note = f.OfType<JObject>().Single(x => (string)x["code"] == RebarFinding.OrientationLabelDiffersFromDrawing);
+            Assert.Equal("info", (string)note["severity"]);
+            Assert.Contains("drawn", (string)note["why"]);
+        }
+
+        [Fact]
+        public void A_hook_DRAWN_the_other_way_is_a_finding_whatever_the_label_says()
+        {
+            JObject o = Observed();
+            ((JArray)o["terminations"])[1]["drawn_orientation"] = "left";   // label 'right' agrees, the drawing does not
+            JArray f = RebarAuditRules.CompareBar(Expected(), o, Tol());
+            JObject one = f.OfType<JObject>().Single(x => (string)x["code"] == RebarFinding.OrientationDiffers);
+            Assert.Equal("right", (string)one["expected"]);
+            Assert.Contains("drawn", (string)one["why"]);
+        }
+
+        [Fact]
+        public void A_drawing_that_could_not_be_measured_leaves_the_label_to_decide()
+        {
+            JObject o = Observed();
+            ((JArray)o["terminations"])[1]["orientation"] = "left";
+            ((JArray)o["terminations"])[1]["drawn_orientation"] = null;
+            JArray f = RebarAuditRules.CompareBar(Expected(), o, Tol());
+            Assert.Single(f.OfType<JObject>(), x => (string)x["code"] == RebarFinding.OrientationDiffers);
+        }
+
+        [Fact]
+        public void A_single_bar_has_no_array_length_and_no_side_to_report()
+        {
+            // MEASURED live 2026-10-08 (a column's one intermediate bar per face): Revit will not
+            // report an array length or a side for a set of one, and the audit filed both as
+            // `unreadable` - a correct bar reported as partly audited.
+            JObject e = Expected(), o = Observed();
+            e["layout"] = JObject.Parse("{ 'rule': 'single', 'number_of_bar_positions': 1, 'quantity': 1, 'array_length_mm': 0, 'bars_on_normal_side': true }".Replace('\'', '"'));
+            o["layout"] = JObject.Parse("{ 'rule_horizun': 'single', 'number_of_bar_positions': 1, 'quantity': 1, 'normal': { 'x': 1.0, 'y': 0.0, 'z': 0.0 } }".Replace('\'', '"'));
+            JArray f = RebarAuditRules.CompareBar(e, o, Tol());
+            Assert.DoesNotContain("unreadable", Codes(f));
+            Assert.DoesNotContain(RebarFinding.SideDiffers, Codes(f));
+        }
+
+        [Fact]
+        public void A_bar_built_under_an_expanded_rule_id_is_not_an_orphan()
+        {
+            // Zones, mat components and section layers are rules of the set under expanded ids.
+            HashSet<string> ids = RebarAuditRules.KnownRuleIds(new[] { "B1" }, new[] { "Z1#start", "V12#h501#top", null });
+            Assert.Contains("B1", ids);
+            Assert.Contains("Z1#start", ids);
+            Assert.Contains("V12#h501#top", ids);
+            Assert.DoesNotContain("V12#h999#top", ids);
+        }
+
+        [Fact]
+        public void An_end_without_a_hook_has_no_orientation_to_disagree_about()
+        {
+            // MEASURED live 2026-10-08 (section rules): straight 16M bars declared with no hook
+            // read back 'right' at both ends against the default 'left', and the audit reported
+            // two orientation findings per set about a hook that does not exist.
+            JObject e = Expected(), o = Observed();
+            foreach (string w in new[] { "start", "end" })
+            {
+                e["terminations"][w]["hook_type_id"] = null;
+                e["terminations"][w]["has_hook"] = false;
+                e["terminations"][w]["orientation"] = "left";
+            }
+            foreach (JObject t in ((JArray)o["terminations"]).OfType<JObject>())
+            {
+                t["hook_type_id"] = -1;
+                t["orientation"] = "right";
+            }
+            JArray f = RebarAuditRules.CompareBar(e, o, Tol());
+            Assert.DoesNotContain(RebarFinding.OrientationDiffers, Codes(f));
+            Assert.DoesNotContain(RebarFinding.HookDiffers, Codes(f));
         }
 
         [Fact]
@@ -259,9 +477,19 @@ namespace Horizun.Core.Tests
             // A gap nobody wrote down is indistinguishable from a gap nobody found.
             JObject s = RebarAuditRules.Summarise(new JArray());
             var not = ((JArray)s["not_checked"]).Select(t => (string)t).ToList();
-            Assert.Contains("lap_insufficient", not);
-            Assert.Contains("missing_coupler", not);
-            Assert.Contains("overlapping_bar", not);
+            // F2.1: a lap a section rule DECLARES is measured; one nobody declared is not.
+            Assert.DoesNotContain("lap_insufficient", not);
+            Assert.Contains("undeclared_lap", not);
+            // L7: a coupler a section rule declares is checked on both bars; one Revit
+            // judged incompatible is still not.
+            Assert.DoesNotContain("missing_coupler", not);
+            Assert.Contains("coupler_incompatible", not);
+            // acero 3.0: bars of different rules ARE measured against each other (overlapping_bar), and the
+            // same bar built twice is looked for too (duplicate_bar, stage 1c) - against bars no rule built as
+            // well. Whether those unattributed bars CROSS the set's is still not judged by the audit.
+            Assert.DoesNotContain("overlapping_bar", not);
+            Assert.DoesNotContain("duplicate_bar", not);
+            Assert.Contains("overlap_with_unattributed_bar", not);
         }
 
         [Fact]
@@ -339,29 +567,8 @@ namespace Horizun.Core.Tests
 
         // --------------------------------------------------------------- marks
 
-        [Fact]
-        public void TWO_BARS_WITH_ONE_MARK_are_a_finding_because_a_schedule_counts_them_once()
-        {
-            var a = Observed(); a["id"] = 1;
-            var b = Observed(); b["id"] = 2;
-            JArray f = RebarAuditRules.DuplicateMarks(new[] { a, b });
-            JObject one = f.OfType<JObject>().Single();
-            Assert.Equal(RebarFinding.BarMarkDuplicate, (string)one["code"]);
-            Assert.Equal(RebarSeverity.Error, (string)one["severity"]);
-            Assert.Equal(new[] { 1L, 2L }, ((JArray)one["rebar_ids"]).Select(t => (long)t));
-        }
-
-        [Fact]
-        public void Distinct_marks_and_blank_marks_are_not_duplicates()
-        {
-            var a = Observed(); a["id"] = 1;
-            var b = Observed(); b["id"] = 2; b["measured"]["schedule_mark"] = "S2";
-            var c = Observed(); c["id"] = 3; c["measured"]["schedule_mark"] = "";
-            var d = Observed(); d["id"] = 4; d["measured"]["schedule_mark"] = "";
-            // Two blanks are not two bars sharing a mark: an unmarked bar is
-            // unmarked, and reporting them as a clash would bury the real ones.
-            Assert.Empty(RebarAuditRules.DuplicateMarks(new[] { a, b, c, d }));
-        }
+        // Marks are pinned in RebarMarkConflictTests: one mark on identical sets is correct,
+        // one mark on different bars is bar_mark_conflict.
 
         // ------------------------------------------------------------ vocabulary
 

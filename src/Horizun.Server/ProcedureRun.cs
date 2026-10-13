@@ -84,9 +84,22 @@ namespace Horizun.Server
         /// two advances by accident wants to be told, not obeyed twice.
         /// </summary>
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> Locks =
-            new System.Collections.Concurrent.ConcurrentDictionary<string, object>(StringComparer.Ordinal);
+            new System.Collections.Concurrent.ConcurrentDictionary<string, object>(StringComparer.OrdinalIgnoreCase);   // NTFS: "Run-A" and "run-a" are one file, so one lock
 
-        private static object LockFor(string runId) => Locks.GetOrAdd(runId ?? "", _ => new object());
+        internal static object LockFor(string runId) => Locks.GetOrAdd(runId ?? "", _ => new object());
+
+        /// <summary>
+        /// ...AND ONE RUN AT A TIME ACROSS PROCESSES (backlog #35). The lock above stops
+        /// two calls in THIS server; Claude's and Codex's servers are two processes over
+        /// one record file, and each used to load it, see the same pending step and
+        /// dispatch it. A named mutex on the record's path is the lock both of them take.
+        /// The wait is ZERO for the same reason the in-process lock does not queue: a
+        /// second advance that waited would dispatch the NEXT step, which nobody asked for.
+        /// </summary>
+        internal const string MutexScope = "ProcedureRun";
+        internal static TimeSpan CrossProcessWait = TimeSpan.Zero;
+
+        internal static string RecordPathFor(string runId) => PathOf(runId);
 
         private static string Root()
         {
@@ -1225,6 +1238,7 @@ namespace Horizun.Server
         {
             string runId = request.Value<string>("run_id");
             if (string.IsNullOrWhiteSpace(runId)) throw new ToolRefusal("run_id is required.");
+            string path = PathOf(runId);
             object gate = LockFor(runId);
             if (!System.Threading.Monitor.TryEnter(gate))
                 throw new ToolRefusal(
@@ -1232,7 +1246,19 @@ namespace Horizun.Server
                     "run both dispatch the same step, and the record - written by whichever finishes last - " +
                     "shows one dispatch. Nothing was done here; wait for the other call and read the result " +
                     "with operation=status.");
-            try { return body(); }
+            try
+            {
+                // ACROSS PROCESSES: the other MCP server takes the same mutex on the same file.
+                using (HostFileMutex held = HostFileMutex.TryAcquire(MutexScope, path, CrossProcessWait))
+                {
+                    if (held == null)
+                        throw new ToolRefusal(
+                            "another Horizun process is operating on run '" + runId + "' (its record is " + path +
+                            "). Two servers advancing one run both dispatch the same step. Nothing was done here; " +
+                            "wait for the other call and read the result with operation=status.");
+                    return body();
+                }
+            }
             finally { System.Threading.Monitor.Exit(gate); }
         }
 

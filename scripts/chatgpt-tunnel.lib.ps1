@@ -677,6 +677,8 @@ function Get-HorizunTunnelConnection {
       chatgpt_call   never verified here: it takes a real call from ChatGPT
 
       -FreshSec 0 (the default) derives the threshold; a positive value overrides it.
+      -NowUtc replaces the clock that ages are measured against (a test seam: an
+      age read from the real clock depends on how busy the machine is).
     #>
     param(
         [Parameter(Mandatory = $true)][string]$StateRoot,
@@ -684,8 +686,10 @@ function Get-HorizunTunnelConnection {
         [int]$FreshSec = 0,
         # -1 derives it; 0 or more overrides it (a test seam).
         [int]$StartupGraceSec = -1,
-        [int]$TimeoutSec = 5
+        [int]$TimeoutSec = 5,
+        [Nullable[datetime]]$NowUtc
     )
+    $now = if ($null -ne $NowUtc) { [DateTimeOffset]::new(([datetime]$NowUtc).ToUniversalTime()) } else { [DateTimeOffset]::UtcNow }
     if (-not $Runtime) { $Runtime = Get-HorizunTunnelRuntime -StateRoot $StateRoot }
     $settings = $null
     if ($Runtime.record -and $Runtime.record.PSObject.Properties['poll_settings'] -and $Runtime.record.poll_settings) { $settings = $Runtime.record.poll_settings }
@@ -772,7 +776,7 @@ function Get-HorizunTunnelConnection {
             }
             else {
                 $when = [DateTimeOffset]::FromUnixTimeMilliseconds([long]($latest * 1000))
-                $age = [int]([DateTimeOffset]::UtcNow - $when).TotalSeconds
+                $age = [int]($now - $when).TotalSeconds
                 $res.control_plane.last_success_utc = $when.UtcDateTime.ToString('o')
                 $res.control_plane.age_seconds = $age
                 if ($age -le $threshold) {
@@ -790,7 +794,7 @@ function Get-HorizunTunnelConnection {
 
     if ($res.control_plane.state -in @('never', 'unknown')) {
         $age = $null
-        try { $age = ([DateTime]::UtcNow - $Runtime.process.StartTime.ToUniversalTime()).TotalSeconds } catch { }
+        try { $age = ($now.UtcDateTime - $Runtime.process.StartTime.ToUniversalTime()).TotalSeconds } catch { }
         if ($null -ne $age -and $age -lt $fresh.startup_grace_seconds) {
             $res.control_plane.state = 'connecting'
             $res.control_plane.detail = ("started {0} s ago; its first poll can take up to {1} s. " -f [int]$age, $fresh.startup_grace_seconds) + $res.control_plane.detail

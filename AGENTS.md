@@ -183,11 +183,25 @@ and run `install.ps1` again.
 
 - **`horizun_health` first, always.** The commands act on the *active* document,
   and health is what tells you which one that is.
+- **Read `health.python_runtime` before a Python call.** It distinguishes
+  `not_authorized`, `not_loadable` with cause, `cold`, and `warm`; only the
+  machine owner can grant access. For CAD detail transfer, check source DWG
+  readability and the per-entity gaps. For linked-view scans, report the
+  candidate and uncertain counts; they are not proof of final visibility.
 - **tools/list schemas are abridged, never incomplete.** Every argument, kind and
   operation is there, but per-variant text is folded to keep the list small. The exact
   schema of one tool or one variant is the resource
   `horizun://contract/tools/{tool}` / `horizun://contract/tools/{tool}/{variant}`,
   and a call that breaks the contract names the failing path and that URI.
+- **3.0 discovery mode defaults to `full`.** An owner may opt a client into
+  `HORIZUN_SCHEMA_MODE=facade`; then `horizun_list_tools` finds reachable
+  tools, `horizun_describe_tool` reads an exact schema and `horizun_call_tool`
+  dispatches under the same permission, toolset and contract checks. The
+  smaller list alone does not establish better agent completion.
+- **A cross-app handoff needs evidence.** `horizun_exchange` emits and verifies
+  `horizun.exchange/0` manifests and checks correction plans. Bind records to
+  the `model_ref` of the intended model and check the receiving app's evidence
+  before declaring the hop complete.
 - **Understand the objective before the first write, and say it back.** A model is
   somebody's deliverable. Before the first typed write of a task you must know
   three things: WHAT outcome is wanted in the model, WHICH elements it applies to,
@@ -441,11 +455,26 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
 
 - **`horizun_health` primero, siempre.** Los comandos actúan sobre el documento
   *activo*, y health es lo que te dice cuál es.
+- **Lee `health.python_runtime` antes de Python.** Distingue
+  `not_authorized`, `not_loadable` con causa, `cold` y `warm`; solo el dueño
+  de la máquina concede acceso. Para transferir detalles CAD, comprueba si
+  se puede leer el DWG fuente y las brechas por entidad. En vistas de vínculos,
+  informa candidatos e inciertos: no prueban visibilidad final.
 - **Los esquemas de tools/list están abreviados, nunca incompletos.** Están todos los
   argumentos, tipos y operaciones, pero el texto de cada variante se pliega para que la
   lista sea corta. El esquema exacto de una herramienta o de una variante es el recurso
   `horizun://contract/tools/{tool}` / `horizun://contract/tools/{tool}/{variant}`,
   y una llamada que rompe el contrato nombra la ruta que falla y esa URI.
+- **El modo de descubrimiento 3.0 predeterminado es `full`.** El dueño puede
+  optar por `HORIZUN_SCHEMA_MODE=facade` en un cliente: `horizun_list_tools`
+  encuentra herramientas disponibles, `horizun_describe_tool` lee el esquema
+  exacto y `horizun_call_tool` despacha bajo las mismas comprobaciones de
+  permisos, toolsets y contrato. Una lista menor por sí sola no demuestra
+  mejor desempeño del agente.
+- **Un salto entre aplicaciones necesita evidencia.** `horizun_exchange`
+  emite y verifica manifiestos `horizun.exchange/0` y comprueba planes de
+  corrección. Vincula cada registro al `model_ref` previsto y comprueba la
+  evidencia de la aplicación receptora antes de declarar terminado el salto.
 - **Entiende el objetivo antes de la primera escritura, y devuélvelo dicho.** Un
   modelo es el entregable de alguien. Antes de la primera escritura tipada de una
   tarea tienes que saber tres cosas: QUÉ resultado se quiere en el modelo, A QUÉ

@@ -30,6 +30,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -46,6 +47,53 @@ namespace Horizun.Revit.Core
 
     public static class ScheduleEditRules
     {
+        // ---- remove_fields: every position resolved before the first removal --------
+
+        /// <summary>
+        /// Resolve EVERY entry against the schedule as it stands, then remove. Removing
+        /// while resolving made a later field_index name the field that had slid into that
+        /// position: asked to remove 1 and 2 of A,B,C,D it removed B and D (audit 2026-10-08,
+        /// 6.7). Two entries naming one field are refused before anything is removed.
+        /// </summary>
+        public static List<TId> ResolveThenRemove<TId>(IEnumerable<JObject> entries, Func<JObject, TId> resolve,
+                                                       Action<TId> remove)
+        {
+            var ids = new List<TId>();
+            foreach (JObject entry in entries ?? Enumerable.Empty<JObject>())
+            {
+                TId id = resolve(entry);
+                if (ids.Contains(id))
+                    throw new InvalidOperationException("two entries of remove_fields name the same field; nothing was removed.");
+                ids.Add(id);
+            }
+            foreach (TId id in ids) remove(id);
+            return ids;
+        }
+
+        // ---- set_filters: the unit a number_value is read in ------------------------
+
+        /// <summary>
+        /// The unit a filter's number_value is read in, decided by the field's spec: a length
+        /// in millimetres, an area in m2, a volume in m3, a unitless number as given. Revit
+        /// compares in internal units, so a raw 3000 against a length field meant 3000 FEET
+        /// (audit 2026-10-08, 6.7). Any other measured spec has no declared unit here and is
+        /// refused (<paramref name="refusal"/>); filter it by its text 'value' instead.
+        /// Returns "millimeters", "square_meters", "cubic_meters" or null (as given).
+        /// </summary>
+        public static string FilterNumberUnit(bool measurable, bool takesMillimeters, bool takesSquareMeters,
+                                              bool takesCubicMeters, string spec, out string refusal)
+        {
+            refusal = null;
+            if (!measurable) return null;
+            if (takesMillimeters) return "millimeters";
+            if (takesSquareMeters) return "square_meters";
+            if (takesCubicMeters) return "cubic_meters";
+            refusal = "number_value on a field measured as " + (spec ?? "an unknown spec") + " has no declared unit " +
+                      "(lengths are read in mm, areas in m2, volumes in m3). Nothing was changed; filter it by its " +
+                      "display text with 'value' instead.";
+            return null;
+        }
+
         // ---- operations, closed ---------------------------------------------------
 
         /// <summary>

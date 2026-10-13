@@ -333,6 +333,7 @@ namespace Horizun.Revit.Core
 
             string wanted = facet.BaseName.Simple;
             string value = null;
+            string unestablished = null;
             bool found = false;
             try
             {
@@ -341,8 +342,8 @@ namespace Horizun.Revit.Core
                     if (parameter == null || parameter.Definition == null) continue;
                     if (!string.Equals(parameter.Definition.Name, wanted, StringComparison.Ordinal)) continue;
                     found = true;
-                    value = ValueText(parameter);
-                    if (!string.IsNullOrEmpty(value)) break;
+                    value = ValueText(parameter, out unestablished);
+                    if (!string.IsNullOrEmpty(value) || unestablished != null) break;
                 }
             }
             catch { }
@@ -357,7 +358,7 @@ namespace Horizun.Revit.Core
                     if (type != null)
                     {
                         Parameter onType = type.LookupParameter(wanted);
-                        if (onType != null) { found = true; value = ValueText(onType); }
+                        if (onType != null) { found = true; value = ValueText(onType, out unestablished); }
                     }
                 }
                 catch { }
@@ -366,6 +367,9 @@ namespace Horizun.Revit.Core
             if (!found)
                 return IdsMatch.Missing("no Revit parameter named '" + wanted + "' on the element or its type");
 
+            if (unestablished != null)
+                return IdsMatch.Unknown("the parameter is a measured quantity whose value in IFC units could not be " +
+                                        "established (" + unestablished + "), so it is not compared in Revit's internal units.");
             observed = value ?? "(present, empty)";
             if (facet.Value == null)
                 return string.IsNullOrWhiteSpace(value)
@@ -676,23 +680,79 @@ namespace Horizun.Revit.Core
             catch { return null; }
         }
 
-        private static string ValueText(Parameter p)
+        private static string ValueText(Parameter p) { string _; return ValueText(p, out _); }
+
+        /// <summary>The value as the IFC will state it; <paramref name="unestablished"/> says why when it cannot be.</summary>
+        private static string ValueText(Parameter p, out string unestablished)
         {
+            unestablished = null;
             try
             {
                 if (p == null || !p.HasValue) return null;
+                ForgeTypeId spec = null;
+                try { spec = p.Definition?.GetDataType(); } catch { spec = null; }
                 switch (p.StorageType)
                 {
                     case StorageType.String: return p.AsString();
-                    case StorageType.Integer: return p.AsInteger()
-                        .ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    case StorageType.Double: return p.AsDouble()
-                        .ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                    case StorageType.Integer:
+                        // IDS SPELLS A BOOLEAN TRUE/FALSE, as the IFC will (audit 2026-10-08, 6.4).
+                        if (spec != null && spec == SpecTypeId.Boolean.YesNo) return IdsRevitValues.YesNo(p.AsInteger());
+                        return p.AsInteger().ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    case StorageType.Double:
+                        try { return IdsRevitValues.Number(InIfcUnits(p.AsDouble(), spec)); }
+                        catch (Exception ex) { unestablished = ex.Message; return null; }
                     case StorageType.ElementId: return p.AsValueString();
                     default: return null;
                 }
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// A stored double in the SI unit the IFC will carry: Revit stores feet, square feet,
+        /// degrees as radians already... and IDS bounds are written against the file. A
+        /// measured spec no SI candidate fits throws: the caller reports "not established"
+        /// rather than compare internal units against an SI bound (audit 2026-10-08, 6.4).
+        /// </summary>
+        private static double InIfcUnits(double raw, ForgeTypeId spec)
+        {
+            if (spec == null) return raw;
+            bool measurable;
+            try { measurable = UnitUtils.IsMeasurableSpec(spec); } catch { measurable = false; }
+            if (!measurable) return raw;
+            foreach (string candidate in IdsRevitValues.SiCandidates)
+            {
+                ForgeTypeId unit = SiUnit(candidate);
+                if (unit == null) continue;
+                bool valid;
+                try { valid = UnitUtils.IsValidUnit(spec, unit); } catch { valid = false; }
+                if (valid) return UnitUtils.ConvertFromInternalUnits(raw, unit);
+            }
+            throw new InvalidOperationException("no SI unit fits spec " + spec.TypeId);
+        }
+
+        private static ForgeTypeId SiUnit(string canonical)
+        {
+            switch (canonical)
+            {
+                case "meters": return UnitTypeId.Meters;
+                case "square_meters": return UnitTypeId.SquareMeters;
+                case "cubic_meters": return UnitTypeId.CubicMeters;
+                case "radians": return UnitTypeId.Radians;
+                case "kilograms": return UnitTypeId.Kilograms;
+                case "newtons": return UnitTypeId.Newtons;
+                case "pascals": return UnitTypeId.Pascals;
+                case "kilograms_per_cubic_meter": return UnitTypeId.KilogramsPerCubicMeter;
+                case "kelvin": return UnitTypeId.Kelvin;
+                case "seconds": return UnitTypeId.Seconds;
+                case "watts": return UnitTypeId.Watts;
+                case "meters_per_second": return UnitTypeId.MetersPerSecond;
+                case "cubic_meters_per_second": return UnitTypeId.CubicMetersPerSecond;
+                case "amperes": return UnitTypeId.Amperes;
+                case "volts": return UnitTypeId.Volts;
+                case "lux": return UnitTypeId.Lux;
+                default: return null;
+            }
         }
 
         private static string TypeName(Document doc, Element element)

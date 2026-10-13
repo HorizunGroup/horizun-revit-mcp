@@ -359,7 +359,7 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>A deterministic viewpoint guid, so re-exporting the same ledger is the same file.</summary>
-        private static string ViewpointGuid(string findingId) => CommentGuid(findingId, 9001);
+        public static string ViewpointGuid(string findingId) => CommentGuid(findingId, 9001);
 
         private static string CommentGuid(string findingId, int index)
         {

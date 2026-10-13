@@ -326,7 +326,7 @@ namespace Horizun.Revit.Commands
                 if (host is Wall wall) return wall.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT)?.AsInteger() == 1;
                 if (host is Floor floor) return floor.get_Parameter(BuiltInParameter.FLOOR_PARAM_IS_STRUCTURAL)?.AsInteger() == 1;
                 string bic = CategoryBic(host);
-                return bic == "OST_StructuralFraming" || bic == "OST_StructuralColumns";
+                return SleeveRules.IsStructuralCategory(bic);
             }
             catch { return true; }   // unreadable is treated as structural: the opt-in is the safe side
         }

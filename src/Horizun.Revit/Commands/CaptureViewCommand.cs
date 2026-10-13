@@ -46,7 +46,7 @@ namespace Horizun.Revit.Commands
             JObject req;
             try
             {
-                req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
+                req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
                 var allowed = new HashSet<string>(TemporaryFields) { "view_name","view_id","pixel_size","target_document" };
                 foreach(var field in req.Properties()) if(!allowed.Contains(field.Name)) return CommandResult.Fail("Unknown capture argument: "+field.Name);
                 if(req["view_id"]!=null && req["view_name"]!=null) return CommandResult.Fail("Specify view_id or view_name, not both.");

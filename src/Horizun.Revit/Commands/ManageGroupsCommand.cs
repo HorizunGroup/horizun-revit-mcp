@@ -34,26 +34,37 @@ namespace Horizun.Revit.Commands
 {
     public sealed class ManageGroupsCommand : ICommand
     {
+        private static readonly GroupAnnotationSession AnnotationSession = new GroupAnnotationSession();
         public string Name => "horizun_manage_groups";
-        public string Description => "List, create, redefine, rename, duplicate, swap and ungroup Revit groups with rehearsal and re-read verification.";
+        public string Description => "Find colocated group/family instances by type, or list and manage groups with verified writes.";
 
         private static readonly string[] Writes =
-            { "create", "add_members", "remove_members", "rename_type", "duplicate_type", "swap_type", "ungroup" };
+            { "create", "add_members", "remove_members", "rename_type", "duplicate_type", "swap_type", "change_group_type", "set_group_level", "place_group", "ungroup" };
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             string op = (request.Value<string>("operation") ?? "").Trim().ToLowerInvariant();
 
-            if (op == "list")
+            if (op == "list" || op == "find_duplicates" || op == "annotation_report")
             {
                 Document readDoc = app.ActiveUIDocument?.Document;
                 if (readDoc == null) return CommandResult.Fail("No document is open.");
                 CommandResult wrong = DocumentGate.ReadGuard(readDoc, request, Name);
                 if (wrong != null) return wrong;
-                return List(readDoc, request);
+                if (op == "annotation_report")
+                {
+                    var report = AnnotationSession.Read(SessionKey(readDoc));
+                    return CommandResult.Ok(new JObject { ["operation"] = op, ["document"] = readDoc.Title,
+                        ["operations"] = report.Operations, ["tags_at_risk"] = report.TagsAtRisk,
+                        ["tags_recreated"] = report.TagsRecreated,
+                        ["tags_lost"] = Math.Max(0, report.TagsAtRisk - report.TagsRecreated),
+                        ["dimensions_lost"] = report.DimensionsLost,
+                        ["scope"] = "this Revit process and this document" });
+                }
+                return op == "list" ? List(readDoc, request) : FindDuplicates(readDoc, request);
             }
             if (op == "convert_to_link")
                 return CommandResult.FailWithDetail(
@@ -63,7 +74,7 @@ namespace Horizun.Revit.Commands
                     new JObject { ["state"] = "refused", ["code"] = "api_absent", ["operation"] = op, ["write_started"] = false },
                     FallbackSignal.NotAllowed("api_absent", false), null);
             if (!Writes.Contains(op))
-                return CommandResult.Fail("operation must be list, " + string.Join(", ", Writes) + " or convert_to_link.");
+                return CommandResult.Fail("operation must be list, find_duplicates, annotation_report, " + string.Join(", ", Writes) + " or convert_to_link.");
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name); if (!gate.Ok) return gate.Refusal;
             Document doc = gate.Document;
@@ -72,13 +83,16 @@ namespace Horizun.Revit.Commands
                 return CommandResult.FailWithDetail(error + " Nothing was written.",
                     new JObject { ["state"] = "refused", ["operation"] = op, ["write_started"] = false });
 
-            string hash = DocumentGate.PlanHash(request, "operation", "group_ids", "type_id", "element_ids", "name", "scope");
+            string hash = DocumentGate.PlanHash(request, "operation", "group_ids", "type_id", "element_ids", "name", "scope", "level_id", "keep_position", "pattern_group_id", "point_mm");
             ResolvedPlan resolved = Resolved(gate, app, plan);
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
             string txName = "Horizun: groups " + op;
 
             if (dry)
             {
+                JObject annotationsAtRisk = AnnotationDependencyAudit.Read(doc,
+                    op == "place_group" ? new ElementId[0] : plan.Groups.Select(g => g.Id));
+                if (op == "set_group_level" || op == "change_group_type") plan.AnnotationsBefore = annotationsAtRisk;
                 JObject rehearsal = Rehearse(doc, plan, txName);
                 if (rehearsal.Value<bool>("rollback_confirmed") != true)
                     return CommandResult.FailWithDetail("Group rehearsal rollback was not confirmed; model state is uncertain.",
@@ -87,7 +101,8 @@ namespace Horizun.Revit.Commands
                     return CommandResult.FailWithDetail("The group rehearsal could not verify the change (" + RehearsalWhy(rehearsal) + "). Nothing was committed.",
                         new JObject { ["state"] = "refused", ["rehearsal"] = rehearsal });
                 DocumentGate.RecordResolvedPlan(resolved);
-                var result = new JObject { ["dry_run"] = true, ["plan"] = PlanJson(plan), ["rehearsal"] = rehearsal };
+                var result = new JObject { ["dry_run"] = true, ["plan"] = PlanJson(plan),
+                    ["rehearsal"] = rehearsal, ["annotations_at_risk_by_view"] = annotationsAtRisk };
                 ApplicationOutcome.StampRehearsal(result, 1, 0, 0, 0);
                 DocumentGate.StampConfirmation(result, gate, Name, hash, true,
                     "the token binds the group instances, types, member ids and instance counts named in the plan.");
@@ -97,6 +112,7 @@ namespace Horizun.Revit.Commands
             DocumentGate.RecordResolvedPlan(resolved);
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, hash, resolved, null);
             if (refusal != null) return refusal;
+            if (op == "set_group_level" || op == "change_group_type") plan.AnnotationsBefore = AnnotationDependencyAudit.Read(doc, plan.Groups.Select(g => g.Id));
 
             var failures = new FailureLog();
             PostconditionCheck inside;
@@ -145,10 +161,70 @@ namespace Horizun.Revit.Commands
             ApplicationOutcome.StampApplied(done, ApplicationOutcome.Committed, 1, 1, after.AllVerified ? 1 : 0, 0, 0, after.AllVerified ? 0 : 1);
             if (!after.AllVerified)
                 return CommandResult.FailWithDetail("The change committed but a postcondition no longer re-reads as planned; state is uncertain.", done);
+            if (op == "change_group_type")
+                AnnotationSession.Record(SessionKey(doc), op,
+                    plan.TagsBefore.Count, plan.RestoredTags.Count, plan.LostDimensions.Count);
             return CommandResult.Ok(done);
         }
 
+        private static string SessionKey(Document doc) => doc.GetHashCode() + "|" + doc.PathName + "|" + doc.Title;
+
         // ------------------------------------------------------------------ list
+        private static CommandResult FindDuplicates(Document doc, JObject request)
+        {
+            double tolerance = request.Value<double?>("position_tolerance_mm") ?? 1.0;
+            double levelTolerance = request.Value<double?>("level_tolerance_mm") ?? 300.0;
+            if (tolerance <= 0 || levelTolerance < 0 || double.IsNaN(tolerance) ||
+                double.IsInfinity(tolerance) || double.IsNaN(levelTolerance) || double.IsInfinity(levelTolerance))
+                return CommandResult.Fail("position_tolerance_mm must be positive and level_tolerance_mm nonnegative.");
+            var levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>()
+                .Select(l => new GroupLevelFact { Id = Rid.Value(l.Id), ElevationMm = l.Elevation * 304.8 }).ToList();
+            var facts = new List<GroupDuplicateFact>();
+            var evidence = new Dictionary<long, JObject>();
+            var skipped = new JArray();
+            IEnumerable<Element> candidates = new FilteredElementCollector(doc).OfClass(typeof(Group)).Cast<Element>()
+                .Concat(new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance)).Cast<Element>());
+            foreach (Element element in candidates)
+            {
+                long id = Rid.Value(element.Id);
+                LocationPoint at = element.Location as LocationPoint;
+                BoundingBoxXYZ bounds = Safe(() => element.get_BoundingBox(null));
+                if (at == null || at.Point == null || bounds == null)
+                {
+                    skipped.Add(new JObject { ["id"] = id, ["reason"] = "location_or_geometry_unreadable" });
+                    continue;
+                }
+                long typeId = Rid.Value(element.GetTypeId());
+                string kind = element is Group ? "group" : "family";
+                var inferred = GroupDuplicateRules.InferLevel(bounds.Min.Z * 304.8, levels, levelTolerance);
+                facts.Add(new GroupDuplicateFact { Id = id, TypeId = typeId, Kind = kind,
+                    X = at.Point.X * 304.8, Y = at.Point.Y * 304.8, Z = at.Point.Z * 304.8 });
+                evidence[id] = new JObject { ["id"] = id, ["kind"] = kind, ["type_id"] = typeId,
+                    ["position_mm"] = new JArray(at.Point.X * 304.8, at.Point.Y * 304.8, at.Point.Z * 304.8),
+                    ["geometry_bottom_mm"] = inferred.GeometryBottomMm,
+                    ["inferred_level_id"] = inferred.LevelId.HasValue ? (JToken)inferred.LevelId.Value : JValue.CreateNull(),
+                    ["inference"] = inferred.Evidence,
+                    ["level_distance_mm"] = double.IsInfinity(inferred.DistanceMm) ? (JToken)JValue.CreateNull() : inferred.DistanceMm,
+                    ["stored_level_id"] = element.LevelId == ElementId.InvalidElementId ? (JToken)JValue.CreateNull() : Rid.Value(element.LevelId),
+                    ["group_id"] = element.GroupId == ElementId.InvalidElementId ? (JToken)JValue.CreateNull() : Rid.Value(element.GroupId) };
+            }
+            var pairs = GroupDuplicateRules.Find(facts, tolerance);
+            int maxRows = Math.Max(1, Math.Min(2000, request.Value<int?>("max_rows") ?? 200));
+            var rows = new JArray();
+            foreach (var pair in pairs.Take(maxRows))
+                rows.Add(new JObject { ["kind"] = pair.Kind, ["type_id"] = pair.TypeId,
+                    ["distance_mm"] = pair.DistanceMm,
+                    ["first"] = evidence[pair.FirstId], ["second"] = evidence[pair.SecondId] });
+            var result = new JObject { ["document"] = doc.Title,
+                ["position_tolerance_mm"] = tolerance, ["level_tolerance_mm"] = levelTolerance,
+                ["candidate_count"] = facts.Count, ["duplicate_pair_count"] = pairs.Count,
+                ["returned_pairs"] = rows.Count, ["pairs_truncated"] = rows.Count < pairs.Count,
+                ["pairs"] = rows, ["skipped"] = skipped,
+                ["level_meaning"] = "Nearest Level to geometry bottom within tolerance; unknown otherwise. Stored LevelId is shown separately." };
+            ApplicationOutcome.StampApplied(result, ApplicationOutcome.NotStarted, 0, 0, 0, 0, 0, 0);
+            return CommandResult.Ok(result);
+        }
+
         private static CommandResult List(Document doc, JObject request)
         {
             long filter = request.Value<long?>("type_id") ?? -1;
@@ -228,6 +304,17 @@ namespace Horizun.Revit.Commands
             if (typeId >= 0 && p.Type == null) { error = "type_id " + typeId + " is not a group type."; return null; }
             if (p.Type != null) p.TypeId = p.Type.Id;
             p.GroupIds = p.Groups.Select(g => g.Id).ToList();
+            if (op == "place_group")
+            {
+                if (p.Groups.Count > 0) { error = "place_group uses pattern_group_id, not group_ids."; return null; }
+                long patternId = r.Value<long?>("pattern_group_id") ?? -1;
+                Group pattern = patternId >= 0 && Rid.CanRepresent(patternId)
+                    ? doc.GetElement(Rid.Make(patternId)) as Group : null;
+                if (pattern == null) { error = "pattern_group_id must identify a group instance."; return null; }
+                if (pattern.GroupId != ElementId.InvalidElementId)
+                { error = "A nested group cannot be used as the placement pattern."; return null; }
+                p.Groups.Add(pattern); p.GroupIds.Add(pattern.Id);
+            }
 
             switch (op)
             {
@@ -246,14 +333,75 @@ namespace Horizun.Revit.Commands
                     p.TypeInstancesBefore = GroupsOf(p.Type).Count;
                     return p;
                 case "swap_type":
+                case "change_group_type":
                     if (p.Type == null || p.Groups.Count == 0) { error = "swap_type needs group_ids and the target type_id."; return null; }
+                    if (op == "change_group_type" && p.Groups.Count != 1)
+                    { error = "change_group_type needs exactly one group_ids entry so member and tag mapping is unambiguous."; return null; }
                     foreach (Group g in p.Groups)
                     {
                         if (g.GroupType.Id == p.Type.Id) { error = "group " + Rid.Value(g.Id) + " already has type " + typeId + "; a no-op is refused, not reported as work."; return null; }
                         if (Kind(g.GroupType) != Kind(p.Type)) { error = "group " + Rid.Value(g.Id) + " is a " + Kind(g.GroupType) + " group and type " + typeId + " is " + Kind(p.Type) + "."; return null; }
                     }
                     p.TypeInstancesBefore = GroupsOf(p.Type).Count;
+                    if (op == "change_group_type")
+                    {
+                        Group old = p.Groups[0];
+                        p.AnnotationsBefore = AnnotationDependencyAudit.Read(doc, p.GroupIds);
+                        if ((bool?)p.AnnotationsBefore["coverage_complete"] != true)
+                        { error = "Some annotation references are unreadable; change_group_type refuses to risk orphaning them."; return null; }
+                        try
+                        {
+                            p.OldMemberFacts = MemberFacts(doc, old);
+                            p.TagsBefore = CaptureMemberTags(doc, old);
+                        }
+                        catch (Exception ex) { error = "Cannot map members/tags safely: " + ex.Message; return null; }
+                    }
                     return p;
+                case "set_group_level":
+                {
+                    if (p.Groups.Count != 1) { error = "set_group_level needs exactly one group_ids entry."; return null; }
+                    long wanted = r.Value<long?>("level_id") ?? -1;
+                    Level level = wanted >= 0 && Rid.CanRepresent(wanted) ? doc.GetElement(Rid.Make(wanted)) as Level : null;
+                    if (level == null) { error = "level_id must identify an existing Level."; return null; }
+                    Group target = p.Groups[0];
+                    Parameter levelParam = target.get_Parameter(BuiltInParameter.GROUP_LEVEL);
+                    Parameter offsetParam = target.get_Parameter(BuiltInParameter.GROUP_OFFSET_FROM_LEVEL);
+                    if (levelParam == null || levelParam.IsReadOnly || offsetParam == null || offsetParam.IsReadOnly)
+                    { error = "Group level or offset parameter is unavailable/read-only."; return null; }
+                    LocationPoint point = target.Location as LocationPoint;
+                    if (point == null || point.Point == null) { error = "Group position is unreadable."; return null; }
+                    p.LevelId = level.Id; p.KeepPosition = r.Value<bool?>("keep_position") ?? true;
+                    p.PositionBefore = point.Point;
+                    p.MembersBefore[target.Id] = target.GetMemberIds().ToList();
+                    p.Type = target.GroupType; p.TypeId = p.Type.Id;
+                    return p;
+                }
+                case "place_group":
+                {
+                    Group pattern = p.Groups[0];
+                    if (Kind(pattern.GroupType) != "model")
+                    { error = "place_group currently requires a model group pattern."; return null; }
+                    LocationPoint at = pattern.Location as LocationPoint;
+                    if (at == null || at.Point == null) { error = "Pattern position/rotation is unreadable."; return null; }
+                    JArray xy = r["point_mm"] as JArray;
+                    if (xy == null || xy.Count != 2 || xy.Any(v => v.Type != JTokenType.Float && v.Type != JTokenType.Integer))
+                    { error = "point_mm must be [x,y] in internal-origin millimetres; pattern Z is preserved."; return null; }
+                    double x = xy[0].Value<double>(), y = xy[1].Value<double>();
+                    if (double.IsNaN(x) || double.IsInfinity(x) || double.IsNaN(y) || double.IsInfinity(y))
+                    { error = "point_mm must contain finite coordinates."; return null; }
+                    p.PositionBefore = at.Point;
+                    p.TargetPoint = new XYZ(x / 304.8, y / 304.8, at.Point.Z);
+                    // Group's LocationPoint.Rotation throws in Revit 2024. Infer candidate
+                    // rotations from the actual member geometry during rehearsal instead.
+                    p.Type = pattern.GroupType; p.TypeId = p.Type.Id;
+                    p.LevelId = pattern.get_Parameter(BuiltInParameter.GROUP_LEVEL)?.AsElementId();
+                    p.PatternOffset = pattern.get_Parameter(BuiltInParameter.GROUP_OFFSET_FROM_LEVEL)?.AsDouble();
+                    p.PatternWorkset = pattern.WorksetId;
+                    p.PatternSignatures = Signatures(doc, pattern.GetMemberIds());
+                    if (p.LevelId == null || p.PatternOffset == null || p.PatternSignatures.Count == 0)
+                    { error = "Pattern level, offset or member geometry is unreadable."; return null; }
+                    return p;
+                }
                 case "ungroup":
                     if (p.Groups.Count == 0) { error = "ungroup needs group_ids."; return null; }
                     foreach (Group g in p.Groups)
@@ -405,6 +553,119 @@ namespace Horizun.Revit.Commands
                 case "swap_type":
                     foreach (Group g in p.Groups) g.GroupType = p.Type;
                     break;
+                case "change_group_type":
+                {
+                    Group g = p.Groups[0];
+                    g.GroupType = p.Type;
+                    doc.Regenerate();
+                    GroupMemberMap map = GroupMemberEquivalence.Match(p.OldMemberFacts,
+                        MemberFacts(doc, g), 2.0 / 304.8);
+                    if (!map.Complete) throw new InvalidOperationException("Equivalent member mapping refused: " + map.Reason);
+                    p.MemberMap = map.ByOldId;
+                    p.RestoredTags.Clear();
+                    foreach (TagSnapshot tag in p.TagsBefore)
+                    {
+                        long newId = map.ByOldId[tag.MemberId];
+                        if (doc.GetElement(tag.TagId) != null) doc.Delete(tag.TagId);
+                        Element target = doc.GetElement(Rid.Make(newId));
+                        if (target == null) throw new InvalidOperationException("Equivalent member disappeared before tag recreation.");
+                        IndependentTag made = IndependentTag.Create(doc, tag.TypeId, tag.ViewId,
+                            new Reference(target), tag.HasLeader, tag.Orientation, tag.Head);
+                        if (made == null) throw new InvalidOperationException("Revit did not create the replacement tag.");
+                        p.RestoredTags.Add(new RestoredTag { OldId = tag.TagId, NewId = made.Id,
+                            MemberId = newId, ViewId = tag.ViewId });
+                    }
+                    p.LostDimensions = LostDimensions(doc, p.AnnotationsBefore, map.ByOldId);
+                    break;
+                }
+                case "set_group_level":
+                {
+                    Group g = p.Groups[0];
+                    Level newLevel = doc.GetElement(p.LevelId) as Level;
+                    if (newLevel == null) throw new InvalidOperationException("Target Level disappeared.");
+                    if (!g.get_Parameter(BuiltInParameter.GROUP_LEVEL).Set(p.LevelId))
+                        throw new InvalidOperationException("Revit refused GROUP_LEVEL.");
+                    if (p.KeepPosition)
+                    {
+                        double offsetFeet = GroupLevelRules.OffsetMmForWorldZ(
+                            p.PositionBefore.Z * 304.8, newLevel.Elevation * 304.8) / 304.8;
+                        if (!g.get_Parameter(BuiltInParameter.GROUP_OFFSET_FROM_LEVEL).Set(offsetFeet))
+                            throw new InvalidOperationException("Revit refused GROUP_OFFSET_FROM_LEVEL.");
+                    }
+                    break;
+                }
+                case "place_group":
+                {
+                    List<double> angles;
+                    var expectedAtTarget = GroupPatternRules.Translated(p.PatternSignatures,
+                        p.TargetPoint.X - p.PositionBefore.X,
+                        p.TargetPoint.Y - p.PositionBefore.Y, 0);
+                    using (var baseline = new SubTransaction(doc))
+                    {
+                        baseline.Start();
+                        Group temporary = doc.Create.PlaceGroup(p.TargetPoint, p.Type);
+                        doc.Regenerate();
+                        angles = GroupPatternRules.CandidateAngles(expectedAtTarget,
+                            Signatures(doc, temporary.GetMemberIds()), p.TargetPoint.X, p.TargetPoint.Y);
+                        if (!Guard.RollBack(baseline).Confirmed)
+                            throw new InvalidOperationException("Pattern baseline rollback was not confirmed.");
+                    }
+                    Group placed = null;
+                    foreach (double angle in angles)
+                    {
+                        using (var trial = new SubTransaction(doc))
+                        {
+                            trial.Start();
+                            Group candidate = doc.Create.PlaceGroup(p.TargetPoint, p.Type);
+                            Line axis = Line.CreateBound(p.TargetPoint, p.TargetPoint + XYZ.BasisZ);
+                            if (Math.Abs(angle) > 1e-10)
+                                ElementTransformUtils.RotateElement(doc, candidate.Id, axis, angle);
+                            doc.Regenerate();
+                            bool matches = PatternMatches(doc, p, candidate);
+                            bool mirrored = false;
+                            if (!matches)
+                            {
+                                XYZ n = new XYZ(Math.Cos(angle), Math.Sin(angle), 0);
+                                Plane plane = Plane.CreateByNormalAndOrigin(n, p.TargetPoint);
+                                ElementTransformUtils.MirrorElements(doc, new[] { candidate.Id }, plane, false);
+                                doc.Regenerate();
+                                matches = PatternMatches(doc, p, candidate);
+                                if (!matches)
+                                {
+                                    ElementTransformUtils.MirrorElements(doc, new[] { candidate.Id }, plane, false);
+                                    XYZ other = new XYZ(-n.Y, n.X, 0);
+                                    ElementTransformUtils.MirrorElements(doc, new[] { candidate.Id },
+                                        Plane.CreateByNormalAndOrigin(other, p.TargetPoint), false);
+                                    doc.Regenerate();
+                                    matches = PatternMatches(doc, p, candidate);
+                                }
+                                mirrored = matches;
+                            }
+                            if (matches)
+                            {
+                                if (trial.Commit() != TransactionStatus.Committed)
+                                    throw new InvalidOperationException("Pattern orientation trial did not commit.");
+                                placed = candidate; p.PatternRotation = angle; p.MirrorApplied = mirrored;
+                                break;
+                            }
+                            if (!Guard.RollBack(trial).Confirmed)
+                                throw new InvalidOperationException("Pattern orientation trial rollback was not confirmed.");
+                        }
+                    }
+                    if (placed == null) throw new InvalidOperationException("The placed group does not match the pattern under tested rotations/reflections; nothing is claimed copied.");
+                    p.NewGroupId = placed.Id; p.NewTypeId = p.TypeId;
+                    Parameter level = placed.get_Parameter(BuiltInParameter.GROUP_LEVEL);
+                    Parameter offset = placed.get_Parameter(BuiltInParameter.GROUP_OFFSET_FROM_LEVEL);
+                    if (level == null || offset == null || !level.Set(p.LevelId) || !offset.Set(p.PatternOffset.Value))
+                        throw new InvalidOperationException("Revit refused the pattern level/offset.");
+                    if (placed.WorksetId != p.PatternWorkset)
+                    {
+                        Parameter workset = placed.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
+                        if (workset == null || workset.IsReadOnly || !workset.Set(p.PatternWorkset.IntegerValue))
+                            throw new InvalidOperationException("Revit refused the pattern workset.");
+                    }
+                    break;
+                }
                 case "ungroup":
                     p.Released.Clear();
                     for (int i = 0; i < p.Groups.Count; i++)
@@ -489,6 +750,77 @@ namespace Horizun.Revit.Commands
                     c.Record("instance_types", Rid.Value(p.TypeId), new JArray(wrong), wrong.Count == 0);
                     GroupType t = doc.GetElement(p.TypeId) as GroupType;
                     c.Compare("target_instances", p.TypeInstancesBefore + p.Groups.Count, t == null ? -1 : GroupsOf(t).Count);
+                    return c;
+                }
+                case "change_group_type":
+                {
+                    var c = new PostconditionCheck("instance_type", "equivalent_members", "tags_restored", "dimensions_reported");
+                    Group g = doc.GetElement(p.GroupIds[0]) as Group;
+                    c.Compare("instance_type", Rid.Value(p.TypeId), g == null ? -1 : Rid.Value(g.GroupType.Id));
+                    GroupMemberMap current = g == null ? null : GroupMemberEquivalence.Match(
+                        p.OldMemberFacts, MemberFacts(doc, g), 2.0 / 304.8);
+                    c.Record("equivalent_members", p.OldMemberFacts.Count,
+                        current?.ByOldId.Count ?? 0, current != null && current.Complete);
+                    bool tagsHeld = p.RestoredTags.Count == p.TagsBefore.Count;
+                    var rows = new JArray();
+                    foreach (RestoredTag t in p.RestoredTags)
+                    {
+                        IndependentTag tag = doc.GetElement(t.NewId) as IndependentTag;
+                        bool held = tag != null && tag.OwnerViewId == t.ViewId &&
+                            tag.GetTaggedLocalElementIds().Any(x => Rid.Value(x) == t.MemberId);
+                        tagsHeld &= held;
+                        rows.Add(new JObject { ["old_tag_id"] = Rid.Value(t.OldId),
+                            ["new_tag_id"] = Rid.Value(t.NewId), ["member_id"] = t.MemberId,
+                            ["view_id"] = Rid.Value(t.ViewId), ["verified"] = held });
+                    }
+                    c.Record("tags_restored", p.TagsBefore.Count, rows, tagsHeld);
+                    JArray nowLost = LostDimensions(doc, p.AnnotationsBefore, p.MemberMap);
+                    c.Record("dimensions_reported", p.LostDimensions, nowLost,
+                        JToken.DeepEquals(p.LostDimensions, nowLost));
+                    return c;
+                }
+                case "set_group_level":
+                {
+                    var c = new PostconditionCheck("group_level", "position", "members", "annotations");
+                    Group g = doc.GetElement(p.GroupIds[0]) as Group;
+                    ElementId actualLevel = g?.get_Parameter(BuiltInParameter.GROUP_LEVEL)?.AsElementId();
+                    c.Compare("group_level", Rid.Value(p.LevelId), actualLevel == null ? -1 : Rid.Value(actualLevel));
+                    XYZ actual = (g?.Location as LocationPoint)?.Point;
+                    bool held = !p.KeepPosition || actual != null && GroupLevelRules.PositionHeld(
+                        p.PositionBefore.X * 304.8, p.PositionBefore.Y * 304.8, p.PositionBefore.Z * 304.8,
+                        actual.X * 304.8, actual.Y * 304.8, actual.Z * 304.8, 1.0);
+                    c.Record("position", new JArray(p.PositionBefore.X, p.PositionBefore.Y, p.PositionBefore.Z),
+                        actual == null ? (JToken)JValue.CreateNull() : new JArray(actual.X, actual.Y, actual.Z), held);
+                    SameIds(c, "members", p.MembersBefore[p.GroupIds[0]], g?.GetMemberIds());
+                    JObject afterAnnotations = AnnotationDependencyAudit.Read(doc, p.GroupIds);
+                    bool annotationsHeld = p.AnnotationsBefore != null &&
+                        JToken.DeepEquals(p.AnnotationsBefore["by_view"], afterAnnotations["by_view"]) &&
+                        (bool?)afterAnnotations["coverage_complete"] == true;
+                    c.Record("annotations", p.AnnotationsBefore?["by_view"], afterAnnotations["by_view"], annotationsHeld);
+                    return c;
+                }
+                case "place_group":
+                {
+                    var c = new PostconditionCheck("group_exists", "type", "position", "level", "offset", "workset", "members");
+                    Group g = p.NewGroupId == null ? null : doc.GetElement(p.NewGroupId) as Group;
+                    c.Compare("group_exists", true, g != null);
+                    c.Compare("type", Rid.Value(p.TypeId), g == null ? -1 : Rid.Value(g.GroupType.Id));
+                    XYZ at = (g?.Location as LocationPoint)?.Point;
+                    bool located = at != null && GroupLevelRules.PositionHeld(
+                        p.TargetPoint.X * 304.8, p.TargetPoint.Y * 304.8, p.TargetPoint.Z * 304.8,
+                        at.X * 304.8, at.Y * 304.8, at.Z * 304.8, 1.0);
+                    c.Record("position", new JArray(p.TargetPoint.X,p.TargetPoint.Y,p.TargetPoint.Z),
+                        at == null ? (JToken)JValue.CreateNull() : new JArray(at.X,at.Y,at.Z), located);
+                    ElementId lev = g?.get_Parameter(BuiltInParameter.GROUP_LEVEL)?.AsElementId();
+                    c.Compare("level", Rid.Value(p.LevelId), lev == null ? -1 : Rid.Value(lev));
+                    double? off = g?.get_Parameter(BuiltInParameter.GROUP_OFFSET_FROM_LEVEL)?.AsDouble();
+                    c.Record("offset", p.PatternOffset, off, off.HasValue && Math.Abs(off.Value - p.PatternOffset.Value) <= 0.001 / 304.8);
+                    c.Compare("workset", p.PatternWorkset.IntegerValue, g == null ? -1 : g.WorksetId.IntegerValue);
+                    var expected = GroupPatternRules.Translated(p.PatternSignatures,
+                        p.TargetPoint.X - p.PositionBefore.X, p.TargetPoint.Y - p.PositionBefore.Y, 0);
+                    RetainedMatch match = g == null ? null : GroupRedefinitionRules.Match(expected,
+                        Signatures(doc, g.GetMemberIds()), true, 0, GroupRedefinitionRules.BoxTolerance);
+                    c.Record("members", expected.Count, match?.After ?? -1, match != null && match.Held);
                     return c;
                 }
                 default: // ungroup
@@ -610,6 +942,80 @@ namespace Horizun.Revit.Commands
             return list;
         }
 
+        private static bool PatternMatches(Document doc, Plan p, Group placed)
+        {
+            var expected = GroupPatternRules.Translated(p.PatternSignatures,
+                p.TargetPoint.X - p.PositionBefore.X,
+                p.TargetPoint.Y - p.PositionBefore.Y, 0);
+            RetainedMatch match = GroupRedefinitionRules.Match(expected,
+                Signatures(doc, placed.GetMemberIds()), true, 0, GroupRedefinitionRules.BoxTolerance);
+            return match.Held;
+        }
+
+        private static List<GroupMemberFact> MemberFacts(Document doc, Group group)
+        {
+            XYZ origin = (group.Location as LocationPoint)?.Point;
+            if (origin == null) throw new InvalidOperationException("Group origin is unavailable.");
+            var result = new List<GroupMemberFact>();
+            foreach (ElementId id in group.GetMemberIds())
+            {
+                Element element = doc.GetElement(id);
+                BoundingBoxXYZ b = element?.get_BoundingBox(null);
+                if (b == null) throw new InvalidOperationException("Member " + Rid.Value(id) + " has no geometry box.");
+                result.Add(new GroupMemberFact(Rid.Value(id),
+                    element.Category == null ? -1 : Rid.Value(element.Category.Id),
+                    (b.Min.X+b.Max.X)/2-origin.X, (b.Min.Y+b.Max.Y)/2-origin.Y,
+                    (b.Min.Z+b.Max.Z)/2-origin.Z,
+                    b.Max.X-b.Min.X,b.Max.Y-b.Min.Y,b.Max.Z-b.Min.Z));
+            }
+            return result;
+        }
+
+        private static List<TagSnapshot> CaptureMemberTags(Document doc, Group group)
+        {
+            var memberIds = new HashSet<long>(group.GetMemberIds().Select(Rid.Value));
+            var result = new List<TagSnapshot>();
+            foreach (IndependentTag tag in new FilteredElementCollector(doc).OfClass(typeof(IndependentTag)))
+            {
+                var all = tag.GetTaggedLocalElementIds().Select(Rid.Value).ToList();
+                var relevant = all.Where(memberIds.Contains).ToList();
+                if (relevant.Count == 0) continue;
+                if (all.Count != 1 || relevant.Count != 1)
+                    throw new InvalidOperationException("Tag " + Rid.Value(tag.Id) + " has multiple references; automatic recreation is ambiguous.");
+                result.Add(new TagSnapshot { TagId = tag.Id, MemberId = relevant[0],
+                    TypeId = tag.GetTypeId(), ViewId = tag.OwnerViewId,
+                    Head = tag.TagHeadPosition, HasLeader = tag.HasLeader,
+                    Orientation = tag.TagOrientation });
+            }
+            return result;
+        }
+
+        private static JArray LostDimensions(Document doc, JObject before,
+            IDictionary<long,long> memberMap)
+        {
+            var lost = new JArray();
+            if (before?["by_view"] is not JArray views) return lost;
+            foreach (JObject view in views.OfType<JObject>())
+            {
+                long viewId = view.Value<long>("view_id");
+                foreach (JObject row in (view["dimensions"] as JArray ?? new JArray()).OfType<JObject>())
+                {
+                    long id = row.Value<long>("id");
+                    Dimension current = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) as Dimension : null;
+                    var refs = new HashSet<long>();
+                    try { if (current?.References != null) foreach (Reference reference in current.References)
+                            if (reference != null) refs.Add(Rid.Value(reference.ElementId)); }
+                    catch { }
+                    var expected = ((JArray)row["referenced_target_ids"]).Select(x => x.Value<long>())
+                        .Where(memberMap.ContainsKey).Select(x => memberMap[x]).ToList();
+                    if (current == null || expected.Any(x => !refs.Contains(x)))
+                        lost.Add(new JObject { ["view_id"] = viewId, ["dimension_id"] = id,
+                            ["reason"] = current == null ? "deleted_by_revit" : "reference_not_rebound_to_equivalent_member" });
+                }
+            }
+            return lost;
+        }
+
         private static int MemberCount(Group g)
         {
             try { return g.GetMemberIds().Count; } catch { return 0; }
@@ -640,8 +1046,13 @@ namespace Horizun.Revit.Commands
             ["element_ids"] = new JArray(p.Elements.Select(Rid.Value)),
             ["name"] = p.Name,
             ["scope"] = p.Scope,
+            ["level_id"] = p.LevelId == null ? (JToken)JValue.CreateNull() : Rid.Value(p.LevelId),
+            ["keep_position"] = p.KeepPosition,
+            ["point_mm"] = p.TargetPoint == null ? (JToken)JValue.CreateNull() : new JArray(p.TargetPoint.X*304.8,p.TargetPoint.Y*304.8),
             ["type_instances_before"] = p.TypeInstancesBefore,
             ["other_instances_affected"] = p.Scope == GroupRedefinitionRules.ScopeAll ? new JArray(p.OtherIds.Select(Rid.Value)) : new JArray(),
+            ["tags_to_recreate"] = p.TagsBefore.Count,
+            ["dimensions_lost_in_rehearsal"] = p.LostDimensions,
             ["note"] = p.Op == "add_members" || p.Op == "remove_members"
                 ? "Revit has no edit-group API: the reference instance is ungrouped and regrouped (it gets a NEW group id; its instance parameters are not carried). " +
                   (p.Scope == GroupRedefinitionRules.ScopeAll && p.Others.Count > 0
@@ -659,6 +1070,15 @@ namespace Horizun.Revit.Commands
             ElementId typeId = p.NewTypeId ?? p.TypeId;
             var o = new JObject { ["type_id"] = typeId == null ? (JToken)JValue.CreateNull() : Rid.Value(typeId) };
             if (p.NewGroupId != null) o["group_id"] = Rid.Value(p.NewGroupId);
+            if (p.LevelId != null) o["level_id"] = Rid.Value(p.LevelId);
+            if (p.Op == "place_group") o["mirrored_to_match_pattern"] = p.MirrorApplied;
+            if (p.Op == "change_group_type")
+            {
+                o["tags_recreated"] = new JArray(p.RestoredTags.Select(t => (JToken)new JObject {
+                    ["old_tag_id"] = Rid.Value(t.OldId), ["new_tag_id"] = Rid.Value(t.NewId),
+                    ["member_id"] = t.MemberId, ["view_id"] = Rid.Value(t.ViewId) }));
+                o["dimensions_lost"] = p.LostDimensions;
+            }
             GroupType t = typeId == null ? null : doc.GetElement(typeId) as GroupType;
             if (t != null) { o["type_name"] = t.Name; o["type_instances_after"] = GroupsOf(t).Count; }
             o["type_instances_before"] = p.TypeInstancesBefore;
@@ -698,6 +1118,9 @@ namespace Horizun.Revit.Commands
                 ["elements"] = string.Join(",", p.Elements.Select(Rid.Value)),
                 ["others"] = string.Join(",", p.OtherIds.Select(Rid.Value))
             };
+            if (p.LevelId != null) before["level"] = Rid.Value(p.LevelId) + "|" + p.KeepPosition + "|" + p.PositionBefore;
+            if (p.Op == "place_group") before["pattern"] = p.Groups[0].UniqueId + "|" + p.PositionBefore + "|" + p.TargetPoint + "|" + p.PatternRotation + "|" + p.PatternWorkset.IntegerValue;
+            if (p.Op == "change_group_type") before["annotations"] = p.AnnotationsBefore.ToString(Newtonsoft.Json.Formatting.None);
             rp.Elements.Add(new PlannedElement { UniqueId = "groups:" + p.Op, Category = "group", Action = p.Op == "create" || p.Op == "duplicate_type" ? PlannedAction.Create : PlannedAction.Modify, BeforeValues = before });
             return rp;
         }
@@ -712,6 +1135,21 @@ namespace Horizun.Revit.Commands
             public List<ElementId> GroupIds = new List<ElementId>(), OtherIds = new List<ElementId>();
             public int TypeInstancesBefore;
             public ElementId NewGroupId, NewTypeId;
+            public ElementId LevelId;
+            public bool KeepPosition;
+            public XYZ PositionBefore;
+            public XYZ TargetPoint;
+            public double PatternRotation;
+            public double? PatternOffset;
+            public WorksetId PatternWorkset;
+            public List<MemberSignature> PatternSignatures;
+            public bool MirrorApplied;
+            public List<GroupMemberFact> OldMemberFacts;
+            public List<TagSnapshot> TagsBefore = new List<TagSnapshot>();
+            public Dictionary<long,long> MemberMap = new Dictionary<long,long>();
+            public List<RestoredTag> RestoredTags = new List<RestoredTag>();
+            public JArray LostDimensions = new JArray();
+            public JObject AnnotationsBefore;
             public readonly List<Group> Groups = new List<Group>();
             public readonly List<ElementId> Elements = new List<ElementId>();
             public List<ElementId> Expected = new List<ElementId>();
@@ -723,6 +1161,21 @@ namespace Horizun.Revit.Commands
             public readonly Dictionary<ElementId, List<ElementId>> Released = new Dictionary<ElementId, List<ElementId>>();
             public readonly Dictionary<ElementId, long> ParentBefore = new Dictionary<ElementId, long>();
             public readonly Dictionary<ElementId, int[]> UngroupTypes = new Dictionary<ElementId, int[]>(); // type -> {instances before, ungrouped}
+        }
+
+        private sealed class TagSnapshot
+        {
+            public ElementId TagId, TypeId, ViewId;
+            public long MemberId;
+            public XYZ Head;
+            public bool HasLeader;
+            public TagOrientation Orientation;
+        }
+
+        private sealed class RestoredTag
+        {
+            public ElementId OldId, NewId, ViewId;
+            public long MemberId;
         }
 
         /// <summary>Records and deletes warnings; an error rolls the transaction back and is reported.</summary>

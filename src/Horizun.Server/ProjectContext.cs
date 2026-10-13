@@ -11,7 +11,7 @@
 // here keeps the bridge organisation-neutral: every code, pattern, path and name
 // inside a project context is the PROJECT's data.
 //
-// Five operations:
+// Five operations (and three for the project registry, ProjectIntegrationsTool.cs):
 //
 //   schema     the JSON Schema, byte for byte what is embedded.
 //   validate   a file against it. THREE different verdicts are kept apart, because
@@ -118,11 +118,18 @@ namespace Horizun.Server
                 case "draft": return DraftOperation(args, ct);
                 case "elicit": return ElicitOperation(args, ct);
                 case "ids_from_loin": return LoinIds.Operation(args, ct);
+                // The project registry (project-integrations.json, decision D0): a sibling file,
+                // because the project-context v1 schema is closed.
+                case "integrations":
+                case "register_model":
+                case "resolve_model":
+                    return ProjectIntegrationsTool.Handle(operation, args, ct);
                 case null:
-                    throw new ToolRefusal("operation is required: schema, validate, questions, draft, elicit or ids_from_loin. Nothing was read.");
+                    throw new ToolRefusal("operation is required: schema, validate, questions, draft, elicit, ids_from_loin, " +
+                                          "integrations, register_model or resolve_model. Nothing was read.");
                 default:
                     throw new ToolRefusal("Unknown operation '" + operation + "'. Use schema, validate, questions, draft, " +
-                                          "elicit or ids_from_loin. Nothing was read.");
+                                          "elicit, ids_from_loin, integrations, register_model or resolve_model. Nothing was read.");
             }
         }
 
@@ -1979,11 +1986,7 @@ namespace Horizun.Server
             if (t == null || t.Type == JTokenType.Null) return null;
             if (t.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)t))
                 throw new ToolRefusal("path must be a non-empty string. Nothing was read.");
-            string path = (string)t;
-            if (!Path.IsPathRooted(path))
-                throw new ToolRefusal("path must be absolute; '" + path + "' is relative, and this server's working folder " +
-                                      "is not the project's. Nothing was read.");
-            return Path.GetFullPath(path);
+            return LocalPath.Require((string)t, "path", " Nothing was read.");
         }
 
         internal static string Sha256Hex(byte[] bytes)

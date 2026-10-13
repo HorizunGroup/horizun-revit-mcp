@@ -33,7 +33,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             string op = request.Value<string>("operation") ?? "list";
 
@@ -165,6 +165,16 @@ namespace Horizun.Revit.Commands
                         {
                             bool gone = UndoCapture.State(doc, id) == null;
                             check.Record(k, "absent", gone ? "absent" : "present", gone);
+                        }
+                        else if (e.Op == "vary_between_groups")
+                        {
+                            InternalDefinition def = (doc.GetElement(Rid.Make(id)) as ParameterElement)?.GetDefinition();
+                            if (def == null) check.Unreadable(k, e.Before[sid], "parameter definition no longer exists");
+                            else
+                            {
+                                var now = new JObject { ["varies"] = def.VariesAcrossGroups };
+                                check.Record(k, e.Before[sid], now, UndoRules.StatesMatch(e.Before[sid], now));
+                            }
                         }
                         else if (e.Op == "parameter")
                         {

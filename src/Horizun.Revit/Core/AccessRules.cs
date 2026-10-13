@@ -72,6 +72,13 @@ namespace Horizun.Revit.Core
     public static class AccessRules
     {
         /// <summary>
+        /// The run of a ramp read from its plan box: the LONG side, which is the walked length
+        /// of a straight ramp. The box's diagonal (used before, backlog #49) adds the width and
+        /// reads the ramp flatter than it is.
+        /// </summary>
+        public static double RampRunMm(double boxXmm, double boxYmm) => Math.Max(Math.Abs(boxXmm), Math.Abs(boxYmm));
+
+        /// <summary>
         /// Every threshold this evaluator knows how to APPLY. A profile may carry others;
         /// they are echoed back as `unapplied` rather than silently dropped, because a
         /// threshold somebody wrote and nothing checked is worse than one nobody wrote.
@@ -135,8 +142,12 @@ namespace Horizun.Revit.Core
                 }
                 double value;
                 JToken valueToken = row["value"];
+                // Invariant text of the token, never its current-culture ToString(): on a
+                // Spanish machine 8.33 became "8,33" and the profile was refused. Only
+                // numbers and numeric strings; a boolean is not a threshold.
                 if (valueToken == null ||
-                    !double.TryParse(valueToken.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+                    (valueToken.Type != JTokenType.Integer && valueToken.Type != JTokenType.Float && valueToken.Type != JTokenType.String) ||
+                    !double.TryParse(JsonScalar.ToInvariantString(valueToken), NumberStyles.Float, CultureInfo.InvariantCulture, out value))
                 {
                     error = "threshold '" + property.Name + "' has no numeric value.";
                     return null;

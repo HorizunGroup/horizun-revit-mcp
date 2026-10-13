@@ -19,17 +19,22 @@ namespace Horizun.Server.Tests
 {
     public class ExcelReadRowsTests : IDisposable
     {
+        private readonly ExcelBackupRoot _root = new ExcelBackupRoot();
         private readonly string _dir;
+        private readonly string _savedRoot = Environment.GetEnvironmentVariable(Horizun.Revit.Core.HorizunPaths.RootOverrideVariable);
 
         public ExcelReadRowsTests()
         {
             _dir = Path.Combine(Path.GetTempPath(), "hz-xlsxread-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_dir);
+            Environment.SetEnvironmentVariable(Horizun.Revit.Core.HorizunPaths.RootOverrideVariable, Path.Combine(_dir, "state"));
         }
 
         public void Dispose()
         {
+            Environment.SetEnvironmentVariable(Horizun.Revit.Core.HorizunPaths.RootOverrideVariable, _savedRoot);
             try { Directory.Delete(_dir, true); } catch { }
+            _root.Dispose();
         }
 
         private string Book(string sheetXml, string sharedXml = null)
@@ -150,6 +155,58 @@ namespace Horizun.Server.Tests
             Assert.Equal("id", (string)row[0]);
             Assert.Equal(7.0, (double)row[1]);
             Assert.True((bool)row[2]);
+        }
+
+        // ---- 2026-10-08 audit: a zip bomb used to be inflated whole into memory. ----
+
+        private static byte[] ZipWith(string name, long zeroBytes)
+        {
+            using (var ms = new MemoryStream())
+            {
+                using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, true))
+                {
+                    var e = zip.CreateEntry(name, CompressionLevel.Optimal);
+                    using (var w = e.Open())
+                    {
+                        var chunk = new byte[1 << 20];
+                        for (long left = zeroBytes; left > 0; left -= chunk.Length)
+                            w.Write(chunk, 0, (int)Math.Min(chunk.Length, left));
+                    }
+                }
+                return ms.ToArray();
+            }
+        }
+
+        [Fact]
+        public void An_entry_inflating_far_beyond_its_compressed_size_is_refused()
+        {
+            byte[] bomb = ZipWith("xl/worksheets/sheet1.xml", 64L << 20);   // 64 MB of zeros, ~64 KB compressed
+            var ex = Assert.Throws<InvalidDataException>(() => ExcelWriteRows.ReadEntries(bomb));
+            Assert.Contains("ratio", ex.Message);
+        }
+
+        [Fact]
+        public void An_entry_above_the_size_cap_is_refused_while_streaming()
+        {
+            byte[] big = ZipWith("xl/big.xml", 3L << 20);
+            var ex = Assert.Throws<InvalidDataException>(() =>
+                ExcelWriteRows.ReadEntries(big, maxEntryBytes: 2L << 20, maxRatio: 100000, maxTotalBytes: 1L << 30));
+            Assert.Contains("xl/big.xml", ex.Message);
+        }
+
+        [Fact]
+        public void A_bomb_given_to_read_rows_refuses_as_unreadable()
+        {
+            string path = Path.Combine(_dir, "bomb.xlsx");
+            File.WriteAllBytes(path, ZipWith("xl/worksheets/sheet1.xml", 64L << 20));
+            Assert.Throws<InvalidDataException>(() => ExcelReadRows.Handle(new JObject { ["file_path"] = path }));
+        }
+
+        [Fact]
+        public void An_ordinary_workbook_still_reads()
+        {
+            byte[] ok = ExcelWriteRows.MinimalWorkbook("Hoja1");
+            Assert.Contains(ExcelWriteRows.ReadEntries(ok), kv => kv.Key == "xl/workbook.xml");
         }
     }
 }

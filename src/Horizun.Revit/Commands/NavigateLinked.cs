@@ -21,12 +21,14 @@
 // A pair is not an id with an extra field: it is the identity, and dropping half
 // of it is what produced the defect.
 //
-// WHAT THE RE-READ CAN AND CANNOT CONFIRM, said in the reply rather than rounded
-// up. Selection.GetElementIds() returns the LINK INSTANCE for a linked selection,
-// not the element inside it. So a host selection is verified element by element,
-// and a linked one is verified only as far as "the right link instances are
-// selected". That is weaker, it is what Revit exposes, and reporting it as
-// equivalent would be the kind of claim this bridge refuses everywhere else.
+// WHAT THE RE-READ CONFIRMS. The selection is read back BY REFERENCE
+// (Selection.GetReferences), the way it was set: a host element by its id, a linked
+// one by (link instance, element inside it), so each linked element is verified
+// individually. It used to be read by Selection.GetElementIds(), believed to report
+// the link instance - MEASURED 2026-10-09 in Revit 2026, it reports nothing for a
+// linked selection, and once an unverified selection became a refusal (audit
+// 2026-10-08, 6.12) every linked selection was refused. SelectionReadBack (Core)
+// holds the comparison.
 //
 // PRESERVING THE EXISTING BEHAVIOUR. `element_ids` still means exactly what it
 // meant: host-document ids, resolved and verified the way they always were. The
@@ -203,29 +205,42 @@ namespace Horizun.Revit.Commands
         {
             uidoc.Selection.SetReferences(references);
 
-            var hostWanted = new HashSet<long>(targets.Where(t => !t.InLink).Select(t => t.ElementId));
-            var linksWanted = new HashSet<long>(targets.Where(t => t.InLink).Select(t => t.LinkInstanceId));
+            // BY REFERENCE: GetElementIds() returns nothing for an element in a link.
+            var held = new List<SelectionHeld>();
+            string readBy = "references";
+            try
+            {
+                foreach (Reference r in uidoc.Selection.GetReferences() ?? new List<Reference>())
+                {
+                    if (r == null) continue;
+                    long linked = r.LinkedElementId == null || r.LinkedElementId == ElementId.InvalidElementId
+                        ? -1 : Rid.Value(r.LinkedElementId);
+                    held.Add(new SelectionHeld { ElementId = Rid.Value(r.ElementId), LinkedElementId = linked });
+                }
+            }
+            catch
+            {
+                // Without references a linked element cannot be verified; the host ones still can.
+                readBy = "element_ids";
+                held.Clear();
+                try { held.AddRange(uidoc.Selection.GetElementIds().Select(id => new SelectionHeld { ElementId = Rid.Value(id) })); }
+                catch { }
+            }
 
-            var after = new HashSet<long>();
-            try { after = new HashSet<long>(uidoc.Selection.GetElementIds().Select(Rid.Value)); }
-            catch { }
-
-            bool hostVerified = hostWanted.All(after.Contains);
-            bool linksVerified = linksWanted.All(after.Contains);
+            SelectionVerdict v = SelectionReadBack.Verify(
+                targets.Select(t => new SelectionWanted { ElementId = t.ElementId, LinkInstanceId = t.LinkInstanceId }), held);
 
             return new JObject
             {
                 ["requested"] = new JArray(targets.Select(t => t.ToJson())),
-                ["selected_after"] = after.Count,
-                ["host_elements_verified"] = hostVerified,
-                ["link_instances_verified"] = linksVerified,
-                ["linked_elements_verified"] = false,
+                ["selected_after"] = v.HeldCount,
+                ["read_back_by"] = readBy,
+                ["host_elements_verified"] = v.HostElementsVerified,
+                ["link_instances_verified"] = v.LinkInstancesVerified,
+                ["linked_elements_verified"] = v.LinkedElementsVerified,
                 ["what_the_reread_proves"] =
-                    "Selection.GetElementIds() reports the LINK INSTANCE for a linked selection, not " +
-                    "the element inside it. So a host element is verified individually and a linked " +
-                    "one is verified only as far as 'the right link instance is selected'. That is " +
-                    "weaker, it is what Revit exposes, and it is reported as what it is rather than " +
-                    "as the same claim."
+                    "The selection is read back by reference, as it was set: a host element by its id and a " +
+                    "linked one by its link instance AND the element inside it, so each is verified on its own."
             };
         }
 

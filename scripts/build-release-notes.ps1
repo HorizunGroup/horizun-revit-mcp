@@ -6,7 +6,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $props = [xml](Get-Content (Join-Path $repo 'Directory.Build.props'))
 $version = [string]($props.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
 $changelog = Get-Content (Join-Path $repo 'CHANGELOG.md') -Raw -Encoding UTF8
-$pattern = '(?ms)^## v' + [regex]::Escape($version) + '[ \t]+[^\r\n]*\r?\n(.*?)(?=^## |\z)'
+$pattern = '(?ms)^## v' + [regex]::Escape($version) + '(?:[ \t]+[^\r\n]*)?\r?\n(.*?)(?=^## |\z)'
 $section = [regex]::Match($changelog, $pattern)
 if (-not $section.Success) { throw "CHANGELOG.md needs a release section for v$version before publication." }
 $changes = $section.Groups[1].Value.Trim()

@@ -13,7 +13,7 @@ $root = [IO.Path]::GetFullPath($DevRoot)
 $statePath = Join-Path $root "session-$Year.json"
 $addins = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$Year"
 $installed = Join-Path $addins 'Horizun.addin'
-$aside = Join-Path $addins 'Horizun.addin.geometry-dev-aside'
+$aside = Join-Path $root "original-$Year.addin"
 $manifest = Join-Path $addins 'Horizun-geometry-dev.addin'
 foreach ($process in @(Get-Process Revit -ErrorAction SilentlyContinue)) {
     try { $processPath = $process.Path } catch { throw 'Cannot determine the year of a running Revit; no manifests changed.' }

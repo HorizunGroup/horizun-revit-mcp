@@ -30,8 +30,15 @@ namespace Horizun.Server.Tests
             Assert.False((bool)c.InputSchema["additionalProperties"]);
             var required = c.InputSchema["required"].Select(t => (string)t).ToList();
             Assert.Contains("target_document", required);
-            Assert.Contains("finding_set_fingerprint", required);
-            Assert.Contains("actions", required);
+            Assert.Contains("finding_set_fingerprint", c.InputSchema["oneOf"][0]["required"].Select(t => (string)t));
+            Assert.Contains("actions", c.InputSchema["oneOf"][0]["required"].Select(t => (string)t));
+            Assert.Contains("correction_plan", c.InputSchema["oneOf"][1]["required"].Select(t => (string)t));
+            var schema = c.InputSchema;
+            var review = new JObject { ["target_document"] = "Model A", ["correction_plan"] = new JObject() };
+            Assert.Empty(ContractSchemaCheck.Validate(review, schema));
+            review["actions"] = new JArray(new JObject { ["finding_id"] = "f-1" });
+            Assert.NotEmpty(ContractSchemaCheck.Validate(review, schema));
+            Assert.NotEmpty(ContractSchemaCheck.Validate(new JObject { ["target_document"] = "Model A", ["actions"] = review["actions"] }, schema));
             Assert.Equal(1, (int)props["actions"]["minItems"]);
         }
 

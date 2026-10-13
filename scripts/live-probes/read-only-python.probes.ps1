@@ -20,7 +20,10 @@ $script:HzProbeModules += [pscustomobject]@{
         function Skip($name, $why) { $out.Add(@{ Name = $name; Tool = $T; Outcome = 'not_covered'; Detail = $why }) }
         function Disabled($reply) {
             if (-not $reply.isError) { return $false }
-            return ([string]$reply.text) -match 'DISABLED ON THIS MACHINE'
+            # The server now refuses before forwarding to Revit and names the
+            # owner's effective permission profile. Both refusal forms mean no
+            # Python code ran; the three live cases remain not covered.
+            return ([string]$reply.text) -match 'DISABLED ON THIS MACHINE|requires explicit permission_profile=unsafe_code and enable_execute_python=true'
         }
         $doc = $Ctx.Document
         $names = @(

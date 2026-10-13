@@ -31,6 +31,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -66,7 +67,7 @@ namespace Horizun.Revit.Commands
             var r = new CadReading();
 
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex)
             {
                 r.Refusal = CommandResult.Fail("Parameters must be a JSON object: " + ex.Message);
@@ -332,7 +333,9 @@ namespace Horizun.Revit.Commands
             "distinction is the point: an empty text result from a reader that cannot see text is not a " +
             "finding about the drawing. The IR carries a canonical fingerprint so two readings of one file are " +
             "comparable, and layers are read TWICE - from the geometry and from the import's own subcategories " +
-            "- so a layer whose content this reading lost is named rather than silently absent. Read-only.";
+            "- so a layer whose content this reading lost is named rather than silently absent. Set " +
+            "read_dwg_text=true to read source-file TEXT and MTEXT strings, height and justification through " +
+            "AutoCAD; a missing DWG or engine is named. Read-only.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -370,7 +373,133 @@ namespace Horizun.Revit.Commands
                     "the entities themselves are not in this reply. Send include_entities=true to page " +
                     "through them; the summary and the capability above describe the whole reading either way.";
             }
+            if (r.Request.Value<bool?>("read_dwg_text") ?? false)
+                reply["dwg_text"] = ReadDwgText(r);
+            if (r.Request.Value<bool?>("detail_plan") ?? false)
+            {
+                long viewId = r.Request.Value<long?>("view_id") ?? -1;
+                View view = viewId >= 0 && Rid.CanRepresent(viewId)
+                    ? r.Document.GetElement(Rid.Make(viewId)) as View : null;
+                if (view == null)
+                    reply["detail_plan"] = new JObject { ["state"] = "refused",
+                        ["reason"] = "detail_plan_requires_view_id" };
+                else
+                {
+                    var styles = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                    if (r.Request["line_style_by_layer"] is JObject styleObject)
+                        foreach (var item in styleObject)
+                        {
+                            long id;
+                            if (string.IsNullOrWhiteSpace(item.Key) ||
+                                !long.TryParse(item.Value?.ToString(), NumberStyles.Integer,
+                                    CultureInfo.InvariantCulture, out id) || id < 0)
+                                return CommandResult.Fail("line_style_by_layer requires nonnegative integer IDs keyed by CAD layer.");
+                            styles[item.Key] = id;
+                        }
+                    CadPoint P(XYZ v) => new CadPoint(v.X * 304.8, v.Y * 304.8, v.Z * 304.8);
+                    CadPoint D(XYZ v) => new CadPoint(v.X, v.Y, v.Z);
+                    var plan = CadDetailPlanRules.Build(r.Ir.Entities, viewId,
+                        P(view.Origin), D(view.RightDirection), D(view.UpDirection), D(view.ViewDirection),
+                        r.Request.Value<int?>("detail_offset") ?? 0,
+                        r.Request.Value<int?>("max_detail_entities") ?? 100, styles);
+                    var report = plan.ToJson();
+                    report["state"] = "planned_read_only";
+                    report["source_dwg_total_entities"] = JValue.CreateNull();
+                    report["source_dwg_total_reason"] = "This Revit reading does not know the original DWG entity denominator.";
+                    report["layer_style_note"] = "Actions retain source layers in action_sources_in_same_order. " +
+                        "Provide matching line_style_id values from the target view before horizun_detail_2d; " +
+                        "no layer style is guessed here.";
+                    report["apply_note"] = "Send batches through horizun_detail_2d dry run and verified apply. " +
+                        "Compare every verified action and reread the target view. This read-only plan is not a completion claim.";
+                    if (reply["dwg_text"] is JObject dwg && (string)dwg["state"] != "supplied")
+                        report["text_gap"] = (string)dwg["reason"];
+                    reply["detail_plan"] = report;
+                }
+            }
             return CommandResult.Ok(reply);
+        }
+
+        private static JObject ReadDwgText(CadReading r)
+        {
+            string linked = r.Facts?.ExternalPath;
+            string named = r.Request.Value<string>("dwg_path");
+            string linkedFull = null, namedFull = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(linked)) linkedFull = Path.GetFullPath(linked);
+                if (!string.IsNullOrWhiteSpace(named)) namedFull = Path.GetFullPath(named);
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+            {
+                return new JObject { ["state"] = "refused", ["reason"] = "invalid_dwg_path",
+                    ["cause"] = ex.GetType().Name + ": " + ex.Message };
+            }
+            if (linkedFull != null && namedFull != null &&
+                !string.Equals(linkedFull, namedFull, StringComparison.OrdinalIgnoreCase))
+                return new JObject { ["state"] = "refused", ["reason"] = "dwg_path_disagrees_with_link",
+                    ["means"] = "The caller named a different DWG from the CAD link; no text was read." };
+
+            string path = linkedFull ?? namedFull;
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                return new JObject { ["state"] = "unavailable", ["reason"] = "source_dwg_not_readable",
+                    ["means"] = "Revit has no source DWG this machine can read. Pass dwg_path for an embedded import, " +
+                                "or restore the link's file. Revit geometry alone has no TEXT/MTEXT strings." };
+
+            string importName = Path.GetFileNameWithoutExtension(r.Facts?.Name ?? "");
+            string fileName = Path.GetFileNameWithoutExtension(path);
+            if (!string.IsNullOrWhiteSpace(importName) &&
+                !string.Equals(importName, fileName, StringComparison.OrdinalIgnoreCase))
+                return new JObject { ["state"] = "refused", ["reason"] = "source_dwg_name_mismatch",
+                    ["means"] = "The source DWG filename does not match the CAD import; no text was attributed to it." };
+
+            string fileSha;
+            try { fileSha = CadDwgCache.Sha256(path); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                return new JObject { ["state"] = "unavailable", ["reason"] = "source_dwg_not_readable",
+                    ["cause"] = ex.GetType().Name + ": " + ex.Message };
+            }
+            if (!string.IsNullOrWhiteSpace(r.Facts?.FileSha256) &&
+                !string.Equals(fileSha, r.Facts.FileSha256, StringComparison.OrdinalIgnoreCase))
+                return new JObject { ["state"] = "refused", ["reason"] = "source_dwg_changed_since_import",
+                    ["means"] = "The source DWG hash differs from the import's recorded file hash; reload the link " +
+                                "before combining its text with Revit geometry." };
+
+            int timeout = Math.Max(10, Math.Min(900, r.Request.Value<int?>("dwg_read_timeout_seconds") ?? 300));
+            CadDwgRunResult run;
+            try { run = CadDwgReader.Read(path, timeout); }
+            catch (Exception ex)
+            {
+                return new JObject { ["state"] = "unavailable", ["reason"] = "dwg_reader_failed",
+                    ["cause"] = ex.GetType().Name + ": " + ex.Message };
+            }
+            if (!run.Ok)
+                return new JObject { ["state"] = "unavailable", ["reason"] = run.Refusal,
+                    ["detail"] = run.RefusalDetail, ["reader"] = "autocad-accoreconsole" };
+
+            var texts = run.Reading.Entities.Where(e => e.Kind == CadEntityKind.Text && e.Text != null).ToList();
+            int offset = Math.Max(0, r.Request.Value<int?>("text_offset") ?? 0);
+            int limit = Math.Max(1, Math.Min(20000, r.Request.Value<int?>("max_text_entities") ?? 2000));
+            var page = texts.Skip(offset).Take(limit).ToList();
+            return new JObject
+            {
+                ["state"] = "supplied",
+                ["reader"] = CadDwgExtract.ReaderId,
+                ["reader_capability"] = CadDwgExtract.Capability(run.Reading, run.EngineVersion).ToJson(),
+                ["source_sha256"] = fileSha,
+                ["source_identity"] = string.IsNullOrWhiteSpace(r.Facts?.FileSha256)
+                    ? "filename_matches_but_import_hash_unavailable" : "import_file_hash_matches",
+                ["text_count"] = texts.Count,
+                ["text_types"] = new JObject(texts.GroupBy(e => e.TextType ?? "unknown")
+                    .Select(g => new JProperty(g.Key, g.Count()))),
+                ["entities"] = new JArray(page.Select(e => (JToken)e.ToJson())),
+                ["page"] = new JObject { ["offset"] = offset, ["returned"] = page.Count,
+                    ["total"] = texts.Count, ["complete"] = offset + page.Count >= texts.Count },
+                ["placement_note"] = "Text inside a block definition has LOCAL coordinates. Its model position " +
+                    "requires expansion through every INSERT; this raw page does not claim that placement.",
+                ["coverage"] = run.Reading.Complete && run.Reading.Unparsed.Count == 0 ? "complete_file_read" : "partial_file_read",
+                ["unparsed_rows"] = run.Reading.Unparsed.Count
+            };
         }
     }
 
@@ -397,7 +526,7 @@ namespace Horizun.Revit.Commands
             // A PAGE OF AN ANALYSIS ALREADY MADE is cut from it, when the request names its fingerprint and nothing
             // it depends on has changed (Core/CadNetworkCache). Everything else reads afresh.
             JObject early = null;
-            try { early = string.IsNullOrWhiteSpace(paramsJson) ? null : JObject.Parse(paramsJson); } catch { }
+            try { early = string.IsNullOrWhiteSpace(paramsJson) ? null : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); } catch { }
             long cacheEpoch = CadNetworkCache.Kept.Epoch;
             string cacheKey = early != null && QueryCacheLifecycle.Ready ? NetworkCacheKey(app, early) : null;
             string expectedEarly = early?.Value<string>("expect_analysis_fingerprint");

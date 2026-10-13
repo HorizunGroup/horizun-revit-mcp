@@ -388,6 +388,11 @@ namespace Horizun.Revit.Core
                 if (spec.Status == null || spec.Revision == null)
                     Problem(v, "file_name", n.FileNameMode, "file_name_needs_status_revision",
                         "file_name=name_status_revision needs both status and revision");
+                // In this mode status and revision become part of a FILE NAME, so they obey
+                // the fields' rule whatever their patterns allow: a '\' or '/' would turn
+                // the name into a path and carry the file out of its folder (backlog #39).
+                CheckFileNamePart("status", spec.Status, v);
+                CheckFileNamePart("revision", spec.Revision, v);
                 v.FileStem = v.Name + n.Separator + (spec.Status ?? "") + n.Separator + (spec.Revision ?? "");
             }
             else v.FileStem = v.Name;
@@ -409,6 +414,15 @@ namespace Horizun.Revit.Core
                     Problem(v, f, value, "pattern_mismatch", "value does not match " + pattern);
             }
             else Warn(v, f, "no_pattern", "no pattern is declared for field '" + f + "'; only emptiness and separators were checked");
+        }
+
+        private static void CheckFileNamePart(string field, string value, ContainerValidation v)
+        {
+            if (value == null) return;
+            if (value.IndexOfAny(InvalidNameChars) >= 0 || value.Trim().Length != value.Length)
+                Problem(v, field, value, "invalid_characters",
+                    field + " is part of the file name (file_name=name_status_revision) and has leading/trailing spaces " +
+                    "or a character Windows forbids in file names");
         }
 
         private static void CheckStatus(ContainerNaming n, string status, ContainerValidation v)

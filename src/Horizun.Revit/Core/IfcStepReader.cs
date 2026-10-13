@@ -41,6 +41,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.IO;
 using System.Text;
 
@@ -115,8 +116,17 @@ namespace Horizun.Revit.Core
             if (string.IsNullOrWhiteSpace(text)) { error = "the file is empty."; return null; }
 
             var document = new Document();
-            int header = text.IndexOf("HEADER", StringComparison.OrdinalIgnoreCase);
-            int dataStart = text.IndexOf("DATA", StringComparison.OrdinalIgnoreCase);
+            // KEYWORDS, NOT SUBSTRINGS. The first "DATA" anywhere used to start the data
+            // section - including the one in a FILE_NAME of 'Datacenter.ifc' or an author
+            // called "Data team" - which cut the header before FILE_SCHEMA and left the
+            // schema null (backlog P0 #9). The data section is the DATA; keyword that
+            // follows the header's ENDSEC;.
+            Match headerKeyword = Regex.Match(text, @"\bHEADER\s*;", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            int header = headerKeyword.Success ? headerKeyword.Index : -1;
+            int headerEnd = header < 0 ? -1 : text.IndexOf("ENDSEC", header, StringComparison.OrdinalIgnoreCase);
+            Match dataKeyword = headerEnd < 0 ? Match.Empty
+                : new Regex(@"\bDATA\s*;", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant).Match(text, headerEnd);
+            int dataStart = dataKeyword.Success ? dataKeyword.Index : -1;
             if (header < 0 || dataStart < 0)
             {
                 error = "this is not a STEP physical file: it has no HEADER and no DATA section. An IFC in " +

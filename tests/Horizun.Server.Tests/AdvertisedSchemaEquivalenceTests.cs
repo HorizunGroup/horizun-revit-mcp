@@ -404,8 +404,11 @@ namespace Horizun.Server.Tests
                     inAdvertised += Count(adv, kv.Key);
                     shortInAdvertised += Count(adv, kv.Value);
                 }
-                // MEASURED 2026-09-26: the idempotency_key text is repeated 65 times.
-                Assert.True(inContract >= 65, "the contract holds the full text " + inContract + " times");
+                // MEASURED 2026-09-26: the idempotency_key text is repeated 65 times. The
+                // 2026-10-10 short forms each replace a text repeated in at least three tools.
+                int floor = kv.Key.StartsWith("REQUIRED whenever this call will mutate", StringComparison.Ordinal) ? 65 : 3;
+                Assert.True(inContract >= floor, "the contract holds the full text " + inContract + " times (at least " + floor +
+                    " expected - did its wording change?): " + kv.Key);
                 Assert.Equal(0, inAdvertised);
                 // A branch copy identical to its union field was already folded away by the
                 // subtraction (MEASURED 2026-09-26: 5 in horizun_document_session); every

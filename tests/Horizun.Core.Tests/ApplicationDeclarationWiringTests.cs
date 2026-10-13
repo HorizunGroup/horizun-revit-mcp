@@ -510,7 +510,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("bool rehearsedCleanly = ledger.RehearsedCleanly;", src);
             // Both the token and the recorded plan are gated on it - a token without a plan,
             // or a plan without a token, would each be half a refusal.
-            Assert.Contains("if (rehearsedCleanly) DocumentGate.RecordResolvedPlan", src);
+            Assert.Contains("DocumentGate.RecordResolvedPlan(rehearsedCleanly ? GraphPlan(app, gate, rows, actions) : null);", src);
             Assert.Contains("planHash, rehearsedCleanly,", src);
         }
 

@@ -61,12 +61,30 @@ namespace Horizun.Core.Tests
         }
 
         [Theory]
-        [InlineData("Tower A.rvt", "Tower_A")]
+        [InlineData("Tower A.rvt", "tower_a")]
         [InlineData("..\\..\\evil", "evil")]
         [InlineData("", "default")]
         [InlineData(null, "default")]
         public void The_project_key_is_a_safe_file_name(string raw, string expected)
             => Assert.Equal(expected, QualityHistory.ProjectKey(raw));
+
+        // Backlog #48: the key was cut at 80 characters and kept the case, on a file system
+        // that ignores case. Two projects whose names differ only after character 80 wrote
+        // one history; two keys differing only in case named one file.
+        [Fact]
+        public void Two_long_names_that_differ_past_the_cut_keep_two_histories()
+        {
+            string stem = new string('p', 90);
+            string a = QualityHistory.ProjectKey(stem + "-north");
+            string b = QualityHistory.ProjectKey(stem + "-south");
+            Assert.NotEqual(a, b);
+            Assert.True(a.Length <= 80 && b.Length <= 80);
+            Assert.Equal(a, QualityHistory.ProjectKey(stem + "-north"));
+        }
+
+        [Fact]
+        public void Two_names_that_differ_only_in_case_are_one_key_as_they_are_one_file()
+            => Assert.Equal(QualityHistory.ProjectKey("Tower A"), QualityHistory.ProjectKey("TOWER a"));
 
         [Fact]
         public void Append_then_read_returns_the_record_exactly_and_counts_malformed_lines()

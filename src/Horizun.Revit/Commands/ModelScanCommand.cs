@@ -99,7 +99,7 @@ namespace Horizun.Revit.Commands
             _censusUnreadableError = null;
 
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             // OPT-IN cooperative reading. Absent means today's behaviour exactly: no scope is

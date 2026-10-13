@@ -111,6 +111,32 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// Take ONE waiting entry out by its job id, or say it is not waiting. Under the
+        /// same lock as Take, so an entry is either removed here or claimed by the UI
+        /// thread - never both: "not waiting" means it started (or finished, or never
+        /// existed here), and the caller must not report it as cancelled. Used by
+        /// tasks/cancel (audit 2026-10-08), which used to promise this removal and never
+        /// asked for it.
+        /// </summary>
+        public static bool TryRemove(string jobId, out AsyncWork removed)
+        {
+            removed = null;
+            if (string.IsNullOrEmpty(jobId)) return false;
+            lock (_gate)
+            {
+                var kept = new Queue<AsyncWork>();
+                while (_pending.Count > 0)
+                {
+                    AsyncWork w = _pending.Dequeue();
+                    if (removed == null && string.Equals(w.JobId, jobId, StringComparison.Ordinal)) removed = w;
+                    else kept.Enqueue(w);
+                }
+                while (kept.Count > 0) _pending.Enqueue(kept.Dequeue());
+            }
+            return removed != null;
+        }
+
+        /// <summary>
         /// Everything still waiting when Revit is closing. These never ran, and saying
         /// so on the way down is the difference between a job whose record stops
         /// mid-flight and one that is known never to have started.

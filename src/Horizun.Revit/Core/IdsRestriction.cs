@@ -83,7 +83,7 @@ namespace Horizun.Revit.Core
             if (Enumeration.Count > 0)
                 parts.Add("one of [" + string.Join(", ", Enumeration.Take(12)) +
                           (Enumeration.Count > 12 ? ", …" : "") + "]");
-            foreach (string pattern in Patterns) parts.Add("matches /" + pattern + "/ (whole value)");
+            if (Patterns.Count > 0) parts.Add("matches /" + string.Join("/ or /", Patterns) + "/ (whole value)");
             if (MinInclusive.HasValue) parts.Add(">= " + Number(MinInclusive.Value));
             if (MinExclusive.HasValue) parts.Add("> " + Number(MinExclusive.Value));
             if (MaxInclusive.HasValue) parts.Add("<= " + Number(MaxInclusive.Value));
@@ -260,16 +260,34 @@ namespace Horizun.Revit.Core
                              string.Join(", ", constraint.Enumeration.Take(12)) +
                              (constraint.Enumeration.Count > 12 ? ", …" : "") + "]");
 
-            foreach (string pattern in constraint.Patterns)
+            // SIBLING PATTERNS ARE ALTERNATIVES. XML Schema ORs the xs:pattern facets of one
+            // restriction step; requiring all of them failed every value that followed one
+            // convention of two (audit 2026-10-08, 6.5). One match satisfies; with none, a
+            // pattern that could not be evaluated means no claim, since it might have matched.
+            if (constraint.Patterns.Count > 0)
             {
-                bool matched;
-                string problem;
-                if (!TryMatchWholeValue(actual, pattern, out matched, out problem))
-                    return IdsMatch.Unknown("the pattern /" + pattern + "/ could not be evaluated: " +
-                                            problem + ". No claim is made about this element.");
-                if (!matched)
-                    failures.Add("is '" + actual + "', which does not match /" + pattern +
-                                 "/ over the WHOLE value");
+                bool anyMatched = false;
+                string unevaluated = null;
+                foreach (string pattern in constraint.Patterns)
+                {
+                    bool matched;
+                    string problem;
+                    if (!TryMatchWholeValue(actual, pattern, out matched, out problem))
+                    {
+                        if (unevaluated == null) unevaluated = "the pattern /" + pattern + "/ could not be evaluated: " + problem;
+                        continue;
+                    }
+                    if (matched) { anyMatched = true; break; }
+                }
+                if (!anyMatched)
+                {
+                    if (unevaluated != null)
+                        return IdsMatch.Unknown(unevaluated + ". No claim is made about this element.");
+                    failures.Add(constraint.Patterns.Count == 1
+                        ? "is '" + actual + "', which does not match /" + constraint.Patterns[0] + "/ over the WHOLE value"
+                        : "is '" + actual + "', which matches none of /" + string.Join("/, /", constraint.Patterns) +
+                          "/ over the WHOLE value");
+                }
             }
 
             bool wantsNumber = constraint.MinInclusive.HasValue || constraint.MaxInclusive.HasValue ||

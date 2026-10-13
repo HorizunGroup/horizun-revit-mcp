@@ -250,7 +250,9 @@ namespace Horizun.Revit.Core
             }
 
             JObject envelope;
-            try { envelope = JObject.Parse(text); }
+            // Text stays text: JObject.Parse made dates of the timestamps, re-printed them
+            // without trailing zeros and refused its own file as hash_mismatch.
+            try { envelope = JsonText.ParseObject(text); }
             catch (Exception ex)
             {
                 r.Code = SnapshotStoreCodes.Partial;

@@ -38,6 +38,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
 using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
+using System.Globalization;
 
 namespace Horizun.Revit.Commands
 {
@@ -566,7 +567,7 @@ namespace Horizun.Revit.Commands
                 check["placement_verified"] = deviation <= WallLayerRules.ToleranceMm;
                 if (deviation > WallLayerRules.ToleranceMm)
                     return "it is " + deviation.ToString("F2") + " mm from where the carrier's displacement of " +
-                           Math.Round(WallLayerRules.FeetToMm(expected.CarrierOffsetFeet), 2) + " mm puts it.";
+                           Math.Round(WallLayerRules.FeetToMm(expected.CarrierOffsetFeet), 2).ToString(CultureInfo.InvariantCulture) + " mm puts it.";
             }
 
             string scalar = CompareScalars(after, before, check);
@@ -1344,6 +1345,15 @@ namespace Horizun.Revit.Commands
             string digest = WallSplitFacts.CurveDigest(Safe(() => (after.Location as LocationCurve)?.Curve, (Curve)null));
             check["curve_digest_before"] = before.FoundationCurveDigest;
             check["curve_digest_after"] = digest;
+            // COMPARED, not only reported: with the carrier left where it was, the footing's
+            // own curve must be exactly what it was (audit 2026-10-08, 6.11). A displaced
+            // carrier moves it, and the position check above measures that move.
+            bool carrierStayed = Math.Abs(WallLayerRules.FeetToMm(expected.CarrierOffsetFeet)) <= WallLayerRules.ToleranceMm;
+            check["curve_digest_compared"] = carrierStayed;
+            if (carrierStayed && !string.IsNullOrEmpty(before.FoundationCurveDigest) &&
+                !string.Equals(before.FoundationCurveDigest, digest, StringComparison.Ordinal))
+                return WallSplitCodes.VerifyFoundationGeometry + "|the carrier did not move and its footing's curve " +
+                       "changed (" + before.FoundationCurveDigest + " -> " + (digest ?? "unreadable") + ").";
             return null;
         }
 
@@ -2153,9 +2163,10 @@ namespace Horizun.Revit.Commands
                     string key = WallLayerRules.EdgeKey(wid, other);
                     if (!siblingIds.Contains(other))
                     {
-                        // The carrier keeps its own original neighbours; a produced layer
-                        // wall has no business being joined to anything else.
-                        if (wid != expected.CarrierId) foreignEdges.Add(key);
+                        // The carrier keeps its own ORIGINAL neighbours and nothing else: a join
+                        // it gained here is a change nobody asked for (audit 2026-10-08, 6.11).
+                        // A produced layer wall has no business being joined to anything else.
+                        if (wid != expected.CarrierId || !before.GeometricJoinIds.Contains(other)) foreignEdges.Add(key);
                         continue;
                     }
                     if (!wanted.Contains(key)) extraEdges.Add(key);

@@ -47,6 +47,24 @@ namespace Horizun.Revit.Commands
             }
             catch { }
 
+            // D0 (3.0.0 interoperability): the evidence a project registry binds a model_ref to.
+            // Every value is read the same way in every year; what a year cannot provide is null
+            // with the reason in identity_note, never a guess.
+            Newtonsoft.Json.Linq.JObject modelIdentity = ModelIdentity.Evidence(
+#if REVIT2023
+                null,                                           // Document.CreationGUID arrived in Revit 2024
+#else
+                SafeText(() => doc.CreationGUID.ToString()),
+#endif
+                SafeText(() => doc.WorksharingCentralGUID.ToString()),
+                SafeText(() => { var p = doc.GetCloudModelPath(); return p == null ? null : p.GetModelGUID().ToString(); }),
+                SafeText(() => { var p = doc.GetCloudModelPath(); return p == null ? null : p.GetProjectGUID().ToString(); }),
+                null,                                           // the header's Unique Document GUID has no API: not read
+                SafeText(() => doc.ProjectInformation?.UniqueId),
+                app.Application.VersionNumber,
+                SafeText(() => doc.Title),
+                SafeText(() => doc.PathName));
+
             return CommandResult.Ok(new
             {
                 title = doc.Title,
@@ -56,8 +74,16 @@ namespace Horizun.Revit.Commands
                 revit_version = app.Application.VersionNumber,
                 revit_build = app.Application.VersionBuild,
                 element_count = elements,
-                shared_coordinates = sharedCoordinates
+                shared_coordinates = sharedCoordinates,
+                model_identity = modelIdentity
             });
+        }
+
+        // A cloud path on a local model, a central GUID on a file-based one: "not applicable"
+        // throws on some years. That is null, not an unreadable document.
+        private static string SafeText(Func<string> read)
+        {
+            try { return read(); } catch (Exception) { return null; }
         }
     }
 }

@@ -44,7 +44,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class ApplyCorrectionsCommand : ICommand
+    public sealed partial class ApplyCorrectionsCommand : ICommand
     {
         private readonly Func<string, ICommand> _resolve;
         public ApplyCorrectionsCommand(Func<string, ICommand> resolve) { _resolve = resolve; }
@@ -85,8 +85,10 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+
+            if (request["correction_plan"] != null) return ExecuteReviewPlan(app, request);
 
             // THE SHAPE FIRST. Unknown keys, an empty selection and a malformed action
             // are refused before any document is looked at.
@@ -209,7 +211,8 @@ namespace Horizun.Revit.Commands
                 ApplicationOutcome.StampRehearsal(preview, actions.Count,
                     actions.Count(a => a.State != CorrectionActionState.Rehearsed), 0, 0);
                 // Recorded and issued together, or neither.
-                if (rehearsedCleanly) DocumentGate.RecordResolvedPlan(plan);
+                // Never a child's: each rehearsal above may have left its own plan recorded (#17).
+                DocumentGate.RecordResolvedPlan(rehearsedCleanly ? plan : null);
                 DocumentGate.StampConfirmation(preview, gate, Name, planHash, rehearsedCleanly,
                     "the token binds this document, audit " + record.Fingerprint + ", the exact action set, and " +
                     "what each typed tool's own rehearsal resolved; the apply re-runs the cited checks and " +
@@ -291,6 +294,7 @@ namespace Horizun.Revit.Commands
             };
             ApplicationOutcome.StampApplied(result, stepsApplied > 0 ? ApplicationOutcome.Committed : ApplicationOutcome.NotStarted,
                                             steps, stepsApplied, stepsApplied, 0, steps - stepsApplied, 0);
+            DocumentGate.ClearResolvedPlan();   // the last child's plan is not this reply's (#17)
             DocumentGate.StampConfirmation(result, gate, Name, planHash, false);
 
             if (stepsApplied == 0)

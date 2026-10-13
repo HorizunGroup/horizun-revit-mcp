@@ -357,7 +357,7 @@ namespace Horizun.Revit.Commands
             string idempotencyKey;
             try
             {
-                request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
+                request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
                 runAsync = request.Value<bool?>("run_async") ?? false;
                 preflight = request.Value<bool?>("preflight") ?? false;
                 // Field 6.x: run the script inside a TransactionGroup that is ALWAYS
@@ -478,6 +478,10 @@ namespace Horizun.Revit.Commands
             {
                 var warnings = new JArray();
                 foreach (JToken advisory in typedAlternatives) warnings.Add(advisory);
+                if (PythonCollectorHazard.HasViewLinkOverload(code))
+                    warnings.Add("FilteredElementCollector(doc, viewId, linkId) can terminate Revit in affected builds. " +
+                        "Use horizun_manage_links operation=visible_elements to inspect the link without that overload; " +
+                        "preflight has not executed this script.");
 
                 if (readOnly && readOnlyViolations.Count > 0)
                     warnings.Add(

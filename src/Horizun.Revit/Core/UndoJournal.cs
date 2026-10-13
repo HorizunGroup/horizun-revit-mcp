@@ -125,7 +125,7 @@ namespace Horizun.Revit.Core
         {
             refusal = null;
             UndoBatch last = (batches ?? new List<UndoBatch>()).Where(b => b.UndoneUtc == null)
-                                                             .OrderBy(b => b.CreatedUtc, StringComparer.Ordinal)
+                                                             .OrderBy(b => b.CreatedUtc, JsonText.ByInstant)
                                                              .LastOrDefault();
             if (last == null) { refusal = "no Horizun batch is recorded for this document (or every one is already undone)."; return null; }
             if (!last.Undoable)
@@ -198,6 +198,15 @@ namespace Horizun.Revit.Core
             }
             if (a is JObject ao && b is JObject bo)
             {
+                // A TEXT PARAMETER WITH NO VALUE AND ONE HOLDING "" ARE ONE STATE: Revit has no
+                // way to unset a string, so restoring a never-written text writes "" and reads
+                // it back. Comparing null to "" refused every undo of a first text write
+                // (measured live 2026-10-08). Only for storage String; nothing else is loosened.
+                if (string.Equals(ao.Value<string>("storage"), "String", StringComparison.Ordinal) &&
+                    string.Equals(bo.Value<string>("storage"), "String", StringComparison.Ordinal) &&
+                    ao.Properties().Select(p => p.Name).OrderBy(n => n).SequenceEqual(new[] { "storage", "value" }) &&
+                    bo.Properties().Select(p => p.Name).OrderBy(n => n).SequenceEqual(new[] { "storage", "value" }))
+                    return string.Equals(ao.Value<string>("value") ?? "", bo.Value<string>("value") ?? "", StringComparison.Ordinal);
                 var keys = new HashSet<string>(ao.Properties().Select(p => p.Name).Concat(bo.Properties().Select(p => p.Name)));
                 foreach (string k in keys) if (!StatesMatch(ao[k], bo[k], tolerance)) return false;
                 return true;
@@ -255,7 +264,7 @@ namespace Horizun.Revit.Core
         public static List<UndoBatch> Load(string path)
         {
             if (!File.Exists(path)) return new List<UndoBatch>();
-            JObject root = JObject.Parse(File.ReadAllText(path));
+            JObject root = JsonText.ParseObject(File.ReadAllText(path));
             return (root["batches"] as JArray ?? new JArray()).OfType<JObject>().Select(UndoBatch.FromJson).ToList();
         }
 

@@ -122,6 +122,61 @@ if ($runnerGate -notmatch "Get-Process -Name Revit" -or $runnerGate -notmatch 'p
     Fail 'the release lifecycle no longer refuses a pre-existing user Revit session'
 }
 if ($runnerGate -match 'Stop-Process\s+-Name\s+Revit') { Fail 'the release lifecycle can kill arbitrary Revit processes' }
+
+# Backlog #28. The live gate certifies what THIS job built: the expected hashes
+# come from the job's dist/stage/manifest.json and its commit must be the run's
+# github.sha. Defaulting to the installed manifest let a shared runner, where
+# somebody else installed another build in between, certify that other build.
+if ($ci -notmatch '(?s)revit-integration:.*?run-release-live-gate\.ps1[^\r\n]*-Manifest\s+"?dist/stage/manifest\.json"?' -or
+    $ci -notmatch '(?s)revit-integration:.*?run-release-live-gate\.ps1[^\r\n]*-ExpectedCommit\s+"?\$\{\{\s*github\.sha\s*\}\}"?') {
+    Fail 'the live release gate does not bind to the job''s own manifest and github.sha (backlog #28)'
+}
+$gateRoot = Join-Path ([IO.Path]::GetTempPath()) ('horizun-gate-binding-' + [guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path $gateRoot -Force | Out-Null
+    $gateServer = Join-Path $gateRoot 'horizun-mcp.exe'
+    [IO.File]::WriteAllBytes($gateServer, [byte[]](1, 2, 3))
+    $gateManifest = Join-Path $gateRoot 'manifest.json'
+    $builtCommit = '1111111111111111111111111111111111111111'
+    [pscustomobject]@{ Commit = $builtCommit; Server = [pscustomobject]@{ Sha256 = ('a' * 64) }
+                       Plugins = @([pscustomobject]@{ Year = 2026; Sha256 = ('b' * 64) }) } |
+        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $gateManifest -Encoding UTF8
+    # A fixtures path that does not exist: the binding is decided before any
+    # fixture, process or Revit is looked at, so neither run gets that far.
+    $noFixtures = Join-Path $gateRoot 'no-such-fixtures.json'
+    $gateHost = (Get-Process -Id $PID).Path
+    $gateScript = Join-Path $repo 'scripts/run-release-live-gate.ps1'
+    # The gate's refusal arrives on stderr; under Windows PowerShell 5.1 that is
+    # a terminating error with Stop in force, so it is captured under Continue.
+    $ErrorActionPreference = 'Continue'
+    try {
+        $other = (& $gateHost -NoProfile -ExecutionPolicy Bypass -File $gateScript -Year 2026 -Fixtures $noFixtures -Manifest $gateManifest `
+                  -Server $gateServer -Json (Join-Path $gateRoot 'live.json') -ExpectedCommit ('2' * 40) 2>&1 | Out-String)
+        $otherExit = $LASTEXITCODE
+        $same = (& $gateHost -NoProfile -ExecutionPolicy Bypass -File $gateScript -Year 2026 -Fixtures $noFixtures -Manifest $gateManifest `
+                 -Server $gateServer -Json (Join-Path $gateRoot 'live.json') -ExpectedCommit $builtCommit 2>&1 | Out-String)
+    }
+    finally { $ErrorActionPreference = 'Stop' }
+    if ($otherExit -eq 0 -or $other -notmatch [regex]::Escape($builtCommit) -or $other -match 'fixtures are missing') {
+        Fail "the live release gate accepted a manifest built from another commit (backlog #28): $other"
+    }
+    if ($same -notmatch 'fixtures are missing') {
+        Fail "the live release gate refused a manifest whose commit is the expected one (backlog #28): $same"
+    }
+}
+finally { Remove-Item -LiteralPath $gateRoot -Recurse -Force -ErrorAction SilentlyContinue }
+
+# Backlog #27. The client-registration helpers ship to machines that may only
+# have Windows PowerShell 5.1, and their suites run them under the host that runs
+# the suite. CI must therefore run them under BOTH hosts, as it does the ChatGPT
+# helper - not only under pwsh 7.
+foreach ($workflow in @(@{ Name = 'ci.yml'; Text = $ci }, @{ Name = 'pr.yml'; Text = (Get-Content (Join-Path $repo '.github/workflows/pr.yml') -Raw) })) {
+    $steps = [regex]::Split($workflow.Text, '(?m)^(?=\s*- name:)')
+    $bothHosts = (@($steps | Where-Object { $_ -match "foreach \(\`$\w+ in @\('powershell\.exe', 'pwsh'\)\)" }) -join "`n")
+    foreach ($suite in 'register-client.tests.ps1', 'register-client-legacy.tests.ps1', 'client-config-encoding.tests.ps1', 'chatgpt-tunnel.tests.ps1') {
+        if (-not $bothHosts.Contains($suite)) { Fail "$($workflow.Name) does not run $suite under both Windows PowerShell 5.1 and PowerShell 7 (backlog #27)" }
+    }
+}
 if ($hzCall -notmatch 'reply\.result\.structuredContent') { Fail 'hz-call no longer reads the machine payload before human Revit diagnostics' }
 if ($ci -notmatch '\(\?m\)\^failed\[ \\t\]\*=\[ \\t\]\*\\S') {
     Fail 'CI install-result parsing can again read the line after an empty failed= as a failed year'

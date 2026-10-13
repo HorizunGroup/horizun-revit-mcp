@@ -199,13 +199,16 @@ jobs:
             'scripts/install-arguments.tests.ps1'
             'scripts/install-result.tests.ps1'
             'scripts/install-completion.tests.ps1'
+            'scripts/install-run-entries.tests.ps1'
             'scripts/install-status.tests.ps1'
             'scripts/dwg-state.tests.ps1'
             'scripts/live-paths.tests.ps1'
+            'scripts/verify-live-gates.tests.ps1'
             'scripts/verify-install.tests.ps1'
             'scripts/uninstall-cleanup.tests.ps1'
             'scripts/manifest-integrity.tests.ps1'
-            'scripts/register-client.tests.ps1'
+            'scripts/client-process.tests.ps1'
+            'scripts/install-release-helpers.tests.ps1'
             'scripts/scan-sensitive.tests.ps1'
             'scripts/server-update.tests.ps1'
             'scripts/public-consistency.tests.ps1'
@@ -217,6 +220,7 @@ jobs:
             'scripts/provenance.tests.ps1'
             'scripts/structural-state.tests.ps1'
             'scripts/parameter-shadowing.tests.ps1'
+            'scripts/script-encoding.tests.ps1'
             'scripts/hz-call.tests.ps1'
             'scripts/release-gate-exemptions.tests.ps1'
           )
@@ -228,16 +232,25 @@ jobs:
           pwsh -NoProfile -File scripts/audit-dependencies.ps1
           if ($LASTEXITCODE -ne 0) { throw "dependency audit failed with exit code $LASTEXITCODE" }
 
-      - name: ChatGPT tunnel helper under Windows PowerShell 5.1 and PowerShell 7
+      - name: Installed client helpers under Windows PowerShell 5.1 and PowerShell 7
         shell: pwsh
         run: |
-          # The helper declares 5.1 and ships to machines that may only have it,
-          # so it is exercised under both hosts. The suite runs the helper under
-          # the same host that runs the suite.
+          # These helpers declare 5.1 and ship to machines that may only have it
+          # (the installer runs them under powershell.exe), so their suites are
+          # exercised under both hosts. Each suite runs its helper under the same
+          # host that runs the suite (backlog #27).
+          $suites = @(
+            'scripts/chatgpt-tunnel.tests.ps1'
+            'scripts/register-client.tests.ps1'
+            'scripts/register-client-legacy.tests.ps1'
+            'scripts/client-config-encoding.tests.ps1'
+          )
           foreach ($ps in @('powershell.exe', 'pwsh')) {
-            Write-Host "==> scripts/chatgpt-tunnel.tests.ps1 under $ps"
-            & $ps -NoProfile -ExecutionPolicy Bypass -File scripts/chatgpt-tunnel.tests.ps1
-            if ($LASTEXITCODE -ne 0) { throw "chatgpt-tunnel.tests.ps1 failed under $ps with exit code $LASTEXITCODE" }
+            foreach ($suite in $suites) {
+              Write-Host "==> $suite under $ps"
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $suite
+              if ($LASTEXITCODE -ne 0) { throw "$suite failed under $ps with exit code $LASTEXITCODE" }
+            }
           }
 
   # ---------------------------------------------------------------------------
@@ -825,7 +838,10 @@ jobs:
         # This owns the whole lifecycle. Merely invoking verify-live.ps1 does not
         # start Revit, open fixtures, close a workset or opt into the committing
         # tier; without those steps a green-looking job cannot be release evidence.
-        run: pwsh scripts/run-release-live-gate.ps1 -Year ${{ matrix.year }} -Json "artifacts/live/live-${{ matrix.year }}.json"
+        # The expected hashes are this job's own package manifest and its commit
+        # is github.sha: the installed manifest on a shared runner may be another
+        # build's (backlog #28).
+        run: pwsh scripts/run-release-live-gate.ps1 -Year ${{ matrix.year }} -Manifest "dist/stage/manifest.json" -ExpectedCommit "${{ github.sha }}" -Json "artifacts/live/live-${{ matrix.year }}.json"
 
       # always(), because the JSON of a FAILED run is the artifact somebody
       # actually needs. Publishing only the green ones is publishing nothing.

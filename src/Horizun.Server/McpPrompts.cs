@@ -117,6 +117,10 @@ namespace Horizun.Server
                         "Turn a wall-type or ceiling detail (an image or a 2-D detail) into a horizun_framing spec, confirm it with the person, then build and verify it.",
                         Arg("kind", "wall or ceiling: which spec the detail fills.", true),
                         Arg("element_ids", "The walls or ceilings the detail applies to, comma-separated. Optional: without them the person is asked.", false)),
+                    Prompt("cross-app-coordination", "Coordinate a task across Horizun apps",
+                        "The agent is the bus between Revit, Navisworks, MS Project, Power BI and the CDE: peers preflighted, one intake, approval per stage, owner order, three-layer verification, one closing row per hop.",
+                        Arg("objective", "WHAT outcome is wanted across the apps, in the person's words.", true),
+                        Arg("integrations_path", "Absolute path of the project's project-integrations.json (or of the project-context.json beside it). Optional: without it models are matched by nothing and every hop says so.", false)),
                     Prompt("material-standardisation", "Bring materials to a declared standard",
                         "Create, duplicate and edit materials to match an approved standard, re-reading every value and touching nothing else.",
                         Arg("material_standard", "The approved standard - names, classes, colours, patterns. Required because Horizun carries no organisation's catalogue.", true))
@@ -479,6 +483,47 @@ namespace Horizun.Server
                         "and get it confirmed. 6) Call horizun_framing operation=" + kind + " with dry_run=true; show counts per role, warnings and the openings it read. " +
                         "7) Only after the person agrees, call again with dry_run=false, the confirmation_token and an idempotency_key; report the postconditions as re-read. " +
                         "A refusal names the field to fix; framing from another spec must be removed (operation=remove) before a new one.";
+                    break;
+                }
+                case "cross-app-coordination":
+                {
+                    string coordinationObjective = Argument(args, "objective", true);
+                    string registry = Argument(args, "integrations_path", false);
+                    bool hasRegistry = !string.IsNullOrWhiteSpace(registry);
+                    description = "Coordinate one objective across Horizun apps, with the agent as the only bus.";
+                    body =
+                        "Objective: " + coordinationObjective + ". You, the agent in this client, are the ONLY bus: MCP servers never call each " +
+                        "other; you pass manifest PATHS between them (horizun.exchange/0), never large JSON inline. " +
+                        "0) PREFLIGHT. Call each peer's health tool that this client exposes - horizun_health (Revit), and the " +
+                        "Navisworks, MS Project and Power BI servers' own health/capabilities tools - and list which are reachable. " +
+                        "If one app is registered twice (two servers or a plugin plus a server), say so and use neither until the " +
+                        "person names one. " +
+                        (hasRegistry
+                            ? "Read the project registry with horizun_project_context operation=integrations integrations_path=" + registry + ". "
+                            : "No project registry was given: ask for project-integrations.json; without it no hop can prove which model it came from. ") +
+                        "For every Revit model involved, read get_document_info and resolve its model_identity with " +
+                        "horizun_project_context operation=resolve_model; a model with no strong evidence is NOT matched and is " +
+                        "reported identity_proven:false (Revit 2023 always is). Print the hops that are possible and the ones that are not. " +
+                        "1) INTAKE, ONE ROUND for the whole chain: WHAT outcome, to WHICH elements/models/tasks, and HOW each app's " +
+                        "result will be recognised as correct. If any of the three is missing or reads two ways, ask with options " +
+                        "and trade-offs. Create one correlation_id for the run. " +
+                        "2) APPROVAL PER STAGE: present one envelope per stage (hops, documents, the maximum elements touched) and " +
+                        "get a yes for that stage; inside it every write is rehearsed (dry_run=true) and applied with its own token. " +
+                        "Approvals expire: Revit tokens after 10 minutes, Power BI plans after 3600 s, a Navisworks fingerprint as " +
+                        "soon as anything upstream writes - re-rehearse rather than reuse. " +
+                        "3) EXECUTE IN OWNER ORDER: Revit the model, Navisworks the clashes, MS Project dates and progress, Power BI " +
+                        "the presentation, the CDE the containers. A downstream hop runs only when horizun_exchange operation=verify " +
+                        "on its input says may_continue=true; partial or failed STOPS the chain there. Idempotency is correlation_id + " +
+                        "hop + attempt; never resend a call whose outcome is in doubt - read its state first. " +
+                        "4) VERIFY IN THREE LAYERS: the producer re-reads what it wrote (its own reply); the consumer checks sha256 and " +
+                        "identity (horizun_exchange verify) and re-derives its part; you reconcile the invariants across apps (counts " +
+                        "per code equal on both sides, issues = reproduced + not reproduced + untraceable). Reloading a " +
+                        "re-exported NWC in Navisworks is MANUAL: ask the person to reload, then re-run the SAME test - 0 active " +
+                        "for what was resolved is the closing proof. " +
+                        "5) CLOSE: one row per hop - app, manifest path, state (verified | self_reported_verified | partial | failed), " +
+                        "counts, evidence - and the overall state is the WEAKEST hop's. A hop through Python is at most " +
+                        "self_reported_verified. WHEN NOBODY IS AT THE KEYBOARD, only read and export files: every model write, " +
+                        "Navisworks status, Power BI refresh or Project write needs a person's yes.";
                     break;
                 }
                 case "project-intake":

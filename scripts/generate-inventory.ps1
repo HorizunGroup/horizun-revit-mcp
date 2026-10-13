@@ -84,6 +84,10 @@ $inventorySettings = [ordered]@{
 # settings. Omitting tool_packs means the documented default: every pack.
 $psi.EnvironmentVariables['HORIZUN_DATA_ROOT'] = $inventoryDataRoot
 $psi.EnvironmentVariables['HORIZUN_TOOL_PACKS'] = 'all'
+# The WHOLE surface, not the schema facade (3.0.0): in facade mode tools/list
+# carries four tools and the rest is reached through them, so counting it would
+# measure the facade instead of the product. full is the 2.x list byte for byte.
+$psi.EnvironmentVariables['HORIZUN_SCHEMA_MODE'] = 'full'
 
 $proc = $null
 $listed = $null

@@ -65,6 +65,7 @@ function Invoke-HorizunProcess {
 
         started    whether Windows started it at all (a blocked or missing file,
                    an AppLocker/SmartScreen refusal, a bad image, all say false)
+        process_id the child's pid, so a caller can find what it started in turn
         exit_code  $null when it never started or had to be killed
         timed_out  it was still running at the deadline and was killed
         stdout / stderr, separately
@@ -84,6 +85,7 @@ function Invoke-HorizunProcess {
         path       = $Path
         arguments  = @($Arguments)
         started    = $false
+        process_id = $null
         exit_code  = $null
         timed_out  = $false
         stdout     = ''
@@ -115,6 +117,7 @@ function Invoke-HorizunProcess {
         return [pscustomobject]$result
     }
     $result.started = $true
+    $result.process_id = $p.Id
     try {
         try { $p.StandardInput.Close() } catch { }
         $out = $p.StandardOutput.ReadToEndAsync()

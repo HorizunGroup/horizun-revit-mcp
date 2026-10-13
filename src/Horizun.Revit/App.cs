@@ -36,6 +36,11 @@ namespace Horizun.Revit
                 Log.Info("startup: Revit " + _year + ", add-in " + Build.Version +
                          ", data root " + Safe(() => HorizunPaths.DataRoot()));
 
+                // Install before the command registry causes any IronPython types
+                // to be JIT-resolved. A different add-in may already have loaded an
+                // older DLR into Revit's default context.
+                PythonDependencyIsolation.Install();
+
                 // BEFORE the bridge, and deliberately not gated on it. If the pipe fails
                 // to start, the tab is the only thing that can say so to somebody who is
                 // looking at Revit rather than at a log - which is everybody, the first
@@ -57,6 +62,19 @@ namespace Horizun.Revit
                         Horizun.Revit.Ui.OperationsPaneIdentity.Title,
                         new Horizun.Revit.Ui.OperationsPane());
                     Log.Info("operations pane registered");
+                    // REVIT RESTORES A PANE AS IT WAS when the last session closed, so a pane opened once
+                    // came back at every start. It is hidden again once Revit's UI exists; only the ribbon
+                    // button shows it (OperationsPanePolicy).
+                    app.ControlledApplication.ApplicationInitialized += (sender, args) =>
+                    {
+                        try
+                        {
+                            var ui = new UIApplication(sender as Autodesk.Revit.ApplicationServices.Application);
+                            DockablePane pane = ui.GetDockablePane(Horizun.Revit.Ui.OperationsPaneIdentity.PaneId);
+                            if (Horizun.Revit.Core.OperationsPanePolicy.HideAtStartUp(pane.IsShown())) pane.Hide();
+                        }
+                        catch (Exception hex) { Log.Warn("the operations pane could not be hidden at start-up: " + hex.Message); }
+                    };
                 }
                 catch (Exception pex)
                 {

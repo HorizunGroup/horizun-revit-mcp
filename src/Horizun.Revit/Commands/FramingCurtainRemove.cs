@@ -125,7 +125,7 @@ namespace Horizun.Revit.Commands
                 return "its type changed after the apply (now " + Rid.Value(w.GetTypeId()) + ", the apply left " + left + ")";
             XYZ a = s.NewStart ?? s.OriginalStart, b = s.NewEnd ?? s.OriginalEnd;
             double dev = Math.Max(Flat(l.GetEndPoint(0)).DistanceTo(Flat(a)), Flat(l.GetEndPoint(1)).DistanceTo(Flat(b))) * 304.8;
-            return dev > EndpointToleranceMm ? "its location line moved " + Math.Round(dev, 1) + " mm after the apply" : null;
+            return dev > EndpointToleranceMm ? "its location line moved " + Math.Round(dev, 1).ToString(CultureInfo.InvariantCulture) + " mm after the apply" : null;
         }
 
         /// <summary>What the remove's token binds for the restores ("" when there are none).</summary>

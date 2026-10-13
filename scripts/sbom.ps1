@@ -55,6 +55,9 @@ function Get-StagedLicence([string]$relativePath) {
             return 'Apache-2.0'
         }
         if ($leaf -eq 'Newtonsoft.Json.dll') { return 'MIT' }
+        # The server's NuGet packages (PdfPig for horizun_read_schedule) carry their own
+        # licence; only what is left after them is the redistributed .NET runtime.
+        if ($thirdPartyDllLicences.ContainsKey($leaf)) { return $thirdPartyDllLicences[$leaf] }
         # `dotnet publish --self-contained` redistributes the .NET runtime beside
         # the application. The runtime, apphost, native host and reference facade
         # files in this directory come from dotnet/runtime under MIT.
@@ -108,6 +111,31 @@ if ($runtimeVersion -ne $pinnedRuntimeVersion) {
 $runtimePurl = "pkg:nuget/$runtimeName@$runtimeVersion"
 $runtimeRef = $runtimePurl
 
+# The server's NuGet packages, read from the same published deps graph: one
+# PURL-addressable component each, with its licence. A package this table does not
+# know is a release failure, exactly as an unclassified file is.
+$serverPackageLicences = @{ 'Newtonsoft.Json' = 'MIT'; 'PdfPig' = 'Apache-2.0' }
+$packageComponents = @()
+foreach ($package in @($deps.libraries.PSObject.Properties | Where-Object { $_.Value.type -eq 'package' } | Sort-Object Name)) {
+    $parts = $package.Name.Split('/')
+    if (-not $serverPackageLicences.ContainsKey($parts[0])) {
+        throw "the staged server carries NuGet package $($package.Name) and sbom.ps1 has no licence for it"
+    }
+    $purl = "pkg:nuget/$($parts[0])@$($parts[1])"
+    $packageComponents += [ordered]@{
+        type      = 'library'
+        'bom-ref' = $purl
+        name      = $parts[0]
+        version   = $parts[1]
+        purl      = $purl
+        licenses  = @(@{ license = @{ id = $serverPackageLicences[$parts[0]] } })
+        properties = @(
+            @{ name = 'horizun:distribution'; value = 'redistributed with the MCP server' },
+            @{ name = 'horizun:evidence'; value = 'server/horizun-mcp.deps.json' }
+        )
+    }
+}
+
 $components = @()
 $unknown = @()
 foreach ($file in $files) {
@@ -133,7 +161,7 @@ foreach ($file in $files) {
         licenses = @(@{ license = $licenceChoice })
         properties = @(
             @{ name = 'horizun:bytes'; value = [string]$file.Length },
-            @{ name = 'horizun:origin'; value = $(if ($relative.StartsWith('server/') -and $licence -eq 'MIT' -and $relative -notlike '*/Newtonsoft.Json.dll') { 'dotnet/runtime self-contained publish' } elseif ($licence -eq 'Apache-2.0') { 'Horizun source tree' } else { 'redistributed third-party dependency' }) }
+            @{ name = 'horizun:origin'; value = $(if ($thirdPartyDllLicences.ContainsKey([IO.Path]::GetFileName($relative))) { 'redistributed third-party dependency' } elseif ($relative.StartsWith('server/') -and $licence -eq 'MIT') { 'dotnet/runtime self-contained publish' } elseif ($licence -eq 'Apache-2.0') { 'Horizun source tree' } else { 'redistributed third-party dependency' }) }
         )
     }
 }
@@ -178,11 +206,11 @@ $sbom = [ordered]@{
             @{ name='horizun:not-redistributed'; value='Autodesk RevitAPI.dll and RevitAPIUI.dll' }
         )
     }
-    components = @($runtimeComponent) + @($components)
+    components = @($runtimeComponent) + @($packageComponents) + @($components)
     dependencies = @(
-        @{ ref = $applicationRef; dependsOn = @($runtimeRef) },
+        @{ ref = $applicationRef; dependsOn = @($runtimeRef) + @($packageComponents | ForEach-Object { $_.'bom-ref' }) },
         @{ ref = $runtimeRef; dependsOn = @() }
-    )
+    ) + @($packageComponents | ForEach-Object { @{ ref = $_.'bom-ref'; dependsOn = @() } })
 }
 
 $outDir = Split-Path -Parent $OutFile

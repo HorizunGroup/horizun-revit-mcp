@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # Focused, typed-only verification of the optimization work. It never enables
 # Python and does not claim to be the full release gate. The lifecycle runner
 # opens an explicitly disposable fixture and owns closing its Revit process.

@@ -21,6 +21,7 @@ using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
+using System.Globalization;
 
 namespace Horizun.Revit.Commands
 {
@@ -35,7 +36,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             Document doc = app?.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
@@ -131,7 +132,7 @@ namespace Horizun.Revit.Commands
                 ["at"] = StructuralLayoutRules.Describe(crossing),
                 ["code"] = StructuralLayoutRules.CodeAlreadyPresent,
                 ["reason"] = "a structural column already stands within " +
-                             Math.Round(StructuralLayoutRules.SamePlaceToleranceFeet * 304.8, 1) +
+                             Math.Round(StructuralLayoutRules.SamePlaceToleranceFeet * 304.8, 1).ToString(CultureInfo.InvariantCulture) +
                              " mm of this crossing (or an earlier crossing of this plan claims the same spot)."
             }));
 

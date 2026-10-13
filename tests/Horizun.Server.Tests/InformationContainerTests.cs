@@ -336,6 +336,104 @@ namespace Horizun.Server.Tests
             Assert.False((bool)last["truncated"]);
         }
 
+        /// <summary>
+        /// Deny the current user the listing of <paramref name="folder"/> (a real ACL, Windows
+        /// only) for the duration of <paramref name="body"/>; the rule is removed afterwards.
+        /// </summary>
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+        private static void WithUnlistableFolder(string folder, Action body)
+        {
+            var info = new DirectoryInfo(folder);
+            var sid = System.Security.Principal.WindowsIdentity.GetCurrent().User;
+            var deny = new System.Security.AccessControl.FileSystemAccessRule(sid,
+                System.Security.AccessControl.FileSystemRights.ListDirectory, System.Security.AccessControl.AccessControlType.Deny);
+            var acl = System.IO.FileSystemAclExtensions.GetAccessControl(info);
+            acl.AddAccessRule(deny);
+            System.IO.FileSystemAclExtensions.SetAccessControl(info, acl);
+            try
+            {
+                Assert.Throws<UnauthorizedAccessException>(() => Directory.GetFiles(folder));   // the fixture is real
+                body();
+            }
+            finally
+            {
+                acl = System.IO.FileSystemAclExtensions.GetAccessControl(info);
+                acl.RemoveAccessRule(deny);
+                System.IO.FileSystemAclExtensions.SetAccessControl(info, acl);
+            }
+        }
+
+        [Fact]
+        public void Inspect_names_a_subfolder_it_cannot_read_instead_of_failing_the_whole_call()
+        {
+            // backlog #34: one unreadable subfolder used to throw out of the whole inspect.
+            if (!OperatingSystem.IsWindows()) return;   // the fixture is a Windows ACL
+            Tree t = MakeTree();
+            WriteFile(t.Wip, "a.pdf", "x");
+            string locked = Path.Combine(t.Wip, "locked");
+            WriteFile(locked, "hidden.pdf", "x");
+            WriteFile(t.Shared, "b.pdf", "x");
+            WithUnlistableFolder(locked, () =>
+            {
+                JObject r = InformationContainerTool.Inspect(new JObject
+                { ["operation"] = "inspect", ["root"] = t.Root, ["states"] = States() }, CancellationToken.None, DateTime.UtcNow);
+                JObject wip = (JObject)r["states"]["wip"];
+                Assert.False((bool)wip["complete"]);
+                Assert.Equal(new[] { locked }, wip["unreadable_folders"].Select(x => (string)x));
+                Assert.Equal(1, (int)wip["files"]);
+                Assert.True((bool)r["states"]["shared"]["complete"]);           // the walk went on to the next state
+                Assert.Equal(1, (int)r["states"]["shared"]["files"]);
+                Assert.False((bool)r["coverage_complete"]);
+                JObject cov = (JObject)((JArray)r["coverage"]).Single(c => (string)c["state"] == "wip");
+                Assert.False((bool)cov["covered"]);
+                Assert.Contains("could not be read", (string)cov["reason"]);
+            });
+        }
+
+        [Fact]
+        public void Inspect_stops_at_max_files_without_walking_the_rest_of_the_tree()
+        {
+            // backlog #34: the whole tree was enumerated and sorted before the cap applied, so
+            // a folder past the cap was still read - here, an unreadable one fails the old walk.
+            if (!OperatingSystem.IsWindows()) return;
+            Tree t = MakeTree();
+            WriteFile(t.Wip, "a.pdf", "x");
+            WriteFile(t.Wip, "b.pdf", "x");
+            string locked = Path.Combine(t.Wip, "zz");
+            WriteFile(locked, "c.pdf", "x");
+            WithUnlistableFolder(locked, () =>
+            {
+                JObject r = InformationContainerTool.Inspect(new JObject
+                { ["operation"] = "inspect", ["root"] = t.Root, ["states"] = States(), ["max_files"] = 1 },
+                    CancellationToken.None, DateTime.UtcNow);
+                Assert.Equal(1, (int)r["files_walked"]);
+                JObject wip = (JObject)r["states"]["wip"];
+                Assert.False((bool)wip["complete"]);
+                Assert.Empty((JArray)wip["unreadable_folders"]);   // never reached
+                Assert.Contains("max_files", (string)((JArray)r["coverage"]).Single(c => (string)c["state"] == "wip")["reason"]);
+            });
+        }
+
+        [Fact]
+        public void Inspect_walks_in_the_same_order_as_one_sort_of_every_path()
+        {
+            // The lazy walk keeps the order the global sort gave, so a cap keeps the same prefix.
+            Tree t = MakeTree();
+            foreach (string rel in new[] { "b.pdf", "a_b.pdf", Path.Combine("a", "z.pdf"), "a.pdf", Path.Combine("A b", "c.pdf"), "ab.pdf" })
+                WriteFile(Path.GetDirectoryName(Path.Combine(t.Wip, rel)), Path.GetFileName(rel), "x");
+            var expected = Directory.EnumerateFiles(t.Wip, "*", SearchOption.AllDirectories)
+                                    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+            for (int cap = 1; cap <= expected.Count; cap++)
+            {
+                JObject r = InformationContainerTool.Inspect(new JObject
+                { ["operation"] = "inspect", ["root"] = t.Root, ["states"] = States(), ["max_files"] = cap, ["limit"] = 500 },
+                    CancellationToken.None, DateTime.UtcNow);
+                var seen = ((JArray)r["findings"]).Where(f => (string)f["kind"] == "missing_sidecar")
+                                                  .Select(f => (string)f["path"]).OrderBy(p => p, StringComparer.OrdinalIgnoreCase);
+                Assert.Equal(expected.Take(cap), seen);
+            }
+        }
+
         [Fact]
         public void Inspect_reads_states_naming_and_deliverables_from_a_project_context()
         {
@@ -464,6 +562,47 @@ namespace Horizun.Server.Tests
             Assert.False((bool)Run(TransitionArgs(t, ok, "wip", "shared", true, "S2"))["written"]);
             Assert.Throws<ToolRefusal>(() => Run(TransitionArgs(t, ok, "wip", "shared", false, "S2")));
             Assert.Empty(Directory.GetFiles(t.Shared, "*", SearchOption.AllDirectories));
+        }
+
+        [Theory]
+        [InlineData(@"P01\..\..\..\escaped")]
+        [InlineData("P01/../../../escaped")]
+        public void Transition_never_builds_a_destination_outside_the_state_folder(string revision)
+        {
+            // backlog #39: with file_name=name_status_revision the revision enters the file
+            // name; a permissive revision pattern used to let a separator through and the
+            // destination climbed out of the shared folder.
+            Tree t = MakeTree();
+            JObject container = Container("0040", "S0", "P01");
+            container["file_name"] = InformationContainer.FileNameWithStatusRevision;
+            string src = WriteFile(t.Wip, "HZ01-HRZ-ZZ-XX-M3-A-0040-S0-P01.pdf", "s");
+            Assert.True((bool)StampReal(src, container)["written"]);
+
+            JObject args = TransitionArgs(t, src, "wip", "shared", true, "S2", revision);
+            args["naming"] = new JObject
+            {
+                ["file_name"] = InformationContainer.FileNameWithStatusRevision,
+                ["revision_patterns"] = new JObject { ["any"] = ".*" }
+            };
+            var ex = Assert.Throws<ToolRefusal>(() => Run(args));
+            Assert.Contains("revision", ex.Message);
+            Assert.Empty(Directory.GetFiles(t.Root, "*escaped*", SearchOption.AllDirectories));
+            Assert.Empty(Directory.GetFiles(_dir, "*escaped*", SearchOption.AllDirectories));
+
+            // The rule is the core's, so horizun_export's file name obeys it too.
+            var spec = new ContainerSpec
+            {
+                Naming = InformationContainer.ParseNaming(new JObject
+                {
+                    ["file_name"] = InformationContainer.FileNameWithStatusRevision,
+                    ["revision_patterns"] = new JObject { ["any"] = ".*" }
+                }, null),
+                Status = "S2", Revision = revision
+            };
+            foreach (JProperty p in ((JObject)Container()["fields"]).Properties()) spec.Fields[p.Name] = (string)p.Value;
+            ContainerValidation v = InformationContainer.Validate(spec, true);
+            Assert.False(v.Valid);
+            Assert.Contains(v.Problems, p => (string)p["field"] == "revision" && (string)p["code"] == "invalid_characters");
         }
 
         // ---- the contract, and export without the argument ---------------------------------

@@ -69,5 +69,36 @@ namespace Horizun.Server.Tests
             }
             finally { SharedRecordFile.Patience = before; }
         }
+
+        // ---- 2026-10-08 audit ----------------------------------------------------
+
+        [Fact]
+        public void Two_writers_of_one_record_never_share_a_temporary()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "hz-shared-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                string target = Path.Combine(dir, "run.json");
+                SharedRecordFile.WriteAtomically(target, "{}");
+                var failures = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+                System.Threading.Tasks.Parallel.For(0, 20, i =>
+                {
+                    try { SharedRecordFile.WriteAtomically(target, "{\"w\":" + i + "}"); }
+                    catch (Exception ex) { failures.Add(ex); }
+                });
+                Assert.Empty(failures);
+                Assert.StartsWith("{\"w\":", File.ReadAllText(target));
+                Assert.Empty(Directory.GetFiles(dir, "run.json.*.tmp"));
+                Assert.False(File.Exists(target + ".tmp"));
+            }
+            finally { try { Directory.Delete(dir, true); } catch { } }
+        }
+
+        [Fact]
+        public void A_run_id_differing_only_in_case_shares_the_lock_it_shares_the_file_with()
+        {
+            Assert.Same(ProcedureRun.LockFor("Run-A"), ProcedureRun.LockFor("run-a"));
+        }
     }
 }

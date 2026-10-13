@@ -17,6 +17,11 @@
   Nothing here writes anything. It looks, and reports what it saw.
 #>
 
+# Configurations are read as strict UTF-8 and scanned without ConvertFrom-Json,
+# which refuses keys that differ only in case and, on 5.1, reads UTF-8 as ANSI.
+. (Join-Path $PSScriptRoot 'json-member.lib.ps1')
+. (Join-Path $PSScriptRoot 'client-process.lib.ps1')
+
 function Get-HorizunClaudeDesktop {
     <#
       Returns one object describing Claude Desktop: whether it is installed, how,
@@ -106,21 +111,16 @@ function Get-HorizunClaudeDesktop {
         }
         if ($info.config_exists) {
             try {
-                $cfg = Get-Content -LiteralPath $info.config_path -Raw | ConvertFrom-Json
-                $servers = $cfg.PSObject.Properties['mcpServers']
-                if ($servers -and $servers.Value) {
-                    $info.horizun_in_config = 'horizun-revit' -in @($servers.Value.PSObject.Properties.Name)
-                }
+                $info.horizun_in_config = 'horizun-revit' -cin @(Get-HorizunMcpServerNames (Read-HorizunUtf8Text $info.config_path))
             }
             catch { $info.problem = "claude_desktop_config.json does not parse: $($_.Exception.Message)" }
         }
     }
 
-    # "claude" also matches the Claude Code CLI, which is a different product and
-    # does not own claude_desktop_config.json. Match the desktop app's own
-    # process names only.
-    $info.running = @(Get-Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.ProcessName -in @('Claude', 'claude-desktop', 'AnthropicClaude') }).Count -gt 0
+    # "claude" also matches the Claude Code CLI - claude.exe, which on Windows has
+    # the same process name as the desktop app - and Claude Code does not own
+    # claude_desktop_config.json. Decided by executable path: client-process.lib.ps1.
+    $info.running = Test-HorizunClientRunning 'ClaudeDesktop'
 
     return [pscustomobject]$info
 }
@@ -167,8 +167,7 @@ function Get-HorizunExistingClients {
     $entry = [ordered]@{ client = 'claude-code'; config_path = $claudeCode; config_exists = (Test-Path -LiteralPath $claudeCode -PathType Leaf); registered = $false }
     if ($entry.config_exists) {
         try {
-            $cfg = Get-Content -LiteralPath $claudeCode -Raw | ConvertFrom-Json
-            if ($cfg.mcpServers) { $entry.registered = 'horizun-revit' -in @($cfg.mcpServers.PSObject.Properties.Name) }
+            $entry.registered = 'horizun-revit' -cin @(Get-HorizunMcpServerNames (Read-HorizunUtf8Text $claudeCode))
         }
         catch { }
     }

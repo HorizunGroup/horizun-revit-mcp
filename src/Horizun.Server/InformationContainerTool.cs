@@ -227,9 +227,9 @@ namespace Horizun.Server
                 }
                 int files = 0, sidecars = 0, compliant = 0, stamped = 0;
                 var sidecarPaths = new List<string>();
+                var unreadable = new List<string>();
                 bool stateComplete = true;
-                foreach (string path in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories)
-                                                 .OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+                foreach (string path in WalkOrdered(folder, unreadable, ct))
                 {
                     ct.ThrowIfCancellationRequested();
                     string rel = Path.GetRelativePath(folder, path);
@@ -283,13 +283,17 @@ namespace Horizun.Server
                     if (!File.Exists(target))
                         findings.Add(ContainerInspection.Finding("orphan_sidecar", state, sc, new JObject { ["expected_file"] = target }));
                 }
+                if (unreadable.Count > 0) stateComplete = false;
+                string why = !stateComplete && truncatedWalk ? "max_files reached; the walk stopped here" : null;
+                if (unreadable.Count > 0)
+                    why = (why == null ? "" : why + "; ") + unreadable.Count + " subfolder(s) could not be read (unreadable_folders)";
                 perState[state] = new JObject
                 {
                     ["folder"] = folder, ["files"] = files, ["sidecars"] = sidecars, ["compliant_names"] = compliant,
-                    ["stamped"] = stamped, ["complete"] = stateComplete
+                    ["stamped"] = stamped, ["complete"] = stateComplete, ["unreadable_folders"] = new JArray(unreadable)
                 };
                 coverage.Add(new JObject { ["state"] = state, ["folder"] = folder, ["covered"] = stateComplete,
-                                           ["reason"] = stateComplete ? null : "max_files reached; the walk stopped here" });
+                                           ["reason"] = why });
                 if (truncatedWalk) break;
             }
 
@@ -312,6 +316,49 @@ namespace Horizun.Server
             result["deliverables"] = deliverables;
             result["note"] = "Read-only: nothing was written. 'covered=false' is a folder that was not read, never an empty one.";
             return result;
+        }
+
+        /// <summary>
+        /// Every file under <paramref name="folder"/>, LAZILY, in the order one
+        /// case-insensitive ordinal sort of all their paths gives (backlog #34). Each folder
+        /// is listed and sorted on its own - a sub-folder by its name plus the separator,
+        /// which is exactly where its paths fall in the global sort - so a caller that stops
+        /// at max_files never lists what lies past the cap. A folder that cannot be listed
+        /// is named in <paramref name="unreadable"/> and the walk goes on; a reparse point
+        /// (junction, symbolic link) is not followed, and neither is our own .horizun folder,
+        /// whose files are ignored anyway.
+        /// </summary>
+        internal static IEnumerable<string> WalkOrdered(string folder, List<string> unreadable, CancellationToken ct)
+        {
+            List<FileSystemInfo> entries = ListOrdered(folder, unreadable);
+            if (entries == null) yield break;
+            foreach (FileSystemInfo e in entries)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (e is DirectoryInfo d)
+                {
+                    if ((d.Attributes & FileAttributes.ReparsePoint) != 0 ||
+                        string.Equals(d.Name, ".horizun", StringComparison.OrdinalIgnoreCase)) continue;
+                    foreach (string f in WalkOrdered(d.FullName, unreadable, ct)) yield return f;
+                }
+                else yield return e.FullName;
+            }
+        }
+
+        private static List<FileSystemInfo> ListOrdered(string folder, List<string> unreadable)
+        {
+            try
+            {
+                var options = new EnumerationOptions { RecurseSubdirectories = false, IgnoreInaccessible = false, AttributesToSkip = 0 };
+                return new DirectoryInfo(folder).EnumerateFileSystemInfos("*", options)
+                    .OrderBy(e => e is DirectoryInfo ? e.Name + Path.DirectorySeparatorChar : e.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException || ex is IOException || ex is System.Security.SecurityException)
+            {
+                unreadable.Add(folder);
+                return null;
+            }
         }
 
         private static bool Ignored(string relative)
@@ -398,7 +445,15 @@ namespace Horizun.Server
                     ["reason"] = "the project context names '" + expectedApprover + "' for " + from + "->" + to });
 
             string destDir = Path.Combine(toFolder, Path.GetDirectoryName(rel) ?? "");
-            string dest = Path.Combine(destDir, v.FileStem + Path.GetExtension(source));
+            string dest = Path.GetFullPath(Path.Combine(destDir, v.FileStem + Path.GetExtension(source)));
+            // The destination is the source's place under the next state's folder and
+            // nothing else: a name that resolves anywhere else is refused before any
+            // check reads it (backlog #39).
+            string destRel = Path.GetRelativePath(toFolder, dest);
+            if (destRel.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(destRel) ||
+                !string.Equals(Path.GetFileName(dest), v.FileStem + Path.GetExtension(source), StringComparison.Ordinal))
+                throw new ToolRefusal("The container name '" + v.FileStem + "' does not stay a file name inside the " + to +
+                                      " folder (" + toFolder + "). Nothing was written.");
             string destSidecar = InformationContainer.SidecarPath(dest);
             string logPath = Path.Combine(cde.Root ?? toFolder, ".horizun", "cde-transitions.jsonl");
             string sourceSha = (string)sourceCheck["sha256"];
@@ -550,7 +605,7 @@ namespace Horizun.Server
         {
             string path = OptionalString(args, "project_context_path");
             if (path == null) return null;
-            if (!Path.IsPathRooted(path)) throw new ToolRefusal("project_context_path must be absolute. Nothing was read.");
+            path = LocalPath.Require(path, "project_context_path", " Nothing was read.");
             if (!File.Exists(path)) throw new ToolRefusal("project_context_path not found: " + path + ". Nothing was read.");
             try
             {
@@ -572,13 +627,13 @@ namespace Horizun.Server
             JObject states = args["states"] as JObject ?? context?["cde"]?["states"] as JObject;
             if (!requireStates && (states == null || !states.Properties().Any()))
             {
-                if (cde.Root != null && !Path.IsPathRooted(cde.Root)) throw new ToolRefusal("root must be absolute. Nothing was read.");
+                if (cde.Root != null) cde.Root = LocalPath.Require(cde.Root, "root", " Nothing was read.");
                 return cde;
             }
             if (states == null || !states.Properties().Any())
                 throw new ToolRefusal("Declare the CDE state folders: 'states' {wip, shared, published, archived} (with 'root' when they are relative), " +
                                       "or a project_context_path whose cde.states does. Nothing was read.");
-            if (cde.Root != null && !Path.IsPathRooted(cde.Root)) throw new ToolRefusal("root must be absolute. Nothing was read.");
+            if (cde.Root != null) cde.Root = LocalPath.Require(cde.Root, "root", " Nothing was read.");
             foreach (JProperty p in states.Properties())
             {
                 if (Array.IndexOf(InformationContainer.States, p.Name) < 0)
@@ -591,7 +646,7 @@ namespace Horizun.Server
                     if (cde.Root == null) throw new ToolRefusal("states." + p.Name + " is relative and no root was given. Nothing was read.");
                     folder = Path.Combine(cde.Root, folder);
                 }
-                cde.States[p.Name] = Path.GetFullPath(folder);
+                cde.States[p.Name] = LocalPath.Require(folder, "states." + p.Name, " Nothing was read.");
             }
             return cde;
         }
@@ -658,9 +713,7 @@ namespace Horizun.Server
 
         private static string AbsolutePath(JObject args, string key)
         {
-            string path = RequiredString(args, key);
-            if (!Path.IsPathRooted(path)) throw new ToolRefusal(key + " must be absolute. Nothing was read.");
-            return Path.GetFullPath(path);
+            return LocalPath.Require(RequiredString(args, key), key, " Nothing was read.");
         }
 
         private static string AbsoluteExistingFile(JObject args, string key)

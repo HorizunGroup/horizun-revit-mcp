@@ -37,7 +37,7 @@ namespace Horizun.Server
                 {
                     Def(GuidanceUri, "typed-first-guidance", "Verified Revit workflow",
                         "The operating rules for health-first targeting, typed writes, dry-runs and Python fallback.",
-                        "text/markdown", Encoding.UTF8.GetByteCount(ServerInstructions.Text)),
+                        "text/markdown", Encoding.UTF8.GetByteCount(ServerInstructions.TextFor(SchemaMode.Current))),
                     Def(ContractUri, "tool-contract", "Installed tool contract",
                         "The exact names, effects and JSON schemas compiled into this server.",
                         "application/json", Encoding.UTF8.GetByteCount(ContractText())),
@@ -76,7 +76,7 @@ namespace Horizun.Server
             string text;
             switch (uri)
             {
-                case GuidanceUri: mime = "text/markdown"; text = ServerInstructions.Text; break;
+                case GuidanceUri: mime = "text/markdown"; text = ServerInstructions.TextFor(SchemaMode.Current); break;
                 case ContractUri: mime = "application/json"; text = ContractText(); break;
                 case SecurityUri: mime = "application/json"; text = SecurityText(); break;
                 case BuildUri: mime = "application/json"; text = BuildText(); break;
@@ -280,6 +280,10 @@ namespace Horizun.Server
             {
                 ["server_name"] = "horizun-mcp",
                 ["contract_hash"] = Horizun.Contracts.Contract.Hash,
+                // The facade's identity beside the contract's: the two hashes are independent
+                // (SchemaFacade.cs), and the mode says which surface tools/list carries.
+                ["facade_hash"] = SchemaFacade.Hash,
+                ["schema_mode"] = SchemaMode.Name(SchemaMode.Current),
                 ["bridge_protocol_version"] = Horizun.Contracts.Contract.ProtocolVersion,
                 // EVERY revision, not only the ones reachable through initialize.
                 // ProtocolNegotiation.Supported is the legacy half by design; a reader

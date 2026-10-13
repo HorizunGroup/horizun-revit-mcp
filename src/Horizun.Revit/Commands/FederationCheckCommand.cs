@@ -30,7 +30,7 @@ namespace Horizun.Revit.Commands
             Document doc = app?.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             CommandResult wrong = DocumentGate.ReadGuard(doc, request, Name);
             if (wrong != null) return wrong;

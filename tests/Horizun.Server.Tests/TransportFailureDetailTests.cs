@@ -85,5 +85,47 @@ namespace Horizun.Server.Tests
                 Assert.Equal("unknown", (string)wire["structuredContent"]["transaction_status"]);
             }
         }
+
+        // Backlog #36: a cancel that overtakes its request is answered "not found", and the
+        // add-in now refuses the request when it arrives. The caller is told both readings
+        // honestly instead of only "it finished or left the queue".
+        [Fact]
+        public async Task A_cancel_answered_not_found_names_the_refusal_on_arrival()
+        {
+            string name = "hrz-early-cancel-" + Guid.NewGuid().ToString("N");
+            var requestRead = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (var cts = new CancellationTokenSource())
+            using (var main = new NamedPipeServerStream(name, PipeDirection.InOut, 2, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
+            using (var control = new NamedPipeServerStream(name, PipeDirection.InOut, 2, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
+            {
+                var peer = Task.Run(async () =>
+                {
+                    using (var timeout = new CancellationTokenSource(15000))
+                    {
+                        await main.WaitForConnectionAsync(timeout.Token);
+                        var request = JObject.Parse(await new StreamReader(main).ReadLineAsync());
+                        requestRead.TrySetResult(true);
+                        await control.WaitForConnectionAsync(timeout.Token);
+                        var cancel = JObject.Parse(await new StreamReader(control).ReadLineAsync());
+                        Assert.Equal("__horizun_cancel_queued", (string)cancel["command"]);
+                        await new StreamWriter(control) { AutoFlush = true }.WriteLineAsync(new JObject
+                        {
+                            ["id"] = cancel["id"], ["success"] = true,
+                            ["data"] = new JObject
+                            {
+                                ["cancelled_before_start"] = false, ["wire_id"] = request["id"],
+                                ["state"] = "not_found_or_finished", ["refused_on_arrival"] = true
+                            }
+                        }.ToString(Newtonsoft.Json.Formatting.None));
+                    }
+                });
+                _ = requestRead.Task.ContinueWith(_ => cts.Cancel());
+                var ex = Assert.Throws<OperationCanceledException>(() =>
+                    PipeClient.Send(new Discovered { PipeName = name }, "horizun_create_elements", new JObject(), 12000, cts.Token));
+                await peer;
+                Assert.Contains("refuses it when it arrives", ex.Message);
+                Assert.Contains("do not resend it assuming nothing happened", ex.Message);
+            }
+        }
     }
 }

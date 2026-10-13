@@ -142,11 +142,10 @@ namespace Horizun.Server
 
             System.IO.Directory.CreateDirectory(Directory());
             string target = PathFor(channel);
-            string temporary = target + ".tmp";
-            File.WriteAllText(temporary, document.ToString(Newtonsoft.Json.Formatting.Indented),
-                              new UTF8Encoding(false));
-            if (File.Exists(target)) File.Delete(target);
-            File.Move(temporary, target);
+            // Swapped in whole: the old way deleted the live selection and then moved a
+            // FIXED "<file>.tmp" into place - a moment with no selection, and one
+            // temporary shared by two publishers (audit 2026-10-08).
+            AtomicFile.WriteAllText(target, document.ToString(Newtonsoft.Json.Formatting.Indented));
 
             // RE-READ. A selection that did not land is a coordination call where one
             // person is looking at something nobody else can see.
@@ -215,6 +214,18 @@ namespace Horizun.Server
                 ["source"] = document["source"]
             };
 
+            // A read that names NO document is not a read from the matching one. Handing it
+            // the keys would apply them to whichever model happens to be open - exactly the
+            // confusion the identity rule exists to stop (backlog #24).
+            if (string.IsNullOrWhiteSpace(expectedFingerprint))
+            {
+                result["document_unidentified"] =
+                    "this read named no document_fingerprint, so the keys are NOT returned. Pass the " +
+                    "document_fingerprint horizun_health reports for the document you will apply them to; a " +
+                    "read that does not say which model it is about cannot be told whether it is the right one.";
+                result["keys"] = new JArray();
+                return result;
+            }
             if (mismatch != null)
             {
                 result["document_mismatch"] = mismatch;
@@ -312,6 +323,9 @@ namespace Horizun.Server
         private static string RequiredChannel(JObject arguments)
         {
             string channel = arguments?.Value<string>("channel") ?? "default";
+            if (channel.Length == 0)
+                throw new ToolRefusal("channel must not be empty: it becomes a file name, and an empty one is a file " +
+                                      "called \".json\" that every misconfigured caller would share. Omit it for 'default'.");
             foreach (char c in channel)
                 if (!char.IsLetterOrDigit(c) && c != '-' && c != '_')
                     throw new ToolRefusal(

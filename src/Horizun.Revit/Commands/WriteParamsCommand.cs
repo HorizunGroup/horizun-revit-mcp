@@ -81,7 +81,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             // WHICH model. target_document_title was already accepted here as an OPTIONAL
@@ -186,7 +186,11 @@ namespace Horizun.Revit.Commands
             // before it exists. Nothing writes before that check runs - resolution is
             // read-only by construction (no transaction is open).
 
-            bool allowVary = request["allow_vary_between_groups"] == null || request.Value<bool>("allow_vary_between_groups");
+            // A DEFINITION CHANGE IS NOT A VALUE WRITE. Letting a parameter vary between group
+            // instances changes it for the whole project, so it happens only when asked
+            // (default false since audit 2026-10-08, 6.9), is reported as a definition change,
+            // re-read, and recorded for horizun_undo.
+            bool allowVary = request.Value<bool?>("allow_vary_between_groups") ?? false;
             var txName = request.Value<string>("transaction_name");
             if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: write params";
             int maxRows = 500;
@@ -219,6 +223,14 @@ namespace Horizun.Revit.Commands
                 row.ReadOnly = SafeReadOnly(row.Parameter);
                 row.Before = ReadValue(row.Parameter);
                 row.VariesBefore = ReadVaries(row.Parameter);
+                if (VaryBetweenGroupsRules.RefuseGroupMember(allowVary, row.TargetKind, row.VariesBefore, InGroup(target)))
+                {
+                    row.Error = "element " + SafeId(target) + " is a member of a model group and '" + SafeDefName(row.Parameter) +
+                                "' does not vary between group instances: writing it would make Revit ask to ungroup. " +
+                                "Nothing was written. Pass allow_vary_between_groups=true to change the parameter's " +
+                                "definition for the whole project (reported and undoable), or write the group's other instances alike.";
+                    continue;
+                }
 
                 if (row.ReadOnly == true)
                 {
@@ -411,7 +423,7 @@ namespace Horizun.Revit.Commands
                             var def = SafeInternalDef(r.Parameter);
                             if (def != null)
                             {
-                                try { def.SetAllowVaryBetweenGroups(doc, true); }
+                                try { def.SetAllowVaryBetweenGroups(doc, true); r.VaryDefinitionId = SafeDefinitionId(def); }
                                 catch (Exception ex) { r.VaryError = "SetAllowVaryBetweenGroups failed: " + ex.Message; }
                             }
                         }
@@ -639,8 +651,59 @@ namespace Horizun.Revit.Commands
             // is, even though this command was asked to behave that way.
             ApplicationOutcome.StampApplied(result, txStatus, rows.Count, confirmed,
                                        confirmedAgainstCallerValue, unresolved, failed, unknown);
-            if (committed && confirmed > 0) result["undo"] = RecordUndo(doc, rows);
+            var definitionChanges = committed ? DefinitionChanges(doc, rows) : new JArray();
+            if (definitionChanges.Count > 0) result["definition_changes"] = definitionChanges;
+            if (committed && (confirmed > 0 || definitionChanges.Count > 0)) result["undo"] = RecordUndo(doc, rows);
             return CommandResult.Ok(result);
+        }
+
+        private static bool InGroup(Element e)
+        {
+            try { return e != null && e.GroupId != null && e.GroupId != ElementId.InvalidElementId; } catch { return false; }
+        }
+
+        private static string SafeId(Element e)
+        {
+            try { return Rid.Value(e.Id).ToString(System.Globalization.CultureInfo.InvariantCulture); } catch { return "?"; }
+        }
+
+        private static long? SafeDefinitionId(InternalDefinition def)
+        {
+            try { return def.Id == null || def.Id == ElementId.InvalidElementId ? (long?)null : Rid.Value(def.Id); } catch { return null; }
+        }
+
+        /// <summary>
+        /// Every definition this batch let vary between groups, RE-READ after the commit. One
+        /// entry per definition, however many rows reached it.
+        /// </summary>
+        private static JArray DefinitionChanges(Document doc, List<Row> rows)
+        {
+            var changes = new JArray();
+            foreach (long id in rows.Where(r => r.VaryDefinitionId.HasValue).Select(r => r.VaryDefinitionId.Value).Distinct())
+            {
+                bool? now = null;
+                string name = null;
+                try
+                {
+                    var pe = doc.GetElement(Rid.Make(id)) as ParameterElement;
+                    InternalDefinition def = pe?.GetDefinition();
+                    name = def?.Name;
+                    now = def?.VariesAcrossGroups;
+                }
+                catch { now = null; }
+                changes.Add(new JObject
+                {
+                    ["parameter"] = name,
+                    ["parameter_element_id"] = id,
+                    ["change"] = "allow_vary_between_groups",
+                    ["varies_across_groups_before"] = false,
+                    ["varies_across_groups_after"] = now.HasValue ? (JToken)now.Value : null,
+                    ["verified"] = now == true,
+                    ["means"] = "a DEFINITION change: this parameter may now hold different values in different " +
+                                "instances of the same group, everywhere in the project. horizun_undo reverts it."
+                });
+            }
+            return changes;
         }
 
         /// <summary>
@@ -651,6 +714,20 @@ namespace Horizun.Revit.Commands
         private JObject RecordUndo(Document doc, List<Row> rows)
         {
             var entries = new List<UndoEntry>(); string blocked = null;
+            // FIRST, so the reversed replay restores the values before the definition stops
+            // letting them differ.
+            foreach (long defId in rows.Where(r => r.VaryDefinitionId.HasValue).Select(r => r.VaryDefinitionId.Value).Distinct())
+            {
+                string sid = defId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                entries.Add(new UndoEntry
+                {
+                    Op = "vary_between_groups", ElementIds = new List<long> { defId },
+                    UniqueIds = new List<string> { doc.GetElement(Rid.Make(defId))?.UniqueId },
+                    Before = new JObject { [sid] = new JObject { ["varies"] = false } },
+                    After = new JObject { [sid] = new JObject { ["varies"] = true } },
+                    Inverse = new JObject()
+                });
+            }
             foreach (Row r in rows.Where(x => x.Confirmed))
             {
                 string key = UndoCapture.ParameterKey(r.Parameter);
@@ -908,6 +985,7 @@ namespace Horizun.Revit.Commands
             public bool? ReadOnly;
             public bool? VariesBefore;
             public string VaryError;
+            public long? VaryDefinitionId;   // the ParameterElement this row let vary between groups
             public JObject Before;
             // What the caller asked for, in the shape the model stores it — computed at
             // apply time from Requested. Comparing Written against another read of the
@@ -1442,6 +1520,26 @@ namespace Horizun.Revit.Commands
         /// the parameter from scratch. Re-using the cached Parameter object would be
         /// reading our own handle, not the model.
         /// </summary>
+        internal static JObject ReReadReview(Document doc, JObject args, JObject applied)
+        {
+            var rows = new JArray();
+            foreach (JObject w in (args["writes"] as JArray) ?? new JArray())
+            {
+                string kind, why; long? id;
+                Element target = ResolveTarget(doc, w, out kind, out id, out why);
+                var row = new Row { TargetKind = kind, TargetId = id, ParamSpec = (string)w["parameter"] };
+                JObject read = target == null ? new JObject { ["readable"] = false, ["error"] = why } : ReReadFromModel(doc, row);
+                JObject prior = (applied["rows"] as JArray)?.OfType<JObject>().FirstOrDefault(r =>
+                    (string)r["parameter"] == row.ParamSpec && (kind == "project_info" ? (string)r["target_kind"] == kind : (string)r["target_id"] == id?.ToString()));
+                bool confirmed = (bool?)prior?["confirmed"] == true && SameValue(read, prior?["value_expected"] as JObject);
+                rows.Add(new JObject { ["target_kind"] = kind, ["target_id"] = id?.ToString(), ["parameter"] = row.ParamSpec,
+                    ["value_read_back"] = read, ["confirmed"] = confirmed,
+                    ["confirmed_against"] = prior?["confirmed_against"],
+                    ["outcome"] = !Readable(read) ? "unknown" : confirmed ? "confirmed" : "not_written" });
+            }
+            return new JObject { ["rows"] = rows, ["rows_truncated"] = false };
+        }
+
         private static JObject ReReadFromModel(Document doc, Row r)
         {
             try
@@ -1590,9 +1688,13 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("tabular_source.category is required (an OST_ BuiltInCategory name): it " +
                     "bounds the sweep that matches keys to elements, and an unbounded sweep of a real model is not " +
                     "a cost to impose silently.");
-            BuiltInCategory category;
-            if (!Enum.TryParse(categoryName, false, out category))
-                return CommandResult.Fail("tabular_source.category '" + categoryName + "' is not a BuiltInCategory name.");
+            // ONE EXACT OST_ NAME, as sequence.category: Enum.TryParse also took numbers and
+            // comma lists, so "-2000011" or "OST_Walls,OST_Doors" swept a category nobody
+            // named (audit 2026-10-08, 6.9).
+            if (!Enum.GetNames(typeof(BuiltInCategory)).Contains(categoryName, StringComparer.Ordinal))
+                return CommandResult.Fail("tabular_source.category '" + categoryName + "' is not a BuiltInCategory name " +
+                    "(one exact OST_ name; numbers and lists are refused). Nothing was written.");
+            var category = (BuiltInCategory)Enum.Parse(typeof(BuiltInCategory), categoryName);
             bool skipUnchanged = source["skip_unchanged"] == null || source.Value<bool>("skip_unchanged");
             string decimalSeparator = source.Value<string>("decimal_separator");
             if (decimalSeparator != null && decimalSeparator != "." && decimalSeparator != ",")
@@ -1688,7 +1790,7 @@ namespace Horizun.Revit.Commands
                     {
                         ["target_id"] = Rid.Value(target.Id),
                         ["parameter"] = column.Value,
-                        ["value"] = cell
+                        ["value"] = CellWrite(target, column.Value, cell, decimalSeparator)
                     });
                 }
             }
@@ -1717,7 +1819,9 @@ namespace Horizun.Revit.Commands
                       "decimal_separator declared ('" + decimalSeparator + "'), a numeric cell against a " +
                       "Double parameter compared NUMERICALLY to the model's value in that parameter's display " +
                       "unit (Integer storage compared the integer; equal means within 1e-6 relative); " +
-                      "numeric_compares counts them. Everything else kept the exact display-string compare - " +
+                      "numeric_compares counts them, and such a cell is WRITTEN as that number (internal units for " +
+                      "Double, the integer for Integer), never as text re-read with the document's decimal symbol. " +
+                      "Everything else kept the exact display-string compare - " +
                       "conservative: a formatting difference writes again, harmlessly. The expanded ops ride " +
                       "the normal rehearsal: the token binds them, and a file edited before apply refuses as " +
                       "a stale plan."
@@ -1781,6 +1885,34 @@ namespace Horizun.Revit.Commands
                 catch { /* fall through to the conservative string compare */ }
             }
             return TabularRules.ShouldWrite(cell, ReadAsDisplayed(element, parameterName));
+        }
+
+        /// <summary>
+        /// The value an op carries for a cell: with decimal_separator declared, a
+        /// numeric cell goes to a Double parameter in internal units and to an Integer
+        /// parameter as the integer (TabularRules.NormalizedWrite), never as text for
+        /// SetValueString to re-read with the document's own decimal symbol.
+        /// </summary>
+        private static JToken CellWrite(Element element, string parameterName, string cell, string decimalSeparator)
+        {
+            if (decimalSeparator == null) return cell;
+            try
+            {
+                Parameter parameter = ResolveParameter(element, parameterName, out string _, out string _);
+                if (parameter == null) return cell;
+                string storage = parameter.StorageType.ToString();
+                Func<double, double?> toInternal = n =>
+                {
+                    try
+                    {
+                        ForgeTypeId unit = parameter.GetUnitTypeId();
+                        return unit == null ? (double?)null : UnitUtils.ConvertToInternalUnits(n, unit);
+                    }
+                    catch { return null; }
+                };
+                return TabularRules.NormalizedWrite(cell, decimalSeparator, storage, toInternal);
+            }
+            catch { return cell; }
         }
 
         /// <summary>The value as the model displays it: AsString for text, AsValueString otherwise.</summary>

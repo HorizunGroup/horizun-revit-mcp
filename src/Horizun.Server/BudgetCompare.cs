@@ -76,6 +76,7 @@ namespace Horizun.Server
             if (inline == fromPath)
                 throw new ToolRefusal("Pass exactly one of model_rows (the takeoff rows or the whole horizun_quantities mode='takeoff' reply) " +
                                       "or model_rows_path (a JSON file holding the same). Nothing was read.");
+            if (fromPath) modelRowsPath = LocalPath.Require(modelRowsPath, "model_rows_path", " Nothing was read.");
 
             string problem;
             BudgetComparisonMapping mapping = BudgetComparisonRules.ReadMapping(args["mapping"], out problem);
@@ -188,11 +189,16 @@ namespace Horizun.Server
                 if (!decision.IsFresh) throw new ToolRefusal(decision.Message);
             }
 
+            // Each destination is another tool's work, so it answers to that tool's own
+            // admission as well: an owner who denied horizun_power_bi_push did not mean
+            // "unless it is reached through budget_compare". Same reason text CallTool gives.
             var destinations = (JArray)reply["destinations"];
             if (outputs.Excel != null)
-                destinations.Add(WriteExcel(outputs.Excel, comparison, key, ledger, cancellationToken));
+                destinations.Add(Denied("excel", ExcelWriteRows.ToolName) ??
+                                 WriteExcel(outputs.Excel, comparison, key, ledger, cancellationToken));
             if (outputs.PowerBi != null)
-                destinations.Add(PushPowerBi(outputs.PowerBi, comparison, key, powerBi, cancellationToken));
+                destinations.Add(Denied("power_bi", PowerBiPush.ToolName) ??
+                                 PushPowerBi(outputs.PowerBi, comparison, key, powerBi, cancellationToken));
 
             if (decision != null) ledger.Complete(decision, CommandResult.Ok(reply));
             return reply;
@@ -201,6 +207,21 @@ namespace Horizun.Server
         // ------------------------------------------------------------------
         // Destinations.
         // ------------------------------------------------------------------
+
+        /// <summary>A skipped destination when the owner's settings refuse the tool behind it, or null.</summary>
+        private static JObject Denied(string destination, string toolName)
+        {
+            string reason = Tools.DisabledReason(toolName);
+            if (reason == null) return null;
+            return new JObject
+            {
+                ["destination"] = destination,
+                ["status"] = "skipped",
+                ["skip_reason"] = "denied_by_owner",
+                ["reason"] = reason + " Nothing was sent or written for this destination; the comparison and any other " +
+                             "destination are unaffected."
+            };
+        }
 
         private static JObject WriteExcel(ExcelSpec spec, JObject comparison, string key, DurableCommandLedger ledger,
                                           CancellationToken cancellationToken)
@@ -218,17 +239,10 @@ namespace Horizun.Server
                     return report;
                 }
 
-                string backupPath = null;
-                if (existed)
-                {
-                    string stamp = System.Diagnostics.Process.GetCurrentProcess().Id + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
-                    backupPath = spec.FilePath + "." + stamp + ".horizunbak";
-                    File.Copy(spec.FilePath, backupPath, false);
-                }
-                string dir = Path.GetDirectoryName(spec.FilePath);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                File.WriteAllBytes(spec.FilePath, ExcelWriteRows.MinimalWorkbook(spec.Sheet));
-
+                // One writer for the whole report: the new workbook is built in memory and
+                // takes the file's place under the workbook lock, through a temp file and a
+                // replace, after the previous file is backed up to the state folder - never
+                // a bare overwrite beside a backup left next to the user's file.
                 var rowsJson = new JArray();
                 foreach (IList<object> row in BudgetComparisonRules.SheetRows(comparison))
                 {
@@ -236,18 +250,19 @@ namespace Horizun.Server
                     foreach (object cell in row) cells.Add(cell == null ? JValue.CreateNull() : JToken.FromObject(cell));
                     rowsJson.Add(cells);
                 }
-                JObject written = ExcelWriteRows.Handle(new JObject
+                JObject written = ExcelWriteRows.WriteNewWorkbook(new JObject
                 {
                     ["file_path"] = spec.FilePath,
                     ["sheet"] = spec.Sheet,
                     ["rows"] = rowsJson,
                     ["idempotency_key"] = key + "/excel"
-                }, ledger, cancellationToken);
+                }, ledger, cancellationToken, replaceExisting: spec.OverwritePolicy == "replace");
 
                 bool replayed = written["replayed"] != null && written["replayed"].Type == JTokenType.Boolean && (bool)written["replayed"];
+                bool created = written["created"] != null && written["created"].Type == JTokenType.Boolean && (bool)written["created"];
                 report["status"] = replayed ? "replayed" : "written";
-                report["created"] = !existed;
-                report["replaced_backup_path"] = backupPath;
+                report["created"] = created;
+                report["replaced_backup_path"] = created ? null : written["backup_path"];
                 report["evidence"] = new JObject
                 {
                     ["rows_written"] = written["rows_written"],
@@ -394,6 +409,7 @@ namespace Horizun.Server
             RefuseUnknownKeys(o, "baseline.", "file_path", "sheet", "header_row", "max_rows", "columns");
             var spec = new BaselineSpec { FilePath = (string)o["file_path"], Sheet = (string)o["sheet"] };
             if (string.IsNullOrWhiteSpace(spec.FilePath)) throw new ToolRefusal("baseline.file_path is required.");
+            spec.FilePath = LocalPath.Require(spec.FilePath, "baseline.file_path", " Nothing was read.");
             if (o["header_row"] != null)
             {
                 if (o["header_row"].Type != JTokenType.Integer || (int)o["header_row"] < 1)
@@ -532,6 +548,7 @@ namespace Horizun.Server
                 RefuseUnknownKeys(excel, "outputs.excel.", "file_path", "sheet", "overwrite_policy");
                 var e = new ExcelSpec { FilePath = (string)excel["file_path"] };
                 if (string.IsNullOrWhiteSpace(e.FilePath)) throw new ToolRefusal("outputs.excel.file_path is required.");
+                e.FilePath = LocalPath.Require(e.FilePath, "outputs.excel.file_path", " Nothing was read or written.");
                 if (!e.FilePath.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
                     throw new ToolRefusal("outputs.excel.file_path must end in .xlsx: the destination is a workbook, and a file named otherwise would be opened as something else.");
                 if (excel["sheet"] != null && excel["sheet"].Type != JTokenType.Null) e.Sheet = (string)excel["sheet"];

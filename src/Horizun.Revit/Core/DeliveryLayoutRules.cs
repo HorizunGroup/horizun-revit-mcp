@@ -6,6 +6,21 @@ namespace Horizun.Revit.Core
 {
     public static class DeliveryLayoutRules
     {
+        /// <summary>
+        /// A layout distance's default, in the caller's units. The defaults are MILLIMETRES
+        /// (10 mm clearance, 15 mm offset and chain separation, 30 mm paper or 1200 mm model
+        /// displacement); they used to be read in whatever units the call declared, so with
+        /// units=m a dimension stood 15 METRES off its element (audit 2026-10-08, 6.17).
+        /// <paramref name="toFeet"/> is feet per caller unit.
+        /// </summary>
+        public static double DefaultInUnits(string key, string distanceSpace, double toFeet)
+        {
+            double mm = key == "clearance" ? 10.0
+                      : key == "max_displacement" ? (distanceSpace == "paper" ? 30.0 : 1200.0)
+                      : 15.0;
+            return mm / (toFeet * 304.8);
+        }
+
         public static double Distance(double value, double unitToFeet, int scale, string space)
         {
             if (!Finite(value) || value < 0 || !Finite(unitToFeet) || unitToFeet <= 0 || scale < 1)

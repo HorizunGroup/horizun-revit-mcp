@@ -54,12 +54,13 @@ namespace Horizun.Revit.Commands
             "Read the CAD (DWG) surface of the active document: instances with link/import state, resolved path, " +
             "load status, transform, declared units and file SHA-256; layers with a primitive census; geometry as " +
             "millimetre curves with stable surrogate ids; and an explicit coverage block naming what Revit does " +
-            "NOT expose. Read-only.";
+            "NOT expose. Revit cannot return imported TEXT/MTEXT strings; horizun_cad_extract with " +
+            "read_dwg_text=true reads the source DWG with AutoCAD when available. Read-only.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             Document doc = app.ActiveUIDocument?.Document;

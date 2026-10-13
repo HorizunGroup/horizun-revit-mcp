@@ -231,7 +231,8 @@ namespace Horizun.Core.Tests
                      'face': 'top', 'distance_mm': 40 } ]".Replace('\'', '"').Replace('"', '\''));
             Assert.False(s.Ok);
             Assert.Equal(StructuralRequirementSet.CodeUnknownValue, s.Code);
-            Assert.Contains("Only 'common' is implemented", s.Error);
+            // L7: a face is named by its outward normal, never by a word like 'top'.
+            Assert.Contains("normal", s.Error);
         }
 
         [Fact]

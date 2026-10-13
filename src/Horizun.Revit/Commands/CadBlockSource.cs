@@ -57,7 +57,7 @@ namespace Horizun.Revit.Commands
             CadDwgReading reading = ReadDrawing(facts, set, callerPath, readTimeoutSeconds, report);
             if (reading == null) return report;
 
-            CadPlacementReading placement = CadBlockPlacement.Place(reading.Entities);
+            CadPlacementReading placement = CadBlockPlacement.Place(reading.Entities, CadBlockPlacement.DefaultMaxDepth, reading.BlockBases);
             report["placement"] = placement.SummaryJson();
 
             // MODEL SPACE ONLY. A sheet carries the legend, the title block and the
@@ -492,7 +492,7 @@ namespace Horizun.Revit.Commands
             report["layers"] = new JArray(layers.Cast<object>().ToArray());
             CadDwgReading reading = ReadDrawing(facts, set, callerPath, readTimeoutSeconds, report);
             if (reading == null) return null;
-            CadPlacementReading placement = CadBlockPlacement.Place(reading.Entities);
+            CadPlacementReading placement = CadBlockPlacement.Place(reading.Entities, CadBlockPlacement.DefaultMaxDepth, reading.BlockBases);
 
             Transform t = Transform.Identity;
             var import = element as ImportInstance;
@@ -543,7 +543,7 @@ namespace Horizun.Revit.Commands
             report["layers"] = new JArray(layerPatterns.Cast<object>().ToArray());
             CadDwgReading reading = ReadDrawing(facts, set, callerPath, readTimeoutSeconds, report);
             if (reading == null) return false;
-            CadPlacementReading placement = CadBlockPlacement.Place(reading.Entities);
+            CadPlacementReading placement = CadBlockPlacement.Place(reading.Entities, CadBlockPlacement.DefaultMaxDepth, reading.BlockBases);
             Transform t = Transform.Identity;
             var import = element as ImportInstance;
             if (import != null) { try { t = import.GetTransform(); } catch { t = Transform.Identity; } }

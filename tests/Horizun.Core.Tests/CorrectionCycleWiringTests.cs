@@ -116,7 +116,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("ApplicationOutcome.IsValidRehearsal(state)", src);
             Assert.Contains("[\"plan_resolved\"]?[\"fingerprint\"]", src);
             // And the token is issued only over a clean rehearsal, together with the plan.
-            Assert.Contains("if (rehearsedCleanly) DocumentGate.RecordResolvedPlan(plan);", src);
+            Assert.Contains("DocumentGate.RecordResolvedPlan(rehearsedCleanly ? plan : null);", src);
             Assert.Contains("DocumentGate.StampConfirmation(preview, gate, Name, planHash, rehearsedCleanly,", src);
         }
 

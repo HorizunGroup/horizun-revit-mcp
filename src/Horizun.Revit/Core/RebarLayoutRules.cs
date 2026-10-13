@@ -66,6 +66,13 @@ namespace Horizun.Revit.Core
         public bool IncludeLastBar = true;
         /// <summary>Needed only by minimum_clear_spacing, where clear distance is measured between bar surfaces.</summary>
         public double? BarDiameterMm;
+
+        /// <summary>The same layout laid the other way along its run: its first bar is its last.</summary>
+        public RebarLayoutRequest SwappedEnds() => new RebarLayoutRequest
+        {
+            Layout = Layout, Number = Number, SpacingMm = SpacingMm, ArrayLengthMm = ArrayLengthMm, BarDiameterMm = BarDiameterMm,
+            IncludeFirstBar = IncludeLastBar, IncludeLastBar = IncludeFirstBar
+        };
     }
 
     /// <summary>What that declaration produces, or why it produces nothing.</summary>

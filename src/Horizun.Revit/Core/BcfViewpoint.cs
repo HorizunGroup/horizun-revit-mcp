@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // THE VIEWPOINT. A BCF topic without one is a topic nobody can navigate to.
@@ -84,7 +84,7 @@ namespace Horizun.Revit.Core
         /// indistinguishable from a broken model.
         /// </summary>
         public static string Xml(double[] pointMm, IEnumerable<BcfComponent> components,
-                                 double standoffMm = DefaultStandoffMm)
+                                 double standoffMm = DefaultStandoffMm, string viewpointGuid = null)
         {
             double[] point = pointMm ?? new double[] { 0, 0, 0 };
             if (standoffMm <= 0) standoffMm = DefaultStandoffMm;
@@ -109,7 +109,10 @@ namespace Horizun.Revit.Core
             var xml = new StringBuilder();
             xml.Append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
             xml.Append("<VisualizationInfo xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" Guid=\"")
-               .Append(Guid.NewGuid().ToString("D")).Append("\">\n");
+               // THE GUID THE MARKUP NAMES (backlog #42). A fresh one per export matched nothing
+               // in the markup's <Viewpoints Guid>, and readers that link the two found no camera.
+               .Append(string.IsNullOrWhiteSpace(viewpointGuid) ? Guid.NewGuid().ToString("D") : viewpointGuid)
+               .Append("\">\n");
 
             var list = (components ?? Enumerable.Empty<BcfComponent>()).Where(c => c != null).ToList();
             if (list.Count > 0)

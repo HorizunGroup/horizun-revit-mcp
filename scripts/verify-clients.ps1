@@ -35,6 +35,7 @@ param(
     [string]$Json
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'json-member.lib.ps1')
 if ($Name -notmatch '^[A-Za-z0-9_-]{1,64}$') { throw 'Name must contain only ASCII letters, digits, underscore or hyphen (1..64 characters).' }
 $here = $PSScriptRoot
 $call = Join-Path $here 'hz-call.ps1'
@@ -52,12 +53,11 @@ function Check($name, $ok, $detail) {
 $clients = @{}
 
 if (Test-Path $claudeConfig) {
-    $c = Get-Content $claudeConfig -Raw | ConvertFrom-Json
-    $e = $c.mcpServers.$Name
-    if ($e) { $clients['Claude'] = $e.command }
+    $command = Get-HorizunMcpServerCommand (Read-HorizunUtf8Text $claudeConfig) $Name
+    if ($null -ne $command) { $clients['Claude'] = $command }
 }
 if (Test-Path $codexConfig) {
-    $lines = Get-Content $codexConfig
+    $lines = @((Read-HorizunTextLines $codexConfig).Lines)
     $i = ($lines | Select-String -Pattern ("^\[mcp_servers\." + [regex]::Escape($Name) + "\]$")).LineNumber
     if ($i) {
         for ($k = $i; $k -lt [Math]::Min($i + 10, $lines.Count); $k++) {

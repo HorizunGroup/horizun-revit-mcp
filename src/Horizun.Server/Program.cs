@@ -141,7 +141,10 @@ namespace Horizun.Server
             catch (Exception ex) { Log.Warn("discovery sweep at startup failed: " + ex.Message); }
 
             Log.Info("server " + ServerVersion + " up" +
-                     (string.IsNullOrEmpty(TargetYear) ? "" : ", HORIZUN_REVIT_YEAR=" + TargetYear));
+                     (string.IsNullOrEmpty(TargetYear) ? "" : ", HORIZUN_REVIT_YEAR=" + TargetYear) +
+                     ", schema mode " + SchemaMode.Name(SchemaMode.Current));
+            SchemaMode.Resolve(Environment.GetEnvironmentVariable(SchemaMode.EnvironmentVariable), out _, out string modeProblem);
+            if (modeProblem != null) Log.Warn(modeProblem);
 
             // THE READER NEVER BLOCKS ON WORK. It used to run each request to completion
             // before reading the next line, so while a two-minute model_scan ran, ping,
@@ -201,7 +204,7 @@ namespace Horizun.Server
                 try
                 {
                     JObject msg;
-                    try { msg = JObject.Parse(line); }
+                    try { msg = Horizun.Revit.Core.JsonText.ParseObject(line); }
                     catch (Exception ex)
                     {
                         // -32700, and it is ANSWERED rather than dropped. This used to log
@@ -317,6 +320,15 @@ namespace Horizun.Server
                     // immediately - queueing it behind the work it cancels would be a joke.
                     if (method == "notifications/cancelled")
                     {
+                        // A cancellation sent WITH an id is a request, and an unanswered
+                        // request leaves its client waiting forever. It is refused, and it
+                        // cancels nothing: a malformed message is not an instruction.
+                        if (!isNotification)
+                        {
+                            _writer.TryError(id, -32600,
+                                "notifications/cancelled is a notification and must not carry an id. Nothing was cancelled.");
+                            continue;
+                        }
                         HandleCancel(prms);
                         continue;
                     }
@@ -459,6 +471,10 @@ namespace Horizun.Server
         /// </summary>
         private static void DispatchToolCall(object id, JObject prms, Protocol.RequestEnvelope envelope)
         {
+            // A horizun_call_tool becomes, HERE, the tools/call it stands for - before the
+            // deadline, the metrics, the task decision and the client context read the name.
+            // Everything below is the direct call's own path; see SchemaFacade.cs.
+            prms = SchemaFacade.UnwrapCall(prms, SchemaMode.Current);
             string key = OutboundWriter.Key(id);
             string toolName = (string)prms?["name"] ?? "(unnamed)";
             var cts = new CancellationTokenSource();
@@ -492,7 +508,7 @@ namespace Horizun.Server
             string scenario = Metrics.ScenarioOf(prms);
             int requestBytes = prms == null ? 0 : prms.ToString(Formatting.None).Length;
 
-            Task.Run(() =>
+            StartDedicated(() =>
             {
                 long queuedMs = queueClock.ElapsedMilliseconds;
                 var metric = new CallMetric
@@ -534,18 +550,17 @@ namespace Horizun.Server
                         ClientContext context = ClientContextFor(prms, envelope);
                         using (ClientContext.Enter(context))
                             result = CallTool(prms, cts.Token, progressToken==null ? (Action<JObject>)null : status=>Volatile.Write(ref bridgeObservation,status), envelope);
-                        if (cts.IsCancellationRequested)
+                        // CallTool RETURNED. A cancellation that arrived meanwhile turns the
+                        // reply into "cancelled" ONLY when the result proves the request never
+                        // started (the add-in removed it from the FIFO). Any other returned
+                        // result is work that HAPPENED and is delivered as such - replacing it
+                        // with "cancelled, it may still be running" hid a finished result and
+                        // invited a second write (audit 2026-10-08).
+                        if (NeverStartedProof.AnswerAsCancelled(cts.IsCancellationRequested, result))
                         {
-                            // Two events race after cancellation: PipeClient may observe
-                            // the token first and throw, or the add-in may remove the FIFO
-                            // entry and return its failure envelope first. Preserve the
-                            // stronger NEVER STARTED proof in either ordering.
                             string proof = CancellationProof(result);
                             metric.Outcome = "cancelled";
-                            silencedByCancellation = AnswerCancellation(
-                                reply, envelope, toolName,
-                                proof ?? CancelledMessage(toolName, clock.ElapsedMilliseconds,
-                                                          prms?["arguments"] as JObject));
+                            silencedByCancellation = AnswerCancellation(reply, envelope, toolName, proof);
                             ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice", envelope, id);
                         }
                         else
@@ -593,8 +608,8 @@ namespace Horizun.Server
                         string exact = oce.Message;
                         silencedByCancellation = AnswerCancellation(
                             reply, envelope, toolName,
-                            IsNeverStartedProof(exact) ? exact : CancelledMessage(toolName, clock.ElapsedMilliseconds,
-                                                                                  prms?["arguments"] as JObject));
+                            IsNeverStartedProof(oce) ? exact : CancelledMessage(toolName, clock.ElapsedMilliseconds,
+                                                                                prms?["arguments"] as JObject));
                         ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice", envelope, id);
                     }
                     catch (Exception ex)
@@ -756,7 +771,7 @@ namespace Horizun.Server
             }
             ReplySlot reply = _writer.Slot(id);
             JToken progressToken = prms?["_meta"]?["progressToken"];
-            Task.Run(() =>
+            StartDedicated(() =>
             {
                 var clock = System.Diagnostics.Stopwatch.StartNew();
                 using (var heartbeat = StartHeartbeat(progressToken, "tasks/result", clock, cts.Token,
@@ -1033,17 +1048,17 @@ namespace Horizun.Server
                 CancellationAdvice.Classify(false, CancellationAdvice.HasKey(args)),
                 CancellationAdvice.BatchSize(args), ms);
 
-        private static string CancellationProof(JToken result)
-        {
-            if ((bool?)result?["isError"] != true) return null;
-            string text = (string)result?["content"]?[0]?["text"];
-            return IsNeverStartedProof(text) ? text : null;
-        }
+        /// <summary>
+        /// A tool call BLOCKS for its whole round trip to Revit, so it gets a thread of its
+        /// own. On a ThreadPool thread (Task.Run, as before) sixteen queued calls held the
+        /// pool asleep and starved the server's own timers and replies (audit 2026-10-08).
+        /// </summary>
+        private static Task StartDedicated(Action work) =>
+            Task.Factory.StartNew(work, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-        private static bool IsNeverStartedProof(string text)
-            => !string.IsNullOrEmpty(text) &&
-               (text.IndexOf("FIFO queue", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("NEVER STARTED", StringComparison.OrdinalIgnoreCase) >= 0);
+        private static string CancellationProof(JToken result) => NeverStartedProof.FromResult(result);
+
+        private static bool IsNeverStartedProof(Exception ex) => NeverStartedProof.FromException(ex);
 
         /// <summary>
         /// A heartbeat while a call waits for Revit, only when the caller asked for one.
@@ -1186,7 +1201,7 @@ namespace Horizun.Server
                         // deliberately organisation-neutral, so the standards a delivery
                         // actually needs are not in here and should not be invented.
                         // Only the head: clients truncate long instructions (see ServerInstructions).
-                        ["instructions"] = ServerInstructions.Head
+                        ["instructions"] = ServerInstructions.HeadFor(SchemaMode.Current)
                     };
 
                 case "notifications/initialized":
@@ -1206,9 +1221,11 @@ namespace Horizun.Server
                     // The task-support hint is per era: the legacy field describes the
                     // 2025-11-25 core tasks, and the modern client learns the same thing
                     // from the extension it declared.
+                    // WHICH surface is SchemaMode's decision (SchemaFacade.cs): the whole
+                    // list (full, the 2.x bytes) or horizun_health plus the facade.
                     return new JObject
                     {
-                        ["tools"] = Tools.List(modern
+                        ["tools"] = SchemaFacade.List(SchemaMode.Current, modern
                             ? envelope.Declares(Protocol.ExtensionRegistry.Tasks)
                             : _negotiatedProtocol == ProtocolNegotiation.Latest)
                     };
@@ -1340,6 +1357,9 @@ namespace Horizun.Server
         private static JToken CallTool(JObject prms, CancellationToken ct, Action<JObject> observe,
                                        Protocol.RequestEnvelope envelope)
         {
+            // Idempotent, and here too: a procedure step or a task enters through this
+            // method rather than DispatchToolCall.
+            prms = SchemaFacade.UnwrapCall(prms, SchemaMode.Current);
             ContentSafety.Report safety = null;
             JToken result = CallToolCore(prms, ct, observe, envelope, ref safety);
             // A failed call whose arguments violate the FULL contract carries the exact
@@ -1376,6 +1396,29 @@ namespace Horizun.Server
                     "question from the one you asked.");
             JObject args = argsToken as JObject ?? new JObject();
 
+            // The facade's own tools answer here, in this process, and touch neither the
+            // contract nor Revit. A horizun_call_tool reaching this point is one UnwrapCall
+            // refused to unwrap, and Answer says why.
+            if (SchemaFacade.IsMetaTool(name, SchemaMode.Current))
+            {
+                if (prms?["task"] != null)
+                    throw new McpError(-32602, "'" + name + "' does not support MCP task augmentation; call it " +
+                                               "normally. A task-augmented " + SchemaFacade.CallToolName + " runs " +
+                                               "as a task of the tool it calls.");
+                try
+                {
+                    // Compact text: a schema read into a model's context pays for every
+                    // indentation byte, and the text is the copy most clients show it.
+                    JObject answer = SchemaFacade.Answer(name, args);
+                    return StructuredResult(answer, answer.ToString(Formatting.None));
+                }
+                catch (ToolRefusal refusal)
+                {
+                    Log.Warn(name + " (facade) refused: " + refusal.Message);
+                    return TextResult("Error: " + refusal.Message, true);
+                }
+            }
+
             ToolDef def = Tools.Find(name);
             if (def == null)
                 throw new McpError(-32602, "Unknown tool: '" + name + "'.");
@@ -1387,6 +1430,16 @@ namespace Horizun.Server
             {
                 Log.Warn(name + " refused: disabled by settings");
                 return TextResult("Error: " + disabled, true);
+            }
+
+            // A call a person QUARANTINED in the repair memory: the same tool with the same
+            // arguments already failed in a way somebody decided must not be retried. Refused
+            // here, before a task is created and before anything is routed to Revit.
+            JObject quarantined = QuarantineGate.Check(name, args);
+            if (quarantined != null)
+            {
+                Log.Warn(name + " refused: " + QuarantineGate.Code + " (shape " + (string)quarantined["shape"] + ")");
+                return ErrorResult("Error: " + (string)quarantined["message"], null, null, quarantined);
             }
 
             if (prms?["task"] != null)
@@ -1640,6 +1693,9 @@ namespace Horizun.Server
                     // add-in cannot see, so the server reports it: which toolsets are active
                     // and how many characters/estimated tokens the tool list costs.
                     health["toolsets"] = ToolsetReport.HealthBlock();
+                    // Which surface tools/list carries (full or the facade), what it costs, and
+                    // both identities: the contract hash the add-in shares, the facade's own.
+                    health["schema_mode"] = SchemaFacade.HealthBlock();
                 }
 
                 // model_diff explain: the ISO 19650 gaps come from the SAME validator

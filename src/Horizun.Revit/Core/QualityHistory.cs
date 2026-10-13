@@ -42,9 +42,19 @@ namespace Horizun.Revit.Core
             var sb = new StringBuilder();
             foreach (char c in (raw ?? "").Trim())
                 sb.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.' ? c : '_');
-            string key = sb.ToString().Trim('.', '_');
-            if (key.Length > 80) key = key.Substring(0, 80);
-            if (key.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase)) key = key.Substring(0, key.Length - 4);
+            // LOWER CASE, because the file system the history lives on ignores case: two keys
+            // that differed only in case named one file and mixed their histories (#48).
+            string key = sb.ToString().Trim('.', '_').ToLowerInvariant();
+            if (key.EndsWith(".rvt", StringComparison.Ordinal)) key = key.Substring(0, key.Length - 4);
+            if (key.Length > 80)
+            {
+                // A CUT KEEPS WHAT IT CUT, as a digest: two names that differ only past the
+                // cut wrote one history (#48).
+                string digest;
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                    digest = string.Concat(sha.ComputeHash(Encoding.UTF8.GetBytes(key)).Take(6).Select(b => b.ToString("x2", CultureInfo.InvariantCulture)));
+                key = key.Substring(0, 80 - 13) + "-" + digest;
+            }
             return key.Length == 0 ? "default" : key;
         }
 

@@ -241,7 +241,7 @@ namespace Horizun.Revit.Commands
         internal static JObject Parse(string paramsJson, out CommandResult error)
         {
             error = null;
-            try { return string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { return string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { error = CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); return null; }
         }
 

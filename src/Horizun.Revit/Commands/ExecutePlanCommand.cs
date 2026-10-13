@@ -39,7 +39,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -166,7 +166,8 @@ namespace Horizun.Revit.Commands
                 // The recorded plan and the token travel together, and neither is issued over
                 // a rehearsal that did not resolve. Same shape the other commands use: the
                 // flag that gates the token is the flag that gates the plan.
-                if (rehearsedCleanly) DocumentGate.RecordResolvedPlan(GraphPlan(app, gate, rows, actions));
+                // Never a child's: each rehearsal above may have left its own plan recorded (#17).
+                DocumentGate.RecordResolvedPlan(rehearsedCleanly ? GraphPlan(app, gate, rows, actions) : null);
                 DocumentGate.StampConfirmation(data, gate, Name, planHash, rehearsedCleanly,
                     "one token authorizes this exact ordered graph, AND it is bound to what each independent " +
                     "action's own rehearsal resolved: the apply re-rehearses them (read-only) and refuses as a " +

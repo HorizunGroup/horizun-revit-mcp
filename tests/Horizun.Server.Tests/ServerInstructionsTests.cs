@@ -208,7 +208,9 @@ namespace Horizun.Server.Tests
 
             // ...and the resource the head names serves all of it.
             var read = McpResources.Read(new Newtonsoft.Json.Linq.JObject { ["uri"] = "horizun://guidance/typed-first" });
-            Assert.Equal(text, (string)read["contents"][0]["text"]);
+            // The resource serves the head for the active surface plus the SAME body;
+            // full mode is pinned byte for byte by SchemaFacadeWireTests.
+            Assert.Equal(ServerInstructions.TextFor(SchemaMode.Current), (string)read["contents"][0]["text"]);
         }
     }
 }

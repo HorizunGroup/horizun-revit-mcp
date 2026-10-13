@@ -43,7 +43,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication uiapp, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             string op = (request.Value<string>("operation") ?? "").Trim().ToLowerInvariant();
             if (!Ops.Contains(op)) return CommandResult.Fail("operation must be one of " + string.Join(", ", Ops) + ".");

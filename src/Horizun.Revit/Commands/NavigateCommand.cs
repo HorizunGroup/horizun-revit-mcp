@@ -20,7 +20,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             UIDocument uidoc = app.ActiveUIDocument;
@@ -186,6 +186,21 @@ namespace Horizun.Revit.Commands
                     "precise as Revit lets it be, and the difference is said rather than glossed."
             };
             if (verification != null) foreach (JProperty p in verification.Properties()) payload[p.Name] = p.Value;
+            // A SELECTION THAT DID NOT READ BACK IS NOT A SELECTION. The flags were reported
+            // beside an Ok reply, so a caller acting on "selected" acted on something Revit
+            // was not holding (audit 2026-10-08, 6.12).
+            if (verification != null &&
+                (verification.Value<bool?>("host_elements_verified") != true ||
+                 verification.Value<bool?>("link_instances_verified") != true ||
+                 verification.Value<bool?>("linked_elements_verified") != true))
+                return CommandResult.FailWithDetail(
+                    "Revit's selection does not hold what was asked: host_elements_verified=" +
+                    (verification.Value<bool?>("host_elements_verified") == true ? "true" : "false") +
+                    ", link_instances_verified=" +
+                    (verification.Value<bool?>("link_instances_verified") == true ? "true" : "false") +
+                    ", linked_elements_verified=" +
+                    (verification.Value<bool?>("linked_elements_verified") == true ? "true" : "false") +
+                    ". Nothing in the model changed; the selection is what selected_after says.", payload);
             return CommandResult.Ok(payload);
         }
 

@@ -19,6 +19,9 @@ namespace Horizun.Server
         {
             if (string.IsNullOrWhiteSpace(path))
                 return new JObject { ["status"] = "not_requested", ["why"] = "pass project_context_path to have the gaps evaluated." };
+            string notLocal = LocalPath.Problem(path, "project_context_path");
+            if (notLocal != null)
+                return new JObject { ["status"] = "refused", ["path"] = path, ["why"] = notLocal + " Nothing was read." };
             if (!File.Exists(path))
                 return new JObject { ["status"] = "not_found", ["path"] = path };
             try

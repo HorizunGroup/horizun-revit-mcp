@@ -431,7 +431,7 @@ namespace Horizun.Revit.Commands
                 if (target == null)
                     return new Fail(WallSplitCodes.UnsupportedCurve,
                         "layer " + layer.LayerNumberText + "'s curve could not be built from a " +
-                        approved.CurveClass + " at offset " + Math.Round(layer.ExpectedOffsetMm, 2) +
+                        approved.CurveClass + " at offset " + Math.Round(layer.ExpectedOffsetMm, 2).ToString(CultureInfo.InvariantCulture) +
                         " mm. Nothing was written.");
                 targetCurves[layer.LayerIndex] = target;
             }
@@ -724,8 +724,21 @@ namespace Horizun.Revit.Commands
             // ---- 8. the pin ----------------------------------------------------------
             if (wasPinned)
             {
-                try { carrier.Pinned = true; } catch { }
-                foreach (Wall layerWall in created.Values) { try { layerWall.Pinned = true; } catch { } }
+                // RE-READ, never assumed: a pin that did not take back leaves a wall the
+                // owner had locked free to be dragged, under a reply that says it was
+                // split exactly (audit 2026-10-08, 6.11).
+                var unpinned = new List<long>();
+                foreach (Wall w in new[] { carrier }.Concat(created.Values))
+                {
+                    try { w.Pinned = true; } catch { }
+                    bool pinnedNow;
+                    try { pinnedNow = w.Pinned; } catch { pinnedNow = false; }
+                    if (!pinnedNow) unpinned.Add(Rid.Value(w.Id));
+                }
+                if (unpinned.Count > 0)
+                    return new Fail(WallSplitCodes.VerifyPinNotRestored,
+                        "the wall was pinned and " + unpinned.Count + " of the walls it became did not take the pin " +
+                        "back (" + string.Join(", ", unpinned) + "). The conversion rolls back rather than leave them free.");
             }
 
             outcome.ParameterReport = parameterReport;

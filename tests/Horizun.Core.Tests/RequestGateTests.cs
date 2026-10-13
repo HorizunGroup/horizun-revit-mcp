@@ -190,5 +190,153 @@ namespace Horizun.Core.Tests
             Assert.Equal(0, gate.PendingCount);
             Assert.Null(gate.BusyWith());
         }
+
+        // ---- 2026-10-08 audit: "NEVER STARTED" was decided from a stale read. ----
+        // The dispatcher looked at Started, then abandoned; the UI thread could claim the
+        // request in between, and the caller was told it never ran while it was running.
+        // Abandon now SAYS whether it removed the request before it started.
+
+        [Fact]
+        public void Abandon_answers_true_only_when_it_removed_the_request_before_start()
+        {
+            var gate = new RequestGate();
+            string refusal;
+            var waiting = gate.Begin("w", "{}", out refusal);
+            var other = gate.Begin("o", "{}", out refusal);
+            Assert.True(gate.Abandon(other));           // still queued: removed, never ran
+            Assert.True(other.CancelledBeforeStart);
+
+            Assert.Same(waiting, gate.Take());          // the UI thread claimed it first
+            Assert.False(gate.Abandon(waiting));        // started: NOT removed
+            Assert.False(waiting.CancelledBeforeStart);
+        }
+
+        [Fact]
+        public void Abandon_of_a_request_already_cancelled_by_the_control_message_still_answers_true()
+        {
+            var gate = new RequestGate();
+            string refusal;
+            var r = gate.Begin("wire-x", "x", "{}", out refusal);
+            Assert.True(gate.CancelQueued(r.WireId, out _));
+            Assert.True(gate.Abandon(r));
+        }
+
+        // ---- 2026-10-08 night: the structured proof must ride on EVERY never-started result ----
+        // The server decides "never started" only on detail.never_started (5.2); the queue's own
+        // removals (cancel control, shutdown) still answered with the words alone.
+
+        [Fact]
+        public void A_request_removed_by_the_cancel_control_carries_structured_never_started()
+        {
+            var gate = new RequestGate();
+            string refusal;
+            var r = gate.Begin("wire-y", "y", "{}", out refusal);
+            Assert.True(gate.CancelQueued("wire-y", out _));
+            Assert.False(r.Result.Success);
+            Assert.True((bool)r.Result.Detail["never_started"]);
+            Assert.Equal("not_started", (string)r.Result.Detail["transaction_status"]);
+        }
+
+        [Fact]
+        public void Requests_failed_at_shutdown_carry_structured_never_started()
+        {
+            var gate = new RequestGate();
+            string refusal;
+            var r = gate.Begin("wire-z", "z", "{}", out refusal);
+            Assert.Equal(1, gate.FailQueued("Revit is closing. It NEVER RAN."));
+            Assert.True((bool)r.Result.Detail["never_started"]);
+        }
+
+        // Backlog #38: Revit refused THIS request's raise, but the UI thread had already
+        // claimed it through another one. The caller waited and ignored whether the wait
+        // ended - so a command still running looked like an ordinary "produced no result"
+        // failure, with nothing saying it may still be writing.
+        [Fact]
+        public void A_claimed_request_whose_wait_expires_is_reported_still_running_not_failed()
+        {
+            var gate = new RequestGate();
+            string refusal;
+            var r = gate.Begin("horizun_write_params_verified", "{}", out refusal);
+            Assert.Same(r, gate.Take());
+            Assert.False(gate.Abandon(r));                       // claimed: not withdrawn
+
+            CommandResult result = RequestGate.AwaitClaimed(r, "horizun_write_params_verified", 50);
+
+            Assert.False(result.Success);
+            Assert.NotNull(result.Detail);
+            Assert.False((bool)result.Detail["never_started"]);
+            Assert.Equal("unknown", (string)result.Detail["transaction_status"]);
+            Assert.True((bool)result.Detail["still_running"]);
+            Assert.Contains("STILL RUNNING", result.Error);
+        }
+
+        [Fact]
+        public void A_claimed_request_that_finishes_returns_its_own_result()
+        {
+            var gate = new RequestGate();
+            string refusal;
+            var r = gate.Begin("horizun_health", "{}", out refusal);
+            Assert.Same(r, gate.Take());
+            Assert.False(gate.Abandon(r));
+            r.Result = CommandResult.Ok(new Newtonsoft.Json.Linq.JObject { ["status"] = "healthy" });
+            gate.Complete(r);
+
+            CommandResult result = RequestGate.AwaitClaimed(r, "horizun_health", 1000);
+            Assert.True(result.Success);
+        }
+
+        // Backlog #36: the cancel travels on its own connection, so it can reach the add-in
+        // while the original request is still being read, parsed and authenticated - before
+        // it passes the gate. It was answered "finished or left the queue", and then the
+        // request arrived and RAN. A cancel for an id the gate has not seen now refuses that
+        // id on arrival; wire ids are fresh per send, so this can only stop work, never
+        // misreport it.
+        [Fact]
+        public void A_cancel_that_arrives_before_its_request_refuses_the_request_on_arrival()
+        {
+            var gate = new RequestGate();
+            string detail;
+            Assert.False(gate.CancelQueued("wire-early", out detail));
+            Assert.Equal("not_found_or_finished", detail);
+
+            string refusal;
+            var r = gate.Begin("wire-early", "horizun_create_elements", "{}", out refusal);
+
+            Assert.NotNull(r);
+            Assert.True(r.CancelledBeforeStart);
+            Assert.True(r.Wait(0));
+            Assert.False(r.Result.Success);
+            Assert.True((bool)r.Result.Detail["never_started"]);
+            Assert.Equal(0, gate.PendingCount);
+            Assert.Null(gate.Take());                            // nothing to run
+        }
+
+        [Fact]
+        public void An_early_cancel_refuses_only_its_own_id_and_only_once()
+        {
+            var gate = new RequestGate();
+            string detail, refusal;
+            gate.CancelQueued("wire-x", out detail);
+
+            var other = gate.Begin("wire-y", "a", "{}", out refusal);
+            Assert.False(other.CancelledBeforeStart);
+            Assert.Same(other, gate.Take());
+            gate.Complete(other);
+
+            Assert.True(gate.Begin("wire-x", "a", "{}", out refusal).CancelledBeforeStart);
+            var again = gate.Begin("wire-x", "a", "{}", out refusal);
+            Assert.False(again.CancelledBeforeStart);            // consumed; never a standing ban
+        }
+
+        [Fact]
+        public void Early_cancels_are_remembered_within_a_bound()
+        {
+            var gate = new RequestGate();
+            string detail, refusal;
+            for (int i = 0; i <= RequestGate.MaxEarlyCancels; i++) gate.CancelQueued("wire-" + i, out detail);
+
+            Assert.False(gate.Begin("wire-0", "a", "{}", out refusal).CancelledBeforeStart);   // the oldest fell out
+            Assert.True(gate.Begin("wire-" + RequestGate.MaxEarlyCancels, "a", "{}", out refusal).CancelledBeforeStart);
+        }
     }
 }

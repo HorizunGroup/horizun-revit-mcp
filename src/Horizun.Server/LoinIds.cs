@@ -1097,10 +1097,7 @@ namespace Horizun.Server
             if (t == null || t.Type == JTokenType.Null) return null;
             if (t.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)t))
                 throw new ToolRefusal(key + " must be a non-empty string. Nothing was written.");
-            string p = (string)t;
-            if (!Path.IsPathRooted(p))
-                throw new ToolRefusal(key + " must be absolute; '" + p + "' is relative. Nothing was written.");
-            return Path.GetFullPath(p);
+            return LocalPath.Require((string)t, key, " Nothing was written.");
         }
 
         private static void WriteAtomically(string path, byte[] bytes, bool overwrite)

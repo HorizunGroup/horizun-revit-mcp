@@ -53,7 +53,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             string operation = (request.Value<string>("operation") ?? "list").ToLowerInvariant();
@@ -72,12 +72,13 @@ namespace Horizun.Revit.Commands
                 return Add(app, doc0 => doc0, request);
             }
             if (operation == "acquire_coordinates") return AcquireCoordinates(app, request);
+            if (operation == "visible_elements") return VisibleElements(app, request);
             if (operation == "scan_deviation") return ScanDeviation(app, request);
             if (operation == "add_instance") return AddInstance(app, request);
             if (operation == "change_path") return ChangePath(app, request);
             if (operation != "unload" && operation != "reload" && operation != "pin" && operation != "unpin")
                 return CommandResult.Fail("operation '" + operation + "' is not one this command understands. " +
-                    "Known: list, unload, reload, pin, unpin, add, add_instance, change_path, acquire_coordinates, scan_deviation.");
+                    "Known: list, visible_elements, unload, reload, pin, unpin, add, add_instance, change_path, acquire_coordinates, scan_deviation.");
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -195,6 +196,7 @@ namespace Horizun.Revit.Commands
             if (refusal != null) return refusal;
 
             string error = null;
+            int selectionCleared = ClearSelectionIntoLink(app, doc, type);
             try
             {
                 if (operation == "unload") type.Unload(null);
@@ -213,7 +215,8 @@ namespace Horizun.Revit.Commands
                 ["name"] = SafeName(type),
                 ["status_before"] = statusBefore,
                 ["status_after_reread"] = statusAfter,
-                ["verified"] = verified
+                ["verified"] = verified,
+                ["selection_references_cleared"] = selectionCleared
             };
             if (error != null) result["error"] = error;
             ApplicationOutcome.StampApplied(result, verified ? ApplicationOutcome.Committed : ApplicationOutcome.NotStarted,
@@ -530,6 +533,11 @@ namespace Horizun.Revit.Commands
         }
 
         // ---- change_path: the rewire, said and then re-read. --------------------
+        internal const string ChangePathWorksets = "all_open";
+        internal const string ChangePathWorksetsMeans =
+            "the link is reloaded with every user workset of the new model OPEN. A workset the link had closed " +
+            "comes back open: Revit does not report the configuration a link was loaded with, so it cannot be " +
+            "carried over. Close worksets again in Manage Links if the link needs them closed.";
         private static CommandResult ChangePath(UIApplication app, JObject request)
         {
             GateResult gate = DocumentGate.ForMutation(app, request, "horizun_manage_links");
@@ -563,6 +571,8 @@ namespace Horizun.Revit.Commands
                     ["path_before"] = pathBefore,
                     ["path_after"] = path,
                     ["instances_that_re_resolve"] = instances.Count,
+                    ["worksets_after"] = ChangePathWorksets,
+                    ["worksets_means"] = ChangePathWorksetsMeans,
                     ["note"] = "THIS IS THE REWIRE: every instance above will show the new model after apply. " +
                                "LoadFrom runs outside a transaction; the apply re-reads the type's external path."
                 };
@@ -573,8 +583,15 @@ namespace Horizun.Revit.Commands
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, "horizun_manage_links", hash);
             if (refusal != null) return refusal;
 
+            int selectionCleared = ClearSelectionIntoLink(app, doc, type);
+            // THE WORKSETS, SAID (backlog #33). The reload opens every user workset of the model it
+            // points at: a workset the link had closed comes back open. Revit cannot report the
+            // configuration a link was loaded with (measured 2026-09-04: a link loaded with a closed
+            // workset reads every workset open and delivers its elements), so it cannot be carried
+            // over - the configuration is explicit here and named in the dry run and the reply.
             LinkLoadResult loadResult = type.LoadFrom(
-                ModelPathUtils.ConvertUserVisiblePathToModelPath(LinkPathRules.ForRevit(path)), new WorksetConfiguration());
+                ModelPathUtils.ConvertUserVisiblePathToModelPath(LinkPathRules.ForRevit(path)),
+                new WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets));
             string status = SafeStatus(doc.GetElement(type.Id) as RevitLinkType);
             string pathAfter = LinkPath(doc.GetElement(type.Id) as RevitLinkType);
             bool ok = loadResult != null && LinkLoadResult.IsCodeSuccess(loadResult.LoadResult) &&
@@ -594,13 +611,49 @@ namespace Horizun.Revit.Commands
                 ["path_after"] = pathAfter,
                 ["status_after"] = status,
                 ["instances_re_resolved"] = instances.Count,
-                ["verified_after_reread"] = true
+                ["worksets_after"] = ChangePathWorksets,
+                ["worksets_means"] = ChangePathWorksetsMeans,
+                ["verified_after_reread"] = true,
+                ["selection_references_cleared"] = selectionCleared
             };
             // The same shape the load-state path declares: LoadFrom runs outside a
             // transaction, so the status stands for 'the re-read held', which `ok`
             // above established before this line is reached.
             ApplicationOutcome.StampApplied(repointed, ApplicationOutcome.Committed, 1, 1, 1, 0, 0, 0);
             return CommandResult.Ok(repointed);
+        }
+
+        /// <summary>
+        /// Drops the selection references INTO this link type's instances before its load state
+        /// changes, and returns how many (-1 when the selection could not be read). MEASURED
+        /// 2026-10-10, Revit 2026: a linked element held by reference - what horizun_navigate
+        /// leaves - and its link then unloaded or reloaded killed Revit a few seconds later
+        /// (0xC0000005 in RevitDB.dll, main thread), deterministically; the same reload with
+        /// nothing selected did not. Only the active document has a UI selection to clear.
+        /// </summary>
+        private static int ClearSelectionIntoLink(UIApplication app, Document doc, RevitLinkType type)
+        {
+            try
+            {
+                UIDocument uidoc = app?.ActiveUIDocument;
+                if (uidoc == null || !uidoc.Document.Equals(doc)) return 0;
+                List<Reference> refs = (uidoc.Selection.GetReferences() ?? new List<Reference>()).Where(r => r != null).ToList();
+                if (refs.Count == 0) return 0;
+                var instances = new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance))
+                    .Where(e => e.GetTypeId() == type.Id).Select(e => Rid.Value(e.Id)).ToList();
+                var held = refs.Select(r => new SelectionHeld
+                {
+                    ElementId = Rid.Value(r.ElementId),
+                    LinkedElementId = r.LinkedElementId == null || r.LinkedElementId == ElementId.InvalidElementId
+                        ? -1 : Rid.Value(r.LinkedElementId)
+                }).ToList();
+                List<SelectionHeld> keep = SelectionReadBack.KeepForLinkChange(held, instances, out int dropped);
+                if (dropped == 0) return 0;
+                var keepSet = new HashSet<SelectionHeld>(keep);
+                uidoc.Selection.SetReferences(refs.Where((r, i) => keepSet.Contains(held[i])).ToList());
+                return dropped;
+            }
+            catch { return -1; }
         }
 
         private static string SafeStatus(RevitLinkType type)

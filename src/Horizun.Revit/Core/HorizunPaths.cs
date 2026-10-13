@@ -89,6 +89,9 @@ namespace Horizun.Revit.Core
 
     public static class HorizunPaths
     {
+        // A real known-folder read in production; replaceable only by the linked Core
+        // tests, whose restricted host cannot query the owner's profile folder.
+        internal static Func<string> UserProfileReader = () => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         /// <summary>
         /// The escape hatch, and the ONLY thing that overrides the home directory.
         ///
@@ -364,7 +367,7 @@ namespace Horizun.Revit.Core
 
         private static string SafeSpecialFolder()
         {
-            try { return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile); }
+            try { return UserProfileReader(); }
             catch { return null; }
         }
 

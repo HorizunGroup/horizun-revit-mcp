@@ -136,6 +136,24 @@ namespace Horizun.Core.Tests
             Assert.Equal(expected, Assert.Single(v.Findings).Rule);
         }
 
+        // Backlog #30: a profile's regex ran with no timeout, so a catastrophic pattern froze
+        // Revit's UI thread inside model_scan. It now times out, and the name is reported as
+        // not judged - never as a pass.
+        [Fact]
+        public async System.Threading.Tasks.Task A_catastrophic_regex_times_out_and_the_name_is_not_passed()
+        {
+            NamingProfile p = P(@"{ ""version"": ""v1"", ""views"": { ""regex"": ""^(a+)+$"" } }");
+            Assert.True(p.Ok, p.Message);
+            string name = new string('a', 40) + "!";
+            var run = System.Threading.Tasks.Task.Run(() => NamingProfileRules.Check("views", Things(name), p));
+            var finished = await System.Threading.Tasks.Task.WhenAny(run, System.Threading.Tasks.Task.Delay(System.TimeSpan.FromSeconds(20)));
+            Assert.Same(run, finished);
+            var result = await run;
+            NamingFinding f = Assert.Single(result.Findings);
+            Assert.Equal(NamingCodes.RegexTimedOut, f.Rule);
+            Assert.Equal(0, result.Matched);
+        }
+
         [Fact]
         public void Uniqueness_is_judged_over_the_population_not_one_name_at_a_time()
         {

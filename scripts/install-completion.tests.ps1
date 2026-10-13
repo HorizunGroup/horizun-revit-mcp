@@ -210,6 +210,47 @@ args = []
         ($pointer -eq 'newgeneration02' -and $raceFinal -and $raceFinal.state -eq 'installed_and_registered' -and
          $raceConfig.mcpServers.'horizun-revit'.command -eq $server) `
         "pointer=$pointer state=$($raceFinal.state) command=$($raceConfig.mcpServers.'horizun-revit'.command)"
+
+    # Backlog #60. The client closes, then comes back inside the quiet window and
+    # stays open until the wait runs out. That is the same answer as a client that
+    # never closed - registration_pending, nothing written, no failed attempt
+    # counted - not a registration attempted underneath the running client.
+    $pendingConfig = Join-Path $env:USERPROFILE '.claude.json'
+    Set-Content -LiteralPath $pendingConfig -Value $rollbackConfig -Encoding UTF8
+    $pendingBefore = [IO.File]::ReadAllBytes($pendingConfig)
+    Clear-Content -LiteralPath $clientState
+    $pendingStatus = Join-Path $env:LOCALAPPDATA 'Horizun\quiet-window-status.json'
+    # A run key that does not exist: -NoResume never creates it, and nothing here
+    # reads or writes the real HKCU Run key.
+    $testRunKey = 'HKCU:\Software\HorizunTest\NoSuchRunKey-' + [guid]::NewGuid().ToString('N')
+    $p = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $PSScriptRoot 'complete-install.ps1') + '"'),
+        '-Client', 'Claude', '-ServerPath', ('"' + $server + '"'), '-StatusPath', ('"' + $pendingStatus + '"'),
+        '-WaitTimeoutMinutes', '1', '-Detached', '-NoResume', '-NoLiveWait', '-Generation', 'quietwindow01',
+        '-ClientStateFile', ('"' + $clientState + '"'), '-RunKey', ('"' + $testRunKey + '"'))
+    $null = $p.Handle
+    # The generation claim is the first thing the worker writes, and its first
+    # look at the clients follows within milliseconds (no client: nothing to wait
+    # for). The client "reopens" 800 ms later, in the middle of the two-second
+    # quiet window, so the second look is the one that sees it.
+    $claimDeadline = (Get-Date).AddSeconds(60)
+    while (-not (Test-Path -LiteralPath "$pendingStatus.current") -and (Get-Date) -lt $claimDeadline -and -not $p.HasExited) {
+        Start-Sleep -Milliseconds 20
+    }
+    Start-Sleep -Milliseconds 800
+    'Claude' | Set-Content -LiteralPath $clientState -Encoding ASCII
+    if (-not $p.WaitForExit(180000)) { Stop-Process -Id $p.Id -Force; throw 'the quiet-window worker did not finish within three minutes' }
+    $pendingExit = $p.ExitCode
+    Clear-Content -LiteralPath $clientState
+    $pendingState = Get-Content -LiteralPath "$pendingStatus.generation-quietwindow01.json" -Raw | ConvertFrom-Json
+    Assert 'a client back inside the quiet window until the deadline is registration_pending, exit 3 (backlog #60)' `
+        ($pendingExit -eq 3 -and $pendingState.state -eq 'registration_pending' -and $pendingState.detail -match 'quiet window') "exit=$pendingExit state=$($pendingState.state) detail=$($pendingState.detail)"
+    Assert 'no failed attempt is counted for a client that simply stayed open (backlog #60)' `
+        (-not (Test-Path -LiteralPath "$pendingStatus.generation-quietwindow01.json.attempts")) 'an attempts file was written'
+    Assert 'nothing is written underneath the reopened client (backlog #60)' `
+        ([Convert]::ToBase64String($pendingBefore) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($pendingConfig))) `
+        ([IO.File]::ReadAllText($pendingConfig))
+    Assert 'the test run key was never created' (-not (Test-Path -LiteralPath $testRunKey)) $testRunKey
 }
 finally {
     $env:USERPROFILE = $oldProfile

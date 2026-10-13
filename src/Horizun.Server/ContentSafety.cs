@@ -15,9 +15,14 @@
 //
 //   1. NEUTRALISE characters that make text read differently from what it is:
 //      bidirectional overrides and isolates (U+202A-U+202E, U+2066-U+2069, U+061C),
-//      zero-width and directional marks (U+200B-U+200F), word joiner and invisible
-//      operators (U+2060-U+2064), the BOM (U+FEFF), Unicode TAG characters
-//      (U+E0000-U+E007F, which spell out invisible ASCII), and C0/C1 control
+//      zero-width and directional marks (U+200B-U+200F), word joiner, invisible
+//      operators and deprecated format characters (U+2060-U+206F), the BOM (U+FEFF),
+//      Unicode TAG characters (U+E0000-U+E007F, which spell out invisible ASCII),
+//      variation selectors (U+FE00-U+FE0F, U+E0100-U+E01EF - the other byte-per-
+//      character smuggling scheme; one VS15/VS16 right after a visible character is
+//      kept, so an emoji stays an emoji), the soft hyphen, the combining grapheme
+//      joiner, the Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), the invisible
+//      musical formatting characters (U+1D173-U+1D17A), and C0/C1 control
 //      characters except TAB, LF and the CR of a CRLF pair. Each becomes a VISIBLE,
 //      REVERSIBLE token "[U+XXXX]" - nothing is deleted, and the original string is
 //      recoverable from the token. The paths of the altered strings are reported so a
@@ -79,7 +84,12 @@ namespace Horizun.Server
                 codePoint = char.ConvertToUtf32(c, s[i + 1]);
                 width = 2;
                 // TAG characters: invisible, and they spell out ASCII to anything that reads them.
-                return codePoint >= 0xE0000 && codePoint <= 0xE007F;
+                if (codePoint >= 0xE0000 && codePoint <= 0xE007F) return true;
+                // Supplementary variation selectors: the 16-255 half of the published
+                // "one byte per selector" smuggling scheme (2026-10-08 audit).
+                if (codePoint >= 0xE0100 && codePoint <= 0xE01EF) return true;
+                // Invisible musical formatting characters.
+                return codePoint >= 0x1D173 && codePoint <= 0x1D17A;
             }
 
             if (c < 0x20)
@@ -92,9 +102,34 @@ namespace Horizun.Server
             if (c >= 0x7F && c <= 0x9F) return true;                   // DEL and C1 controls
             if (c >= 0x200B && c <= 0x200F) return true;               // zero-width, LRM/RLM
             if (c >= 0x202A && c <= 0x202E) return true;               // bidi embeddings/overrides
-            if (c >= 0x2060 && c <= 0x2064) return true;               // word joiner, invisible operators
+            if (c >= 0x2060 && c <= 0x206F) return true;               // word joiner, invisible operators, deprecated format chars
             if (c >= 0x2066 && c <= 0x2069) return true;               // bidi isolates
             if (c == 0xFEFF || c == 0x061C || c == 0x180E) return true; // BOM, ALM, MVS
+            // 2026-10-08 audit: soft hyphen, combining grapheme joiner, the Hangul fillers.
+            if (c == 0x00AD || c == 0x034F || c == 0x115F || c == 0x1160 || c == 0x3164 || c == 0xFFA0) return true;
+            // Variation selectors VS1-VS16 carry the 0-15 half of the smuggling scheme. The
+            // only legitimate use in this data is ONE text/emoji presentation selector
+            // (VS15/VS16) right after a visible character - "❤️" - and that alone
+            // is kept; any other selector, a leading one or a second in a row is neutralised.
+            if (c >= 0xFE00 && c <= 0xFE0F)
+            {
+                if (c < 0xFE0E || i == 0) return true;
+                return IsVariationSelectorEndingAt(s, i - 1) || char.IsWhiteSpace(s[i - 1]) || char.IsControl(s[i - 1]);
+            }
+            return false;
+        }
+
+        /// <summary>Does a variation selector (BMP or supplementary) end at UTF-16 index <paramref name="j"/>?</summary>
+        private static bool IsVariationSelectorEndingAt(string s, int j)
+        {
+            if (j < 0) return false;
+            char c = s[j];
+            if (c >= 0xFE00 && c <= 0xFE0F) return true;
+            if (char.IsLowSurrogate(c) && j > 0 && char.IsHighSurrogate(s[j - 1]))
+            {
+                int cp = char.ConvertToUtf32(s[j - 1], c);
+                return cp >= 0xE0100 && cp <= 0xE01EF;
+            }
             return false;
         }
 

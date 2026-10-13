@@ -43,6 +43,9 @@ namespace Horizun.Revit.Core
 
     public static class XlsxWorkbookReader
     {
+        /// <summary>The worksheet limits (Excel's and the OOXML spec's): rows 1..1 048 576, columns A..XFD.</summary>
+        public const int MaxRows = 1048576, MaxColumns = 16384;
+
         private static readonly XNamespace Main = XlsxWorkbookWriter.MainNamespace;
         private static readonly XNamespace Rel = XlsxWorkbookWriter.RelationshipsNamespace;
         private static readonly XNamespace Pkg = XlsxWorkbookWriter.PackageRelationshipsNamespace;
@@ -160,6 +163,10 @@ namespace Horizun.Revit.Core
                         // the next row would be skipped.
                         var row = (XElement)XNode.ReadFrom(xr);
                         int number = ParseInt((string)row.Attribute("r")) ?? lastRow + 1;
+                        // A SHEET'S OWN LIMIT (backlog #47): the gap up to `r` is padded with
+                        // empty rows, so an unbounded r="2000000000" exhausted memory.
+                        if (number < 1 || number > MaxRows)
+                            throw new InvalidDataException("sheet '" + sheet.Name + "' names row " + number + "; a worksheet has rows 1 to " + MaxRows + ".");
                         if (number <= lastRow)
                             throw new InvalidDataException("sheet '" + sheet.Name + "' row " + number + " comes after row " + lastRow + ".");
                         while (sheet.Rows.Count < number - 1) sheet.Rows.Add(new XlsxCell[0]);
@@ -177,6 +184,9 @@ namespace Horizun.Revit.Core
             foreach (XElement c in row.Elements(Main + "c"))
             {
                 int column = ColumnIndex((string)c.Attribute("r")) ?? cells.Count;
+                if (column < 0 || column >= MaxColumns)
+                    throw new InvalidDataException("sheet '" + sheetName + "' row " + rowNumber + ": cell " + (string)c.Attribute("r") +
+                                                   " is past the last column a worksheet has (XFD, " + MaxColumns + " columns).");
                 if (column < cells.Count)
                     throw new InvalidDataException("sheet '" + sheetName + "' row " + rowNumber + ": cell " + (string)c.Attribute("r") + " is out of order.");
                 while (cells.Count < column) cells.Add(XlsxCell.Empty);
@@ -239,7 +249,9 @@ namespace Horizun.Revit.Core
             {
                 char c = char.ToUpperInvariant(ch);
                 if (c < 'A' || c > 'Z') break;
-                index = index * 26 + (c - 'A' + 1);
+                // Clamped past the last column, so a long run of letters cannot wrap an int
+                // round to a small, plausible column.
+                index = Math.Min(index * 26 + (c - 'A' + 1), MaxColumns + 1);
                 letters++;
             }
             return letters == 0 ? (int?)null : index - 1;

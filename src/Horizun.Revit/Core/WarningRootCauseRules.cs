@@ -97,7 +97,7 @@ namespace Horizun.Revit.Core
                 {
                     Cause = WarningRootCauseCauses.ExactDuplicate,
                     Detail = "same category, same type, and their bounding boxes coincide within " +
-                             toleranceMm.ToString("0.#") + " mm on every axis: two instances standing on top of each other."
+                             toleranceMm.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " mm on every axis: two instances standing on top of each other."
                 };
 
             if (Contains(a, b, toleranceMm) || Contains(b, a, toleranceMm))
@@ -116,7 +116,7 @@ namespace Horizun.Revit.Core
                     Cause = WarningRootCauseCauses.VerticalOverlap,
                     OverlapMm = zOverlap,
                     Detail = "their footprints intersect and their elevation ranges overlap by " +
-                             zOverlap.ToString("0.#") + " mm."
+                             zOverlap.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " mm."
                 };
 
             return new WarningRootCause

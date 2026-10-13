@@ -32,6 +32,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'toml-section.lib.ps1')
+. (Join-Path $PSScriptRoot 'json-member.lib.ps1')
 
 if (-not $ServerPath) {
     $ServerPath = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
@@ -351,11 +352,13 @@ if ($resolvedClient -eq 'Claude' -or $resolvedClient -eq 'Both') {
     Check 'Claude configuration exists' (Test-Path -LiteralPath $claudeConfig -PathType Leaf) $claudeConfig
     if (Test-Path -LiteralPath $claudeConfig) {
         try {
-            $cfg = Get-Content -LiteralPath $claudeConfig -Raw | ConvertFrom-Json
-            $entry = $cfg.mcpServers.$Name
-            Check "Claude has MCP entry '$Name'" ($null -ne $entry) 'entry not found'
-            if ($entry) {
-                $actual = Resolve-FullPath ([string]$entry.command)
+            # Read as strict UTF-8 and without ConvertFrom-Json: a config with keys
+            # that differ only in case (routine in ~/.claude.json) is valid JSON, and
+            # refusing it here undid every registration on such a machine.
+            $command = Get-HorizunMcpServerCommand (Read-HorizunUtf8Text $claudeConfig) $Name
+            Check "Claude has MCP entry '$Name'" ($null -ne $command) 'entry not found'
+            if ($null -ne $command) {
+                $actual = Resolve-FullPath ([string]$command)
                 Check 'Claude points at the installed server' ($actual -ieq $expectedServer) "$actual"
             }
         }
@@ -367,7 +370,7 @@ if ($resolvedClient -eq 'Codex' -or $resolvedClient -eq 'Both') {
     Check 'Codex configuration exists' (Test-Path -LiteralPath $codexConfig -PathType Leaf) $codexConfig
     if (Test-Path -LiteralPath $codexConfig) {
         try {
-            $lines = @(Get-Content -LiteralPath $codexConfig)
+            $lines = @((Read-HorizunTextLines $codexConfig).Lines)
             $table = @(Get-CodexTable $lines "[mcp_servers.$Name]")
             Check "Codex has MCP entry '$Name'" ($table.Count -gt 0) 'entry not found'
             if ($table.Count -gt 0) {

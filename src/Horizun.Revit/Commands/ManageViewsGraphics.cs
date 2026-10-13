@@ -449,7 +449,11 @@ namespace Horizun.Revit.Commands
                         // still visible was not actually isolated by this call.
                         if (!visible) return false;
                     }
-                    return true;
+                    // AND EVERYTHING ELSE IS HIDDEN (backlog #52). The requested ids being visible is
+                    // true before any isolate too, and an earlier temporary mode satisfies the mode
+                    // check: the call could do nothing and read verified. A hideable element the view
+                    // still shows, outside the requested ids, means the isolate did not happen.
+                    return IsolateLeftNothingElseVisible(doc, isolating, isolated);
                 }
 
                 case "reset_temporary":
@@ -644,6 +648,29 @@ namespace Horizun.Revit.Commands
             Element e = doc.GetElement(id);
             if (e == null) throw new ArgumentException("element " + Rid.Value(id) + " does not exist");
             try { return e.CanBeHidden(view); } catch { return false; }
+        }
+
+        /// <summary>
+        /// After an isolate: no hideable element of the view outside `isolated` is still shown in
+        /// the temporary mode. Every candidate is read; a truncated census or unreadable
+        /// CanBeHidden would not prove that everything else is hidden.
+        /// </summary>
+        private static bool IsolateLeftNothingElseVisible(Document doc, View view, IList<ElementId> isolated)
+        {
+            var keep = new HashSet<long>(isolated.Select(Rid.Value));
+            try
+            {
+                foreach (Element other in new FilteredElementCollector(doc, view.Id).WhereElementIsNotElementType())
+                {
+                    if (keep.Contains(Rid.Value(other.Id))) continue;
+                    bool hideable;
+                    try { hideable = other.CanBeHidden(view); } catch { return false; }
+                    if (!hideable) continue;
+                    if (view.IsElementVisibleInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate, other.Id)) return false;
+                }
+                return true;
+            }
+            catch { return false; }
         }
 
         private static IList<ElementId> ReadElementIds(Document doc, JObject a, string field)

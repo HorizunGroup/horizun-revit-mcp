@@ -20,7 +20,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name); if (!gate.Ok) return gate.Refusal;
             Document doc = gate.Document;
@@ -203,11 +203,14 @@ namespace Horizun.Revit.Commands
         {
             if (p.Operation == "create_revision") p.Revision = Revision.Create(doc);
             JObject a = p.Input;
+            // ISSUED IS WRITTEN LAST, and an issued revision the caller re-states is un-issued
+            // first: Revit locks an issued revision's fields and clouds (audit 2026-10-08, 6.15).
+            bool? wantIssued = a["issued"] != null ? a.Value<bool>("issued") : (bool?)null;
+            if (RevisionIssueRules.UnissueFirst(p.Revision.Issued, wantIssued)) p.Revision.Issued = false;
             if (a["description"] != null) p.Revision.Description = a.Value<string>("description") ?? "";
             if (a["revision_date"] != null) p.Revision.RevisionDate = a.Value<string>("revision_date") ?? "";
             if (a["issued_by"] != null) p.Revision.IssuedBy = a.Value<string>("issued_by") ?? "";
             if (a["issued_to"] != null) p.Revision.IssuedTo = a.Value<string>("issued_to") ?? "";
-            if (a["issued"] != null) p.Revision.Issued = a.Value<bool>("issued");
             foreach (ViewSheet sheet in p.Sheets)
             {
                 List<ElementId> ids = sheet.GetAdditionalRevisionIds().ToList();
@@ -223,6 +226,37 @@ namespace Horizun.Revit.Commands
                 RevisionCloud created = RevisionCloud.Create(doc, cloud.View, p.Revision.Id, cloud.Curves);
                 cloud.CreatedId = created.Id;
             }
+            bool? issuedLast = RevisionIssueRules.IssuedLast(wantIssued);
+            if (issuedLast.HasValue) p.Revision.Issued = issuedLast.Value;
+        }
+
+        internal static JObject ReReadReview(Document doc, JObject args, JObject applied)
+        {
+            var rows = new JArray();
+            foreach (JObject action in (args["actions"] as JArray) ?? new JArray())
+            {
+                JObject prior = (applied["rows"] as JArray)?.OfType<JObject>().FirstOrDefault(r => (string)r["key"] == (string)action["key"]);
+                long id = (long?)prior?["revision_id"] ?? -1;
+                var p = new Plan { Key = (string)action["key"], Input = action,
+                    Revision = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) as Revision : null };
+                bool ok = (string)applied["state"] == "committed_verified" && (bool?)applied["host_verified"] == true && (bool?)prior?["verified"] == true;
+                foreach (JToken sheet in (action["sheet_ids"] as JArray) ?? new JArray())
+                {
+                    var s = doc.GetElement(Rid.Make((long)sheet)) as ViewSheet;
+                    if (s == null) ok = false; else p.Sheets.Add(s);
+                }
+                foreach (JToken sheet in (action["remove_sheet_ids"] as JArray) ?? new JArray())
+                {
+                    var s = doc.GetElement(Rid.Make((long)sheet)) as ViewSheet;
+                    if (s == null) ok = false; else p.RemoveSheets.Add(s);
+                }
+                // Clouds need the child's own geometric verification; no second rule guesses it.
+                if (action["clouds"] != null) ok = false;
+                ok &= Verify(doc, p);
+                rows.Add(new JObject { ["key"] = p.Key, ["revision_id"] = id, ["verified"] = ok,
+                    ["sheet_ids"] = new JArray(p.Sheets.Select(s => Rid.Value(s.Id))) });
+            }
+            return new JObject { ["state"] = "committed_verified", ["host_verified"] = rows.All(r => (bool)r["verified"]), ["rows"] = rows };
         }
 
         private static bool Verify(Document doc, Plan p)

@@ -70,6 +70,42 @@ that measures wrong, the gate fails as before. Remove the exemption from
 `scripts/verify-live.ps1` and from this table as soon as a dense point-cloud fixture
 exists. No other case may be added without the same written owner approval.
 
+## Revit 2027 ADP crash
+
+Revit 2027 can die in the middle of a live run inside Autodesk's analytics SDK. Approved by
+the project owner on 2026-10-09 as a known **Autodesk** crash, distinguished from a Horizun
+failure by its dump, never by its timing:
+
+| Field | The known Autodesk crash |
+|---|---|
+| Revit | 2027 (product folder `f665c0ef…` under `%LOCALAPPDATA%\Autodesk\CER`) |
+| Exception | `0xC0000005` (access violation, null pointer + 8) |
+| Where | `AdpSDKCore.dll+0x11b98` (`Common Files\Autodesk\AdpDesktopSDK`, measured with 6.4.14.18) |
+| Thread | **not** Revit's main thread (the first thread of the dump) |
+| Horizun in that thread's stack | none |
+
+How it was told apart (2026-10-09):
+- two dumps from runs on public/main had exactly this signature;
+- one from 2026-10-01 with the installed add-in had it too;
+- every crash followed an ordinary document or family operation (loading a family, opening an `.rfa`, saving a document's schemas);
+- the same runs were repeated without a crash.
+
+What the gate does with it: `scripts/verify-live.ps1` reads every CER dump written since the
+run started (in memory, nothing is copied) when Revit dies mid-run. The probes that answered
+"Revit … is no longer running" are re-filed under one verdict, recorded in the report as
+`revit_crash` with the dump's path and the first probe without Revit:
+
+- **`revit_crash_autodesk_adp`**: every new dump has the signature above. Exit code **4**:
+  the run is **repeated**, and only a clean repetition is evidence.
+- **`revit_crash_unclassified`**: any other dump, or no dump at all. It counts as a failure
+  (exit 1) until somebody reads the dump. A crash with the same exception in another module, at
+  another offset, on the main thread or in another Revit year is unclassified.
+
+**A crash is never a pass.** The known Autodesk crash only tells the reader where to look; it
+does not stand in for the probes the run did not complete. Crash dumps hold this machine's
+paths and are never committed: the classifier's tests build a synthetic minidump
+(`scripts/verify-live-gates.tests.ps1`).
+
 ## Versioning
 
 SemVer over the **tool contract**, not over the C#. What is public is the set of tool

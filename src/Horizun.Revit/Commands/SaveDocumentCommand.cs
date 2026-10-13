@@ -40,7 +40,7 @@ namespace Horizun.Revit.Commands
             JObject req = null;
             try
             {
-                req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
+                req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
                 expectedTitle = req.Value<string>("expected_document");
             }
             catch (Exception ex)

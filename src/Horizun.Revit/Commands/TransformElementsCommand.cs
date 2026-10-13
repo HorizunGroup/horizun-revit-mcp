@@ -20,7 +20,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -237,6 +237,13 @@ namespace Horizun.Revit.Commands
                 }
             }
 
+            // THE INVERSE IS RECORDED AS SOON AS THE COMMIT LANDED, before any verdict can
+            // return: a committed batch that then failed its check was left with no undo
+            // (audit 2026-10-08, 6.8).
+            JObject undo;
+            try { undo = RecordUndo(doc, plans, undoBefore); }
+            catch (Exception ex) { undo = new JObject { ["recorded"] = false, ["error"] = ex.Message }; }
+
             var verification = new JArray();
             int verified = 0;
             foreach (Plan p in plans)
@@ -248,8 +255,10 @@ namespace Horizun.Revit.Commands
                 verification.Add(detail); if (ok) verified++;
             }
             if (plans.Count == 0 || verified != plans.Count)
-                return CommandResult.Fail("The transaction committed, but " + (plans.Count - verified) +
-                    " operation(s) failed post-commit verification. Inspect the model. " + verification.ToString(Formatting.None));
+                return CommandResult.FailWithDetail("The transaction committed, but " + (plans.Count - verified) +
+                    " operation(s) failed post-commit verification. Inspect the model; 'undo' reverts the batch. " +
+                    verification.ToString(Formatting.None),
+                    new JObject { ["transaction_status"] = "Committed", ["rows"] = verification, ["undo"] = undo });
             var trResult = new JObject
             {
                 ["dry_run"] = false, ["transaction_status"] = "Committed", ["transaction_name"] = txName,
@@ -258,7 +267,7 @@ namespace Horizun.Revit.Commands
             // Reached only when every planned operation passed its post-commit check.
             ApplicationOutcome.StampApplied(trResult, ApplicationOutcome.Committed,
                                             plans.Count, verified, verified, 0, 0, 0);
-            trResult["undo"] = RecordUndo(doc, plans, undoBefore);
+            trResult["undo"] = undo;
             return CommandResult.Ok(trResult);
         }
 
@@ -664,20 +673,31 @@ namespace Horizun.Revit.Commands
             if (p.Operation == "copy")
             {
                 int present = p.Created == null ? 0 : p.Created.Count(id => doc.GetElement(id) != null);
-                detail["copies_expected"] = p.Ids.Count; detail["copies_present"] = present;
+                detail["copies_expected"] = p.Ids.Count;
                 detail["created_ids"] = new JArray((p.Created ?? new List<ElementId>()).Select(id => (JToken)Rid.Value(id)));
                 var remaining=(p.Created ?? new List<ElementId>()).Select(doc.GetElement).Where(e=>e!=null).ToList();
                 int matched=0;
+                var copies = new List<long>();
+                var hostProblems = new JArray();
                 foreach(var sourceId in p.Ids)
                 {
                     var source=doc.GetElement(sourceId); var before=p.Samples[Rid.Value(sourceId)];
                     int index=remaining.FindIndex(e=>e.GetTypeId()==source.GetTypeId() && e.GetType()==source.GetType() &&
                         Samples(e).Count==before.Count && (MatchesSamples(before,Samples(e),p,false) || (before.Count==2 && MatchesSamples(before,Samples(e),p,true))));
-                    if(index<0) continue; matched++; remaining.RemoveAt(index);
+                    if(index<0) continue; matched++;
+                    copies.Add(Rid.Value(remaining[index].Id));
+                    string hostProblem = HostedCopyProblem(p, Rid.Value(sourceId), remaining[index]);
+                    if (hostProblem != null) hostProblems.Add(hostProblem);
+                    remaining.RemoveAt(index);
                 }
+                // Inserts copied with their hosts are dependents, not extra copies (audit 2026-10-08, 6.8).
+                int dependents = Dependents(remaining, copies, detail);
+                detail["copies_present"] = present - dependents;
                 detail["copies_geometry_verified"]=matched;
+                if (hostProblems.Count > 0) detail["hosted_copies_off_host"] = hostProblems;
                 // An operation over no source proves nothing: 0 == 0 is not a copy.
-                return p.Ids.Count > 0 && present == p.Ids.Count && matched==p.Ids.Count;
+                return p.Ids.Count > 0 && present - dependents == p.Ids.Count && matched==p.Ids.Count &&
+                       hostProblems.Count == 0 && detail["unexplained_created_ids"] == null;
             }
             if (p.Operation == "rename_level")
             {
@@ -923,6 +943,54 @@ namespace Horizun.Revit.Commands
                 return projection.Distance * 304.8;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Created elements left over after matching copies: dependents (hosted, transitively,
+        /// on a copy) are counted apart and named; anything else is unexplained and named.
+        /// Returns the number of dependents.
+        /// </summary>
+        private static int Dependents(List<Element> leftOver, IEnumerable<long> copies, JObject detail)
+        {
+            var byId = new Dictionary<long, Element>();
+            foreach (Element e in leftOver) byId[Rid.Value(e.Id)] = e;
+            List<long> dependents, unexplained;
+            TransformCopyRules.Classify(byId.Keys, copies, id => { Element e; return byId.TryGetValue(id, out e) ? HostOf(e) : null; },
+                                        out dependents, out unexplained);
+            if (dependents.Count > 0) detail["dependent_created_ids"] = new JArray(dependents);
+            if (unexplained.Count > 0) detail["unexplained_created_ids"] = new JArray(unexplained);
+            return dependents.Count;
+        }
+
+        /// <summary>The array member's source: the one of the plan's ids with the same type.</summary>
+        private static long? SourceOf(Plan p, Document doc, Element member)
+        {
+            foreach (ElementId id in p.Ids)
+            {
+                Element source = doc.GetElement(id);
+                if (source != null && source.GetTypeId() == member.GetTypeId() && source.GetType() == member.GetType())
+                    return Rid.Value(id);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// A COPY OF A HOSTED ELEMENT MUST BE HOSTED TOO, and on its host's face. GuardHosts
+        /// checks the sources, which a copy does not move; the copies were never looked at
+        /// (audit 2026-10-08, 6.8). Null when the source was not hosted or the copy is fine.
+        /// </summary>
+        private static string HostedCopyProblem(Plan p, long sourceId, Element copy)
+        {
+            if (!p.HostBefore.ContainsKey(sourceId)) return null;
+            long? host = HostOf(copy);
+            if (!host.HasValue)
+                return "the copy " + Rid.Value(copy.Id) + " of hosted element " + sourceId + " has no host";
+            double? off = OffItsFaceMm(copy);
+            if (off.HasValue && off.Value > FaceToleranceMm)
+                return "the copy " + Rid.Value(copy.Id) + " of hosted element " + sourceId + " is " +
+                       off.Value.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) +
+                       " mm off the face of its host " + host.Value;
+            return null;
         }
 
         private static long? HostOf(Element e)
@@ -1200,7 +1268,7 @@ namespace Horizun.Revit.Commands
         private static bool VerifyArray(Document doc, Plan p, JObject detail)
         {
             bool grouped = p.Grouped;
-            var required = new List<string> { "copies_present", "copies_at_formula" };
+            var required = new List<string> { "copies_present", "copies_at_formula", "hosted_copies_on_host" };
             if (grouped) required.Add("array_element");
             var check = new PostconditionCheck(required.ToArray());
             // Leaves: a member that Revit wrapped in a group is judged by what it holds.
@@ -1214,7 +1282,6 @@ namespace Horizun.Revit.Commands
             var sources = new HashSet<long>(p.Ids.Select(Rid.Value));
             leaves = leaves.Where(e => !sources.Contains(Rid.Value(e.Id))).ToList();
             int expected = p.Ids.Count * (p.Count - 1);
-            check.Compare("copies_present", expected, leaves.Count);
             int matched = 0;
             var misses = new JArray();
             var remaining = new List<Element>(leaves);
@@ -1235,6 +1302,19 @@ namespace Horizun.Revit.Commands
                 }
             }
             check.Compare("copies_at_formula", expected, matched);
+            // Inserts copied with their hosts are dependents, not extra members (audit 2026-10-08, 6.8).
+            var members = leaves.Except(remaining).ToList();
+            int dependents = Dependents(remaining, members.Select(e => Rid.Value(e.Id)), detail);
+            check.Compare("copies_present", expected, leaves.Count - dependents);
+            var hostProblems = new JArray();
+            foreach (Element member in members)
+            {
+                long? sourceOf = SourceOf(p, doc, member);
+                string problem = sourceOf.HasValue ? HostedCopyProblem(p, sourceOf.Value, member) : null;
+                if (problem != null) hostProblems.Add(problem);
+            }
+            if (hostProblems.Count > 0) detail["hosted_copies_off_host"] = hostProblems;
+            check.Compare("hosted_copies_on_host", 0, hostProblems.Count);
             if (grouped)
                 check.Compare("array_element", true, p.ArrayId.HasValue && doc.GetElement(Rid.Make(p.ArrayId.Value)) is BaseArray);
             detail["created_ids"] = new JArray(leaves.Select(e => (JToken)Rid.Value(e.Id)));

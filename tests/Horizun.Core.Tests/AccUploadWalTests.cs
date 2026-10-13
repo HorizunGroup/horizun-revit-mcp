@@ -49,6 +49,19 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_name_with_accents_reads_as_written()
+        {
+            // MEASURED on this machine's connector logs (2026-10-08): the records are ASCII-tagged
+            // and every non-ASCII name in them is valid UTF-8. Read as Latin-1, "Sección" came out
+            // as "SecciÃ³n" and never matched the name a person typed (audit 2026-10-08, lote 7).
+            string name = "Sección estructural ñ.rvt";
+            byte[] raw = Encoding.UTF8.GetBytes("noise" + Record("co.X1", name) + "noise");
+            var hits = AccUploadWal.Scan("f", AccUploadWal.Decode(raw));
+            Assert.Single(hits);
+            Assert.Equal(name, hits[0].Name);
+        }
+
+        [Fact]
         public void Scan_is_org_neutral_where_the_field_script_was_not()
         {
             // The field prototype matched one organisation's prefix. The rule

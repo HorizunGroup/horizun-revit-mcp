@@ -454,6 +454,36 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>True when no declared point is further than the tolerance off the best-fit plane.</summary>
+        /// <summary>
+        /// The declared points moved onto the plane perpendicular to the declared normal - through their
+        /// mean height along it - when none is further from it than <paramref name="maxMoveMm"/>. MEASURED on
+        /// Revit 2024 (anonymized regression case, Paso 3): points 0.0005 mm off that plane, a 3-decimal rounding of an oblique
+        /// bar, made Rebar.CreateFromCurves fail with "An internal error has occurred". False, with
+        /// <paramref name="squared"/> null, when a point is further off than the limit.
+        /// </summary>
+        public static bool SquareToNormalPlane(IList<double[]> points, double[] normal, double maxMoveMm,
+                                               out List<double[]> squared, out double worstMm)
+        {
+            squared = null; worstMm = 0;
+            if (points == null || points.Count == 0 || normal == null) return false;
+            double l = Math.Sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+            if (!(l > 0)) return false;
+            double[] n = { normal[0] / l, normal[1] / l, normal[2] / l };
+            double mean = 0;
+            foreach (double[] p in points) mean += p[0] * n[0] + p[1] * n[1] + p[2] * n[2];
+            mean /= points.Count;
+            var outp = new List<double[]>(points.Count);
+            foreach (double[] p in points)
+            {
+                double h = p[0] * n[0] + p[1] * n[1] + p[2] * n[2] - mean;
+                worstMm = Math.Max(worstMm, Math.Abs(h));
+                outp.Add(new[] { p[0] - h * n[0], p[1] - h * n[1], p[2] - h * n[2] });
+            }
+            if (worstMm > maxMoveMm) return false;
+            squared = outp;
+            return true;
+        }
+
         public static bool IsPlanar(IList<double[]> points, double toleranceMm, out double worstMm)
         {
             worstMm = 0;

@@ -54,6 +54,7 @@ using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
 using Horizun.Revit.Core;
+using System.Globalization;
 
 namespace Horizun.Revit.Commands
 {
@@ -196,7 +197,7 @@ namespace Horizun.Revit.Commands
             if (!measured.HasValue)
                 fw.Warnings.Add(who + ": its side faces could not be read as two parallel planes; the layer is placed by the location line's arithmetic");
             else if (Math.Abs(measured.Value + loc) * 304.8 > 1.0)
-                fw.Warnings.Add(who + ": the location line reads " + (WallLocationLine)key + " but the curve sits " + Math.Round(Math.Abs(measured.Value + loc) * 304.8, 1)
+                fw.Warnings.Add(who + ": the location line reads " + (WallLocationLine)key + " but the curve sits " + Math.Round(Math.Abs(measured.Value + loc) * 304.8, 1).ToString(CultureInfo.InvariantCulture)
                                 + " mm from that line (Revit keeps the curve when the location line parameter changes); the measured faces place the layer");
             fw.LayerOffset = fw.CentreFromCurve + layerCentre;
 
@@ -210,7 +211,7 @@ namespace Horizun.Revit.Commands
             {
                 double s = Math.Max(0, extent[0]), e = Math.Min(fw.LengthMm, extent[1]);
                 if (!(e - s > 0)) { refusal = who + ": its layer has no length between its joins."; return null; }
-                fw.Warnings.Add(who + ": layer_clipped_at_joins start " + Math.Round(s, 1) + " mm, end " + Math.Round(fw.LengthMm - e, 1) + " mm (read from the wall's solid)");
+                fw.Warnings.Add(who + ": layer_clipped_at_joins start " + Math.Round(s, 1).ToString(CultureInfo.InvariantCulture) + " mm, end " + Math.Round(fw.LengthMm - e, 1).ToString(CultureInfo.InvariantCulture) + " mm (read from the wall's solid)");
                 fw.Origin += fw.Dir * (s / 304.8);
                 fw.LengthMm = e - s;
             }

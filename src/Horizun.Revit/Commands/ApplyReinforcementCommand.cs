@@ -51,7 +51,7 @@ namespace Horizun.Revit.Commands
             ReinforcementResolver.ForgetMeshes();
 
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
@@ -76,9 +76,28 @@ namespace Horizun.Revit.Commands
                 narrow.Add(v);
             }
 
+            // ONE PIECE (L10). A write must quote the cut it was planned against
+            // (chunk.partition_sha256): a cut that moved between two submissions of a loop
+            // would build some hosts twice and others never. The provenance keeps the digest of
+            // the WHOLE set the caller sent, so auditing the whole set later does not call every
+            // piece's bars stale.
+            ChunkOutcome chunk = ReinforcementChunking.Resolve(doc, request, setJson, set, partitionRequired: true);
+            if (chunk != null && !chunk.Ok) return chunk.Refusal;
+            if (chunk != null) set = chunk.PieceSet;
+
             List<ResolvedCoverRow> covers = ReinforcementResolver.ResolveCover(doc, set, narrow);
-            List<ResolvedRebarRow> bars = ReinforcementResolver.ResolveRebar(doc, set, narrow,
-                                                                             refuseAlreadyBuilt: true);
+            // The plan's own crossing order (etapa 1c): the same sets displaced the same way, so what is built is what was read.
+            CrossingDecision crossing;
+            List<ResolvedRebarRow> bars = ReinforcementResolver.ResolveRebarCrossed(doc, set, narrow,
+                                                                                    refuseAlreadyBuilt: true, decision: out crossing);
+            // The plan's own overlap check (overlapping_bar), so the rehearsal a person read is the thing that runs.
+            OverlapReport overlap = ReinforcementResolver.RefuseOverlaps(bars, set);
+            // Area, path and fabric (acero 3.0, L4b): resolved by the plan's own resolver.
+            List<ResolvedSystemRow> systems = SystemReinforcementResolver.Resolve(doc, set, narrow,
+                                                                                  refuseAlreadyBuilt: true);
+            // DECLARED HOOK LENGTHS: written to the BAR TYPE, so every bar of that type with that hook
+            // takes them. Resolved by the plan's own resolver and listed in every reply.
+            List<ResolvedHookLength> hookLengths = RebarHookLengths.Resolve(doc, set);
 
             // NO PYTHON FALLBACK IS EVER OFFERED HERE, and that is a decision
             // rather than an omission. The fallback signal exists for "no typed
@@ -101,15 +120,32 @@ namespace Horizun.Revit.Commands
                     refusals.Add(new JObject { ["index"] = idx, ["kind"] = "rebar", ["rule_id"] = b.Rule.Id, ["code"] = b.Code, ["why"] = b.Why });
                 idx++;
             }
+            foreach (ResolvedSystemRow sr in systems)
+            {
+                if (!sr.Ok && sr.Required)
+                    refusals.Add(new JObject { ["index"] = idx, ["kind"] = sr.Kind, ["rule_id"] = sr.RuleId, ["code"] = sr.Code, ["why"] = sr.Why });
+                idx++;
+            }
+
+            foreach (ResolvedHookLength h in hookLengths)
+            {
+                // Never optional: a declared hook length names a type to change, and one that does
+                // not resolve would leave bars built with whatever length the model happens to carry.
+                if (!h.Ok)
+                    refusals.Add(new JObject { ["index"] = idx, ["kind"] = "bar_type_change", ["rule_id"] = h.Declared.Path, ["code"] = h.Code, ["why"] = h.Why });
+                idx++;
+            }
 
             List<ResolvedRebarRow> toBuild = bars.Where(b => b.Ok).ToList();
+            List<ResolvedHookLength> toChange = hookLengths.Where(h => RebarHookLengths.NeedsChange(h, set.Tolerances.LengthMm)).ToList();
             List<ResolvedCoverRow> toSet = covers.Where(c => c.Ok && !c.AlreadyRight).ToList();
+            List<ResolvedSystemRow> systemsToBuild = systems.Where(x => x.Ok).ToList();
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
-            string planHash = DocumentGate.PlanHash(request, "requirement_set", "host_ids");
+            string planHash = DocumentGate.PlanHash(request, "requirement_set", "host_ids", "chunk");
             string setSha = StructuralRequirementSet.Sha256Of(setJson);
 
-            ResolvedPlan plan = BuildPlan(doc, gate, set, setSha, toSet, toBuild);
+            ResolvedPlan plan = BuildPlan(doc, gate, set, setSha, toSet, toBuild, systemsToBuild, hookLengths);
 
             var payload = new JObject
             {
@@ -126,8 +162,15 @@ namespace Horizun.Revit.Commands
                     ["cover_rows_already_right"] = covers.Count(c => c.Ok && c.AlreadyRight),
                     ["rebar_sets"] = toBuild.Count,
                     ["expected_bars"] = toBuild.Sum(b => b.Layout.Quantity),
-                    ["expected_bar_positions"] = toBuild.Sum(b => b.Layout.NumberOfBarPositions)
+                    ["expected_bar_positions"] = toBuild.Sum(b => b.Layout.NumberOfBarPositions),
+                    ["area_systems"] = systemsToBuild.Count(x => x.Kind == SystemReinforcementRules.KindArea),
+                    ["path_systems"] = systemsToBuild.Count(x => x.Kind == SystemReinforcementRules.KindPath),
+                    ["fabric_areas"] = systemsToBuild.Count(x => x.Kind == SystemReinforcementRules.KindFabric),
+                    ["bar_type_changes"] = toChange.Count
                 },
+                ["chunk"] = chunk == null ? JValue.CreateNull() : (JToken)chunk.Chunking,
+                ["overlap_check"] = overlap.ToJson(),
+                ["crossing_order"] = ReinforcementResolver.DescribeCrossing(crossing, bars),
                 ["refused"] = refusals,
                 ["refused_means"] =
                     "rows whose rule is REQUIRED and could not be resolved. A rule marked required: false may be " +
@@ -140,7 +183,15 @@ namespace Horizun.Revit.Commands
                 var rows = new JArray();
                 for (int i = 0; i < toSet.Count; i++) rows.Add(ReinforcementResolver.DescribeCoverRow(toSet[i], i));
                 for (int i = 0; i < toBuild.Count; i++) rows.Add(ReinforcementResolver.DescribeRebarRow(toBuild[i], i));
+                for (int i = 0; i < systemsToBuild.Count; i++) rows.Add(SystemReinforcementResolver.Describe(systemsToBuild[i], i));
                 payload["will_build"] = rows;
+                var typeChanges = new JArray();
+                foreach (ResolvedHookLength h in hookLengths) typeChanges.Add(RebarHookLengths.Describe(h, set.Tolerances.LengthMm));
+                payload["bar_type_changes"] = typeChanges;
+                payload["bar_type_changes_mean"] =
+                    "the hook lengths this set declares, per (bar type, hook type) pair. Those with change: true are " +
+                    "written to the BAR TYPE in the same transaction, before any bar is built - which changes every " +
+                    "bar of that type with that hook in this model, not only the bars this set builds.";
                 // AND THE ROWS IT IS DROPPING. A required:false row that failed
                 // appeared in neither `refused` nor `will_build`, in the rehearsal or
                 // the apply, while `refused_means` asserted such rows were reported.
@@ -150,6 +201,8 @@ namespace Horizun.Revit.Commands
                     if (!covers[i].Ok) dropped.Add(ReinforcementResolver.DescribeCoverRow(covers[i], i));
                 for (int i = 0; i < bars.Count; i++)
                     if (!bars[i].Ok) dropped.Add(ReinforcementResolver.DescribeRebarRow(bars[i], i));
+                for (int i = 0; i < systems.Count; i++)
+                    if (!systems[i].Ok) dropped.Add(SystemReinforcementResolver.Describe(systems[i], i));
                 payload["will_not_build"] = dropped;
                 payload["will_not_build_means"] =
                     "every row that did not resolve, required or not. A rule marked required: false is dropped " +
@@ -157,7 +210,8 @@ namespace Horizun.Revit.Commands
                 payload["nothing_written"] = true;
 
                 if (refusals.Count == 0) DocumentGate.RecordResolvedPlan(plan);
-                ApplicationOutcome.StampRehearsal(payload, toSet.Count + toBuild.Count, refusals.Count, 0, 0);
+                ApplicationOutcome.StampRehearsal(payload, toSet.Count + toBuild.Count + systemsToBuild.Count + toChange.Count,
+                                                  refusals.Count, 0, 0);
                 CommandResult rehearsal = CommandResult.Ok(payload);
                 DocumentGate.StampConfirmation(payload, gate, Name, planHash, refusals.Count == 0,
                     refusals.Count == 0 ? null
@@ -175,9 +229,9 @@ namespace Horizun.Revit.Commands
                     "not have - fix the set or the model; there is no other tool that could do this instead.",
                     new JObject { ["refused"] = refusals, ["write_started"] = false });
 
-            if (toBuild.Count == 0 && toSet.Count == 0)
+            if (toBuild.Count == 0 && toSet.Count == 0 && systemsToBuild.Count == 0 && toChange.Count == 0)
             {
-                int droppedRows = covers.Count(c => !c.Ok) + bars.Count(b => !b.Ok);
+                int droppedRows = covers.Count(c => !c.Ok) + bars.Count(b => !b.Ok) + systems.Count(x => !x.Ok);
                 payload["nothing_to_do"] = true;
                 payload["rows_dropped"] = droppedRows;
                 if (droppedRows > 0)
@@ -192,6 +246,8 @@ namespace Horizun.Revit.Commands
                         if (!covers[i].Ok) why.Add(ReinforcementResolver.DescribeCoverRow(covers[i], i));
                     for (int i = 0; i < bars.Count; i++)
                         if (!bars[i].Ok) why.Add(ReinforcementResolver.DescribeRebarRow(bars[i], i));
+                    for (int i = 0; i < systems.Count; i++)
+                        if (!systems[i].Ok) why.Add(SystemReinforcementResolver.Describe(systems[i], i));
                     payload["will_not_build"] = why;
                     ApplicationOutcome.StampApplied(payload, ApplicationOutcome.NotStarted,
                                                     droppedRows, 0, 0, droppedRows, 0, 0);
@@ -213,14 +269,32 @@ namespace Horizun.Revit.Commands
             // ------------------------------------------------------------ write
             string txName = request.Value<string>("transaction_name") ?? "Horizun reinforcement";
             var made = new List<Built>();
+            var madeSystems = new List<KeyValuePair<ResolvedSystemRow, ElementId>>();
+            var couplersNotPlaced = new JArray();
             var coversSet = new JArray();
             var provenanceProblems = new JArray();
+            var written = new HashSet<ResolvedHookLength>();
 
             using (var tx = new Transaction(doc, txName))
             {
                 try
                 {
                     tx.Start();
+
+                    // HOOK LENGTHS FIRST, before any bar exists: a bar built with this hook takes the
+                    // length its type carries, so the type is set before the bar is made.
+                    foreach (ResolvedHookLength h in toChange)
+                    {
+                        try { RebarHookLengths.Write(h); }
+                        catch (Exception ex)
+                        {
+                            throw new InvalidOperationException(
+                                "Revit refused hook length " + h.Declared.LengthMm.ToString("0.###", CultureInfo.InvariantCulture) +
+                                " mm for hook type '" + h.Declared.HookTypeName + "' on bar type '" + h.Declared.BarTypeName +
+                                "' (" + h.Declared.Path + "): " + ex.Message + " Nothing in this batch is kept.", ex);
+                        }
+                        written.Add(h);
+                    }
 
                     foreach (ResolvedCoverRow c in toSet)
                     {
@@ -229,13 +303,34 @@ namespace Horizun.Revit.Commands
                             throw new InvalidOperationException(
                                 "host " + Rid.Value(c.Host.Id) + " would not return its RebarHostData inside the " +
                                 "transaction, although it did during the rehearsal.");
-                        using (data) data.SetCommonCoverType(c.CoverType);
-                        coversSet.Add(new JObject
+                        var entry = new JObject
                         {
                             ["host_id"] = Rid.Value(c.Host.Id),
                             ["cover_type_id"] = Rid.Value(c.CoverType.Id),
                             ["rule_id"] = c.Rule.Id
-                        });
+                        };
+                        if (c.Rule.Face == StructuralCoverRule.FaceNormal)
+                        {
+                            // THE FACES ARE FOUND AGAIN, by the same normal, inside the transaction: the
+                            // rehearsal's references are not carried across, and a host whose faces changed
+                            // since is refused rather than half covered.
+                            List<double[]> seen;
+                            string why;
+                            List<ReinforcementResolver.FaceCover> faces = ReinforcementResolver.CoverFaces(
+                                c.Host, c.Rule.FaceNormalMm, set.Tolerances.AngleDegrees, out seen, out why);
+                            if (faces == null || faces.Count != c.Faces.Count)
+                                throw new InvalidOperationException(
+                                    "cover rule '" + c.Rule.Id + "' found " + c.Faces.Count + " face(s) of host " + Rid.Value(c.Host.Id) +
+                                    " pointing that way in the rehearsal and " + (faces == null ? "none readable (" + why + ")" : faces.Count.ToString(CultureInfo.InvariantCulture)) +
+                                    " inside the transaction. Nothing in this batch is kept.");
+                            using (data)
+                                foreach (ReinforcementResolver.FaceCover f in faces) data.SetCoverType(f.Ref, c.CoverType);
+                            entry["face"] = CoverFaceRules.Describe(c.Rule.FaceNormalMm);
+                            entry["faces"] = faces.Count;
+                        }
+                        else
+                            using (data) data.SetCommonCoverType(c.CoverType);
+                        coversSet.Add(entry);
                     }
 
                     foreach (ResolvedRebarRow b in toBuild)
@@ -249,6 +344,73 @@ namespace Horizun.Revit.Commands
                         ApplyLayout(bar, b);
                         WriteProvenance(bar, b, set, setSha, plan, provenanceProblems);
                         made.Add(new Built { Row = b, Id = bar.Id });
+                    }
+
+                    // AREA, PATH AND FABRIC, after the rebar sets and in the SAME transaction:
+                    // one requirement set, one commit or none.
+                    foreach (ResolvedSystemRow sr in systemsToBuild)
+                    {
+                        Element sys = SystemReinforcementWriter.Create(doc, sr);
+                        WriteSystemProvenance(sys, sr, set, setSha, plan, provenanceProblems);
+                        madeSystems.Add(new KeyValuePair<ResolvedSystemRow, ElementId>(sr, sys.Id));
+                    }
+
+                    // COUPLERS (L7): once every piece exists, the coupler of each coupled splice joins the
+                    // END of one piece to the START of the next, which meet at the declared station. A
+                    // partner piece that was not built (a required: false row refused) leaves its coupler
+                    // unplaced and said so; the verification then reports the splice as not coupled.
+                    if (made.Any(m => m.Row.Rule.CouplerNextRuleId != null))
+                    {
+                        doc.Regenerate();
+                        foreach (Built m in made.Where(x => x.Row.Rule.CouplerNextRuleId != null))
+                        {
+                            Built next = Partner(made, m);
+                            if (next == null)
+                            {
+                                couplersNotPlaced.Add(new JObject
+                                {
+                                    ["rule_id"] = m.Row.Rule.Id,
+                                    ["next_rule_id"] = m.Row.Rule.CouplerNextRuleId,
+                                    ["why"] = "the next piece was not built in this batch, so there is nothing to couple to."
+                                });
+                                continue;
+                            }
+                            RebarCouplerError err;
+                            // THE NEXT PIECE FIRST (measured, Revit 2024 and 2026): given (this piece, end 1)
+                            // first, Revit REVERSED this piece so the coupler sat at its end 0.
+                            RebarCoupler coupler = RebarCoupler.Create(doc, m.Row.CouplerType.Id,
+                                RebarReinforcementData.Create(next.Id, 0), RebarReinforcementData.Create(m.Id, m.Row.Rule.CouplerNextEnd), out err);
+                            if (coupler == null || err != RebarCouplerError.ValidationSuccessfuly)
+                                throw new InvalidOperationException(
+                                    "Revit refused the coupler '" + m.Row.Rule.CouplerNextTypeName + "' between rule '" + m.Row.Rule.Id +
+                                    "' and rule '" + m.Row.Rule.CouplerNextRuleId + "' on host " + Rid.Value(m.Row.Host.Id) + ": " + err +
+                                    ". Nothing in this batch is kept.");
+                            m.CouplerId = coupler.Id;
+                        }
+                    }
+
+                    // HOLD THE ENDS (stage 1b, asked for): once every bar and coupler exists, the open bars
+                    // Revit pulled onto a neighbour's cover are re-pinned where the plan put them. Coupled
+                    // pieces are seated by their coupler and closed stirrups have no free end: not applicable.
+                    if (made.Any(m => set.HoldsEnds(m.Row.Rule)))
+                    {
+                        doc.Regenerate();
+                        foreach (Built m in made.Where(x => set.HoldsEnds(x.Row.Rule)))
+                        {
+                            bool coupled = m.Row.Rule.CoupledAtStart || m.Row.Rule.CouplerNextRuleId != null;
+                            if (m.Row.Rule.Closed || coupled || m.Row.Rule.Placement != null)
+                            {
+                                m.Hold = new JObject
+                                {
+                                    ["requested"] = true, ["applicable"] = false, ["verified"] = null,
+                                    ["why"] = m.Row.Rule.Closed ? "a closed bar has no free end to hold."
+                                            : coupled ? "a coupled end is seated by its coupler, not held."
+                                            : "a placed shape is laid by its placement, not by its ends."
+                                };
+                                continue;
+                            }
+                            m.Hold = RebarHoldEnds.Hold(doc, (Rebar)doc.GetElement(m.Id), m.Row.PointsMm);
+                        }
                     }
 
                     Guard.Commit(tx, txName);
@@ -270,8 +432,9 @@ namespace Horizun.Revit.Commands
                     // on the strength of not having looked.
                     bool silent = ex is SilentRollbackException;
                     var detail = ApplicationOutcome.FailureAfterWrite(
-                        "sets_created_before_the_failure", made.Count,
-                        made.Count == 0 ? "first_element" : "after_" + made.Count + "_sets",
+                        "sets_created_before_the_failure", made.Count + madeSystems.Count,
+                        made.Count + madeSystems.Count == 0 ? "first_element"
+                            : "after_" + (made.Count + madeSystems.Count) + "_sets",
                         silent ? ApplicationOutcome.RolledBackStatus : rb,
                         silent ? ApplicationState.RolledBack : ApplicationState.Uncertain,
                         objectReread: false);
@@ -290,7 +453,7 @@ namespace Horizun.Revit.Commands
             int verified = 0;
             foreach (Built m in made)
             {
-                JObject row = Verify(doc, m, set);
+                JObject row = Verify(doc, m, set, made);
                 if ((bool)row["verified"]) verified++;
                 verification.Add(row);
             }
@@ -301,19 +464,63 @@ namespace Horizun.Revit.Commands
             int coversVerified = 0;
             foreach (ResolvedCoverRow c in toSet)
             {
-                RebarHostData data = null;
-                try { data = RebarHostData.GetRebarHostData(c.Host); } catch { }
                 bool ok = false;
-                if (data != null)
-                    using (data)
-                    {
-                        RebarCoverType now = null;
-                        try { now = data.GetCommonCoverType(); } catch { }
-                        ok = now != null && now.Id == c.CoverType.Id;
-                    }
+                if (c.Rule.Face == StructuralCoverRule.FaceNormal)
+                {
+                    // EVERY FACE pointing that way, read back one by one.
+                    List<double[]> seen;
+                    string why;
+                    List<ReinforcementResolver.FaceCover> now = ReinforcementResolver.CoverFaces(
+                        c.Host, c.Rule.FaceNormalMm, set.Tolerances.AngleDegrees, out seen, out why);
+                    ok = now != null && now.Count == c.Faces.Count && now.All(f => f.Current != null && f.Current == c.CoverType.Id);
+                }
+                else
+                {
+                    RebarHostData data = null;
+                    try { data = RebarHostData.GetRebarHostData(c.Host); } catch { }
+                    if (data != null)
+                        using (data)
+                        {
+                            RebarCoverType now = null;
+                            try { now = data.GetCommonCoverType(); } catch { }
+                            ok = now != null && now.Id == c.CoverType.Id;
+                        }
+                }
                 if (ok) coversVerified++;
+                // BY RULE AND HOST: a common rule and a face rule may name the same host.
                 foreach (JToken t in coversSet)
-                    if ((long)t["host_id"] == Rid.Value(c.Host.Id)) ((JObject)t)["verified"] = ok;
+                    if ((long)t["host_id"] == Rid.Value(c.Host.Id) && (string)t["rule_id"] == c.Rule.Id) ((JObject)t)["verified"] = ok;
+            }
+
+            // HOOK LENGTHS, re-read from the bar type - every declared pair, written or not. A pair
+            // that does not read back fixed at the declared length fails the verification.
+            var typeVerification = new JArray();
+            int typeVerified = 0, typeWrittenVerified = 0, typeWrittenPresent = 0;
+            foreach (ResolvedHookLength h in hookLengths.Where(x => x.Ok))
+            {
+                JObject after = RebarHookLengths.Read(h.BarType, h.HookType.Id);
+                JObject v = HookLengthRules.VerifyEntry(h.Declared, h.BarTypeElementId, h.HookTypeElementId,
+                                                        h.Before, after, written.Contains(h), set.Tolerances.LengthMm);
+                bool ok = (bool)v["verified"];
+                if (ok) typeVerified++;
+                if (written.Contains(h))
+                {
+                    if ((bool?)after["readable"] == true) typeWrittenPresent++;
+                    if (ok) typeWrittenVerified++;
+                }
+                typeVerification.Add(v);
+            }
+
+            // AREA, PATH AND FABRIC, re-read: every parameter set, and that each produced at
+            // least one bar or sheet. Never claimed from the creation call returning.
+            var systemVerification = new JArray();
+            int systemsVerified = 0, systemsPresent = 0;
+            foreach (KeyValuePair<ResolvedSystemRow, ElementId> ms in madeSystems)
+            {
+                JObject srow = SystemReinforcementWriter.Verify(doc, ms.Value, ms.Key, set.Tolerances);
+                if ((bool?)srow["present"] == true) systemsPresent++;
+                if ((bool?)srow["verified"] == true) systemsVerified++;
+                systemVerification.Add(srow);
             }
 
             payload["transaction_status"] = ApplicationOutcome.Committed;
@@ -327,7 +534,22 @@ namespace Horizun.Revit.Commands
                 "ACTUAL position transforms Revit computed, measured against the host. The predicted and the " +
                 "measured numbers come from different places on purpose - a verification supplied with both " +
                 "would only confirm its own opinion.";
+            if (madeSystems.Count > 0)
+            {
+                payload["system_verification"] = systemVerification;
+                payload["system_verified"] = systemsVerified;
+            }
+            if (typeVerification.Count > 0)
+            {
+                payload["bar_type_changes"] = typeVerification;
+                payload["bar_type_changes_verified"] = typeVerified;
+                payload["bar_type_changes_mean"] =
+                    "each declared hook length re-read from its BAR TYPE after the commit: requested, read and verified " +
+                    "(fixed, not auto-calculated, within the length tolerance). A TYPE property - every bar of that type " +
+                    "with that hook in this model carries it.";
+            }
             if (provenanceProblems.Count > 0) payload["provenance_problems"] = provenanceProblems;
+            if (couplersNotPlaced.Count > 0) payload["couplers_not_placed"] = couplersNotPlaced;
 
             // APPLIED IS WHAT THE MODEL WAS MEASURED TO CARRY, which is what the
             // declaration block means by the word. It used to be made.Count -
@@ -337,16 +559,20 @@ namespace Horizun.Revit.Commands
             int presentAfterCommit = 0;
             foreach (JToken row in verification)
                 if (row["checks"] != null && row["checks"]["host"] != null) presentAfterCommit++;
-            int requested = made.Count + toSet.Count;
-            int applied = presentAfterCommit + coversVerified;
-            int done = verified + coversVerified;
+            int requested = made.Count + toSet.Count + madeSystems.Count + written.Count;
+            int applied = presentAfterCommit + coversVerified + systemsPresent + typeWrittenPresent;
+            int done = verified + coversVerified + systemsVerified + typeWrittenVerified;
             ApplicationOutcome.StampApplied(payload, ApplicationOutcome.Committed, requested, applied, done, 0,
                                             requested - done, 0);
 
-            if (verified != made.Count || coversVerified != toSet.Count)
+            if (verified != made.Count || coversVerified != toSet.Count || systemsVerified != madeSystems.Count ||
+                typeVerified != typeVerification.Count)
                 return CommandResult.FailWithDetail(
                     "The transaction committed and only " + done + " of " + requested +
-                    " rows were re-read as what was asked for. Success is NOT claimed; inspect the model. The " +
+                    " rows were re-read as what was asked for" +
+                    (typeVerified != typeVerification.Count
+                        ? ", and " + (typeVerification.Count - typeVerified) + " declared hook length(s) do not read back from their bar type"
+                        : "") + ". Success is NOT claimed; inspect the model. The " +
                     "elements exist - their ids are in the verification rows - so the fix is to correct them, " +
                     "never to build them again.",
                     payload);
@@ -358,12 +584,22 @@ namespace Horizun.Revit.Commands
         {
             public ResolvedRebarRow Row;
             public ElementId Id;
+            /// <summary>The coupler joining this piece's end to the next piece (L7), when one was placed.</summary>
+            public ElementId CouplerId;
+            /// <summary>What hold_ends did to this bar (stage 1b), when it was asked for.</summary>
+            public JObject Hold;
         }
+
+        /// <summary>The piece a coupled splice joins this one to: the next rule, in the same host.</summary>
+        private static Built Partner(List<Built> made, Built m) =>
+            made.FirstOrDefault(n => n.Row.Rule.Id == m.Row.Rule.CouplerNextRuleId && n.Row.Host.Id == m.Row.Host.Id);
 
         // --------------------------------------------------------------- create
 
         private static Rebar Create(Document doc, ResolvedRebarRow b)
         {
+            if (b.Rule.Placement != null) return CreatePlaced(doc, b);
+
             RebarStyle style = b.Rule.Style == StructuralStyle.StirrupTie
                 ? RebarStyle.StirrupTie : RebarStyle.Standard;
 
@@ -380,6 +616,66 @@ namespace Horizun.Revit.Commands
                                              b.Rule.Start.Orientation, b.Rule.End.Orientation,
                                              useExistingShapeIfPossible: true, createNewShape: true);
         }
+
+        /// <summary>
+        /// A HOOP OR A SPIRAL PLACED FROM A SHAPE (L7). Rebar.CreateFromCurves cannot draw either
+        /// (measured on Revit 2024: every chain with an arc fails inside Revit), so the shape the rule
+        /// names - its definition already read and judged by the resolver - is placed with
+        /// CreateFromRebarShape at the corner of the hoop's box, its x and y on the section's two
+        /// directions, and fitted with the documented ScaleToBox (the box INCLUDES the bar, so it is
+        /// the centreline diameter plus one bar) or, for a spiral, ScaleToBoxFor3D over the declared
+        /// height. Revit assigns hooks to a placed shape arbitrarily, so both ends are cleared. A
+        /// spiral's pitch, finishing turns and height are then set from the declaration. Every one of
+        /// these is re-read after the commit; nothing here is reported as done on its own say-so.
+        /// </summary>
+        private static Rebar CreatePlaced(Document doc, ResolvedRebarRow b)
+        {
+            PlacedShapeGeometry g = b.Rule.Placement;
+            double d = ReinforcementResolver.SafeDiameterMm(b.BarType);
+            if (d <= 0)
+                throw new InvalidOperationException(
+                    "rule '" + b.Rule.Id + "': bar type '" + SafeName(b.BarType) + "' reports no model diameter, and the box a placed " +
+                    "hoop is fitted to includes the bar. Nothing in this batch is kept.");
+            double[] origin, xv, yv;
+            PlacedShapes.Box(g, d, out origin, out xv, out yv);
+            XYZ o = Ft(origin);
+            Rebar bar = Rebar.CreateFromRebarShape(doc, b.Shape, b.BarType, b.Host, o,
+                                                   new XYZ(g.XVec[0], g.XVec[1], g.XVec[2]), new XYZ(g.YVec[0], g.YVec[1], g.YVec[2]));
+            if (bar == null) return null;
+            // "If appropriate hooks can be found in the document, they will be assigned arbitrarily."
+            bar.SetHookTypeId(0, ElementId.InvalidElementId);
+            bar.SetHookTypeId(1, ElementId.InvalidElementId);
+            RebarShapeDrivenAccessor acc = bar.GetShapeDrivenAccessor();
+            if (acc == null)
+                throw new InvalidOperationException("the bar placed from shape '" + SafeName(b.Shape) + "' for rule '" + b.Rule.Id +
+                                                    "' is not shape driven, so it cannot be fitted. Nothing in this batch is kept.");
+            if (g.IsSpiral)
+            {
+                acc.ScaleToBoxFor3D(o, Ft(xv), Ft(yv), g.HeightMm.Value * MmToFt);
+                SetPlacedParameter(bar, b, BuiltInParameter.REBAR_SHAPE_SPIRAL_PITCH, g.PitchMm.Value * MmToFt, null);
+                SetPlacedParameter(bar, b, BuiltInParameter.REBAR_SHAPE_SPIRAL_BASE_FINISHING_TURNS, null, g.BaseFinishingTurns.Value);
+                SetPlacedParameter(bar, b, BuiltInParameter.REBAR_SHAPE_SPIRAL_TOP_FINISHING_TURNS, null, g.TopFinishingTurns.Value);
+                SetPlacedParameter(bar, b, BuiltInParameter.REBAR_SHAPE_SPIRAL_HEIGHT, g.HeightMm.Value * MmToFt, null);
+            }
+            else acc.ScaleToBox(o, Ft(xv), Ft(yv));
+            return bar;
+        }
+
+        private static void SetPlacedParameter(Rebar bar, ResolvedRebarRow b, BuiltInParameter which, double? lengthFt, int? count)
+        {
+            Parameter p = bar.get_Parameter(which);
+            if (p == null || p.IsReadOnly)
+                throw new InvalidOperationException(
+                    "rule '" + b.Rule.Id + "': the spiral placed from shape '" + SafeName(b.Shape) + "' carries no writable " + which +
+                    ", so the declared value cannot be set. Nothing in this batch is kept.");
+            bool set = count.HasValue
+                ? (p.StorageType == StorageType.Integer ? p.Set(count.Value) : p.Set((double)count.Value))
+                : p.Set(lengthFt.Value);
+            if (!set)
+                throw new InvalidOperationException("rule '" + b.Rule.Id + "': Revit refused " + which + ". Nothing in this batch is kept.");
+        }
+
+        private static XYZ Ft(double[] mm) => new XYZ(mm[0] * MmToFt, mm[1] * MmToFt, mm[2] * MmToFt);
 
         private static void ApplyLayout(Rebar bar, ResolvedRebarRow b)
         {
@@ -469,9 +765,42 @@ namespace Horizun.Revit.Commands
                 });
         }
 
+        /// <summary>
+        /// The same provenance a bar carries, on the system element itself - the store
+        /// accepts any element. The layout field names the kind of system; the expected
+        /// quantity is 0 because the bar count of a system is Revit's, not predicted here.
+        /// </summary>
+        private static void WriteSystemProvenance(Element sys, ResolvedSystemRow r, StructuralRequirementSet set,
+                                                  string setSha, ResolvedPlan plan, JArray problems)
+        {
+            var p = new StructuralProvenance
+            {
+                RuleId = r.RuleId,
+                RequirementSetId = set.Id,
+                RequirementSetVersion = set.Version,
+                RequirementSetSha256 = setSha,
+                PlanFingerprint = plan == null ? null : plan.Fingerprint(),
+                HostElementId = Rid.Value(r.Host.Id),
+                HostUniqueId = SafeUid(r.Host),
+                LayoutRule = r.Kind + "_reinforcement_system",
+                ExpectedQuantity = 0,
+                HorizunVersion = Build.Version,
+                HorizunCommit = Build.Commit,
+                WrittenUtc = DateTime.UtcNow.ToString("o")
+            };
+            string why;
+            if (!StructuralProvenanceStore.Write(sys, p, out why))
+                problems.Add(new JObject
+                {
+                    ["element_id"] = Rid.Value(sys.Id),
+                    ["rule_id"] = r.RuleId,
+                    ["revit_said"] = why
+                });
+        }
+
         // --------------------------------------------------------------- verify
 
-        private static JObject Verify(Document doc, Built m, StructuralRequirementSet set)
+        private static JObject Verify(Document doc, Built m, StructuralRequirementSet set, List<Built> made)
         {
             ResolvedRebarRow b = m.Row;
             var row = new JObject
@@ -578,6 +907,7 @@ namespace Horizun.Revit.Commands
             // "a hook was asked for and Revit did not apply it" was the one case
             // nothing looked at, while horizun_audit_reinforcement raises
             // hook_differs on the very same bar.
+            List<double[]> drawnPts = null, declaredPts = null;
             for (int end = 0; end <= 1; end++)
             {
                 ElementId wantHook = end == 0 ? b.StartHookId : b.EndHookId;
@@ -594,11 +924,38 @@ namespace Horizun.Revit.Commands
                 checks["hook_type_" + endName] = hookCheck;
                 ok &= hookOk;
 
+                // A STRAIGHT END HAS NOTHING THAT TURNS (measured live 2026-10-08: hookless 16M
+                // ends read 'right' against the default 'left' and failed a correct set).
+                long wantHookValue = Rid.Value(wantHook ?? ElementId.InvalidElementId);
+                long gotHookValue = gotHook == null ? -1 : Rid.Value(gotHook);
+                if (hookReadable && !RebarAuditRules.OrientationApplies(wantHookValue < 0 ? -1 : wantHookValue,
+                                                                         gotHookValue < 0 ? -1 : gotHookValue))
+                {
+                    checks["termination_orientation_" + endName] = NotApplicable(
+                        "no hook at this end, so nothing turns; Revit's orientation here is not a fact about the bar.");
+                    continue;
+                }
                 string gotOrient = RebarApi.ReadOrientation(bar, end);
-                bool orientOk = string.Equals(gotOrient, wantOrient, StringComparison.Ordinal);
+                // THE DRAWING DECIDES WHEN IT CAN BE READ (etapa 1b). MEASURED on Revit 2024: a straight bar
+                // matched to M_01, declared 'left', drew its hooks on the left and read back 'right'. The side
+                // is measured from the drawn centreline (HookSide); the word decides only when it could not be.
+                if (drawnPts == null) drawnPts = RebarFacts.CentrelinePointsMm(bar, false);
+                if (declaredPts == null) declaredPts = RebarFacts.CentrelinePointsMm(bar, true);
+                string sideWhy;
+                string drawnOrient = HookSide.Measure(drawnPts, declaredPts,
+                    b.Normal == null ? null : new[] { b.Normal.X, b.Normal.Y, b.Normal.Z }, end, out sideWhy);
+                bool orientOk = drawnOrient != null
+                    ? string.Equals(drawnOrient, wantOrient, StringComparison.Ordinal)
+                    : string.Equals(gotOrient, wantOrient, StringComparison.Ordinal);
                 JObject orientCheck = Check(orientOk, wantOrient, gotOrient);
+                orientCheck["drawn"] = drawnOrient;
+                if (drawnOrient == null)
+                    orientCheck["drawn_why"] = sideWhy;
                 if (gotOrient == null)
                     orientCheck["why"] = "Revit would not report which way the termination turns at this end.";
+                else if (drawnOrient != null && !string.Equals(gotOrient, drawnOrient, StringComparison.Ordinal))
+                    orientCheck["why"] = "Revit reports '" + gotOrient + "' and the hook is DRAWN turning '" + drawnOrient +
+                                         "' (measured from the drawn centreline); the drawing is what is judged.";
                 checks["termination_orientation_" + endName] = orientCheck;
                 ok &= orientOk;
             }
@@ -642,8 +999,9 @@ namespace Horizun.Revit.Commands
                     markCheck["reach"] =
                         sharing.Count + " other bar set(s) in this host already carry mark '" + b.Rule.Mark +
                         "'. A schedule groups by mark, so they will appear as one line. Revit gives a new bar " +
-                        "the mark of an existing one unless it is told otherwise, so this is ordinary and it is " +
-                        "not silent: horizun_audit_reinforcement reports it as bar_mark_duplicate.";
+                        "the mark of an existing one unless it is told otherwise. On the same bar that is how a " +
+                        "schedule is meant to work; on a different bar horizun_audit_reinforcement reports it as " +
+                        "bar_mark_conflict.";
                 checks["schedule_mark"] = markCheck;
                 ok &= markOk;
             }
@@ -736,7 +1094,10 @@ namespace Horizun.Revit.Commands
             }
             else
             {
-                List<double[]> corners = ReinforcementResolver.HostCorners(b.Host);
+                // THE HOST, OR ITS UNION WITH THE ELEMENTS THE RULE RUNS INTO (L1): the same
+                // context the plan measured against before the transaction.
+                ReinforcementResolver.ContainmentContext ctx = ReinforcementResolver.ContextFor(doc, set, b.Host, b.Rule);
+                List<double[]> corners = ctx.Corners;
 
                 // THE BAR REVIT ACTUALLY DREW, not the one that was asked for. The
                 // position transforms are OFFSETS from bar 0 - measured, every set
@@ -744,7 +1105,13 @@ namespace Horizun.Revit.Commands
                 // the whole check translation-invariant: a bar Revit had put
                 // somewhere else entirely would still have been measured where the
                 // plan wanted it.
-                List<double[]> barPoints = ActualCentrelinePoints(bar);
+                // A PLACED HOOP OR SPIRAL (L7) is measured on its TESSELLATED centreline: its curves are
+                // arcs or a helix, and their end points alone would leave the bar between them unmeasured.
+                // EVERY BAR IS MEASURED ON ITS TESSELLATED CENTRELINE, hooks and bends included - the very call the
+                // audit makes. MEASURED (Revit 2024, anonymized regression case roof, etapa 1b): reading only each curve's two end points
+                // turned a 180 degree hook into its chord, and a hook 2.04 mm short of its cover passed the apply
+                // while the audit, measuring the drawn arc, reported cover_violated.
+                List<double[]> barPoints = RebarFacts.CentrelinePointsMm(bar, false);
                 bool fromModel = barPoints != null && barPoints.Count > 0;
                 if (!fromModel) barPoints = b.PointsMm;
 
@@ -781,13 +1148,13 @@ namespace Horizun.Revit.Commands
                 // audit runs afterwards - on the centreline Revit DREW and the
                 // offsets Revit COMPUTED, so a bar the model put somewhere else is
                 // measured where it actually is.
-                string applyMeshWhy;
-                HostMesh applyMesh = ReinforcementResolver.MeshFor(b.Host, out applyMeshWhy);
+                string applyMeshWhy = ctx.Code != null ? ctx.Code + ": " + ctx.Why : ctx.MeshWhy;
+                HostMesh applyMesh = ctx.Code != null ? null : ctx.Mesh;
                 double applyRadiusMm = arrayModelDiameterMm / 2.0;
                 SetContainment inside = RebarContainment.Check(
                     applyMesh, barPoints, b.Rule.Closed, measured, b.Rule.NormalMm, applyRadiusMm,
-                    ReinforcementResolver.CoverForContainment(doc, set, b.Host),
-                    set.Tolerances.LengthMm, RebarContainment.DefaultSampleStepMm);
+                    ctx.CoverMm, set.Tolerances.LengthMm, RebarContainment.DefaultSampleStepMm,
+                    applyMesh == null ? applyMeshWhy : null);
 
                 JObject insideJson = inside.ToJson();
                 insideJson["verified"] = inside.Word == SolidContainment.Inside && fromModel;
@@ -795,13 +1162,32 @@ namespace Horizun.Revit.Commands
                 insideJson["source"] = "the centreline Revit drew, offset by GetBarPositionTransform, against " +
                                        "the triangulated boundary of the host itself - both read back after " +
                                        "the commit";
-                if (applyMesh == null && applyMeshWhy != null) insideJson["boundary_why"] = applyMeshWhy;
+                if (applyMesh == null && applyMeshWhy != null && !inside.Why.Contains(applyMeshWhy)) insideJson["boundary_why"] = applyMeshWhy;
                 if (!fromModel)
                     insideJson["why_not_verified"] =
                         "the bar would not return its centreline, so this was measured on the DECLARED " +
                         "geometry. Unknown is not a pass.";
+                if (ctx.IsUnion) insideJson["measured_against"] = new JArray(ctx.PartIds.Cast<object>().ToArray());
                 checks["inside_host_solid"] = insideJson;
                 ok &= inside.Word == SolidContainment.Inside && fromModel;
+
+                // THE ANCHORED LENGTH (L1), on the bar Revit drew - hooks included. The plan could
+                // only measure the declared centreline; this is where a hook's share is known.
+                if (b.Rule.Anchorage.Count > 0)
+                {
+                    List<AnchorageResult> anch = AnchorageCheck.Evaluate(applyMesh, ctx.PartIds, b.Rule.Anchorage,
+                        barPoints, measured, b.Rule.NormalMm, set.Tolerances.LengthMm, fromModel,
+                        ReinforcementResolver.AnyHookDeclared(set, b.Rule));
+                    bool anchOk = fromModel && anch.All(a => a.Verdict == AnchorageCheck.Met);
+                    checks["anchorage"] = new JObject
+                    {
+                        ["verified"] = anchOk,
+                        ["anchorages"] = new JArray(anch.Select(a => (object)a.ToJson()).ToArray()),
+                        ["source"] = "the centreline Revit drew, hooks included, offset by GetBarPositionTransform, " +
+                                     "clipped against the solid of each element"
+                    };
+                    ok &= anchOk;
+                }
 
                 // THE POSITIONS AGAINST THE ONES THE PLAN PREDICTED. The containment
                 // test only asks whether each measured position is between the host
@@ -903,6 +1289,17 @@ namespace Horizun.Revit.Commands
                 checks["array_length"] = NotApplicable("a single bar has no array.");
             }
 
+            // THE PLACEMENT (L7), re-read: the centreline Revit drew against the radius, the plane or
+            // the height the hoop or spiral was placed at; the shape's size parameter; a spiral's pitch,
+            // finishing turns and height.
+            if (b.Rule.Placement != null)
+                VerifyPlacement(doc, bar, b, set, checks, ref ok);
+
+            // THE COUPLER (L7): one coupler at the END of this piece and the START of the next, of the
+            // declared type - read from both bars.
+            if (b.Rule.CouplerNextRuleId != null)
+                checks["coupler_next"] = VerifyCoupler(doc, bar, m, made, ref ok);
+
             // Length is REPORTED, not asserted, whenever a hook is declared: Revit
             // adds hook length itself, and an expectation that guessed at it would
             // fail on every correctly built bar.
@@ -923,9 +1320,31 @@ namespace Horizun.Revit.Commands
                 ["hooks_declared"] = hooked,
                 ["bar_is_straight"] = straight
             };
-            if (!hooked && straight && totalFt.HasValue)
+            // THE BAR AS DRAWN, NOT AS SCHEDULED (measured, Revit 2024, acero L6): TotalLength is rounded
+            // per bar by the host's rebar rounding - a 4432.1 mm bar reads 4430 - so nine bars on a
+            // stair's waist came out 19 mm "short". The centreline Revit drew is what is compared; the
+            // rounded total is kept beside it as Revit's own figure.
+            double? oneBarFt = RebarFacts.OneBarCentrelineFt(bar);
+            if (oneBarFt.HasValue)
             {
-                double diff = Math.Abs(totalFt.Value * FtToMm - expected);
+                length["measured_centreline_mm"] = Math.Round(oneBarFt.Value * FtToMm * b.Layout.Quantity, 3);
+                length["revit_reports_means"] = "Revit's TotalLength, rounded per bar by the host's rebar rounding; " +
+                                                "measured_centreline_mm is what was compared.";
+            }
+            double? comparedFt = oneBarFt.HasValue ? oneBarFt.Value * b.Layout.Quantity : totalFt;
+            // A COUPLED END IS SEATED, NOT PLACED (L7, measured 2024 and 2026): Revit leaves it short of the
+            // station inside the coupler. Where it is on the bar's line and inside the coupler's body, the
+            // trim is taken off what is expected - the same rule the audit applies (CoupledEnd).
+            double trimMm = CoupledTrimMm(doc, bar, b, set.Tolerances.LengthMm);
+            if (trimMm > 0)
+            {
+                expected -= trimMm * b.Layout.Quantity;
+                length["coupled_end_trim_mm"] = Math.Round(trimMm, 3);
+                length["expected_after_coupled_trim_mm"] = Math.Round(expected, 3);
+            }
+            if (!hooked && straight && comparedFt.HasValue)
+            {
+                double diff = Math.Abs(comparedFt.Value * FtToMm - expected);
                 bool lenOk = diff <= set.Tolerances.LengthMm * Math.Max(1, b.Layout.Quantity);
                 length["verified"] = lenOk;
                 length["difference_mm"] = Math.Round(diff, 3);
@@ -952,6 +1371,30 @@ namespace Horizun.Revit.Commands
             }
             checks["total_length"] = length;
 
+            // THE BAR AGAINST ITS PLAN (stage 1c), judged with THE AUDIT'S OWN RULE on the same reading of the drawn
+            // bar. MEASURED (Revit 2024, anonymized regression case COLUMN-A built alone): a bar Revit moved 11.45 mm off its plan, its
+            // handles pinned to a neighbour's cover, came back verified from here while the audit reported
+            // geometry_differs - the length above is asserted only on a straight hook-free bar, and nothing
+            // compared the drawn centreline of a bent or hooked one with the planned polyline.
+            JObject geometry;
+            try
+            {
+                geometry = RebarAuditRules.GeometryMatchesPlan(ReinforcementResolver.DescribeRebarRow(b, 0),
+                    RebarFacts.Describe(doc, bar, false), set.Tolerances, set.HoldsEnds(b.Rule),
+                    RebarConstraintRead.Summary(bar));
+            }
+            catch (Exception ex)
+            {
+                geometry = new JObject
+                {
+                    ["verified"] = false,
+                    ["why"] = "the bar's geometry could not be compared with its plan: " + ex.Message + " Unknown is not a pass."
+                };
+            }
+            checks["geometry_matches_the_plan"] = geometry;
+            if (geometry["verified"]?.Type == JTokenType.Boolean) ok &= (bool)geometry["verified"];
+            else if (geometry["applicable"]?.Type != JTokenType.Boolean || (bool)geometry["applicable"]) ok = false;
+
             string provWhy;
             StructuralProvenance prov = StructuralProvenanceStore.Read(bar, out provWhy);
             checks["provenance"] = new JObject
@@ -964,9 +1407,131 @@ namespace Horizun.Revit.Commands
             };
             ok &= prov != null;
 
+            // HOLD_ENDS (stage 1b), re-read AFTER the commit: the held bar must be on the plan at every vertex.
+            if (m.Hold != null)
+            {
+                var hold = (JObject)m.Hold.DeepClone();
+                if (hold["applicable"]?.Type != JTokenType.Boolean || (bool)hold["applicable"])
+                {
+                    double w, t;
+                    bool comparable = HoldEndsRules.Deviation(b.PointsMm, RebarFacts.CentrelinePointsMm(bar, true), out w, out t);
+                    hold["after_commit_mm"] = comparable ? (JToken)Math.Round(w, 3) : JValue.CreateNull();
+                    hold["verified"] = comparable && HoldEndsRules.Held(w);
+                    ok &= (bool)hold["verified"];
+                }
+                checks["hold_ends"] = hold;
+            }
             row["verified"] = ok;
             row["checks"] = checks;
             return row;
+        }
+
+        private static void VerifyPlacement(Document doc, Rebar bar, ResolvedRebarRow b, StructuralRequirementSet set,
+                                            JObject checks, ref bool ok)
+        {
+            PlacedShapeGeometry g = b.Rule.Placement;
+            PlacedShapeCheck pc = PlacedShapes.CheckCentreline(g, RebarFacts.CentrelinePointsMm(bar, false), set.Tolerances.LengthMm);
+            JObject pj = pc.ToJson();
+            pj["source"] = "Rebar.GetCenterlineCurves, tessellated, read back after the commit, against the placement's axis";
+            pj["not_compared"] = "where round the axis the lap or the first turn starts, and the length of the lap";
+            checks["placement_centreline"] = pj;
+            ok &= pc.Verified;
+
+            if (b.PlacedSizeParamId != null && b.PlacedSizeParamId != ElementId.InvalidElementId)
+            {
+                double? want = PlacedShapes.ExpectedSizeMm(b.PlacedSizeConstraint, b.PlacedSizeReference, g.CentrelineRadiusMm,
+                                                           ReinforcementResolver.SafeDiameterMm(b.BarType));
+                double? got = ReinforcementResolver.ReadShapeParameterMm(doc, bar, b.PlacedSizeParamId);
+                bool sizeOk = want.HasValue && got.HasValue && Math.Abs(got.Value - want.Value) <= set.Tolerances.LengthMm;
+                JObject sc = Check(sizeOk, want.HasValue ? (object)Math.Round(want.Value, 3) : null, got.HasValue ? (object)Math.Round(got.Value, 3) : null);
+                sc["constraint"] = b.PlacedSizeConstraint;
+                sc["measured_to"] = b.PlacedSizeReference;
+                if (!want.HasValue) sc["why"] = "the shape measures its " + b.PlacedSizeConstraint + " to '" + b.PlacedSizeReference +
+                                                "', which this build does not predict. Unknown is not a pass.";
+                else if (!got.HasValue) sc["why"] = "the bar would not report the shape's " + b.PlacedSizeConstraint + " parameter.";
+                checks["placement_size_parameter"] = sc;
+                ok &= sizeOk;
+            }
+            else
+                checks["placement_size_parameter"] = NotApplicable(
+                    "the shape's definition carries no diameter or radius constraint, so there is no size parameter to read; the " +
+                    "centreline radius in placement_centreline is the measurement.");
+
+            if (g.IsSpiral)
+            {
+                JObject sp = ReinforcementResolver.SpiralParametersRead(bar, g, set.Tolerances.LengthMm);
+                checks["spiral_parameters"] = sp;
+                ok &= (bool)sp["verified"];
+            }
+        }
+
+        /// <summary>The summed trim of this bar's coupled ends that sit inside their couplers, in mm (0 when none).</summary>
+        private static double CoupledTrimMm(Document doc, Rebar bar, ResolvedRebarRow b, double tolMm)
+        {
+            if (!b.Rule.CoupledAtStart && b.Rule.CouplerNextRuleId == null) return 0;
+            // AS DRAWN: the declared form does not carry Revit's seating of the coupled end.
+            List<double[]> drawn = RebarFacts.CentrelinePointsMm(bar, false);
+            List<double[]> decl = b.PointsMm;
+            if (drawn == null || drawn.Count < 2 || decl == null || decl.Count < 2) return 0;
+            double sum = 0;
+            foreach (int end in new[] { 0, 1 })
+            {
+                if (end == 0 && !b.Rule.CoupledAtStart) continue;
+                if (end == 1 && (b.Rule.CouplerNextRuleId == null || b.Rule.CouplerNextEnd != 1)) continue;
+                BoundingBoxXYZ box = null;
+                try
+                {
+                    ElementId cid = bar.GetCouplerId(end);
+                    if (cid != null && cid != ElementId.InvalidElementId) box = doc.GetElement(cid)?.get_BoundingBox(null);
+                }
+                catch { }
+                if (box == null) continue;
+                double t = CoupledEnd.TrimMm(end == 0 ? decl[0] : decl[decl.Count - 1], end == 0 ? decl[1] : decl[decl.Count - 2],
+                                             end == 0 ? drawn[0] : drawn[drawn.Count - 1],
+                                             new[] { box.Min.X * FtToMm, box.Min.Y * FtToMm, box.Min.Z * FtToMm },
+                                             new[] { box.Max.X * FtToMm, box.Max.Y * FtToMm, box.Max.Z * FtToMm }, tolMm);
+                if (t > 0) sum += t;
+            }
+            return sum;
+        }
+
+        private static JObject VerifyCoupler(Document doc, Rebar bar, Built m, List<Built> made, ref bool ok)
+        {
+            ResolvedRebarRow b = m.Row;
+            Built next = Partner(made, m);
+            var o = new JObject
+            {
+                ["next_rule_id"] = b.Rule.CouplerNextRuleId,
+                ["next_element_id"] = next == null ? -1 : Rid.Value(next.Id),
+                ["declared_type_id"] = b.CouplerType == null ? -1 : Rid.Value(b.CouplerType.Id),
+                ["declared_type_name"] = b.Rule.CouplerNextTypeName,
+                ["source"] = "Rebar.GetCouplerId at the end of this piece and at the start of the next, and the coupler's own type, " +
+                             "read back after the commit"
+            };
+            ElementId atEnd = null, atStart = null;
+            try { atEnd = bar.GetCouplerId(b.Rule.CouplerNextEnd); } catch { }
+            var nextBar = next == null ? null : doc.GetElement(next.Id) as Rebar;
+            try { atStart = nextBar?.GetCouplerId(0); } catch { }
+            var coupler = atEnd == null || atEnd == ElementId.InvalidElementId ? null : doc.GetElement(atEnd) as RebarCoupler;
+            ElementId typeId = null;
+            try { typeId = coupler?.GetTypeId(); } catch { }
+            bool links = false;
+            try { links = coupler != null && coupler.CouplerLinkTwoBars(); } catch { }
+            o["coupler_at_end_of_this_piece"] = atEnd == null ? -1 : Rid.Value(atEnd);
+            o["coupler_at_start_of_next_piece"] = atStart == null ? -1 : Rid.Value(atStart);
+            o["read_type_id"] = typeId == null ? -1 : Rid.Value(typeId);
+            o["links_two_bars"] = links;
+            bool verified = coupler != null && atStart != null && atStart == atEnd && links &&
+                            b.CouplerType != null && typeId == b.CouplerType.Id;
+            o["verified"] = verified;
+            if (!verified)
+                o["why"] = next == null ? "the next piece was not built, so there is no splice to couple."
+                         : coupler == null ? "this piece carries no coupler at its end."
+                         : atStart != atEnd ? "the next piece does not carry the same coupler at its start."
+                         : !links ? "the coupler does not sit on two bars."
+                         : "the coupler is of another type than the layer declares.";
+            ok &= verified;
+            return o;
         }
 
         /// <summary>
@@ -1126,30 +1691,6 @@ namespace Horizun.Revit.Commands
         /// when it would not answer. Every endpoint of every curve, so the extent is
         /// the bar's real one - hooks and rounded corners included.
         /// </summary>
-        private static List<double[]> ActualCentrelinePoints(Rebar bar)
-        {
-            IList<Curve> curves = null;
-            try
-            {
-                curves = bar.GetCenterlineCurves(false, false, false,
-                                                 MultiplanarOption.IncludeAllMultiplanarCurves, 0);
-            }
-            catch { return null; }
-            if (curves == null || curves.Count == 0) return null;
-            var pts = new List<double[]>();
-            foreach (Curve c in curves)
-            {
-                try
-                {
-                    XYZ a = c.GetEndPoint(0), z = c.GetEndPoint(1);
-                    pts.Add(new[] { a.X * FtToMm, a.Y * FtToMm, a.Z * FtToMm });
-                    pts.Add(new[] { z.X * FtToMm, z.Y * FtToMm, z.Z * FtToMm });
-                }
-                catch { }
-            }
-            return pts.Count == 0 ? null : pts;
-        }
-
         /// <summary>Every bar set in a host, or an empty list when Revit would not say.</summary>
         private static List<Rebar> BarsInHost(Element host)
         {
@@ -1178,7 +1719,8 @@ namespace Horizun.Revit.Commands
 
         private static ResolvedPlan BuildPlan(Document doc, GateResult gate, StructuralRequirementSet set,
                                               string setSha, List<ResolvedCoverRow> covers,
-                                              List<ResolvedRebarRow> bars)
+                                              List<ResolvedRebarRow> bars, List<ResolvedSystemRow> systems,
+                                              List<ResolvedHookLength> hookLengths)
         {
             var plan = new ResolvedPlan
             {
@@ -1213,12 +1755,57 @@ namespace Horizun.Revit.Commands
                         { "positions", b.Layout.NumberOfBarPositions.ToString(CultureInfo.InvariantCulture) },
                         { "quantity", b.Layout.Quantity.ToString(CultureInfo.InvariantCulture) },
                         { "array_mm", b.Layout.ArrayLengthMm.ToString("0.###", CultureInfo.InvariantCulture) },
-                        { "host_box", HostBox(b.Host) }
+                        { "host_box", HostBox(b.Host) },
+                        // L7: where a placed hoop or spiral goes and which coupler joins a splice.
+                        { "placement", b.Rule.Placement == null ? "(none)" : b.Rule.Placement.ToJson().ToString(Formatting.None) },
+                        { "coupler_type_uid", b.CouplerType == null ? "(none)" : SafeUid(b.CouplerType) }
                     },
                     GeometryFingerprint = Geometry(b)
                 });
                 i++;
             }
+            foreach (ResolvedSystemRow sr in systems)
+            {
+                // EVERYTHING THE SYSTEM DEPENDS ON, so a type swapped, a layer edited or a host
+                // moved between rehearsal and apply invalidates the token.
+                var before = new Dictionary<string, string>
+                {
+                    { "rule", sr.RuleId },
+                    { "kind", sr.Kind },
+                    { "set_sha", setSha },
+                    { "system_type_uid", SafeUid(sr.SystemType) },
+                    { "sheet_type_uid", sr.SheetType == null ? "(none)" : SafeUid(sr.SheetType) },
+                    { "host_box", HostBox(sr.Host) }
+                };
+                foreach (KeyValuePair<string, RebarBarType> bt in sr.BarTypes.OrderBy(x => x.Key, StringComparer.Ordinal))
+                    before["bar_type_uid:" + bt.Key] = SafeUid(bt.Value);
+                var g = new System.Text.StringBuilder();
+                foreach (double[] pt in sr.PointsMm)
+                    g.Append(string.Join(",", pt.Select(v => v.ToString("0.##", CultureInfo.InvariantCulture)))).Append(';');
+                plan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = sr.Kind + ":" + sr.RuleId + ":" + Rid.Value(sr.Host.Id),
+                    Category = sr.Kind == SystemReinforcementRules.KindArea ? "OST_AreaRein"
+                             : sr.Kind == SystemReinforcementRules.KindPath ? "OST_PathRein" : "OST_FabricAreas",
+                    TypeName = SafeName(sr.SystemType),
+                    Action = PlannedAction.Create,
+                    HostUniqueId = SafeUid(sr.Host),
+                    BeforeValues = before,
+                    GeometryFingerprint = g.ToString()
+                });
+            }
+            // THE BAR TYPES A DECLARED HOOK LENGTH TOUCHES, with what they carry now: a type somebody
+            // edited between rehearsal and apply invalidates the token rather than being overwritten.
+            foreach (ResolvedHookLength h in hookLengths.Where(x => x.Ok))
+                plan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = "hook_length:" + h.Declared.Path,
+                    Category = "OST_Rebar",
+                    TypeName = SafeName(h.BarType),
+                    Action = PlannedAction.Modify,
+                    HostUniqueId = SafeUid(h.BarType),
+                    BeforeValues = RebarHookLengths.BeforeValues(h, setSha)
+                });
             foreach (ResolvedCoverRow c in covers)
                 plan.Elements.Add(new PlannedElement
                 {
@@ -1240,7 +1827,10 @@ namespace Horizun.Revit.Commands
                         { "cover_mm", c.WantedDistanceMm.HasValue
                             ? c.WantedDistanceMm.Value.ToString("0.###", CultureInfo.InvariantCulture) : "(unread)" },
                         { "current_mm", c.CurrentDistanceMm.HasValue
-                            ? c.CurrentDistanceMm.Value.ToString("0.###", CultureInfo.InvariantCulture) : "(none)" }
+                            ? c.CurrentDistanceMm.Value.ToString("0.###", CultureInfo.InvariantCulture) : "(none)" },
+                        // L7: which faces, and how many were found pointing that way.
+                        { "face", CoverFaceRules.Describe(c.Rule.FaceNormalMm) },
+                        { "faces", c.Faces.Count.ToString(CultureInfo.InvariantCulture) }
                     }
                 });
             return plan;

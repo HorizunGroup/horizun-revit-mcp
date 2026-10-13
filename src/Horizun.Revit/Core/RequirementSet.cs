@@ -349,19 +349,19 @@ namespace Horizun.Revit.Core
                 case "exists": return parameterExists;
                 case "not_exists": return !parameterExists;
                 case "not_empty": return parameterExists && !string.IsNullOrWhiteSpace(measured);
-                case "equals": return parameterExists && string.Equals(measured, rule.Value.ToString(), StringComparison.OrdinalIgnoreCase);
-                case "not_equals": return parameterExists && !string.Equals(measured, rule.Value.ToString(), StringComparison.OrdinalIgnoreCase);
+                case "equals": return parameterExists && JsonScalar.MeasuredEquals(measured, rule.Value);
+                case "not_equals": return parameterExists && !JsonScalar.MeasuredEquals(measured, rule.Value);
                 case "matches":
                     return parameterExists && measured != null &&
                            System.Text.RegularExpressions.Regex.IsMatch(measured, (string)rule.Value);
                 case "in_list":
-                    return parameterExists && ((JArray)rule.Value).Any(v =>
-                        string.Equals(measured, v.ToString(), StringComparison.OrdinalIgnoreCase));
+                    return parameterExists && ((JArray)rule.Value).Any(v => JsonScalar.MeasuredEquals(measured, v));
                 case "is_leaf_of":
                     return parameterExists && Tables[(string)rule.Value].IsLeaf(measured);
                 case "gt": case "gte": case "lt": case "lte": case "between":
                     if (!parameterExists) return false;
-                    if (!double.TryParse(measured, NumberStyles.Any, CultureInfo.InvariantCulture, out double have)) return false;
+                    // Never NumberStyles.Any: it read "1,5" as 15 (audit 2026-10-08).
+                    if (!MeasuredNumber.TryParse(measured, out double have)) return false;
                     return CompareNumber(rule, have);
                 default:
                     // Unreachable: Load() refused unknown operators. Throwing keeps it

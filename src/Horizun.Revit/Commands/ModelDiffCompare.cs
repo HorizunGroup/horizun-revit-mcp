@@ -35,6 +35,7 @@ namespace Horizun.Revit.Commands
 
             DiffOptions options = Options(request);
             DiffResult result = ModelDiffRules.Compare(before, after, options);
+            JObject identity = IdentityOf(before, after);
             JObject summary = ModelDiffRules.Summary(result);
 
             string compareId = ModelDiffRules.NewId(DateTime.UtcNow, before.Id + "|" + after.Id);
@@ -46,6 +47,8 @@ namespace Horizun.Revit.Commands
             {
                 ["schema"] = "horizun.model-diff-comparison/1",
                 ["before"] = Side(before), ["after"] = Side(after), ["summary"] = summary,
+                ["project_identity_kind"] = identity["project_identity_kind"], ["identity_proven"] = identity["identity_proven"],
+                ["warnings"] = identity["warnings"],
                 ["rows"] = ModelDiffRules.Page(result.Rows, 0, Math.Max(1, result.Rows.Count))["rows"],
                 ["type_rows"] = ModelDiffRules.Page(result.TypeRows, 0, Math.Max(1, result.TypeRows.Count))["rows"]
             };
@@ -60,6 +63,10 @@ namespace Horizun.Revit.Commands
                 ["before"] = Side(before),
                 ["after"] = Side(after),
                 ["identity"] = "unique_id",
+                // Option B (owner, 2026-10-10): whether before and after are PROVEN to be one project.
+                ["project_identity_kind"] = identity["project_identity_kind"],
+                ["identity_proven"] = identity["identity_proven"],
+                ["warnings"] = identity["warnings"],
                 ["tolerances"] = new JObject
                 {
                     ["move_mm"] = Math.Round(options.MoveToleranceFeet * 304.8, 3),
@@ -102,8 +109,15 @@ namespace Horizun.Revit.Commands
                 live.Id = Active;
                 if (before == null) before = live; else after = live;
             }
+            string incomparable = ModelDiffRules.Incomparable(before.Schema, after.Schema,
+                (string)before.Document?["project_identity"], (string)after.Document?["project_identity"]);
+            if (incomparable != null) return CommandResult.Fail(incomparable);
             return null;
         }
+
+        /// <summary>The identity evidence of a comparable pair (ModelDiffRules.IdentityEvidence).</summary>
+        internal static JObject IdentityOf(DiffSnapshot before, DiffSnapshot after) =>
+            ModelDiffRules.IdentityEvidence((string)before.Document?["project_identity"], (string)after.Document?["project_identity"]);
 
         private static bool IsActive(string id) => string.Equals(id, Active, StringComparison.OrdinalIgnoreCase);
 

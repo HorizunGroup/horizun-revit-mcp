@@ -71,5 +71,32 @@ if ($PSVersionTable.PSVersion.Major -ge 6) {
     Remove-Item -LiteralPath $fake -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# ---- a date-looking argument is SENT as the same text (backlog P0 #1) ------------------------
+# hz-call parsed the arguments with ConvertFrom-Json - which, under PowerShell 6+, turns ISO
+# 8601 text into a DateTime - and sent that object back out through ConvertTo-Json, so
+# "2026-10-10T12:00:00+02:00" left as "2026-10-10T05:00:00-05:00" before the server ever saw
+# it. The arguments are still validated, but what is sent is the text as given.
+if ($PSVersionTable.PSVersion.Major -ge 6) {
+    $fake = Join-Path ([IO.Path]::GetTempPath()) ('hz-call-fake-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $fake | Out-Null
+    $seen = Join-Path $fake 'seen.txt'
+    $init = '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"1"}}}'
+    $reply = '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}],"isError":false}}'
+    $serverLines = @(
+        'while ($null -ne ($line = [Console]::In.ReadLine())) {',
+        ("    if (`$line -like '*tools/call*') { [IO.File]::WriteAllText('" + $seen + "', `$line) }"),
+        '    $m = $line | ConvertFrom-Json',
+        ("    if (`$m.method -eq 'initialize') { [Console]::Out.WriteLine('" + $init + "'); [Console]::Out.Flush() }"),
+        ("    elseif (`$m.method -eq 'tools/call') { [Console]::Out.WriteLine('" + $reply + "'); [Console]::Out.Flush() }"),
+        '}')
+    Set-Content -LiteralPath (Join-Path $fake 'server.ps1') -Encoding utf8 -Value $serverLines
+    $pwshExe = (Get-Process -Id $PID).Path
+    Set-Content -LiteralPath (Join-Path $fake 'server.cmd') -Encoding ascii -Value ('@"' + $pwshExe + '" -NoProfile -File "%~dp0server.ps1"')
+    & $pwshExe -NoProfile -File $hzCall -Tool horizun_health -Server (Join-Path $fake 'server.cmd') -Arguments '{"value":"2026-10-10T12:00:00+02:00","n":1.50}' -Json (Join-Path $fake 'out.json') -TimeoutSec 60 -Quiet
+    $sent = if (Test-Path -LiteralPath $seen) { Get-Content -LiteralPath $seen -Raw } else { '' }
+    Assert 'a date-looking argument leaves hz-call as the same text' ($sent -match [regex]::Escape('"value":"2026-10-10T12:00:00+02:00"')) $sent
+    Remove-Item -LiteralPath $fake -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 if ($failed -eq 0) { Write-Host 'hz-call: ALL PASSED' -ForegroundColor Green; exit 0 }
 Write-Host "hz-call: $failed FAILED" -ForegroundColor Red; exit 1

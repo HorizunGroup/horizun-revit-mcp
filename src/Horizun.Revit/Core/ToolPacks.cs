@@ -111,6 +111,8 @@ namespace Horizun.Revit.Core
                 ["cad"] = new[] { "read" },
                 ["administration"] = new string[0],
                 ["unsafe_code"] = new string[0],
+                // Self-contained on purpose: it names its own reading tools, so it never pulls a pack in.
+                ["local"] = new string[0],
                 ["read"] = new string[0],
                 ["core"] = new string[0]
             };

@@ -81,12 +81,17 @@ rules:
 |---|---|---|
 | `exists` / `not_exists` | the parameter is present / absent | no |
 | `not_empty` | present and not blank | no |
-| `equals` / `not_equals` | exact match, case-insensitive | yes |
+| `equals` / `not_equals` | exact match, case-insensitive; a numeric `value` compares by value, `true`/`false` match a Yes/No `1`/`0` | yes |
 | `matches` | regex over the stored text | yes |
 | `in_list` | one of the listed values | yes (list) |
 | `is_leaf_of` | the value is a last-level leaf of the named table | yes (table id) |
 | `gt` / `gte` / `lt` / `lte` | numeric comparison against the raw stored value | yes |
 | `between` | inclusive range `[min, max]` | yes (pair) |
+
+Numbers in measured text are read culture-free: the invariant form (`1.5`) or one
+unambiguous decimal comma (`1,5`). Text that could be a thousands group (`1,234`),
+carries both separators, or has units, currency or parentheses is not a number, so
+it never passes a numeric operator on a guess.
 
 The tool that runs this grammar is `horizun_code_check`. It adds geometric `measure`
 assertions, `unit`, `missing_is`, the selectors `name_matches` / `parameter_equals` /

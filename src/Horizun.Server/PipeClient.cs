@@ -98,6 +98,9 @@ namespace Horizun.Server
         /// </summary>
         internal static string DirectoryOverride { get; set; }
 
+        /// <summary>Deadline for writing a request; the add-in's read deadline is 30 s.</summary>
+        internal static int WriteTimeoutMs = 35000;
+
         /// <summary>
         /// How liveness is decided. Overridable for the same reason: a test needs to say
         /// "this instance is running and that one is not" without owning a Revit.
@@ -392,6 +395,23 @@ namespace Horizun.Server
             {
                 ct.ThrowIfCancellationRequested();
 
+                var req = new JObject
+                {
+                    ["id"] = wireId,
+                    ["command"] = command,
+                    ["params"] = args ?? new JObject(),
+                    ["token"] = d.Token
+                };
+                byte[] requestBytes = new UTF8Encoding(false).GetBytes(req.ToString(Newtonsoft.Json.Formatting.None) + "\n");
+
+                // Refused HERE, before anything is sent (backlog #37): the add-in reads at
+                // most this many bytes and refuses the rest unread. Same limit, same contract.
+                if (requestBytes.Length - 1 > Horizun.Contracts.Contract.MaxRequestBytes)
+                    throw new IOException(
+                        "The request for '" + command + "' is " + (requestBytes.Length - 1) + " bytes, over the " +
+                        Horizun.Contracts.Contract.MaxRequestBytes + " byte limit Revit's bridge reads, so it was NOT " +
+                        "sent. Nothing ran. Pass large payloads as a file path, or split the call.");
+
                 using (var pipe = new NamedPipeClientStream(".", d.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
                 {
                     // Connect in slices so a cancel between them is noticed. ConnectAsync
@@ -412,15 +432,19 @@ namespace Horizun.Server
                         }
                     }
 
-                    var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
-
-                    var req = new JObject
-                    {
-                        ["id"] = wireId,
-                        ["command"] = command,
-                        ["params"] = args ?? new JObject(),
-                        ["token"] = d.Token
-                    };
+                    // BOUNDED. This was StreamReader.ReadLineAsync(), which reads until it
+                    // finds a newline however far away that is - so the size of this process
+                    // was decided by whatever came back down the pipe. The add-in caps what it
+                    // sends, but the two halves ship separately and a server built today
+                    // routinely meets an add-in installed months ago, so neither end may be
+                    // the only gate. Same limit, from the shared contract, at both ends.
+                    //
+                    // The reader starts BEFORE the write (backlog #37): the add-in answers a
+                    // request it refuses unread (TooLong, its read deadline) while this end
+                    // may still be writing, and the pipe has no buffer - so a reply nobody
+                    // reads blocks the add-in, and a request nobody reads blocks this end.
+                    var reader = new BoundedLineReader(pipe, Horizun.Contracts.Contract.MaxReplyBytes);
+                    var task = System.Threading.Tasks.Task.Factory.StartNew(() => reader.ReadLine(), CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
 
                     // Last check before the write. Past this point the command IS in Revit's
                     // hands and cancelling can only stop us listening for the answer.
@@ -428,17 +452,22 @@ namespace Horizun.Server
                     phase = "send";
                     // A partial pipe write is already an uncertain submission.
                     possiblySubmitted = true;
-                    writer.WriteLine(req.ToString(Newtonsoft.Json.Formatting.None));
+                    if (!WriteRequest(pipe, requestBytes, task, ct))
+                    {
+                        // Answered before it had read the whole request: the add-in only does
+                        // that when it refuses the request unread, and a request it never read
+                        // to its newline was never dispatched.
+                        possiblySubmitted = false;
+                        BoundedLine early = task.Result;
+                        string said = null;
+                        if (early.Outcome == BoundedLineOutcome.Ok)
+                            try { said = (string)Horizun.Revit.Core.JsonText.ParseObject(early.Line)["error"]; } catch { }
+                        throw new IOException(
+                            "Revit's bridge refused the request for '" + command + "' before reading all of it" +
+                            (string.IsNullOrWhiteSpace(said) ? "." : ": " + said) + " It was never dispatched: nothing ran.");
+                    }
                     phase = "receive";
 
-                    // BOUNDED. This was StreamReader.ReadLineAsync(), which reads until it
-                    // finds a newline however far away that is - so the size of this process
-                    // was decided by whatever came back down the pipe. The add-in caps what it
-                    // sends, but the two halves ship separately and a server built today
-                    // routinely meets an add-in installed months ago, so neither end may be
-                    // the only gate. Same limit, from the shared contract, at both ends.
-                    var reader = new BoundedLineReader(pipe, Horizun.Contracts.Contract.MaxReplyBytes);
-                    var task = System.Threading.Tasks.Task.Run(() => reader.ReadLine());
                     var waiting = System.Diagnostics.Stopwatch.StartNew();
                     int waited;
                     do
@@ -491,7 +520,7 @@ namespace Horizun.Server
                     if (reply.Outcome == BoundedLineOutcome.EndOfStream)
                         throw new IOException("Pipe closed before a reply arrived" +
                                               (reply.Bytes > 0 ? " (" + reply.Bytes + " bytes of one had been sent)." : "."));
-                    return JObject.Parse(reply.Line);
+                    return Horizun.Revit.Core.JsonText.ParseObject(reply.Line);
                 }
             }
             catch (Exception ex)
@@ -522,6 +551,69 @@ namespace Horizun.Server
             }
         }
 
+        /// <summary>
+        /// Write the request, bounded (backlog #37). True when it was written whole; false
+        /// when the add-in answered first, which it does only for a request it refused
+        /// unread. Throws on a deadline, a cancellation or a failed write - the caller's
+        /// disposal of the pipe then ends the pending write.
+        /// </summary>
+        private static bool WriteRequest(Stream pipe, byte[] bytes, System.Threading.Tasks.Task<BoundedLine> reply,
+                                         CancellationToken ct)
+        {
+            System.Threading.Tasks.Task write = pipe.WriteAsync(bytes, 0, bytes.Length);
+            int which = WaitHandle.WaitAny(
+                new[] { ((IAsyncResult)write).AsyncWaitHandle, ((IAsyncResult)reply).AsyncWaitHandle, ct.WaitHandle },
+                WriteTimeoutMs);
+            // Both finished: an ordinary reply to a request written whole.
+            if (which == 1 && ((IAsyncResult)write).AsyncWaitHandle.WaitOne(200) &&
+                write.Status == System.Threading.Tasks.TaskStatus.RanToCompletion)
+                which = 0;
+            if (which == 0)
+            {
+                if (write.Status == System.Threading.Tasks.TaskStatus.RanToCompletion) return true;
+                // The write failed. An add-in that refused the request unread answers and then
+                // closes, and the close can fail the write before its answer is read: a reply
+                // already on its way is that refusal, not a lost request.
+                if (((IAsyncResult)reply).AsyncWaitHandle.WaitOne(500) &&
+                    reply.Status == System.Threading.Tasks.TaskStatus.RanToCompletion &&
+                    IsUnreadRefusal(reply.Result))
+                    return false;
+                Exception failure = write.Exception?.GetBaseException();
+                throw new IOException("Writing the request failed: " + (failure?.Message ?? "unknown error"), failure);
+            }
+
+            // The pipe is about to be disposed under the pending write; observe its fault.
+            write.ContinueWith(t => { var ignored = t.Exception; },
+                System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
+            if (which == 1)
+            {
+                if (reply.Status == System.Threading.Tasks.TaskStatus.RanToCompletion && IsUnreadRefusal(reply.Result))
+                    return false;
+                throw new IOException("The pipe ended or answered before the request was written whole, without " +
+                    "a proven refusal of an unread request. Whether the command ran is unknown; do not resend it " +
+                    "assuming nothing happened.");
+            }
+            ct.ThrowIfCancellationRequested();
+            throw new TimeoutException(
+                "Revit's bridge did not read the request within " + WriteTimeoutMs + " ms, so the write was abandoned. " +
+                "Whether any of it was acted on cannot be proven from here. Do not resend it assuming nothing happened.");
+        }
+
+        // PipeServer's pre-dispatch refusal has no request id, success=false and an error.
+        // A closed pipe, malformed line or unrelated reply proves nothing about execution.
+        private static bool IsUnreadRefusal(BoundedLine line)
+        {
+            if (line.Outcome != BoundedLineOutcome.Ok) return false;
+            try
+            {
+                JObject envelope = Horizun.Revit.Core.JsonText.ParseObject(line.Line);
+                return envelope["id"]?.Type == JTokenType.Null &&
+                       envelope["success"]?.Type == JTokenType.Boolean && !envelope.Value<bool>("success") &&
+                       envelope["error"]?.Type == JTokenType.String && !string.IsNullOrWhiteSpace((string)envelope["error"]);
+            }
+            catch { return false; }
+        }
+
         private static string RetrySentence(JObject args, bool nothingStarted, long elapsedMs)
             => CancellationAdvice.Sentence(
                 CancellationAdvice.Classify(nothingStarted, CancellationAdvice.HasKey(args)),
@@ -531,6 +623,8 @@ namespace Horizun.Server
         {
             public bool? CancelledBeforeStart;
             public string State;
+            /// <summary>The add-in will refuse the request if it has not arrived yet (backlog #36).</summary>
+            public bool RefusedOnArrival;
         }
 
         private static JObject ReadRequestStatus(Discovered target, string wireId)
@@ -543,11 +637,11 @@ namespace Horizun.Server
                     var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
                     string id = "observe-" + Guid.NewGuid().ToString("N");
                     writer.WriteLine(new JObject { ["id"] = id, ["command"] = "__horizun_request_status", ["params"] = new JObject { ["wire_id"] = wireId }, ["token"] = target.Token }.ToString(Newtonsoft.Json.Formatting.None));
-                    var task = System.Threading.Tasks.Task.Run(() => new BoundedLineReader(pipe, 65536).ReadLine());
+                    var task = System.Threading.Tasks.Task.Factory.StartNew(() => new BoundedLineReader(pipe, 65536).ReadLine(), CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
                     if (!task.Wait(500)) return new JObject { ["state"] = "unobserved", ["reason"] = "status_timeout" };
                     var line = task.Result;
                     if (line.Outcome != BoundedLineOutcome.Ok) throw new IOException("Status response unavailable.");
-                    var reply = JObject.Parse(line.Line);
+                    var reply = Horizun.Revit.Core.JsonText.ParseObject(line.Line);
                     if ((string)reply["id"] != id || reply.Value<bool?>("success") != true || !(reply["data"] is JObject data) || (string)data["wire_id"] != wireId)
                         throw new IOException("Status response was not correlated with this request.");
                     return data;
@@ -579,19 +673,60 @@ namespace Horizun.Server
                     }.ToString(Newtonsoft.Json.Formatting.None));
 
                     var reader = new BoundedLineReader(pipe, 65536);
-                    var task = System.Threading.Tasks.Task.Run(() => reader.ReadLine());
+                    var task = System.Threading.Tasks.Task.Factory.StartNew(() => reader.ReadLine(), CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
                     if (!task.Wait(3000)) return outcome;
                     BoundedLine line = task.Result;
                     if (line.Outcome != BoundedLineOutcome.Ok) return outcome;
-                    JObject envelope = JObject.Parse(line.Line);
+                    JObject envelope = Horizun.Revit.Core.JsonText.ParseObject(line.Line);
                     JObject data = envelope["data"] as JObject;
                     if (data == null) return outcome;
                     outcome.CancelledBeforeStart = (bool?)data["cancelled_before_start"];
                     outcome.State = (string)data["state"] ?? "unknown";
+                    outcome.RefusedOnArrival = data["refused_on_arrival"]?.Type == JTokenType.Boolean &&
+                                               (bool)data["refused_on_arrival"];
                     return outcome;
                 }
             }
             catch { return outcome; }
+        }
+
+        /// <summary>
+        /// Ask the Revit that owns a durable job to take it out of its queue before it
+        /// starts. Null when that could not be asked or answered (no such Revit, an older
+        /// add-in, no reply): the caller must then claim nothing.
+        /// </summary>
+        internal static McpTasks.JobCancelAnswer TryCancelJob(string jobId, int? pid)
+        {
+            try
+            {
+                Discovered d = Resolve(null, pid, out _);
+                if (d == null) return null;
+                using (var pipe = new NamedPipeClientStream(".", d.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+                {
+                    pipe.Connect(2000);
+                    var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
+                    writer.WriteLine(new JObject
+                    {
+                        ["id"] = "cancel-job-" + Guid.NewGuid().ToString("N"),
+                        ["command"] = "__horizun_cancel_job",
+                        ["params"] = new JObject { ["job_id"] = jobId },
+                        ["token"] = d.Token
+                    }.ToString(Newtonsoft.Json.Formatting.None));
+                    var task = System.Threading.Tasks.Task.Factory.StartNew(() => new BoundedLineReader(pipe, 65536).ReadLine(), CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
+                    if (!task.Wait(3000)) return null;
+                    BoundedLine line = task.Result;
+                    if (line.Outcome != BoundedLineOutcome.Ok) return null;
+                    JObject data = Horizun.Revit.Core.JsonText.ParseObject(line.Line)["data"] as JObject;
+                    if (data == null || (string)data["job_id"] != jobId || data["cancelled_before_start"]?.Type != JTokenType.Boolean)
+                        return null;   // an older add-in answers an unknown control with a failure, not this shape
+                    return new McpTasks.JobCancelAnswer
+                    {
+                        Removed = (bool)data["cancelled_before_start"],
+                        State = (string)data["state"] ?? "unknown"
+                    };
+                }
+            }
+            catch { return null; }
         }
 
         private static string CancellationUncertainty(string command, CancelAttempt cancel)
@@ -600,6 +735,11 @@ namespace Horizun.Server
                 return "The command had already started inside Revit. The API cannot interrupt work on its UI " +
                        "thread, so it CONTINUES and may finish after this caller stops waiting. Do not resend it " +
                        "assuming nothing happened.";
+            if (cancel != null && string.Equals(cancel.State, "not_found_or_finished", StringComparison.Ordinal) &&
+                cancel.RefusedOnArrival)
+                return "The request was not waiting in Revit's queue: either it had already finished, or it had not " +
+                       "reached the queue yet - in which case Revit refuses it when it arrives and it never runs. " +
+                       "Which of the two cannot be told from here, so do not resend it assuming nothing happened.";
             if (cancel != null && string.Equals(cancel.State, "not_found_or_finished", StringComparison.Ordinal))
                 return "The request was no longer waiting: it either finished or had already left the queue. Its " +
                        "outcome cannot be changed by cancellation. Do not resend it assuming nothing happened.";

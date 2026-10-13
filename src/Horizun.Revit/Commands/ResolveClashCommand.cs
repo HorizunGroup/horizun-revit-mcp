@@ -44,7 +44,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             string op = request.Value<string>("operation") ?? "propose";
             double clearance = request.Value<double?>("clearance_mm") ?? 50;
@@ -451,6 +451,39 @@ namespace Horizun.Revit.Commands
             public Dictionary<long, JObject> MemberBefore;
         }
 
+        /// <summary>The resolved plan: each moving member, its finding, mode and vector, and its location now.</summary>
+        private ResolvedPlan ResolvedMoves(UIApplication app, Document doc, GateResult gate, List<Move> moves)
+        {
+            var plan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            foreach (Move mv in moves)
+                foreach (long id in mv.MemberIds)
+                {
+                    Element member = doc.GetElement(Rid.Make(id));
+                    var row = new PlannedElement
+                    {
+                        UniqueId = member?.UniqueId ?? ("missing:" + id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        Category = member?.Category?.Name,
+                        Action = PlannedAction.Modify,
+                        BeforeValues = new Dictionary<string, string>
+                        {
+                            { "finding_id", mv.FindingId ?? "" },
+                            { "mode", mv.Mode ?? "" },
+                            { "vector_mm", string.Join(",", new[] { mv.Vector.X, mv.Vector.Y, mv.Vector.Z }
+                                .Select(v => Math.Round(v * MmPerFoot, 1).ToString(System.Globalization.CultureInfo.InvariantCulture))) }
+                        }
+                    };
+                    row.BeforeValues["loc"] = UndoCapture.State(doc, id)?["loc"]?.ToString(Formatting.None) ?? "";
+                    plan.Elements.Add(row);
+                }
+            return plan;
+        }
+
         private CommandResult Apply(UIApplication app, JObject request, double clearance, double maxMove)
         {
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
@@ -497,12 +530,17 @@ namespace Horizun.Revit.Commands
                     ["note"] = "Nothing was moved. The apply keeps the group only if solid re-detection shows every targeted pair gone and no new clash."
                 };
                 ApplicationOutcome.StampRehearsal(result, input.Count, errors.Count, 0, 0);
+                if (errors.Count == 0) DocumentGate.RecordResolvedPlan(ResolvedMoves(app, doc, gate, moves));
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
                     errors.Count == 0 ? "the token binds the proposals and clearance" : "no token while any proposal is invalid");
                 return CommandResult.Ok(result);
             }
             if (errors.Count > 0) return CommandResult.Fail("Invalid proposals; nothing ran: " + errors.ToString(Formatting.None));
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
+            // The network is worked out again here, so the token must bind what it resolves
+            // to: every member and where it is now. A member added to the run since the
+            // rehearsal, or a member already moved, is a different plan (backlog P0 #6).
+            ResolvedPlan atApply = ResolvedMoves(app, doc, gate, moves);
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, atApply, null);
             if (refusal != null) return refusal;
 
             // The neighbourhood: every model element whose box meets the swept region of any

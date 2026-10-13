@@ -22,7 +22,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -143,7 +143,7 @@ namespace Horizun.Revit.Commands
                         presetOptions.Add(new KeyValuePair<string, string>(property.Name,
                             property.Value.Type == JTokenType.Boolean
                                 ? ((bool)property.Value ? "true" : "false")
-                                : property.Value.ToString()));
+                                : JsonScalar.ToInvariantString(property.Value) ?? ""));   // never the current culture: 0.5 is not "0,5"
                 string presetReason;
                 preset = ExportPresetRules.Parse(
                     presetToken.Value<string>("name"), format,

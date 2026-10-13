@@ -135,6 +135,7 @@ namespace Horizun.Revit.Commands
             o["is_free_form"] = Safe(() => bar.IsRebarFreeForm());
 
             // ---------------------------------------------------------- layout
+            XYZ barNormal = null;
             var layout = new JObject();
             layout["rule"] = Safe(() => bar.LayoutRule.ToString());
             layout["rule_horizun"] = LayoutWord(Safe(() => bar.LayoutRule.ToString()));
@@ -168,6 +169,7 @@ namespace Horizun.Revit.Commands
                 XYZ n = null;
                 try { n = acc.Normal; } catch { }
                 layout["normal"] = n == null ? null : Xyz(n, 6);
+                barNormal = n;
                 Line path = null;
                 try { path = acc.GetDistributionPath(); } catch { }
                 layout["distribution_path"] = path == null ? null : new JObject
@@ -181,6 +183,9 @@ namespace Horizun.Revit.Commands
 
             // ---------------------------------------------------- terminations
             var terms = new JArray();
+            // THE SIDE EACH HOOK IS DRAWN ON (etapa 1b): Revit's orientation word can disagree with its drawing
+            // (measured, Revit 2024: a straight bar matched to M_01 drew 'left' and read 'right').
+            List<double[]> drawnPts = null, declaredPts = null;
             for (int end = 0; end <= 1; end++)
             {
                 ElementId hookId = null;
@@ -198,17 +203,38 @@ namespace Horizun.Revit.Commands
                     reasons.Add(StructuralCoverage.Reason("termination_orientation",
                         "the bar would not report the orientation at end " + end + ".", Rid.Value(bar.Id)));
                 ElementId couplerId = null;
-                try { couplerId = bar.GetCouplerId(end); } catch { }
+                // -1 MEANT TWO THINGS here too (L7 audits couplers): none, and could not read.
+                bool couplerReadable = true;
+                try { couplerId = bar.GetCouplerId(end); } catch { couplerReadable = false; }
+                // THE COUPLER'S BODY (L7): where a coupled end may sit - Revit leaves a gap inside it.
+                JObject couplerBox = null;
+                if (couplerId != null && couplerId != ElementId.InvalidElementId)
+                {
+                    try
+                    {
+                        BoundingBoxXYZ cb = bar.Document.GetElement(couplerId)?.get_BoundingBox(null);
+                        if (cb != null)
+                            couplerBox = new JObject
+                            {
+                                ["min"] = new JArray(Round(cb.Min.X * FtToMm), Round(cb.Min.Y * FtToMm), Round(cb.Min.Z * FtToMm)),
+                                ["max"] = new JArray(Round(cb.Max.X * FtToMm), Round(cb.Max.Y * FtToMm), Round(cb.Max.Z * FtToMm))
+                            };
+                    }
+                    catch { }
+                }
                 terms.Add(new JObject
                 {
+                    ["coupler_box_mm"] = couplerBox,
                     ["end"] = end,
                     ["hook_readable"] = hookReadable,
                     ["hook_type_id"] = hookId == null ? -1 : Rid.Value(hookId),
                     ["hook_type_name"] = hook == null ? null : Safe(() => hook.Name),
                     ["has_hook"] = hookId != null && hookId != ElementId.InvalidElementId,
                     ["orientation"] = orientation,
+                    ["drawn_orientation"] = DrawnSide(bar, barNormal, end, hookId, ref drawnPts, ref declaredPts),
                     ["coupler_id"] = (couplerId == null || couplerId == ElementId.InvalidElementId)
-                        ? -1 : Rid.Value(couplerId)
+                        ? -1 : Rid.Value(couplerId),
+                    ["coupler_readable"] = couplerReadable
                 });
             }
             o["terminations"] = terms;
@@ -225,6 +251,12 @@ namespace Horizun.Revit.Commands
             measured["volume_m3"] = Round(volumeFt3.HasValue ? (double?)Guard.ToM3(volumeFt3.Value) : null, 6);
             measured["quantity"] = Safe(() => (int?)bar.Quantity);
             measured["schedule_mark"] = Safe(() => bar.ScheduleMark);
+            // ONE BAR'S CENTRELINE LENGTH, EXACT (L2). TotalLength is ROUNDED by the bar type's
+            // rounding rule (measured: 3 x 3770 against 3 x 3767.85), and the rounding value the
+            // API reports is in display units, not internal ones - so the exact length is measured
+            // off the curves instead, and the audit compares against it.
+            double? oneBarFt = OneBarCentrelineFt(bar);
+            measured["bar_centreline_length_mm"] = Round(oneBarFt * FtToMm);
             measured["source"] = "read from the element, not derived from the plan";
             if (!totalLengthFt.HasValue)
                 reasons.Add(StructuralCoverage.Reason("total_length", "the bar would not report its total length.",
@@ -308,6 +340,206 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>
+        /// ONE BAR OF AN AREA OR PATH SYSTEM (RebarInSystem), read into the Revit-free facts
+        /// RebarSystemBars.Row turns into the row the takeoff, the schedule and reconcile aggregate.
+        /// Read off the element like a set: Revit's own total length, volume and quantity.
+        /// </summary>
+        public static JObject DescribeInSystem(Document doc, RebarInSystem bar)
+        {
+            return RebarSystemBars.Row(ReadInSystem(doc, bar));
+        }
+
+        public static SystemBarFacts ReadInSystem(Document doc, RebarInSystem bar)
+        {
+            var f = new SystemBarFacts
+            {
+                Id = Rid.Value(bar.Id),
+                UniqueId = Safe(() => bar.UniqueId),
+                Name = Safe(() => bar.Name)
+            };
+
+            ElementId systemId = null;
+            try { systemId = bar.SystemId; } catch { }
+            Element system = (systemId != null && systemId != ElementId.InvalidElementId) ? doc.GetElement(systemId) : null;
+            f.SystemId = systemId == null || systemId == ElementId.InvalidElementId ? (long?)null : Rid.Value(systemId);
+            f.SystemKind = system is AreaReinforcement ? RebarSystemBars.KindArea
+                         : system is PathReinforcement ? RebarSystemBars.KindPath : null;
+
+            ElementId hostId = null;
+            try { hostId = bar.GetHostId(); } catch { }
+            Element host = (hostId != null && hostId != ElementId.InvalidElementId) ? doc.GetElement(hostId) : null;
+            f.HostId = hostId == null || hostId == ElementId.InvalidElementId ? (long?)null : Rid.Value(hostId);
+            f.HostResolved = host != null;
+            if (host != null)
+            {
+                f.HostCategory = host.Category == null ? null : host.Category.Name;
+                f.HostName = Safe(() => host.Name);
+            }
+
+            RebarBarType barType = null;
+            try { barType = doc.GetElement(bar.GetTypeId()) as RebarBarType; } catch { }
+            if (barType != null)
+            {
+                f.BarTypeId = Rid.Value(barType.Id);
+                f.BarTypeName = Safe(() => barType.Name);
+                f.NominalDiameterMm = Safe(() => barType.BarNominalDiameter) * FtToMm;
+                f.ModelDiameterMm = Safe(() => barType.BarModelDiameter) * FtToMm;
+            }
+
+            ElementId shapeId = null;
+            try { shapeId = bar.RebarShapeId; } catch { }
+            RebarShape shape = (shapeId != null && shapeId != ElementId.InvalidElementId) ? doc.GetElement(shapeId) as RebarShape : null;
+            if (shape != null)
+            {
+                f.ShapeId = Rid.Value(shape.Id);
+                f.ShapeName = Safe(() => shape.Name);
+                try { f.Style = shape.RebarStyle == RebarStyle.StirrupTie ? StructuralStyle.StirrupTie : StructuralStyle.Standard; }
+                catch { }
+            }
+
+            f.LayoutRule = Safe(() => bar.LayoutRule.ToString());
+            f.NumberOfBarPositions = Safe(() => (int?)bar.NumberOfBarPositions);
+            f.Quantity = Safe(() => (int?)bar.Quantity);
+            f.MaxSpacingMm = Safe(() => bar.MaxSpacing) * FtToMm;
+            f.ArrayLengthMm = Safe(() => bar.ArrayLength) * FtToMm;
+
+            for (int end = 0; end <= 1; end++)
+            {
+                ElementId hookId = null; bool readable = true;
+                try { hookId = bar.GetHookTypeId(end); } catch { readable = false; }
+                bool has = hookId != null && hookId != ElementId.InvalidElementId;
+                Element hook = has ? doc.GetElement(hookId) : null;
+                long? id = has ? Rid.Value(hookId) : (long?)null;
+                string name = hook == null ? null : Safe(() => hook.Name);
+                if (end == 0) { f.HookTypeId0 = id; f.HookTypeName0 = name; f.HookReadable0 = readable; }
+                else { f.HookTypeId1 = id; f.HookTypeName1 = name; f.HookReadable1 = readable; }
+            }
+
+            f.TotalLengthMm = Safe(() => bar.TotalLength) * FtToMm;
+            double? volumeFt3 = Safe(() => bar.Volume);
+            f.VolumeM3 = volumeFt3.HasValue ? (double?)Guard.ToM3(volumeFt3.Value) : null;
+            f.ScheduleMark = Safe(() => bar.ScheduleMark);
+
+            IList<Curve> drawn = null;
+            try { drawn = bar.GetCenterlineCurves(false, false, false); } catch { }
+            if (drawn != null && drawn.Count > 0)
+            {
+                double sum = 0;
+                foreach (Curve c in drawn) { try { sum += c.Length; } catch { } }
+                f.OneBarCentrelineMm = sum * FtToMm;
+                f.CentrelinePointsMm = Tessellate(drawn);
+            }
+            IList<Curve> declared = null;
+            try { declared = bar.GetCenterlineCurves(false, true, true); } catch { }
+            if (declared != null && declared.Count > 0) f.CentrelinePointsAsDeclaredMm = Tessellate(declared);
+            return f;
+        }
+
+        /// <summary>
+        /// ONE FABRIC SHEET (stage 1c), read into the Revit-free facts RebarSystemBars.FabricRow turns into the
+        /// takeoff's row: every wire centreline Revit returns for each direction of the sheet AS PLACED, each
+        /// direction's wire type and diameter, and Revit's own masses (cut sheet, the type's sheet and per area).
+        /// </summary>
+        public static JObject DescribeFabric(Document doc, FabricSheet sheet)
+        {
+            return RebarSystemBars.FabricRow(ReadFabric(doc, sheet));
+        }
+
+        public static FabricSheetFacts ReadFabric(Document doc, FabricSheet sheet)
+        {
+            var f = new FabricSheetFacts
+            {
+                Id = Rid.Value(sheet.Id),
+                UniqueId = Safe(() => sheet.UniqueId),
+                Name = Safe(() => sheet.Name)
+            };
+            ElementId area = null;
+            try { area = sheet.FabricAreaOwnerId; } catch { }
+            f.FabricAreaId = area == null || area == ElementId.InvalidElementId ? (long?)null : Rid.Value(area);
+
+            ElementId hostId = null;
+            try { hostId = sheet.HostId; } catch { }
+            Element host = (hostId != null && hostId != ElementId.InvalidElementId) ? doc.GetElement(hostId) : null;
+            f.HostId = hostId == null || hostId == ElementId.InvalidElementId ? (long?)null : Rid.Value(hostId);
+            f.HostResolved = host != null;
+            if (host != null)
+            {
+                f.HostCategory = host.Category == null ? null : host.Category.Name;
+                f.HostName = Safe(() => host.Name);
+            }
+
+            FabricSheetType type = null;
+            try { type = doc.GetElement(sheet.GetTypeId()) as FabricSheetType; } catch { }
+            if (type != null)
+            {
+                f.SheetTypeId = Rid.Value(type.Id);
+                f.SheetTypeName = Safe(() => type.Name);
+                FabricWireType major = null, minor = null;
+                try { major = doc.GetElement(type.MajorDirectionWireType) as FabricWireType; } catch { }
+                try { minor = doc.GetElement(type.MinorDirectionWireType) as FabricWireType; } catch { }
+                if (major != null) { f.MajorWireTypeName = Safe(() => major.Name); f.MajorWireDiameterMm = Safe(() => major.WireDiameter) * FtToMm; }
+                if (minor != null) { f.MinorWireTypeName = Safe(() => minor.Name); f.MinorWireDiameterMm = Safe(() => minor.WireDiameter) * FtToMm; }
+                f.RevitTypeSheetMassKg = Kg(Safe(() => type.SheetMass));
+                double? perAreaInternal = Safe(() => type.SheetMassUnit);
+                if (perAreaInternal.HasValue)
+                    try { f.RevitTypeMassPerAreaKgM2 = UnitUtils.ConvertFromInternalUnits(perAreaInternal.Value, UnitTypeId.KilogramsPerSquareMeter); }
+                    catch { f.RevitTypeMassPerAreaKgM2 = null; }
+            }
+
+            string number = null;
+            try { number = sheet.get_Parameter(BuiltInParameter.FABRIC_NUMBER)?.AsString(); } catch { }
+            f.FabricNumber = number;
+            f.MajorWireLengthsMm = WireLengths(sheet, WireDistributionDirection.Major);
+            f.MinorWireLengthsMm = WireLengths(sheet, WireDistributionDirection.Minor);
+            f.CutOverallLengthMm = Safe(() => sheet.CutOverallLength) * FtToMm;
+            f.CutOverallWidthMm = Safe(() => sheet.CutOverallWidth) * FtToMm;
+            f.IsBent = Safe(() => (bool?)sheet.IsBent);
+            f.RevitCutSheetMassKg = Kg(Safe(() => sheet.CutSheetMass));
+            return f;
+        }
+
+        private static List<double> WireLengths(FabricSheet sheet, WireDistributionDirection direction)
+        {
+            IList<Curve> wires;
+            try { wires = sheet.GetWireCenterlines(direction); } catch { return null; }
+            if (wires == null) return null;
+            var lengths = new List<double>(wires.Count);
+            foreach (Curve c in wires)
+            {
+                try { lengths.Add(c.Length * FtToMm); } catch { return null; }
+            }
+            return lengths;
+        }
+
+        private static double? Kg(double? internalMass)
+        {
+            if (!internalMass.HasValue) return null;
+            try { return UnitUtils.ConvertFromInternalUnits(internalMass.Value, UnitTypeId.Kilograms); }
+            catch { return null; }
+        }
+
+        private static List<double[]> Tessellate(IList<Curve> curves)
+        {
+            var pts = new List<double[]>();
+            double[] previous = null;
+            foreach (Curve c in curves)
+            {
+                IList<XYZ> tess;
+                try { tess = c.Tessellate(); } catch { return null; }
+                if (tess == null) return null;
+                foreach (XYZ q in tess)
+                {
+                    var v = new[] { q.X * FtToMm, q.Y * FtToMm, q.Z * FtToMm };
+                    if (previous != null && Math.Abs(v[0] - previous[0]) < 1e-6 &&
+                        Math.Abs(v[1] - previous[1]) < 1e-6 && Math.Abs(v[2] - previous[2]) < 1e-6) continue;
+                    pts.Add(v);
+                    previous = v;
+                }
+            }
+            return pts.Count >= 2 ? pts : null;
+        }
+
+        /// <summary>
         /// The centreline as Revit draws it, for ONE bar of the set. The count and
         /// the summed length are the substance: a bar whose curves cannot be read
         /// is a bar nobody has measured, whatever its parameters say.
@@ -328,6 +560,37 @@ namespace Horizun.Revit.Commands
         /// statement with a hook-inclusive fact, and reports a difference of the
         /// hook length on every correctly built stirrup.
         /// </summary>
+        /// <summary>One bar's centreline length as drawn (hooks and bends included), unrounded, or null.</summary>
+        internal static double? OneBarCentrelineFt(Rebar bar)
+        {
+            try
+            {
+                IList<Curve> cs = bar.GetCenterlineCurves(false, false, false, MultiplanarOption.IncludeAllMultiplanarCurves, 0);
+                if (cs == null || cs.Count == 0) return null;
+                double sum = 0;
+                foreach (Curve c in cs) sum += c.Length;
+                return sum;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// The side the hook at this end is DRAWN on (HookSide), or null: no hook, or a drawing that does not say.
+        /// </summary>
+        private static string DrawnSide(Rebar bar, XYZ normal, int end, ElementId hookId,
+                                        ref List<double[]> drawn, ref List<double[]> declared)
+        {
+            if (normal == null || hookId == null || hookId == ElementId.InvalidElementId) return null;
+            try
+            {
+                if (drawn == null) drawn = CentrelinePointsMm(bar, false);
+                if (declared == null) declared = CentrelinePointsMm(bar, true);
+                string why;
+                return HookSide.Measure(drawn, declared, new[] { normal.X, normal.Y, normal.Z }, end, out why);
+            }
+            catch { return null; }
+        }
+
         public static List<double[]> CentrelinePointsMm(Rebar bar, bool asDeclared)
         {
             IList<Curve> curves;

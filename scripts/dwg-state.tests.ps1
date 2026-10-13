@@ -80,6 +80,11 @@ try {
     }
 
     function Invoke-Generator([string]$RollUp, [string]$OutName) {
+        # Windows PowerShell 5.1 turns every stderr line of a native command into an
+        # ErrorRecord, and under the script's 'Stop' that THROWS - so the refusals this
+        # file exists to observe (state 5, the missing roll-up) aborted the test there
+        # while PowerShell 7 read them as the exit code they are. Scoped to this function.
+        $ErrorActionPreference = 'Continue'
         $out = Join-Path $root $OutName
         $log = & pwsh -NoProfile -File $generator -RollUp $RollUp -Out $out -SkipTests 2>&1 | Out-String
         [pscustomobject]@{

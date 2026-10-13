@@ -75,7 +75,7 @@ namespace Horizun.Revit.Commands
             bool dryRun;
             try
             {
-                request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
+                request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
                 // Default TRUE. These tools delete and recreate geometry; the caller who
                 // wanted that says so, and the caller who forgot gets a plan instead of a
                 // changed building.

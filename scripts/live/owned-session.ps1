@@ -59,10 +59,32 @@ function Enter-HzOwnedLock {
     return $fs
 }
 
+function Convert-HzOwnedJsonValue($Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [pscustomobject]) {
+        $table = @{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $table[$property.Name] = Convert-HzOwnedJsonValue $property.Value
+        }
+        return $table
+    }
+    if ($Value -is [array]) {
+        $items = @(foreach ($item in $Value) { Convert-HzOwnedJsonValue $item })
+        return ,$items
+    }
+    return $Value
+}
+
+function Read-HzOwnedJsonHashtable([string]$Path) {
+    $json = Get-Content -LiteralPath $Path -Raw
+    if ($PSVersionTable.PSVersion.Major -ge 6) { return (ConvertFrom-Json -InputObject $json -AsHashtable) }
+    return (Convert-HzOwnedJsonValue (ConvertFrom-Json -InputObject $json))
+}
+
 function Read-HzOwnedState([string]$Year) {
     $p = Get-HzOwnedStatePath $Year
     if (-not (Test-Path -LiteralPath $p)) { return $null }
-    return (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json -AsHashtable)
+    return (Read-HzOwnedJsonHashtable $p)
 }
 
 function Save-HzOwnedState([string]$Year, $State) {
@@ -327,7 +349,7 @@ function Get-HzRecordPath([string]$Name, [string]$Year) { return (Join-Path (Get
 function Read-HzRecord([string]$Name, [string]$Year) {
     $p = Get-HzRecordPath $Name $Year
     if (-not (Test-Path -LiteralPath $p)) { return $null }
-    return (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json -AsHashtable)
+    return (Read-HzOwnedJsonHashtable $p)
 }
 
 function Save-HzRecord([string]$Name, [string]$Year, $Record) {

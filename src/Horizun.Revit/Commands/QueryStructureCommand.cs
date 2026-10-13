@@ -41,19 +41,23 @@ namespace Horizun.Revit.Commands
         public static readonly string[] Modes =
         {
             "members", "hosts", "covers", "rebar", "reinforcement_systems", "connections", "coverage",
-            "quantities", "analytical", "loads"
+            "quantities", "analytical", "loads", "reconcile", "bending_schedule", "parse_notation", "compare_bars",
+            RebarSteelReview.Mode
         };
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+
+            string mode = (request.Value<string>("mode") ?? "").Trim().ToLowerInvariant();
+            // mode=parse_notation reads text, not the model: it needs no document.
+            if (mode == "parse_notation") return ParseNotation(request);
 
             Document doc = app?.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
 
-            string mode = (request.Value<string>("mode") ?? "").Trim().ToLowerInvariant();
             if (!Modes.Contains(mode))
                 return CommandResult.Fail("mode must be one of " + string.Join(", ", Modes) + ".");
 
@@ -83,6 +87,10 @@ namespace Horizun.Revit.Commands
                     case "connections": return Connections(doc, ids, offset, maxRows);
                     case "coverage": return Capability(doc);
                     case "quantities": return Quantities(doc, request, ids);
+                    case "reconcile": return Reconcile(doc, request, ids);
+                    case "bending_schedule": return BendingSchedule(doc, request, ids);
+                    case "compare_bars": return CompareBars(doc, request, offset, maxRows);
+                    case RebarSteelReview.Mode: return SteelReview(doc, request, ids, request["max_rows"] == null ? RebarSteelReview.DefaultMaxPairs : maxRows);
                     case "analytical": return Analytical(doc, request, ids, offset, maxRows);
                     case "loads": return Loads(doc, ids, offset, maxRows);
                     default: return CommandResult.Fail("unhandled mode " + mode + ".");
@@ -449,68 +457,241 @@ namespace Horizun.Revit.Commands
             double? density = request.Value<double?>("density_kg_per_m3");
             string densitySource = request.Value<string>("density_source");
 
-            long hostFilter = request.Value<long?>("host_id") ?? -1;
-            List<Rebar> all;
-            if (ids.Count > 0)
-            {
-                all = new List<Rebar>();
-                foreach (long id in ids)
-                {
-                    var b = doc.GetElement(Rid.Make(id)) as Rebar;
-                    if (b != null) all.Add(b);
-                }
-            }
-            else
-            {
-                all = new FilteredElementCollector(doc).OfClass(typeof(Rebar)).Cast<Rebar>().ToList();
-            }
-            if (Rid.CanRepresent(hostFilter) && hostFilter >= 0)
-            {
-                ElementId want = Rid.Make(hostFilter);
-                all = all.Where(b =>
-                {
-                    try { return b.GetHostId() == want; } catch { return false; }
-                }).ToList();
-            }
-            all = all.OrderBy(b => Rid.Value(b.Id)).ToList();
-
-            var rows = new JArray();
-            var reasons = new JArray();
-            foreach (Rebar b in all)
-            {
-                // Positions are not needed for a takeoff and are the expensive part
-                // of describing a set - Revit computes a transform per bar.
-                JObject row = RebarFacts.Describe(doc, b, false);
-                rows.Add(row);
-                string word = (string)(row["coverage"] == null ? null : row["coverage"]["coverage"]);
-                if (word != null && word != StructuralCoverage.Complete)
-                    reasons.Add(StructuralCoverage.Reason("rebar",
-                        "set " + Rid.Value(b.Id) + " could not be described completely, so it may be missing " +
-                        "from a total.", Rid.Value(b.Id)));
-            }
+            long hostFilter;
+            RebarScope scope;
+            JArray rows = ScopeRows(doc, request, ids, out hostFilter, out scope);
 
             string error;
             JObject takeoff = RebarTakeoff.Group(rows, groupBy, density, densitySource, out error);
             if (takeoff == null) return CommandResult.Fail(error);
 
-            takeoff["scope"] = new JObject
-            {
-                ["bar_sets_in_scope"] = all.Count,
-                ["element_ids_given"] = ids.Count,
-                ["host_id"] = Rid.CanRepresent(hostFilter) && hostFilter >= 0 ? (JToken)hostFilter : JValue.CreateNull(),
-                ["means"] = "every rebar set in scope was read, not a page of them: a total over the first " +
-                            "fifty rows is not a total, so this mode does not paginate."
-            };
-            takeoff["coverage"] = StructuralCoverage.Declare(
-                reasons.Count == 0 ? StructuralCoverage.Complete : StructuralCoverage.Partial,
-                all.Count, reasons.Count, reasons);
+            JObject scopeBlock = scope.Describe(ids.Count, Rid.CanRepresent(hostFilter) ? hostFilter : -1);
+            scopeBlock["means"] = "every rebar set, every bar of an area or path system and every fabric sheet in scope was read, not a " +
+                                  "page of them: a total over the first fifty rows is not a total, so this mode does " +
+                                  "not paginate.";
+            takeoff["scope"] = scopeBlock;
+            takeoff["coverage"] = scope.Coverage(rows);
             return CommandResult.Ok(takeoff);
+        }
+
+        /// <summary>
+        /// EVERY bar in scope - rebar sets, the bars of area and path systems (RebarInSystem) and fabric
+        /// sheets - from element_ids (an area or path system id scopes to its bars, a fabric area to its
+        /// sheets), else the whole document; then host_id. Sets are described by RebarFacts without
+        /// positions, system bars by RebarFacts.DescribeInSystem and sheets by RebarFacts.DescribeFabric in
+        /// the same shape, in id order: the one reading mode=quantities, mode=reconcile and
+        /// mode=bending_schedule all aggregate, so none of them can drift from it. Ids that are no
+        /// reinforcement, and bars or sheets whose host would not read, are reasons on the scope (RebarScope).
+        /// </summary>
+        private static JArray ScopeRows(Document doc, JObject request, List<long> ids,
+                                        out long hostFilter, out RebarScope scope)
+        {
+            hostFilter = request.Value<long?>("host_id") ?? -1;
+            IEnumerable<long> wanted = ids;
+            if (ids.Count == 0)
+            {
+                var every = new List<long>();
+                foreach (Type t in new[] { typeof(Rebar), typeof(RebarInSystem), typeof(FabricArea), typeof(FabricSheet) })
+                    every.AddRange(new FilteredElementCollector(doc).OfClass(t).ToElementIds().Select(Rid.Value));
+                wanted = every;
+            }
+            scope = RebarScope.FromIds(wanted, id => KindForTakeoff(doc, id), id => MembersOf(doc, id));
+            if (Rid.CanRepresent(hostFilter) && hostFilter >= 0)
+                scope.FilterByHost(hostFilter, id => HostOf(doc, id));
+
+            var rows = new JArray();
+            // Positions are not needed for a takeoff and are the expensive part
+            // of describing a set - Revit computes a transform per bar.
+            foreach (long id in scope.SetIds.Concat(scope.SystemBarIds).Concat(scope.FabricIds).OrderBy(v => v))
+            {
+                Element e = doc.GetElement(Rid.Make(id));
+                var b = e as Rebar;
+                var sb = e as RebarInSystem;
+                var fs = e as FabricSheet;
+                JObject row = b != null ? RebarFacts.Describe(doc, b, false)
+                            : fs != null ? RebarFacts.DescribeFabric(doc, fs)
+                            : RebarFacts.DescribeInSystem(doc, sb);
+                // A set says it is not a system bar, rather than leaving the reader to infer it.
+                if (b != null) row["system"] = JValue.CreateNull();
+                rows.Add(row);
+            }
+            return rows;
+        }
+
+        private static ReinforcementKind KindForTakeoff(Document doc, long id)
+        {
+            Element e = doc.GetElement(Rid.Make(id));
+            if (e == null) return ReinforcementKind.Missing;
+            if (e is Rebar) return ReinforcementKind.RebarSet;
+            if (e is RebarInSystem) return ReinforcementKind.SystemBar;
+            if (e is AreaReinforcement) return ReinforcementKind.AreaSystem;
+            if (e is PathReinforcement) return ReinforcementKind.PathSystem;
+            if (e is FabricArea) return ReinforcementKind.FabricArea;
+            if (e is FabricSheet) return ReinforcementKind.FabricSheet;
+            return ReinforcementKind.NotReinforcement;
+        }
+
+        private static IList<long> MembersOf(Document doc, long id)
+        {
+            Element e = doc.GetElement(Rid.Make(id));
+            IList<ElementId> m = null;
+            try
+            {
+                var ar = e as AreaReinforcement;
+                var pr = e as PathReinforcement;
+                if (ar != null) m = ar.GetRebarInSystemIds();
+                else if (pr != null) m = pr.GetRebarInSystemIds();
+                else if (e is FabricArea) m = ((FabricArea)e).GetFabricSheetElementIds();
+            }
+            catch { m = null; }
+            return m == null ? null : m.Select(Rid.Value).ToList();
+        }
+
+        private static long? HostOf(Document doc, long id)
+        {
+            Element e = doc.GetElement(Rid.Make(id));
+            ElementId h = null;
+            try
+            {
+                if (e is Rebar) h = ((Rebar)e).GetHostId();
+                else if (e is RebarInSystem) h = ((RebarInSystem)e).GetHostId();
+                else if (e is FabricSheet) h = ((FabricSheet)e).HostId;
+                else if (e is FabricArea) h = ((FabricArea)e).HostId;
+            }
+            catch { h = null; }
+            return h == null || h == ElementId.InvalidElementId ? (long?)null : Rid.Value(h);
+        }
+
+        /// <summary>
+        /// mode=bending_schedule (cartilla, L9): one line per mark - bar type, nominal diameter,
+        /// shape, the legs read off the bar, how many, one bar's length, total length and kg - with
+        /// totals per diameter and per host. A mark over different bars is split into one line per
+        /// bar and named, never averaged. The density and its source are REQUIRED; nothing is
+        /// defaulted. Pure aggregation in Core (RebarBendingSchedule); this only gathers the rows.
+        /// </summary>
+        private CommandResult BendingSchedule(Document doc, JObject request, List<long> ids)
+        {
+            double? density = request.Value<double?>("density_kg_per_m3");
+            string densitySource = request.Value<string>("density_source");
+            double tol = request.Value<double?>("length_tolerance_mm") ?? 0;
+
+            string code, error;
+            // Refuse before reading a single bar: a missing density is the caller's to fix.
+            if (RebarBendingSchedule.Build(new JArray(), density, densitySource, tol, out code, out error) == null)
+                return CommandResult.Fail(code + ": " + error);
+
+            long hostFilter;
+            RebarScope scope;
+            JArray rows = ScopeRows(doc, request, ids, out hostFilter, out scope);
+            JObject schedule = RebarBendingSchedule.Build(rows, density, densitySource, tol, out code, out error);
+            if (schedule == null) return CommandResult.Fail(code + ": " + error);
+
+            schedule["mode"] = "bending_schedule";
+            JObject scopeBlock = scope.Describe(ids.Count, Rid.CanRepresent(hostFilter) ? hostFilter : -1);
+            scopeBlock["means"] = "every rebar set, every bar of an area or path system and every fabric sheet in scope was read, not a " +
+                                  "page of them: a schedule over the first fifty rows is not a schedule, so this mode " +
+                                  "does not paginate.";
+            schedule["scope"] = scopeBlock;
+            schedule["coverage"] = scope.Coverage(rows);
+            return CommandResult.Ok(schedule);
+        }
+
+        /// <summary>
+        /// mode=steel_review (acero 3.0, stage 1c): EVERY bar in scope against every other, with NO requirement
+        /// set - duplicate_bar (one bar built twice) and overlapping_bar (a bar through another, or closer than
+        /// the optional clearances). Scope as mode=quantities: element_ids (an area or path system scopes to its
+        /// bars), else the whole document; then host_id. tolerance_mm is required. Counts in total and by host
+        /// category, the pairs worst first up to max_rows. Pure judgement in Core (RebarSteelReview).
+        /// </summary>
+        private CommandResult SteelReview(Document doc, JObject request, List<long> ids, int maxPairs)
+        {
+            JToken tolToken = request["tolerance_mm"];
+            double tol = tolToken != null && (tolToken.Type == JTokenType.Float || tolToken.Type == JTokenType.Integer) ? tolToken.Value<double>() : double.NaN;
+            if (double.IsNaN(tol) || double.IsInfinity(tol) || tol <= 0)
+                return CommandResult.Fail(RebarSteelReview.CodeToleranceRequired + ": mode=steel_review needs tolerance_mm, a " +
+                                          "positive number: how far two centrelines may stand apart and still be one bar, and how " +
+                                          "deep two surfaces must interpenetrate to be an intersection. It is a decision, not a " +
+                                          "constant. Nothing was reviewed.");
+            string error;
+            StructuralClearances clearances = RebarSteelReview.ReadClearances(request["clearances"], out error);
+            if (clearances == null) return CommandResult.Fail(error + " Nothing was reviewed.");
+
+            long hostFilter = request.Value<long?>("host_id") ?? -1;
+            IEnumerable<long> wanted = ids;
+            if (ids.Count == 0)
+            {
+                var every = new List<long>();
+                foreach (Type t in new[] { typeof(Rebar), typeof(RebarInSystem), typeof(FabricArea), typeof(FabricSheet) })
+                    every.AddRange(new FilteredElementCollector(doc).OfClass(t).ToElementIds().Select(Rid.Value));
+                wanted = every;
+            }
+            RebarScope scope = RebarScope.FromIds(wanted, id => KindForTakeoff(doc, id), id => MembersOf(doc, id));
+            if (Rid.CanRepresent(hostFilter) && hostFilter >= 0)
+                scope.FilterByHost(hostFilter, id => HostOf(doc, id));
+
+            var categories = new Dictionary<long, string>();
+            var sets = new List<ReviewSetFacts>();
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            foreach (long id in scope.SetIds)
+            {
+                var b = doc.GetElement(Rid.Make(id)) as Rebar;
+                if (b != null) sets.Add(SteelReviewReader.Read(doc, b, categories));
+            }
+            foreach (long id in scope.SystemBarIds)
+            {
+                var b = doc.GetElement(Rid.Make(id)) as RebarInSystem;
+                if (b != null) sets.Add(SteelReviewReader.Read(doc, b, categories));
+            }
+            long readMs = watch.ElapsedMilliseconds;
+            JObject result = RebarSteelReview.Review(sets, clearances, tol, maxPairs, scope.Reasons, scope.FabricIds.Count);
+            JObject scopeBlock = scope.Describe(ids.Count, Rid.CanRepresent(hostFilter) ? hostFilter : -1);
+            scopeBlock["means"] = "every rebar set and every bar of an area or path system in scope was read and compared, " +
+                                  "not a page of them. Fabric sheets in scope are counted, not compared.";
+            result["scope"] = scopeBlock;
+            result["document"] = doc.Title;
+            result["read_ms"] = readMs;
+            return CommandResult.Ok(result);
+        }
+
+        /// <summary>
+        /// mode=reconcile (refuerzo desde cartilla, F1.3): the takeoff of every bar in scope,
+        /// grouped by mark, bar type and nominal diameter, compared with the schedule the
+        /// caller passes. Tolerances are declared, never defaulted; weight needs a density
+        /// and its source, as in mode=quantities.
+        /// </summary>
+        private CommandResult Reconcile(Document doc, JObject request, List<long> ids)
+        {
+            string code, error;
+            List<RebarReconcile.Line> schedule = RebarReconcile.ReadSchedule(request["schedule"] as JArray, out code, out error);
+            if (schedule == null) return CommandResult.Fail(code + ": " + error + " Nothing was compared.");
+            var tol = request["tolerances"] as JObject;
+            double? lengthPct = tol?.Value<double?>("length_pct");
+            if (!lengthPct.HasValue || lengthPct.Value < 0 || double.IsNaN(lengthPct.Value))
+                return CommandResult.Fail(RebarReconcile.CodeTolerance + ": tolerances.length_pct is required - how far the model's total " +
+                                          "length per mark may sit from the schedule's, in percent. Whether a difference matters is " +
+                                          "a decision, not a constant. Counts are compared exactly. Nothing was compared.");
+            double? weightPct = tol?.Value<double?>("weight_pct");
+            if (weightPct.HasValue && (weightPct.Value < 0 || double.IsNaN(weightPct.Value)))
+                return CommandResult.Fail(RebarReconcile.CodeTolerance + ": tolerances.weight_pct must be zero or more. Nothing was compared.");
+
+            var q = (JObject)request.DeepClone();
+            q["group_by"] = new JArray(RebarTakeoffKey.Mark, RebarTakeoffKey.BarType, RebarTakeoffKey.NominalDiameter);
+            CommandResult taken = Quantities(doc, q, ids);
+            if (!taken.Success) return taken;
+            var takeoff = taken.Data as JObject;
+            JObject result = RebarReconcile.Compare(schedule, takeoff, lengthPct.Value, weightPct);
+            result["mode"] = "reconcile";
+            result["model_scope"] = takeoff?["scope"];
+            result["model_coverage"] = takeoff?["coverage"];
+            if (takeoff?["density"] != null) result["density"] = takeoff["density"];
+            return CommandResult.Ok(result);
         }
 
         private CommandResult Bars(Document doc, JObject request, List<long> ids, int offset, int maxRows)
         {
             bool positions = request["include_bar_positions"] == null || request.Value<bool>("include_bar_positions");
             long hostFilter = request.Value<long?>("host_id") ?? -1;
+            bool constraints = request.Value<bool?>("include_constraints") ?? false;
 
             List<Rebar> all;
             if (ids.Count > 0)
@@ -542,6 +723,7 @@ namespace Horizun.Revit.Commands
             foreach (Rebar b in all.Skip(offset).Take(maxRows))
             {
                 JObject row = RebarFacts.Describe(doc, b, positions);
+                if (constraints) row["constraints"] = RebarConstraintRead.Read(doc, b);
                 JArray rr = row["coverage"]?["reasons"] as JArray;
                 if (rr != null) foreach (JToken t in rr) reasons.Add(t);
                 rows.Add(row);

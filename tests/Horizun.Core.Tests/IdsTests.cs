@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Core tests - original Horizun code.
 //
 // THE CASES WHERE AN IDS IMPLEMENTATION IS PLAUSIBLE AND WRONG.
@@ -45,6 +45,29 @@ namespace Horizun.Core.Tests
             Assert.False(IdsRestriction.Satisfies("XXDT01YY", value).Satisfied);
             Assert.False(IdsRestriction.Satisfies("DT013", value).Satisfied);
             Assert.False(IdsRestriction.Satisfies("ADT01", value).Satisfied);
+        }
+
+        [Fact]
+        public void Sibling_patterns_are_alternatives()
+        {
+            // XML Schema: several xs:pattern facets in ONE restriction step are ORed. Requiring
+            // every one of them failed any value that matched one convention of two (audit 2026-10-08, 6.5).
+            IdsValue value = Restriction("<xs:pattern value=\"DT[0-9]{2}\"/><xs:pattern value=\"WL-[A-Z]+\"/>");
+            Assert.True(IdsRestriction.Satisfies("DT01", value).Satisfied);
+            Assert.True(IdsRestriction.Satisfies("WL-EXT", value).Satisfied);
+            IdsMatch neither = IdsRestriction.Satisfies("XX", value);
+            Assert.False(neither.Satisfied);
+            Assert.Contains("none of", neither.Reason);
+        }
+
+        [Fact]
+        public void A_pattern_that_cannot_be_evaluated_does_not_hide_one_that_matched()
+        {
+            IdsValue value = Restriction("<xs:pattern value=\"[\"/><xs:pattern value=\"DT[0-9]{2}\"/>");
+            Assert.True(IdsRestriction.Satisfies("DT01", value).Satisfied);
+            IdsMatch xx = IdsRestriction.Satisfies("XX", value);
+            Assert.False(xx.Satisfied);
+            Assert.True(xx.Undecidable);   // the broken alternative might have matched: no claim
         }
 
         [Fact]
@@ -355,6 +378,39 @@ namespace Horizun.Core.Tests
             IdsReport report = IdsRun.Validate(ids, ifc, "test.ids");
             Assert.Equal(IdsOutcome.NotDecidable, report.Results.Single().Outcome);
             Assert.Contains("FILE_SCHEMA", report.Results.Single().Undecidable);
+        }
+
+        // Backlog #13: ifcVersion was compared by prefix in both directions, so IFC4 and
+        // IFC4X3 were taken as one schema. Compared by family now, as IfcDeliveryRules does.
+        [Theory]
+        [InlineData("IFC4", "IFC4X3_ADD2")]
+        [InlineData("IFC4X3_ADD2", "IFC4")]
+        [InlineData("IFC4", "IFC4X3")]
+        public void IFC4_and_IFC4X3_are_different_schemas(string declared, string fileSchema)
+        {
+            IdsFile ids = Ids(@"
+              <specification name=""s"" ifcVersion=""" + declared + @""">
+                <applicability><entity><name><simpleValue>IFCWALL</simpleValue></name></entity></applicability>
+              </specification>");
+            IfcStepReader.Document ifc = Ifc("#1=IFCWALL('0aaaaaaaaaaaaaaaaaaaa1',$,'W1',$,$,$,$,$);", fileSchema);
+            IdsReport report = IdsRun.Validate(ids, ifc, "test.ids");
+            Assert.Equal(IdsOutcome.NotDecidable, report.Results.Single().Outcome);
+        }
+
+        [Theory]
+        [InlineData("IFC4X3_ADD2", "IFC4X3")]
+        [InlineData("IFC4X3_ADD2", "IFC4X3_ADD2")]
+        [InlineData("IFC4", "IFC4")]
+        [InlineData("IFC2X3", "IFC2X3")]
+        public void The_same_schema_family_is_evaluated(string declared, string fileSchema)
+        {
+            IdsFile ids = Ids(@"
+              <specification name=""s"" ifcVersion=""" + declared + @""">
+                <applicability><entity><name><simpleValue>IFCWALL</simpleValue></name></entity></applicability>
+              </specification>");
+            IfcStepReader.Document ifc = Ifc("#1=IFCWALL('0aaaaaaaaaaaaaaaaaaaa1',$,'W1',$,$,$,$,$);", fileSchema);
+            IdsReport report = IdsRun.Validate(ids, ifc, "test.ids");
+            Assert.NotEqual(IdsOutcome.NotDecidable, report.Results.Single().Outcome);
         }
 
         [Fact]

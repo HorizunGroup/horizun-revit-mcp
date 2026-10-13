@@ -134,6 +134,33 @@ namespace Horizun.Server.Tests
                 string.Join(", ", _calls));
         }
 
+        // Backlog #35: the per-run lock was a Monitor - it held inside ONE server. A
+        // second process (Codex beside Claude) loaded the same record, saw the same
+        // pending step and dispatched it again. The holder here is a separate Mutex on
+        // ANOTHER thread, which is what a second process looks like to this one (a
+        // named mutex is re-entrant on its own thread, so the same thread proves nothing).
+        [Fact]
+        public void A_run_held_by_another_process_is_refused_and_dispatches_nothing()
+        {
+            JObject procedure = AnExecutableProcedure();
+            Assert.NotNull(procedure);
+            JObject started = Call(Obj("operation", "start", "procedure", (string)procedure["id"],
+                                       "inputs", InputsFor(procedure)));
+            string runId = started.Value<string>("run_id");
+            string path = ProcedureRun.RecordPathFor(runId);
+
+            using (var holder = new OtherHolder(HostFileMutex.NameFor(ProcedureRun.MutexScope, path)))
+            {
+                ToolRefusal refused = Assert.Throws<ToolRefusal>(() => Call(Obj("operation", "advance", "run_id", runId)));
+                Assert.Contains(path, refused.Message);
+                Assert.Empty(_calls);
+            }
+
+            // Released, the same advance goes through: the refusal was the lock, not the run.
+            Call(Obj("operation", "advance", "run_id", runId));
+            Assert.NotEmpty(_calls);
+        }
+
         [Theory]
         [InlineData("{\"state\":\"applied\",\"stages_failed\":0,\"stopped_early\":false,\"created_verified\":21}", "ok")]
         [InlineData("{\"state\":\"rehearsed\",\"stages_failed\":0,\"stopped_early\":false}", "ok")]

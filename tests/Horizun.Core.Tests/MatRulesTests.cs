@@ -56,6 +56,82 @@ namespace Horizun.Core.Tests
             return 12;
         }
 
+        // ---------------------------------- a sloped face (acero 3.0, L6)
+
+        // A stair's waist slab: 1200 wide, rising 2000 over 4000 on plan, 300 deep measured
+        // vertically, its ends cut vertical - the sheared prism slab_shape makes of a floor.
+        private static HostMesh Waist()
+        {
+            HostMesh m = HostMesh.Box(new double[] { 0, 0, -300 }, new double[] { 1200, 4000, 0 });
+            foreach (double[] v in m.Vertices) v[2] += v[1] * 0.5;
+            return m;
+        }
+
+        [Fact]
+        public void A_mat_under_a_sloped_face_is_measured_on_that_face_not_on_the_whole_solid()
+        {
+            // MEASURED, Revit 2024 (acero L6, T1): the extents were taken over every vertex, and the
+            // vertical end cuts reach further along the slope than the face does, so the first bar
+            // across the slope was laid entirely outside the slab and the plan refused it.
+            double len = Math.Sqrt(4000 * 4000 + 2000 * 2000);
+            var rule = new StructuralMatRule
+            {
+                Id = "T1", FaceNormalMm = new[] { 0, 2000 / len, -4000 / len }, Mark = "W1",
+                Components = new List<MatComponentRequest> { Comp("across", X, 47, 250, 40, 47) }
+            };
+            List<StructuralRebarRule> made;
+            MatResult r = MatRules.Expand(rule, Waist(), Dia, out made);
+            Assert.True(r.Ok, r.Why);
+            double[] p = made.Single().CurvesMm[0];
+            Assert.InRange(p[1], 0.0, 4000.0);
+            // The face is 4472.1 long along the slope; the solid's projection 4606.3.
+            Assert.Equal(len - 2 * 47, made.Single().Layout.ArrayLengthMm.Value, 3);
+        }
+
+        [Fact]
+        public void A_stepped_host_is_still_measured_on_the_whole_solid()
+        {
+            // Two planes facing up (a step): the outermost face alone would quietly drop the lower
+            // step; the extents stay the solid's and containment refuses a bar over the lower one.
+            HostMesh m = HostMesh.Box(new double[] { 0, 0, 0 }, new double[] { 6000, 4000, 200 });
+            HostMesh step = HostMesh.Box(new double[] { 6000, 0, 0 }, new double[] { 8000, 4000, 100 });
+            int b = m.Vertices.Count;
+            foreach (double[] v in step.Vertices) m.AddVertex(v[0], v[1], v[2]);
+            foreach (int[] t in step.Triangles) m.AddTriangle(b + t[0], b + t[1], b + t[2]);
+            List<StructuralRebarRule> made;
+            MatResult r = MatRules.Expand(Rule(Comp("top_x", X, 31)), m, Dia, out made);
+            Assert.True(r.Ok, r.Why);
+            Assert.Equal(8000 - 50, made.Single().CurvesMm[1][0] - made.Single().CurvesMm[0][0], 6);
+        }
+
+        // ---------------------------------- a host whose faces differ (acero 3.0, L3)
+
+        // MEASURED (Revit 2024): a strip footing has no COMMON cover - its bottom is "cast against
+        // earth" at 75 mm, its sides 40 - and a layer declared 74 mm from the bottom was drawn
+        // 82.95 mm up (75 + half a 16M bar), so the audit found it 8.95 mm off. The cover of the
+        // face the mat lies under is what the bar is held to; a layer below it is refused.
+        [Fact]
+        public void A_layer_below_the_cover_of_its_own_face_is_refused_when_the_host_has_no_common_cover()
+        {
+            List<StructuralRebarRule> made;
+            MatResult r = MatRules.Expand(Rule(Comp("bottom_y", Y, 74)), Slab(), Dia, null, 75, out made);
+            Assert.Equal(MatRules.CodeOffsetBelowFaceCover, r.Code);
+            Assert.Contains("75", r.Why);
+            Assert.Empty(made);
+        }
+
+        [Fact]
+        public void A_layer_at_or_past_its_face_cover_plus_half_the_bar_is_laid()
+        {
+            List<StructuralRebarRule> made;
+            MatResult r = MatRules.Expand(Rule(Comp("bottom_y", Y, 81)), Slab(), Dia, null, 75, out made);
+            Assert.True(r.Ok, r.Why);
+        }
+
+        [Fact]
+        public void With_a_common_cover_the_face_cover_is_not_asked() =>
+            Assert.True(MatRules.Expand(Rule(Comp("top_x", X, 31, end: 25, side: 31)), Slab(), Dia, 25, 75, out _).Ok);
+
         // ------------------------------------------------- what it derives
 
         [Fact]

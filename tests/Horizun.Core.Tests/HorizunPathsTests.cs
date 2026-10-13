@@ -65,6 +65,14 @@ namespace Horizun.Core.Tests
 
     public class HorizunPathsTests
     {
+        private sealed class KnownProfile : IDisposable
+        {
+            // Known-folder API shape: an absolute directory, independent of inherited env.
+            internal static readonly string PathValue = Path.Combine(Path.GetPathRoot(Path.GetTempPath()), "hz-known-profile");
+            private readonly Func<string> _saved = HorizunPaths.UserProfileReader;
+            internal KnownProfile() => HorizunPaths.UserProfileReader = () => PathValue;
+            public void Dispose() => HorizunPaths.UserProfileReader = _saved;
+        }
         /// <summary>
         /// THE REGRESSION, in the only form that can be observed from inside one
         /// process: the root is not the folder the old rule produced.
@@ -77,6 +85,7 @@ namespace Horizun.Core.Tests
         {
             using (new EnvGuard())
             {
+                using var profile = new KnownProfile();
                 EnvGuard.Set(HorizunPaths.RootOverrideVariable, null);
 
                 string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -88,7 +97,7 @@ namespace Horizun.Core.Tests
                     "per user, which is what split the server's view from Revit's. Root was " + root);
 
                 // And it is where the brief asked for it to be.
-                Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".horizun"),
+                Assert.Equal(Path.Combine(KnownProfile.PathValue, ".horizun"),
                              root);
             }
         }
@@ -186,6 +195,7 @@ namespace Horizun.Core.Tests
         {
             using (new EnvGuard())
             {
+                using var profile = new KnownProfile();
                 EnvGuard.Set(HorizunPaths.RootOverrideVariable, null);
                 string before = HorizunPaths.DataRoot();
 

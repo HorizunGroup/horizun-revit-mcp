@@ -38,6 +38,49 @@ namespace Horizun.Core.Tests
             Assert.Null(ArchitecturalEditRules.SlabVertexConvention(3, 10, 0.5, 1e-4));
         }
 
+        // Backlog #20: each vertex passed if EITHER reading of Z fitted it, point by point, so
+        // a vertex Revit never moved could pass under the other reading. One edit has one
+        // convention; a vertex that only fits the other one fails.
+        [Fact]
+        public void One_edit_reads_every_vertex_with_one_convention()
+        {
+            // top 3000; vertex 0 asked at offset 0 reads 3000 (absolute); vertex 1 asked at 500
+            // reads 500 - which only the OFFSET reading accepts.
+            double?[] z = { 3000, 500 };
+            double[] offsets = { 0, 500 };
+            string convention = ArchitecturalEditRules.SlabEditConvention(z, 3000, offsets, 1e-4);
+            Assert.Equal("absolute", convention);
+            Assert.Equal(-2500, ArchitecturalEditRules.SlabOffsetRead(500, 3000, convention), 6);
+            Assert.Equal(0, ArchitecturalEditRules.SlabOffsetRead(3000, 3000, convention), 6);
+        }
+
+        [Fact]
+        public void An_unmoved_vertex_cannot_choose_the_reading_that_would_pass_it()
+        {
+            // XYZ Position is a model coordinate. At elevation 10 an unchanged vertex
+            // also happens to equal a requested offset of 10; that is NOT an applied edit.
+            Assert.Equal("absolute", ArchitecturalEditRules.SlabEditConvention(new double?[] { 10 }, 10, new[] { 10.0 }, 1e-4));
+            Assert.Equal(0, ArchitecturalEditRules.SlabOffsetRead(10, 10, "absolute"));
+            Assert.Equal("absolute", ArchitecturalEditRules.SlabEditConvention(new double?[] { 10.5, 10.25 }, 10, new[] { 0.5, 0.25 }, 1e-4));
+            Assert.Equal("absolute", ArchitecturalEditRules.SlabEditConvention(new double?[] { 3, null }, 10, new[] { 0.5, 1 }, 1e-4));
+        }
+
+        [Fact]
+        public void The_slab_shape_verify_reads_one_convention_for_the_edit()
+        {
+            string src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "src", "Horizun.Revit", "Commands", "SlabShapeCommand.cs"));
+            Assert.Contains("ArchitecturalEditRules.SlabEditConvention(", src);
+            Assert.Contains("ArchitecturalEditRules.SlabOffsetRead(", src);
+            Assert.DoesNotContain("double found = how == \"absolute\" ? v.Position.Z - top : v.Position.Z;", src);
+        }
+
+        private static string Root()
+        {
+            var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory);
+            while (d != null && !System.IO.File.Exists(System.IO.Path.Combine(d.FullName, "AGENTS.md"))) d = d.Parent;
+            return d.FullName;
+        }
+
         [Fact]
         public void Covered_length_merges_overlaps_and_clips()
         {

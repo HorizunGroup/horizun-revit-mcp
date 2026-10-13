@@ -517,6 +517,84 @@ namespace Horizun.Server.Tests
             ["links"] = new JObject { ["document_versions"] = new JObject { ["url"] = versionsUrl } }
         };
 
+        /// <summary>The token, the server it belongs to, and the Documents API host that server uses.</summary>
+        private static Dictionary<string, string> OpenCdeVars() => new Dictionary<string, string>
+        {
+            [CdeCloudTool.OpenCdeTokenName] = IssuedToken,
+            [CdeCloudTool.OpenCdeServerName] = "https://cde.example.test",
+            [CdeCloudTool.OpenCdeAllowedHostsName] = "docs.example.test"
+        };
+
+        [Fact]
+        public void OpenCde_a_server_url_other_than_the_configured_one_is_refused_with_zero_requests()
+        {
+            var cloud = OpenCdeServer();
+            var args = new JObject
+            {
+                ["operation"] = "versions", ["provider"] = "opencde", ["server_url"] = "https://attacker.example.test", ["document_id"] = "d1"
+            };
+            var ex = Assert.Throws<ToolRefusal>(() => CdeCloudTool.Handle(args, CancellationToken.None, Env(cloud, OpenCdeVars())));
+            Assert.Contains(CdeCloudTool.OpenCdeServerName, ex.Message);
+            Assert.Empty(cloud.Requests);
+            Assert.DoesNotContain(IssuedToken, ex.Message);
+        }
+
+        [Fact]
+        public void OpenCde_a_token_without_a_configured_server_is_refused_with_zero_requests()
+        {
+            var cloud = OpenCdeServer();
+            var args = new JObject { ["operation"] = "versions", ["provider"] = "opencde", ["server_url"] = "https://cde.example.test", ["document_id"] = "d1" };
+            var vars = new Dictionary<string, string> { [CdeCloudTool.OpenCdeTokenName] = IssuedToken };
+            var ex = Assert.Throws<ToolRefusal>(() => CdeCloudTool.Handle(args, CancellationToken.None, Env(cloud, vars)));
+            Assert.Contains(CdeCloudTool.OpenCdeServerName, ex.Message);
+            Assert.Empty(cloud.Requests);
+        }
+
+        [Fact]
+        public void OpenCde_a_documents_api_on_an_unlisted_host_never_receives_the_token()
+        {
+            var cloud = OpenCdeServer();
+            cloud.Json("POST", "https://docs.example.test/documents/1.0/document-versions",
+                new JObject { ["versions"] = new JArray(Doc("d1", "a.ifc", 2, "https://docs.example.test/documents/1.0/d1/versions")) });
+            var args = new JObject { ["operation"] = "versions", ["provider"] = "opencde", ["server_url"] = "https://cde.example.test", ["document_id"] = "d1" };
+            var vars = OpenCdeVars();
+            vars.Remove(CdeCloudTool.OpenCdeAllowedHostsName);
+            JObject r = CdeCloudTool.Handle(args, CancellationToken.None, Env(cloud, vars));
+            Assert.False((bool)r["coverage_complete"]);
+            Assert.Contains("docs.example.test", (string)r["reason"]);
+            Assert.All(cloud.Requests, q => Assert.Null(q.Auth));
+            Assert.DoesNotContain(cloud.Requests, q => q.Url.Contains("docs.example.test"));
+            NoSecretIn(r);
+        }
+
+        [Fact]
+        public void OpenCde_server_url_may_be_omitted_when_one_is_configured()
+        {
+            var cloud = OpenCdeServer();
+            string versionsUrl = "https://docs.example.test/documents/1.0/d1/versions";
+            cloud.Json("POST", "https://docs.example.test/documents/1.0/document-versions",
+                new JObject { ["versions"] = new JArray(Doc("d1", "a.ifc", 1, versionsUrl)) });
+            cloud.Json("GET", versionsUrl, new JObject { ["documents"] = new JArray(Doc("d1", "a.ifc", 1, versionsUrl)) });
+            var args = new JObject { ["operation"] = "versions", ["provider"] = "opencde", ["document_id"] = "d1" };
+            JObject r = CdeCloudTool.Handle(args, CancellationToken.None, Env(cloud, OpenCdeVars()));
+            Assert.True((bool)r["coverage_complete"]);
+            Assert.Equal("https://cde.example.test", (string)r["server_url"]);
+        }
+
+        [Fact]
+        public void OpenCde_list_states_without_a_token_still_reads_any_server()
+        {
+            var f = new FakeCloud();
+            f.Json("GET", "https://other.example.test/foundation/versions", new JObject
+            {
+                ["versions"] = new JArray(new JObject { ["api_id"] = "documents", ["version_id"] = "1.0", ["api_base_url"] = "https://other.example.test/documents/1.0" })
+            });
+            var args = new JObject { ["operation"] = "list_states", ["provider"] = "opencde", ["server_url"] = "https://other.example.test" };
+            JObject r = CdeCloudTool.Handle(args, CancellationToken.None, Env(f, null));
+            Assert.False((bool)r["states_mappable"]);
+            Assert.All(f.Requests, q => Assert.Null(q.Auth));
+        }
+
         [Fact]
         public void OpenCde_list_states_is_discovery_only_and_says_states_cannot_be_mapped()
         {
@@ -543,7 +621,7 @@ namespace Horizun.Server.Tests
                 ["document_ids"] = new JArray("d1", "d2"), ["as_of"] = "2026-09-24",
                 ["deliverables"] = new JArray(new JObject { ["container"] = "HZ01-HRZ-ZZ-XX-M3-A-0001", ["format"] = "ifc" })
             };
-            var vars = new Dictionary<string, string> { [CdeCloudTool.OpenCdeTokenName] = IssuedToken };
+            var vars = OpenCdeVars();
             JObject r = CdeCloudTool.Handle(args, CancellationToken.None, Env(cloud, vars));
 
             Assert.False((bool)r["coverage_complete"]);
@@ -570,7 +648,7 @@ namespace Horizun.Server.Tests
                 ["documents"] = new JArray(Doc("d1", "a.ifc", 1, versionsUrl), Doc("d1", "a.ifc", 2, versionsUrl))
             });
             var args = new JObject { ["operation"] = "versions", ["provider"] = "opencde", ["server_url"] = "https://cde.example.test", ["document_id"] = "d1" };
-            var vars = new Dictionary<string, string> { [CdeCloudTool.OpenCdeTokenName] = IssuedToken };
+            var vars = OpenCdeVars();
             JObject r = CdeCloudTool.Handle(args, CancellationToken.None, Env(cloud, vars));
             Assert.True((bool)r["coverage_complete"]);
             Assert.Equal(new[] { 2, 1 }, r["versions"].Select(v => (int)v["version_index"]));
@@ -583,7 +661,7 @@ namespace Horizun.Server.Tests
             cloud.Json("POST", "https://docs.example.test/documents/1.0/document-versions",
                 new JObject { ["versions"] = new JArray(Doc("d1", "a.ifc", 2, "https://collector.example.test/x")) });
             var args = new JObject { ["operation"] = "versions", ["provider"] = "opencde", ["server_url"] = "https://cde.example.test", ["document_id"] = "d1" };
-            var vars = new Dictionary<string, string> { [CdeCloudTool.OpenCdeTokenName] = IssuedToken };
+            var vars = OpenCdeVars();
             JObject r = CdeCloudTool.Handle(args, CancellationToken.None, Env(cloud, vars));
             Assert.False((bool)r["coverage_complete"]);
             Assert.DoesNotContain(cloud.Requests, q => q.Url.Contains("collector.example.test"));

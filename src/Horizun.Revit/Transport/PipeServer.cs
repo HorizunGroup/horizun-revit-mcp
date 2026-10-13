@@ -143,7 +143,16 @@ namespace Horizun.Revit.Transport
         /// </summary>
         private const int RequestReadTimeoutMs = 30000;
 
-        private readonly SemaphoreSlim _slots = new SemaphoreSlim(MaxConcurrentConnections);
+        /// <summary>How long an over-limit connection has to send the request it is being refused for.</summary>
+        private const int RefusalReadTimeoutMs = 2000;
+
+        /// <summary>
+        /// The ordinary slots, plus PipeAdmission.ControlReserve held back for control
+        /// messages: with every ordinary slot taken by a queued command, the cancel and
+        /// status controls that exist for exactly that moment were refused (audit
+        /// 2026-10-08).
+        /// </summary>
+        private readonly PipeAdmission _admission = new PipeAdmission(MaxConcurrentConnections);
 
         private void AcceptLoop()
         {
@@ -158,13 +167,30 @@ namespace Horizun.Revit.Transport
 
                     // Take a slot BEFORE spawning anything. Refusing politely costs one
                     // sentence; an unbounded thread count costs the process.
-                    if (!_slots.Wait(0))
+                    PipeAdmission.Slot slot = _admission.TryAdmit();
+                    if (slot == PipeAdmission.Slot.None)
                     {
-                        Refuse(server, "Too many concurrent connections to this Revit (limit " +
-                                       MaxConcurrentConnections + "). Nothing was run. This bridge serves one " +
-                                       "command at a time, so a queue this deep means something is retrying.");
-                        Close(server);
+                        // NEVER ON THIS THREAD. The pipe has no buffer: a refusal written
+                        // here before the request is read blocks against the client's own
+                        // write, and the listener stops accepting anyone (measured live
+                        // 2026-10-08). The refusal is answered on a bounded thread that
+                        // reads first; past that bound the connection is simply closed.
+                        NamedPipeServerStream refused = server;
                         server = null;
+                        if (!_admission.TryTakeRefusal()) { Close(refused); continue; }
+                        new Thread(() =>
+                        {
+                            try
+                            {
+                                LineResult ignored = LineReader.Read(refused, MaxRequestBytes, RefusalReadTimeoutMs);
+                                Refuse(refused, "Too many concurrent connections to this Revit (limit " +
+                                                MaxConcurrentConnections + "). Nothing was run. This bridge serves one " +
+                                                "command at a time, so a queue this deep means something is retrying.");
+                            }
+                            catch { }
+                            finally { Close(refused); _admission.ReleaseRefusal(); }
+                        })
+                        { IsBackground = true, Name = "Horizun.PipeRefuse" }.Start();
                         continue;
                     }
 
@@ -174,9 +200,9 @@ namespace Horizun.Revit.Transport
                     server = null;
                     var worker = new Thread(() =>
                     {
-                        try { HandleOne(connection); }
+                        try { HandleOne(connection, slot); }
                         catch { /* one bad connection is not everyone's problem */ }
-                        finally { Close(connection); _slots.Release(); }
+                        finally { Close(connection); _admission.Release(slot); }
                     })
                     { IsBackground = true, Name = "Horizun.PipeConn" };
                     worker.Start();
@@ -203,15 +229,23 @@ namespace Horizun.Revit.Transport
         /// <summary>Tell a peer why it is being turned away, best effort.</summary>
         private static void Refuse(NamedPipeServerStream server, string why)
         {
-            try
-            {
-                var w = new StreamWriter(server, new UTF8Encoding(false)) { AutoFlush = true };
-                w.WriteLine(PipeEnvelope.Of(null, false, null, why).ToString(Formatting.None));
-            }
-            catch { }
+            // Bounded: a peer still writing does not read this (backlog #37).
+            LineWriter.TryWriteLine(server, PipeEnvelope.Of(null, false, null, why).ToString(Formatting.None),
+                                    ErrorReplyWriteTimeoutMs);
         }
 
-        private void HandleOne(NamedPipeServerStream server)
+        /// <summary>
+        /// How long a reply refusing a request that was never read whole may take to write
+        /// (backlog #37). The peer may still be blocked writing that request - the pipe has
+        /// no buffer - so it is not reading; past this the connection is closed, which fails
+        /// its write instead of leaving both ends blocked writing at each other.
+        /// </summary>
+        private const int ErrorReplyWriteTimeoutMs = 5000;
+
+        /// <summary>How long an ordinary reply may take to be read by the peer before the connection is closed.</summary>
+        private const int ReplyWriteTimeoutMs = 60000;
+
+        private void HandleOne(NamedPipeServerStream server, PipeAdmission.Slot slot)
         {
             // WHO is on the other end (5.16). Windows names the client pid of a pipe
             // connection; recorded BEFORE dispatch so that by the time any command
@@ -229,8 +263,6 @@ namespace Horizun.Revit.Transport
             }
             catch { ClientPresence.Default.SeenUnidentified(DateTime.UtcNow); }
 
-            var writer = new StreamWriter(server, new UTF8Encoding(false)) { AutoFlush = true };
-
             // Bounded in size and in time. StreamReader.ReadLine() was neither: a peer that
             // connected and said nothing held this thread until Revit closed, and a line
             // with no newline in it was read until memory ran out.
@@ -242,8 +274,13 @@ namespace Horizun.Revit.Transport
                 if (read.Outcome != LineOutcome.Closed)
                 {
                     Log.Warn("pipe: " + read.Outcome + " - " + read.Error);
-                    try { writer.WriteLine(PipeEnvelope.Of(null, false, null, read.Error).ToString(Formatting.None)); }
-                    catch { }
+                    // BOUNDED (backlog #37): after TooLong the peer is typically still blocked
+                    // writing the rest of its request, so it is not reading this. HandleOne's
+                    // caller closes the connection when this returns, which ends both writes.
+                    if (!LineWriter.TryWriteLine(server, PipeEnvelope.Of(null, false, null, read.Error).ToString(Formatting.None),
+                                                 ErrorReplyWriteTimeoutMs))
+                        Log.Warn("pipe: the peer did not read the " + read.Outcome + " refusal within " +
+                                 ErrorReplyWriteTimeoutMs + " ms; connection closed");
                 }
                 return;
             }
@@ -253,7 +290,7 @@ namespace Horizun.Revit.Transport
             JObject reply;
             try
             {
-                JObject req = JObject.Parse(line);
+                JObject req = Horizun.Revit.Core.JsonText.ParseObject(line);
                 id = (string)req["id"];
                 string command = (string)req["command"];
                 string token = (string)req["token"];
@@ -266,11 +303,39 @@ namespace Horizun.Revit.Transport
                 {
                     reply = PipeEnvelope.Of(id, false, null, "No command given.");
                 }
+                else if (!PipeAdmission.Allows(slot, command))
+                {
+                    reply = PipeEnvelope.Of(id, false, null,
+                        "Too many concurrent connections to this Revit (limit " + MaxConcurrentConnections + "); this " +
+                        "connection used a slot reserved for control messages, and '" + command + "' is not one. " +
+                        "Nothing was run.");
+                }
                 else if (string.Equals(command, "__horizun_request_status", StringComparison.Ordinal))
                 {
                     var status=_dispatcher.ObserveRequest((string)req["params"]?["wire_id"]);
-                    status["python_runtime"]=RuntimeWarmup.Python.Snapshot();
+                    status["python_runtime"]=PythonRuntimeHealth.Snapshot(Settings.ExecutePythonEnabled);
                     reply=PipeEnvelope.Of(id,true,status,null);
+                }
+                else if (string.Equals(command, "__horizun_cancel_job", StringComparison.Ordinal))
+                {
+                    // A DURABLE job (horizun_submit_job / an MCP task) still waiting in
+                    // AsyncQueue is taken out and its record finished as cancelled; one the
+                    // UI thread already claimed is NOT reported cancelled - it runs to the end.
+                    // Never enters Revit's UI queue; answered from the pipe thread.
+                    string jobId = (string)req["params"]?["job_id"];
+                    AsyncWork removed;
+                    bool cancelled = AsyncQueue.TryRemove(jobId, out removed);
+                    if (cancelled)
+                    {
+                        try { removed.Record?.Finish("cancelled", "Removed from the queue before it started, on a cancellation request. Nothing ran."); }
+                        catch (Exception ex) { Log.Warn("cancel_job: the record of " + jobId + " could not be finished: " + ex.Message); }
+                    }
+                    reply = PipeEnvelope.Of(id, true, new JObject
+                    {
+                        ["cancelled_before_start"] = cancelled,
+                        ["job_id"] = jobId,
+                        ["state"] = cancelled ? "removed_before_start" : "not_in_queue"
+                    }, null);
                 }
                 else if (string.Equals(command, "__horizun_cancel_queued", StringComparison.Ordinal))
                 {
@@ -281,7 +346,10 @@ namespace Horizun.Revit.Transport
                     {
                         ["cancelled_before_start"] = cancelled,
                         ["wire_id"] = target,
-                        ["state"] = detail
+                        ["state"] = detail,
+                        // Not found: finished, or not arrived yet - and if it arrives, the gate
+                        // refuses it (backlog #36). Said so the server can say it too.
+                        ["refused_on_arrival"] = string.Equals(detail, "not_found_or_finished", StringComparison.Ordinal)
                     }, null);
                 }
                 else
@@ -323,7 +391,11 @@ namespace Horizun.Revit.Transport
                     .ToString(Formatting.None);
             }
 
-            try { writer.WriteLine(text); } catch { }
+            // BOUNDED (backlog #37): a peer that stopped reading no longer holds this thread
+            // and its connection slot until Revit closes.
+            if (!LineWriter.TryWriteLine(server, text, ReplyWriteTimeoutMs))
+                Log.Warn("pipe: the reply for '" + (id ?? "?") + "' was not read within " + ReplyWriteTimeoutMs +
+                         " ms (or the peer had gone); connection closed");
         }
 
         // WHO is on the other end of a pipe connection. Win32 answers with the client
