@@ -1817,7 +1817,10 @@ if ($ReleaseGate -and $Document) {
         Send-Rpc @{ jsonrpc='2.0'; id=999002; method='tools/call'; params=@{ name='horizun_query_model'; arguments=$arguments } }
         $answer = Read-Rpc
         if (-not $answer -or [bool]$answer.result.isError) {
-            throw 'The host system type query failed; no compound-structure rehearsal was claimed.'
+            $detail = if ($answer -and $answer.result.content) { [string]$answer.result.content[0].text }
+                      elseif ($answer -and $answer.error) { [string]$answer.error.message }
+                      else { 'no reply' }
+            throw ('The host system type query failed; no compound-structure rehearsal was claimed: ' + $detail)
         }
         return ($answer.result.content[0].text | ConvertFrom-Json)
     }
