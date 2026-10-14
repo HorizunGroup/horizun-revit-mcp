@@ -105,6 +105,8 @@ jobs:
             'scripts/dwg-state.tests.ps1'
             'scripts/live-paths.tests.ps1'
             'scripts/verify-live-gates.tests.ps1'
+            'scripts/live-system-type.tests.ps1'
+            'scripts/release-gate-python-settings.tests.ps1'
             'scripts/inventory.tests.ps1'
             'scripts/provenance.tests.ps1'
             'scripts/structural-state.tests.ps1'
