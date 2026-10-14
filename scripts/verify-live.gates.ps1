@@ -51,6 +51,7 @@ function Get-HzOldFileGate {
 # repetition counts.
 # ---------------------------------------------------------------------------
 $script:HzAdpSignature = @{ Code = [Convert]::ToUInt32('C0000005', 16); Module = 'AdpSDKCore.dll'; Offset = [uint64]0x11b98; Year = 2027 }
+$script:HzRevitHeapSignature = @{ Code = [Convert]::ToUInt32('C0000374', 16); Module = 'ntdll.dll'; Offset = [uint64]0x117eb5; Year = 2027; ThreadIndex = 0 }
 
 # Exception code, faulting module + offset, and the faulting thread's index in the
 # thread list (Revit's main thread is the first), from a minidump's bytes. Null when
@@ -101,6 +102,10 @@ function Get-HzCrashClassification {
     if ($Info -and $RevitYear -eq $s.Year -and [uint32]$Info.Code -eq $s.Code -and
         [string]$Info.Module -eq $s.Module -and $null -ne $Info.Offset -and [uint64]$Info.Offset -eq $s.Offset -and
         [int]$Info.ThreadIndex -gt 0) { return 'revit_crash_autodesk_adp' }
+    $s = $script:HzRevitHeapSignature
+    if ($Info -and $RevitYear -eq $s.Year -and [uint32]$Info.Code -eq $s.Code -and
+        [string]$Info.Module -eq $s.Module -and $null -ne $Info.Offset -and [uint64]$Info.Offset -eq $s.Offset -and
+        [int]$Info.ThreadIndex -eq $s.ThreadIndex) { return 'revit_crash_revit_heap' }
     return 'revit_crash_unclassified'
 }
 
@@ -135,10 +140,12 @@ function Get-HzRevitCrashVerdict {
     param([object[]]$Dumps = @(), [Parameter(Mandatory)][int]$RevitYear, [string]$ProbeInProgress)
     $rows = @($Dumps | ForEach-Object { @{ Path = $_.Path; Class = (Get-HzCrashClassification -Info $_.Info -RevitYear $RevitYear); Info = $_.Info } })
     $state = 'revit_crash_unclassified'
-    if ($rows.Count -gt 0 -and -not @($rows | Where-Object { $_.Class -ne 'revit_crash_autodesk_adp' }).Count) { $state = 'revit_crash_autodesk_adp' }
+    if ($rows.Count -gt 0 -and -not @($rows | Where-Object { $_.Class -ne $rows[0].Class }).Count -and
+        $rows[0].Class -in @('revit_crash_autodesk_adp', 'revit_crash_revit_heap')) { $state = $rows[0].Class }
     $dump = $null; if ($rows.Count -gt 0) { $dump = $rows[$rows.Count - 1].Path }
     $why = if ($rows.Count -eq 0) { 'Revit died and Autodesk''s crash reporter left no dump since the run started' }
            elseif ($state -eq 'revit_crash_autodesk_adp') { 'the known Autodesk ADP crash (AdpSDKCore.dll+0x11b98, 0xC0000005, not the main thread, Revit 2027): repeat the run; only a clean repetition counts' }
+           elseif ($state -eq 'revit_crash_revit_heap') { 'the owner-accepted Revit 2027 heap-corruption crash (ntdll.dll+0x117eb5, 0xC0000374, main thread): repeat the run; only a clean repetition counts' }
            else { 'a dump that is not the known Autodesk ADP crash: treated as a failure until somebody reads it' }
     return @{ State = $state; Dump = $dump; ProbeInProgress = $ProbeInProgress; Repeat = $true; Passes = $false; Why = $why
               Dumps = @($rows | ForEach-Object { @{ path = $_.Path; class = $_.Class } }) }

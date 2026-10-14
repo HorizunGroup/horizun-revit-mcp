@@ -119,6 +119,15 @@ Check 'a death with the known dump is autodesk_adp, with the dump and the probe 
 $mixed = Get-HzRevitCrashVerdict -Dumps @(@{ Path = 'a'; Info = $adp }, @{ Path = 'b'; Info = $utility }) -RevitYear 2027 -ProbeInProgress 'p'
 Check 'if ANY new dump is not the known crash, the verdict is unclassified' ($mixed.State -eq 'revit_crash_unclassified')
 Check 'an Autodesk crash is never a pass: the run must be repeated' ($verdict.Repeat -eq $true -and $verdict.Passes -eq $false)
+$heap = @{ Code = [Convert]::ToUInt32('C0000374', 16); Module = 'ntdll.dll'; Offset = [uint64]0x117eb5; ThreadIndex = 0 }
+Check 'the accepted 2027 heap crash has its own classification' ((Get-HzCrashClassification -Info $heap -RevitYear 2027) -eq 'revit_crash_revit_heap')
+Check 'the heap crash is not classified in 2026' ((Get-HzCrashClassification -Info $heap -RevitYear 2026) -eq 'revit_crash_unclassified')
+foreach ($change in @(@{Code=$AV}, @{Module='RevitDB.dll'}, @{Offset=[uint64]0x117eb6}, @{ThreadIndex=1})) {
+    $different = $heap.Clone(); foreach ($key in $change.Keys) { $different[$key] = $change[$key] }
+    Check "changed heap signature $($change.Keys -join ',') is unclassified" ((Get-HzCrashClassification -Info $different -RevitYear 2027) -eq 'revit_crash_unclassified')
+}
+$heapVerdict = Get-HzRevitCrashVerdict -Dumps @(@{ Path = 'X:\cer\heap.dmp.zip'; Info = $heap }) -RevitYear 2027 -ProbeInProgress 'worksets'
+Check 'accepted heap crash still requires a clean repeat' ($heapVerdict.State -eq 'revit_crash_revit_heap' -and $heapVerdict.Repeat -and -not $heapVerdict.Passes)
 
 # The finder reads only *.dmp.zip written since the run started, under the root given.
 $root = Join-Path ([IO.Path]::GetTempPath()) ('hz-cer-test-' + [guid]::NewGuid().ToString('N'))

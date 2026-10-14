@@ -12125,9 +12125,9 @@ if ($Json) {
 if ($revitCrash) {
     # A crash is never a pass. Unclassified fails; the known Autodesk crash asks for a
     # repetition, and only a clean repetition counts (exit 4 is "repeat this run").
-    if ($revitCrash.State -ne 'revit_crash_autodesk_adp') { exit 1 }
+    if ($revitCrash.State -notin @('revit_crash_autodesk_adp', 'revit_crash_revit_heap')) { exit 1 }
     Write-Host ""
-    Write-Host "  (exit 4: the known Autodesk ADP crash. Repeat the run; only a clean repetition counts.)" -ForegroundColor Red
+    Write-Host "  (exit 4: owner-accepted Revit crash signature $($revitCrash.State). Repeat the run; only a clean repetition counts.)" -ForegroundColor Red
     exit 4
 }
 if ($failed -gt 0) { exit 1 }

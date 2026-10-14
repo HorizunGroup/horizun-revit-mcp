@@ -22,6 +22,27 @@
       ],
       "approved": "2026-09-27, project owner",
       "why": "Revit's API cannot create design options and Autodesk's only 2023 sample has none; 2024-2027 measure it"
+    },
+    {
+      "case": "cde_cloud issues: issues_list reads the issues with their subtypes and names what it could not read",
+      "reason_prefix": "no ACC test project named: set HORIZUN_PROBE_ACC_PROJECT_ID to a test project GUID",
+      "approved": "2026-10-13, project owner",
+      "why": "the owner accepted missing ACC test-project coverage; configured runners must execute the probe, and failures remain failures",
+      "years": [2023, 2024, 2025, 2026, 2027]
+    },
+    {
+      "case": "cde_cloud issues: an issue_create dry run rehearses with a token or refuses with the reason, and creates nothing",
+      "reason_prefix": "no ACC test project named: set HORIZUN_PROBE_ACC_PROJECT_ID to a test project GUID",
+      "approved": "2026-10-13, project owner",
+      "why": "the owner accepted missing ACC test-project coverage; configured runners must execute the probe, and failures remain failures",
+      "years": [2023, 2024, 2025, 2026, 2027]
+    },
+    {
+      "case": "cde_cloud issues: issue_create applies, reads the issue back and a keyed retry does not duplicate it",
+      "reason_prefix": "no ACC test project named: set HORIZUN_PROBE_ACC_PROJECT_ID to a test project GUID",
+      "approved": "2026-10-13, project owner",
+      "why": "the owner accepted missing ACC test-project coverage; configured runners must execute the probe, and failures remain failures",
+      "years": [2023, 2024, 2025, 2026, 2027]
     }
   ]
 }
