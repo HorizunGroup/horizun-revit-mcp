@@ -54,8 +54,24 @@ namespace Horizun.Core.Tests
         {
             string path = Path.Combine(_dir, "keep.json");
             AtomicFile.WriteAllText(path, "old");
-            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))   // no FILE_SHARE_DELETE: Replace must fail
-                Assert.ThrowsAny<Exception>(() => AtomicFile.WriteAllText(path, "new"));   // after the bounded wait
+            if (OperatingSystem.IsWindows())
+            {
+                // Windows denies Replace without FILE_SHARE_DELETE. Unix permits
+                // renaming an open file, so this failure condition is Windows only.
+                using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    Assert.ThrowsAny<Exception>(() => AtomicFile.WriteAllText(path, "new"));
+            }
+            else
+            {
+                // A directory cannot replace a file. This exercises the failed
+                // swap and temporary cleanup under Unix without relying on locks.
+                string directoryTarget = Path.Combine(_dir, "directory-target");
+                Directory.CreateDirectory(directoryTarget);
+                Assert.ThrowsAny<Exception>(() => AtomicFile.WriteAllText(directoryTarget, "new"));
+                Assert.True(Directory.Exists(directoryTarget));
+                Assert.Empty(Directory.GetFiles(_dir, "directory-target.*.tmp"));
+                Directory.Delete(directoryTarget);
+            }
             Assert.Equal("old", File.ReadAllText(path));
             Assert.Equal(new[] { path }, Directory.GetFiles(_dir));
         }
