@@ -1811,18 +1811,18 @@ if ($ReleaseGate) {
 # compound-structure rehearsal against it. A hard-coded ElementId is not a live
 # test; it is a coincidence that breaks as soon as the fixture model changes.
 if ($ReleaseGate -and $Document) {
-    Send-Rpc @{ jsonrpc='2.0'; id=999002; method='tools/call'; params=@{ name='horizun_query_model'; arguments=@{
-        categories=@('OST_Walls','OST_Floors','OST_Roofs','OST_Ceilings'); include_links=$false; include_types=$true; max_rows=500
-    } } }
-    $systemTypeReply = Read-Rpc
-    $systemTypeData = $null
-    if ($systemTypeReply -and -not [bool]$systemTypeReply.result.isError) {
-        try { $systemTypeData = $systemTypeReply.result.content[0].text | ConvertFrom-Json } catch { }
+    . (Join-Path $PSScriptRoot 'live-system-type.ps1')
+    $systemTypeRow = Find-HzHostSystemType -FetchPage {
+        param($arguments)
+        Send-Rpc @{ jsonrpc='2.0'; id=999002; method='tools/call'; params=@{ name='horizun_query_model'; arguments=$arguments } }
+        $answer = Read-Rpc
+        if (-not $answer -or [bool]$answer.result.isError) {
+            throw 'The host system type query failed; no compound-structure rehearsal was claimed.'
+        }
+        return ($answer.result.content[0].text | ConvertFrom-Json)
     }
-    $systemTypeRow = @($systemTypeData.rows | Where-Object { $_.is_element_type -eq $true -and $_.source_kind -eq 'host' } |
-                       Select-Object -First 1)
-    if ($systemTypeRow.Count -eq 1) {
-        $sourceTypeId = [long]$systemTypeRow[0].element_id
+    if ($systemTypeRow) {
+        $sourceTypeId = [long]$systemTypeRow.element_id
         $probes += @{ Name = 'manage_system_types rehearses a real host type and typed compound layer without a transaction'
                       Tool = 'horizun_manage_system_types'
                       Args = @{ target_document = $Document; units = 'mm'; dry_run = $true
