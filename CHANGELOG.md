@@ -3,6 +3,10 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v3.0.1
+
+- The release runner now enables Python only in its isolated test data root and restores the owner's Python setting after each Revit year. The first v3.0.0 release gate copied the owner's disabled setting into the isolated root, leaving fixture-dependent probes without coverage. The owner's durable setting is never edited. The v3.0.0 tag remains immutable and did not publish a stable release.
+
 ## v3.0.0
 
 ### Field defects

@@ -225,12 +225,10 @@ Copy-Item -Path $inactiveModel -Destination $linkSource -Force
 # server root under the stable user profile.
 $dataRoot = Join-Path $env:USERPROFILE ".horizun\release-runs\$runId"
 New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
-# Isolation must not turn Python back on after the owner disabled it. Preserve
-# the owner's permission decision; absent settings keep the bridge's defaults.
+# The owner approved Python only for this disposable release gate. Keep the
+# durable owner file untouched and restore its decision in finally.
 $ownerSettings = Join-Path $env:USERPROFILE '.horizun\settings.json'
-if (Test-Path -LiteralPath $ownerSettings -PathType Leaf) {
-    Copy-Item -LiteralPath $ownerSettings -Destination (Join-Path $dataRoot 'settings.json')
-}
+$isolatedSettings = Join-Path $dataRoot 'settings.json'
 # The owner's 3-legged ACC sign-in, when there is one, so the cde_cloud issue probes run as
 # that user. APS rotates the refresh token on use, so the finally below returns a refreshed
 # pair to the owner's file and removes the copy: a copy left behind would hold a live token.
@@ -248,6 +246,8 @@ $launched = $null
 $ownedPid = $null
 
 try {
+    & (Join-Path $PSScriptRoot 'release-gate-python-settings.ps1') `
+        -OwnerSettings $ownerSettings -IsolatedSettings $isolatedSettings -Mode Start
     Stage "starting Revit $Year in $Language in this interactive Windows session"
     $launched = Start-Process -FilePath $revitExe -ArgumentList @('/language', $Language) -PassThru -WindowStyle Hidden
     $ownedPid = $launched.Id
@@ -381,6 +381,8 @@ finally {
     }
     $env:HORIZUN_DATA_ROOT = $oldDataRoot
     $env:HORIZUN_REVIT_YEAR = $oldTargetYear
+    & (Join-Path $PSScriptRoot 'release-gate-python-settings.ps1') `
+        -OwnerSettings $ownerSettings -IsolatedSettings $isolatedSettings -Mode Restore
     if (Test-Path -LiteralPath $isolatedApsToken -PathType Leaf) {
         $copied = Get-Item -LiteralPath $isolatedApsToken
         $owner = Get-Item -LiteralPath $ownerApsToken -ErrorAction SilentlyContinue
