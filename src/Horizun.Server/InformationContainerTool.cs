@@ -641,6 +641,8 @@ namespace Horizun.Server
                 if (p.Value.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)p.Value))
                     throw new ToolRefusal("states." + p.Name + " must be a folder path. Nothing was read.");
                 string folder = (string)p.Value;
+                if (LocalPath.IsNetworkOrDevice(folder))
+                    throw new ToolRefusal(LocalPath.Problem(folder, "states." + p.Name) + " Nothing was read.");
                 if (!Path.IsPathRooted(folder))
                 {
                     if (cde.Root == null) throw new ToolRefusal("states." + p.Name + " is relative and no root was given. Nothing was read.");
