@@ -6,7 +6,7 @@ assumed. Dates are the day the work landed.
 ## v3.0.1
 
 - The release runner now enables Python only in its isolated test data root and restores the owner's Python setting after each Revit year. The first v3.0.0 release gate copied the owner's disabled setting into the isolated root, leaving fixture-dependent probes without coverage. The owner's durable setting is never edited. The v3.0.0 tag remains immutable and did not publish a stable release.
-- The compound-structure release probe resolves one host instance's own type by exact ElementId. A large query's first page contained only instances, and paging that result set failed during a local rehearsal; the exact read avoids that cursor while still verifying that the selected row is a host system type.
+- The compound-structure release probe lists one host wall, then resolves its instance and type by exact ElementId. A broad model query scanned the entire fixture before paging and outlived the live harness's RPC wait; this bounded route still verifies that the selected row is a host system type.
 
 ## v3.0.0
 

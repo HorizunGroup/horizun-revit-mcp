@@ -1812,10 +1812,13 @@ if ($ReleaseGate) {
 # test; it is a coincidence that breaks as soon as the fixture model changes.
 if ($ReleaseGate -and $Document) {
     . (Join-Path $PSScriptRoot 'live-system-type.ps1')
+    $systemTypeRequestId = [ref]999020
     $systemTypeRow = Find-HzHostSystemType -FetchPage {
-        param($arguments)
-        Send-Rpc @{ jsonrpc='2.0'; id=999002; method='tools/call'; params=@{ name='horizun_query_model'; arguments=$arguments } }
-        $answer = Read-Rpc
+        param($tool, $arguments)
+        $systemTypeRequestId.Value++
+        $requestId = $systemTypeRequestId.Value
+        Send-Rpc @{ jsonrpc='2.0'; id=$requestId; method='tools/call'; params=@{ name=$tool; arguments=$arguments } }
+        $answer = Read-Rpc -ExpectId $requestId
         if (-not $answer -or [bool]$answer.result.isError) {
             $detail = if ($answer -and $answer.result.content) { [string]$answer.result.content[0].text }
                       elseif ($answer -and $answer.error) { [string]$answer.error.message }
