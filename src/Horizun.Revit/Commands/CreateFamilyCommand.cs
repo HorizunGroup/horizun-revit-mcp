@@ -160,6 +160,7 @@ namespace Horizun.Revit.Commands
                 family = app.Application.NewFamilyDocument(template);
                 if (family == null || !family.IsFamilyDocument)
                     throw new InvalidOperationException("Revit did not create a family document from the template.");
+                RejectBoundSharedNames(project, family, plan);
                 View familyView = FindFamilyCreationView(family);
                 // Dimension views and dimension types resolve against the REAL family
                 // document, and deliberately before any transaction or nested load has
@@ -981,6 +982,33 @@ namespace Horizun.Revit.Commands
             if (request["nested_instances"] != null && (!(request["nested_instances"] is JArray nestedArray) || nestedArray.Count != plan.NestedInstances.Count))
                 throw new ArgumentException("every nested_instances entry must be an object");
             return plan;
+        }
+
+        private static void RejectBoundSharedNames(Document project, Document family, FamilyPlan plan)
+        {
+            Category category = family.OwnerFamily?.FamilyCategory;
+            if (category == null || plan.Parameters.Count == 0) return;
+            var requested = new HashSet<string>(plan.Parameters.Select(p => p.Name), StringComparer.Ordinal);
+            var shared = new FilteredElementCollector(project).OfClass(typeof(SharedParameterElement))
+                .Cast<SharedParameterElement>().Where(p => requested.Contains(p.Name)).ToList();
+            if (shared.Count == 0) return;
+            var collisions = new List<string>();
+            DefinitionBindingMapIterator iterator = project.ParameterBindings.ForwardIterator();
+            iterator.Reset();
+            while (iterator.MoveNext())
+            {
+                Definition definition = iterator.Key;
+                if (definition == null || !requested.Contains(definition.Name) || !(iterator.Current is ElementBinding binding) ||
+                    !binding.Categories.Cast<Category>().Any(c => c.Id == category.Id)) continue;
+                SharedParameterElement match = shared.FirstOrDefault(p =>
+                    definition is ExternalDefinition external ? external.GUID == p.GuidValue :
+                    definition is InternalDefinition internalDefinition && internalDefinition.Id == p.Id);
+                if (match != null) collisions.Add(definition.Name + " (GUID " + match.GuidValue.ToString("D") + ")");
+            }
+            if (collisions.Count > 0)
+                throw new ArgumentException("Creating ordinary family parameters would duplicate shared parameters already bound to category '" +
+                    category.Name + "': " + string.Join(", ", collisions.Distinct(StringComparer.Ordinal)) +
+                    ". Omit these family parameters; address existing shared values by GUID after loading.");
         }
 
         private static Dictionary<string, FamilyParameter> EnsureParameters(FamilyManager fm, List<ParameterPlan> plans)
