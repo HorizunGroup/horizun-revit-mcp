@@ -985,7 +985,23 @@ namespace Horizun.Revit.Commands
                     if (faces.Any(f => Math.Abs(f.Origin.Z - z) > GeometryInput.Tolerance)) throw new InvalidOperationException("Reference faces have different elevations.");
                     return z;
                 }, GeometryInput.Tolerance);
-            if (p.Kind == "roof")
+            // A sloped glazing footprint roof has curtain panels rather than an upward
+            // solid face. Its edge slope parameters remain available for verification.
+            bool glazing = false;
+            try { glazing = e is FootPrintRoof gr && gr.CurtainGrids != null && gr.CurtainGrids.Size > 0; } catch { }
+            if (p.Kind == "roof" && glazing)
+            {
+                for (int i = 0; i < p.Slopes.Length; i++)
+                {
+                    int edge = i;
+                    ModelCurve ReadEdge() => ((FootPrintRoof)e).GetProfiles().Cast<ModelCurveArray>()
+                        .SelectMany(a => a.Cast<ModelCurve>()).Single(c => MatchEdge(p, c.GeometryCurve) == edge);
+                    exact("defines_slope_" + edge, p.DefinesSlope[edge], () => ((FootPrintRoof)e).get_DefinesSlope(ReadEdge()));
+                    if (p.DefinesSlope[edge]) numeric("slope_" + edge, p.Slopes[edge],
+                        () => ((FootPrintRoof)e).get_SlopeAngle(ReadEdge()), 1e-8);
+                }
+            }
+            else if (p.Kind == "roof")
             {
                 exact("roof_face_slopes", true, () =>
                 {

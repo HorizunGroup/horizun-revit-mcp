@@ -93,7 +93,12 @@ namespace Horizun.Revit.Core
             // move a clash resolution tried around the origin.
             "OST_Cameras", "OST_Viewers", "OST_SectionBox",
             // A system's geometry is its members'; the system element itself has no solid.
-            "OST_PipingSystem", "OST_DuctSystem", "OST_ElectricalCircuit");
+            "OST_PipingSystem", "OST_DuctSystem", "OST_ElectricalCircuit",
+            // An MEP run's centre line is a line, not a body (measured 2026-10-16: a route from a branch's free end was
+            // refused as 'inside' that branch's Center Line element).
+            "OST_PipeCurvesCenterLine", "OST_PipeFittingCenterLine", "OST_DuctCurvesCenterLine", "OST_DuctFittingCenterLine",
+            "OST_ConduitCenterLine", "OST_ConduitFittingCenterLine", "OST_CableTrayCenterLine", "OST_CableTrayFittingCenterLine",
+            "OST_FlexPipeCurvesCenterLine", "OST_FlexDuctCurvesCenterLine");
         /// <summary>Pairs that meet by construction: the structural frame, and walls standing on slabs.</summary>
         private static readonly HashSet<string> ExpectedPairs = PairSet(
             "OST_StructuralFraming|OST_StructuralColumns", "OST_StructuralFraming|OST_Floors",

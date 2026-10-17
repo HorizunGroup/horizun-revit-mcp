@@ -185,8 +185,22 @@ namespace Horizun.Revit.Core
                     // dialog whose "continue" is some other button will not proceed, and
                     // that is recorded here rather than hidden. It is scoped to the open
                     // call by the command that set it; every other dialog still cancels.
-                    e.OverrideResult(1);
-                    answered = "dismissed by the bridge (on_open_dialog=dismiss: acknowledged and continued)";
+                    // MEASURED 2026-10-16: a model received from another team opens on "Unresolved References"
+                    // (its links are not on this machine). Its OK is not "continue": the continue is the SECOND
+                    // command link, "Ignore and continue opening the project" (TaskDialogResult.CommandLink2 = 1002).
+                    // With 1 the open aborted and Revit returned no document.
+                    string dialogId = null;
+                    try { dialogId = (e as TaskDialogShowingEventArgs)?.DialogId ?? e.DialogId; } catch { }
+                    if (dialogId != null && dialogId.IndexOf("Unresolved_References", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        e.OverrideResult(1002);
+                        answered = "unresolved references IGNORED by the bridge (on_open_dialog=dismiss): the model opens without the links that are not on this machine";
+                    }
+                    else
+                    {
+                        e.OverrideResult(1);
+                        answered = "dismissed by the bridge (on_open_dialog=dismiss: acknowledged and continued)";
+                    }
                 }
                 else
                 {

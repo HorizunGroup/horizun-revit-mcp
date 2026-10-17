@@ -244,6 +244,8 @@ namespace Horizun.Revit.Commands
                 }
                 JObject compound = plan.Compound == null ? null : VerifyCompound(fresh as HostObjAttributes, plan.Compound);
                 bool compoundOk = compound == null || compound.Value<bool>("verified");
+                string keynoteAfter = plan.CarriedKeynote == null ? null : fresh?.get_Parameter(BuiltInParameter.KEYNOTE_PARAM)?.AsString();
+                bool keynoteOk = plan.CarriedKeynote == null || string.Equals(keynoteAfter, plan.CarriedKeynote, StringComparison.Ordinal);
                 JObject junction = null; bool junctionOk = true;
                 if (plan.Junction != null)
                 {
@@ -263,13 +265,18 @@ namespace Horizun.Revit.Commands
                     };
                 }
                 bool sourceUnchanged = JToken.DeepEquals(plan.SourceState, SourceState((ElementType)doc.GetElement(plan.Source.Id)));
-                bool okAll = typeOk && valuesOk && compoundOk && junctionOk && sourceUnchanged; if (okAll) verified++;
+                bool okAll = typeOk && valuesOk && compoundOk && junctionOk && keynoteOk && sourceUnchanged; if (okAll) verified++;
                 rows.Add(new JObject
                 {
                     ["index"] = plan.Index, ["source_type_id"] = Rid.Value(plan.Source.Id), ["new_type_id"] = Rid.Value(plan.CreatedId),
                     ["class"] = fresh?.GetType().Name, ["name"] = fresh?.Name, ["type_verified"] = typeOk,
                     ["source_unchanged"] = sourceUnchanged, ["parameters_verified"] = valuesOk, ["compound_structure_verified"] = compoundOk,
                     ["verified"] = okAll, ["parameters"] = parameters, ["compound_structure"] = compound,
+                    ["classification_carried"] = plan.CarriedKeynote == null ? new JArray() : new JArray(new JObject
+                    {
+                        ["parameter"] = BuiltInParameter.KEYNOTE_PARAM.ToString(), ["expected"] = plan.CarriedKeynote,
+                        ["read_after_commit"] = keynoteAfter, ["verified"] = keynoteOk
+                    }),
                     ["junction_preference"] = junction
                 });
             }
@@ -292,6 +299,7 @@ namespace Horizun.Revit.Commands
                         {
                             plan.CreatedId = plan.Source.Duplicate(plan.NewName).Id;
                             var created = (ElementType)doc.GetElement(plan.CreatedId);
+                            plan.CarriedKeynote = CarryKeynote(plan.Source, created, plan.Writes);
                         if (plan.Junction != null && created is MEPCurveType pipeCreated)
                         {
                             // The duplicate INHERITS the source's routing preferences; this
@@ -356,6 +364,21 @@ namespace Horizun.Revit.Commands
             foreach(Parameter parameter in source.Parameters.Cast<Parameter>().OrderBy(p=>Rid.Value(p.Id)))
                 values[Rid.Value(parameter.Id).ToString(System.Globalization.CultureInfo.InvariantCulture)]=Read(parameter);
             return new JObject { ["name"]=source.Name,["unique_id"]=source.UniqueId,["parameters"]=values };
+        }
+
+        private static string CarryKeynote(ElementType source, ElementType created, List<Write> writes)
+        {
+            if (!(source is FamilySymbol) || created == null ||
+                writes.Any(w => string.Equals(w.Spec, BuiltInParameter.KEYNOTE_PARAM.ToString(), StringComparison.OrdinalIgnoreCase)))
+                return null;
+            Parameter from = source.get_Parameter(BuiltInParameter.KEYNOTE_PARAM);
+            Parameter to = created.get_Parameter(BuiltInParameter.KEYNOTE_PARAM);
+            if (from == null || to == null || to.IsReadOnly || from.StorageType != StorageType.String ||
+                to.StorageType != StorageType.String) return null;
+            string keynote = from.AsString();
+            if (string.IsNullOrEmpty(keynote) || !string.IsNullOrEmpty(to.AsString())) return null;
+            if (!to.Set(keynote)) throw new InvalidOperationException("Revit refused to carry the duplicated FamilySymbol's Keynote.");
+            return keynote;
         }
 
         internal static Parameter ResolveParameter(Element element, string spec, out string why)
@@ -675,7 +698,7 @@ namespace Horizun.Revit.Commands
         }
 
         private sealed class JunctionPlan { public string Kind; public FamilySymbol TapFitting; }
-        private sealed class Plan { public int Index; public ElementType Source; public string NewName; public List<Write> Writes; public CompoundPlan Compound; public ElementId CreatedId; public JObject SourceState; public JunctionPlan Junction; }
+        private sealed class Plan { public int Index; public ElementType Source; public string NewName; public List<Write> Writes; public CompoundPlan Compound; public ElementId CreatedId; public JObject SourceState; public JunctionPlan Junction; public string CarriedKeynote; }
         internal sealed class Write { public string Spec; public JToken Requested, Expected; public bool ParsedByRevit; }
         private sealed class CompoundPlan
         {

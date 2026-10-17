@@ -485,5 +485,19 @@ namespace Horizun.Core.Tests
             Assert.False(s.Ok);
             Assert.Contains("t99", s.Error);
         }
+
+        [Fact]
+        public void Two_crossing_layers_in_one_plane_clash_only_where_their_patches_meet()
+        {
+            // Negatives over a beam along X (bars along Y, y 0..650) and over a beam along Y (bars along X,
+            // spread from y 750): one plane, crossing directions, and no point in common.
+            var overY = new MatComponentPlan { StartPointMm = new[] { 325.0, 20, 0 }, EndPointMm = new[] { 325.0, 650, 0 },
+                                               DistributionDirection = new[] { 1.0, 0, 0 }, ArrayLengthMm = 3000 };
+            var overX = new MatComponentPlan { StartPointMm = new[] { 20.0, 750, 0 }, EndPointMm = new[] { 650.0, 750, 0 },
+                                               DistributionDirection = new[] { 0, 1.0, 0 }, ArrayLengthMm = 1800 };
+            Assert.False(MatRules.PatchesOverlap(overY, overX, 12.7));
+            overX.StartPointMm = new[] { 20.0, 400, 0 }; overX.EndPointMm = new[] { 650.0, 400, 0 };
+            Assert.True(MatRules.PatchesOverlap(overY, overX, 12.7));
+        }
     }
 }

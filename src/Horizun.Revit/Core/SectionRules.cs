@@ -355,6 +355,17 @@ namespace Horizun.Revit.Core
         public const string CodeLapOutside = "lap_outside_the_bar";
         public const string CodeLapsOverlap = "laps_overlap";
         public const string CodeLapOffsetNoRoom = "lap_offset_does_not_fit";
+        // A FACE'S BARS STAND AT FIXED SHARES OF ITS WIDTH: i/(n-1), or the middle for a single
+        // bar. Two layers on one face coincide only where those shares meet - a pair at the
+        // corners and one bar at the middle (4#5 + 4#4 in a square column) never touch.
+        private static bool StationsShare(int a, int b)
+        {
+            if (a <= 0 || b <= 0) return true;
+            Func<int, IEnumerable<double>> at = n => n == 1 ? new[] { 0.5 } : Enumerable.Range(0, n).Select(i => (double)i / (n - 1));
+            foreach (double x in at(a)) foreach (double y in at(b)) if (Math.Abs(x - y) < 1e-6) return true;
+            return false;
+        }
+
         public const string CodeLayersCoincide = "layers_coincide";
         public const string CodeCrankOutside = "crank_outside_the_bar";
         public const string CodeCrankWithLaps = "crank_with_laps_not_implemented";
@@ -538,6 +549,7 @@ namespace Horizun.Revit.Core
             }
 
             var laid = new List<Tuple<string, double, double, string>>();   // face, from, to, layer
+            var laidCount = new Dictionary<string, int>();                  // layer -> bars across its face
             var heldDiameter = new Dictionary<string, double>(StringComparer.Ordinal);
             for (int li = 0; li < layers.Count; li++)
             {
@@ -601,12 +613,14 @@ namespace Horizun.Revit.Core
                 // say. Where a schedule means bastones BETWEEN the continuous bars, that placement is
                 // a decision this build does not make: refused, not laid on top of each other.
                 foreach (Tuple<string, double, double, string> other in laid)
-                    if (other.Item1 == l.Face && other.Item4 != l.Between && Math.Min(other.Item3, u1) - Math.Max(other.Item2, u0) > 1e-6)
+                    if (other.Item1 == l.Face && other.Item4 != l.Between && Math.Min(other.Item3, u1) - Math.Max(other.Item2, u0) > 1e-6 &&
+                        StationsShare(laidCount.TryGetValue(other.Item4, out int oc) ? oc : 0, l.Count))
                         return Refuse(CodeLayersCoincide, "layers '" + other.Item4 + "' and '" + (l.Name ?? l.Face) + "' are both on the " +
                                       l.Face + " face over " + Mm(Math.Min(other.Item3, u1) - Math.Max(other.Item2, u0)) + " mm of element " +
                                       f.ElementId + ", and both are spread across the same width: their bars would coincide. Declare " +
                                       "them as one layer, or give them extents that do not overlap.");
                 laid.Add(Tuple.Create(l.Face, u0, u1, l.Name ?? l.Face));
+                laidCount[l.Name ?? l.Face] = l.Count;
 
                 double k = rule.Stirrups != null && stirrupBendOf != null
                     ? CornerInsetMm(stirrupBendOf(rule.Stirrups.BarTypeId), db) : 0;
@@ -633,19 +647,23 @@ namespace Horizun.Revit.Core
                             if (!stations.TryGetValue(l.Between, out held) || heldRun == null)
                                 return Refuse(CodeBetweenNotLaid, "layer '" + (l.Name ?? l.Face) + "' is laid between the bars of '" + l.Between +
                                               "', which is not laid in element " + f.ElementId + ": there are no gaps to lay it in.");
-                            if (n != held.Item5 - 1)
+                            // One bar in each gap - or, in a SINGLE gap (a pair at the corners), several bars
+                            // evenly across it: 2#5 continuous + 2#5 bastones is four bars at thirds.
+                            int gaps = held.Item5 - 1, perGap = gaps == 1 ? n : 1;
+                            if (n != gaps && !(gaps == 1 && n > 1))
                                 return Refuse(CodeBetweenCount, "layer '" + (l.Name ?? l.Face) + "' has " + n + " bar(s) and '" + l.Between + "' has " +
-                                              held.Item5 + ", so " + (held.Item5 - 1) + " gap(s): one bar in each gap is " + (held.Item5 - 1) + ".");
+                                              held.Item5 + ", so " + gaps + " gap(s): one bar in each gap is " + gaps + "; several bars go only in a single gap.");
                             if (u0 < heldRun.Item2 - 1e-6 || u1 > heldRun.Item3 + 1e-6)
                                 return Refuse(CodeBetweenOutside, "layer '" + (l.Name ?? l.Face) + "' runs " + Mm(u0 - f.UMin) + ".." + Mm(u1 - f.UMin) +
                                               " mm along element " + f.ElementId + " and '" + l.Between + "' " + Mm(heldRun.Item2 - f.UMin) + ".." +
                                               Mm(heldRun.Item3 - f.UMin) + " mm: past it there are no gaps.");
                             double heldDb = heldDiameter.TryGetValue(l.Between, out double hd) ? hd : db;
-                            if (held.Item4 / 2 < (db + heldDb) / 2 - 1e-6)
+                            double pitch = held.Item4 / (perGap + 1);
+                            if (pitch < (db + heldDb) / 2 - 1e-6 || (perGap > 1 && pitch < db - 1e-6))
                                 return Refuse(CodeBetweenNoRoom, "layer '" + (l.Name ?? l.Face) + "': the gaps of '" + l.Between + "' are " + Mm(held.Item4) +
-                                              " mm centre to centre, and a " + Mm(db) + " mm bar in the middle of one stands in a " + Mm(heldDb) + " mm bar beside it.");
-                            vFirst = held.Item2 + held.Item4 / 2;
-                            spread = held.Item4 * (n - 1);
+                                              " mm centre to centre, and " + perGap + " bar(s) of " + Mm(db) + " mm evenly in one stand in a " + Mm(heldDb) + " mm bar beside them.");
+                            vFirst = held.Item2 + pitch;
+                            spread = perGap > 1 ? pitch * (n - 1) : held.Item4 * (n - 1);
                             w = held.Item3;
                         }
                         start = f.At(u0, vFirst, w); startEnd = f.At(u1, vFirst, w); normal = f.V;
@@ -736,6 +754,12 @@ namespace Horizun.Revit.Core
                     // THE PIECE BEFORE A COUPLER RUNS FROM THE STATION BACK, so the coupler is at its end 0 -
                     // where Revit puts it, reversing the bar otherwise (measured, Revit 2024 and 2026).
                     bool fromStation = coupler != null && piece == 0;
+                    // THE FIRST PIECE OF A LAPPED LAYER, hooked at its start only, is laid from its lap end back to
+                    // the hook (measured, Revit 2023, Casa Duelo 2026-10-15): laid hook-first, Revit matched the
+                    // straight-with-one-hook shape the other way round - hook at the lap end, the bar 1030 mm off
+                    // the plan - and would not hold it. A dowel's anchorage names its start, so it is left alone.
+                    bool hookLast = !fromStation && coupler == null && cranked == null && cuts.Count > 0 && piece == 0 &&
+                                    l.Start != null && l.Start.HookTypeId != null && l.Anchorage.Count == 0;
                     string id = cuts.Count == 0 ? layerId : layerId + "#p" + (piece + 1).ToString(CultureInfo.InvariantCulture);
                     var layout = n == 1
                         ? new RebarLayoutRequest { Layout = RebarLayout.Single }
@@ -748,13 +772,13 @@ namespace Horizun.Revit.Core
                         ShapeName = l.ShapeName,
                         AllowNewShape = l.AllowNewShape,
                         Style = StructuralStyle.Standard,
-                        CurvesMm = cranked ?? (fromStation ? new List<double[]> { pb, pa } : new List<double[]> { pa, pb }),
+                        CurvesMm = cranked ?? (fromStation || hookLast ? new List<double[]> { pb, pa } : new List<double[]> { pa, pb }),
                         Closed = false,
                         NormalMm = new[] { normal[0], normal[1], normal[2] },
                         BarsOnNormalSide = true,
                         Layout = layout,
-                        Start = fromStation ? new StructuralTermination() : piece == 0 ? l.Start : new StructuralTermination(),
-                        End = fromStation ? Reversed(l.Start) : piece == cuts.Count ? l.End : new StructuralTermination(),
+                        Start = fromStation || hookLast ? new StructuralTermination() : piece == 0 ? l.Start : new StructuralTermination(),
+                        End = fromStation || hookLast ? Reversed(l.Start) : piece == cuts.Count ? l.End : new StructuralTermination(),
                         Mark = l.Mark ?? rule.Mark,
                         Required = rule.Required,
                         LapNextMm = piece < cuts.Count && coupler == null ? cuts[piece][2] : (double?)null,

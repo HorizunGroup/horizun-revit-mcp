@@ -844,6 +844,10 @@ namespace Horizun.Revit.Core
                                             a.DistributionDirection[1] * b.DistributionDirection[1] +
                                             a.DistributionDirection[2] * b.DistributionDirection[2]);
                     if (cross > 0.999) continue;   // parallel layers, not crossing
+                    // ONLY WHERE THEY MEET: each layer covers the patch its first bar sweeps along the
+                    // distribution - negatives over one beam and negatives over the beam across it lie
+                    // in one plane and never touch, because their patches do not overlap.
+                    if (!PatchesOverlap(a, b, ra + rb)) continue;
                     r.Code = CodeLayersShareAPlane;
                     r.Why = "components '" + a.Name + "' and '" + b.Name + "' cross each other and their " +
                             "centrelines are " + Mm(sep) + " apart, which is less than the " + Mm(ra + rb) +
@@ -856,6 +860,38 @@ namespace Horizun.Revit.Core
 
             return r;
         }
+
+        /// <summary>
+        /// Whether the patches two mat layers cover overlap, grown by `marginMm`: each patch is its first bar
+        /// (StartPointMm to EndPointMm) swept along DistributionDirection by ArrayLengthMm. Separating axes
+        /// are the two layers' bar and distribution directions. A layer whose patch cannot be read overlaps.
+        /// </summary>
+        public static bool PatchesOverlap(MatComponentPlan a, MatComponentPlan b, double marginMm)
+        {
+            double[][] pa = Patch(a), pb = Patch(b);
+            if (pa == null || pb == null) return true;
+            foreach (double[] axis in new[] { Sub(pa[1], pa[0]), a.DistributionDirection, Sub(pb[1], pb[0]), b.DistributionDirection })
+            {
+                double len = Math.Sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+                if (len < 1e-9) continue;
+                double[] u = { axis[0] / len, axis[1] / len, axis[2] / len };
+                double aMin = double.MaxValue, aMax = double.MinValue, bMin = double.MaxValue, bMax = double.MinValue;
+                foreach (double[] p in pa) { double t = p[0] * u[0] + p[1] * u[1] + p[2] * u[2]; aMin = Math.Min(aMin, t); aMax = Math.Max(aMax, t); }
+                foreach (double[] p in pb) { double t = p[0] * u[0] + p[1] * u[1] + p[2] * u[2]; bMin = Math.Min(bMin, t); bMax = Math.Max(bMax, t); }
+                if (aMax + marginMm < bMin || bMax + marginMm < aMin) return false;
+            }
+            return true;
+        }
+
+        private static double[][] Patch(MatComponentPlan c)
+        {
+            if (c.StartPointMm == null || c.EndPointMm == null || c.DistributionDirection == null) return null;
+            double[] d = c.DistributionDirection; double l = c.ArrayLengthMm;
+            double[] s = c.StartPointMm, e = c.EndPointMm;
+            return new[] { s, e, new[] { e[0] + d[0] * l, e[1] + d[1] * l, e[2] + d[2] * l }, new[] { s[0] + d[0] * l, s[1] + d[1] * l, s[2] + d[2] * l } };
+        }
+
+        private static double[] Sub(double[] p, double[] q) => new[] { p[0] - q[0], p[1] - q[1], p[2] - q[2] };
 
         private static string PartName(IList<MatHostPart> parts, int p)
         {

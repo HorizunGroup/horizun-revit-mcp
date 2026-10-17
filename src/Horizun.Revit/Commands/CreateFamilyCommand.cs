@@ -610,6 +610,7 @@ namespace Horizun.Revit.Commands
             refused = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refused != null) return refused;
             Family loaded = null;
+            bool alreadyLoaded = false;
             // A rollback is a CLAIM about the model, so it is only made when Revit's own
             // status confirms one; anything else keeps its uncertainty rather than being
             // asserted away.
@@ -623,7 +624,15 @@ namespace Horizun.Revit.Commands
                     try
                     {
                         if (!project.LoadFamily(source, new FamilyLoadOptions(overwriteValues), out loaded) || loaded == null)
-                            throw new InvalidOperationException("Revit's LoadFamily returned no loaded Family");
+                        {
+                            // THE SAME FAMILY, ALREADY THERE: Revit loads nothing and says false. Measured 2026-10-16:
+                            // reloading a library into a model that had it reported 16 of 16 families as failed loads.
+                            // The family by that name is the answer - re-read below like any other load.
+                            loaded = new FilteredElementCollector(project).OfClass(typeof(Family)).Cast<Family>()
+                                .FirstOrDefault(f => string.Equals(f.Name, expectedName, StringComparison.Ordinal));
+                            if (loaded == null) throw new InvalidOperationException("Revit's LoadFamily returned no loaded Family");
+                            alreadyLoaded = true;
+                        }
                         Guard.Commit(transaction, "load family into project");
                     }
                     catch
@@ -656,6 +665,8 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(new JObject
             {
                 ["operation"] = "load_existing_rfa",
+                ["already_loaded"] = alreadyLoaded,
+                ["already_loaded_means"] = alreadyLoaded ? "the project already held this family unchanged: Revit loaded nothing, and the family read back is the one already there" : null,
                 ["source_path"] = source,
                 ["source_sha256"] = SafeFileHash(source),
                 ["verified_by_reread"] = true,
@@ -1314,8 +1325,16 @@ namespace Horizun.Revit.Commands
                 long id = row.Value<long>("element_id");
                 if (!(family.GetElement(Rid.Make(id)) is ConnectorElement connector)) throw new InvalidOperationException("created connector " + id + " was not re-read as ConnectorElement");
                 ConnectorPlan requested = connectorPlans[row.Value<string>("key")];
-                if (connector.IsPrimary != requested.Primary)
+                // Revit makes the FIRST connector of each domain primary by itself. Asked for primary, it must be; not asked,
+                // Revit's own choice stands and is reported (measured 2026-10-16: every family with a connector and no
+                // primary flag was refused as 'did not re-read', so no MEP family could be made at all).
+                if (requested.Primary && !connector.IsPrimary)
                     throw new InvalidOperationException("connector '" + requested.Key + "' primary state did not re-read as requested");
+                if (!requested.Primary && connector.IsPrimary && plan.Connectors.Any(x => x.Primary && x.Kind == requested.Kind))
+                    throw new InvalidOperationException("connector '" + requested.Key + "' re-read as primary although connector '" +
+                        plan.Connectors.First(x => x.Primary && x.Kind == requested.Kind).Key + "' was asked to be");
+                row["primary"] = connector.IsPrimary;
+                if (connector.IsPrimary && !requested.Primary) row["primary_means"] = "not asked for: Revit makes the first connector of its domain primary";
                 VerifyAssociation(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER), requested.DiameterParameter, "connector '" + requested.Key + "' diameter");
                 VerifyAssociation(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_WIDTH), requested.WidthParameter, "connector '" + requested.Key + "' width");
                 VerifyAssociation(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_HEIGHT), requested.HeightParameter, "connector '" + requested.Key + "' height");

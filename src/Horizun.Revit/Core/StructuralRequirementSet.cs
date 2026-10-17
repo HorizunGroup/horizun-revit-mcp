@@ -1649,9 +1649,13 @@ namespace Horizun.Revit.Core
                                  " face. Between is a top or bottom layer in the gaps of a layer on that same face.", lat + ".between");
                             return "x";
                         }
-                        if (l.Laps.Count > 0 || l.Crank != null || held.Laps.Count > 0 || held.Crank != null)
+                        // A LAPPED OR CRANKED HELD LAYER keeps its gaps: on a top or bottom face its offset pieces
+                        // move INTO the section (along w), never across it, so the bars in its gaps stand where
+                        // they stood. The overlap check still measures every pair. The layer in the gaps itself
+                        // stays plain: its own pieces would need gaps of their own.
+                        if (l.Laps.Count > 0 || l.Crank != null)
                         {
-                            Fail(s, CodeUnknownValue, lat + " is laid between '" + l.Between + "' and one of them is lapped or cranked: " +
+                            Fail(s, CodeUnknownValue, lat + " is laid between '" + l.Between + "' and is itself lapped or cranked: " +
                                  "a lapped piece moves across, and what then lies in which gap is a placement this build does not lay.", lat + ".between");
                             return "x";
                         }
