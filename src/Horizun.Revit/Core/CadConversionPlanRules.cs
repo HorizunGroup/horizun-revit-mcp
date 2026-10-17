@@ -171,9 +171,8 @@ namespace Horizun.Revit.Core
 
         /// <summary>
         /// Resolve a run's declared height above its storey into absolute end Z, in
-        /// mm, and remove the plan-internal key. A run whose two ends already differ
-        /// in Z carries a fall (or a drawn slope) and is left as it is: the fall is
-        /// the more specific statement. Returns true when the row was changed.
+        /// mm, and remove the plan-internal key. The drawing's own Z is not used (a run
+        /// with a computed fall no longer carries the key). Returns true when the row was changed.
         /// </summary>
         public static bool ResolveOffsetFromLevel(JObject row, double levelElevationMm)
         {
@@ -183,9 +182,14 @@ namespace Horizun.Revit.Core
             var start = row["start"] as JArray;
             var end = row["end"] as JArray;
             if (start == null || end == null || start.Count < 3 || end.Count < 3) return false;
+            // A PLAN'S Z IS NOT A HEIGHT. A run still carrying this key has no computed fall (a fall removes it), so its
+            // height is the rule's: level + offset, whatever Z the drawing gave its line. Measured 2026-10-16: a tower plan
+            // with a few lines at Z = -24.8 m (and one 3D polyline from -29.8 m to 0) built conduits 25 m below the building.
             double zA = start[2].Value<double>(), zB = end[2].Value<double>();
-            if (Math.Abs(zA - zB) > 1e-6) return false;
-            double z = Math.Round(levelElevationMm + zA + offset, 4, MidpointRounding.AwayFromZero);
+            Func<double, bool> inStorey = q => q >= levelElevationMm - 3000 && q <= levelElevationMm + 6000;
+            // ends that differ INSIDE the storey's band are a fall somebody computed: kept as they are
+            if (Math.Abs(zA - zB) > 1e-6 && inStorey(zA) && inStorey(zB)) return false;
+            double z = Math.Round(levelElevationMm + offset, 4, MidpointRounding.AwayFromZero);
             start[2] = z;
             end[2] = z;
             return true;
