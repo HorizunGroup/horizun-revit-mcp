@@ -68,6 +68,7 @@
     <Compile Include="..\..\src\Horizun.Server\ToolListMonitor.cs" Link="ToolListMonitor.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpTasks.cs" Link="McpTasks.cs" />
     <Compile Include="..\..\src\Horizun.Server\CatalogLookup.cs" Link="CatalogLookup.cs" />
+    <Compile Include="..\..\src\Horizun.Server\TextFold.cs" Link="TextFold.cs" />
     <!-- The ISO 19650 project context tool, with the schema embedded under the SAME
          logical name the server uses, so the tests read the resource the shipped
          code reads rather than a file next to the test. -->

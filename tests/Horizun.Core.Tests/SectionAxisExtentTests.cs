@@ -177,9 +177,9 @@ namespace Horizun.Core.Tests
             SectionResult r = Expand(Set(lapped), Beam(), out List<StructuralRebarRule> bars, out _);
             Assert.True(r.Ok, r.Why);
             Assert.Equal(2, bars.Count);
-            Assert.Equal(new[] { 200.0, 1200 }, new[] { bars[0].CurvesMm[0][0], bars[0].CurvesMm[1][0] });
+            Assert.Equal(new[] { 1200.0, 200 }, new[] { bars[0].CurvesMm[0][0], bars[0].CurvesMm[1][0] });   // lap end back to the hook
             Assert.Equal(new[] { 600.0, 2200 }, new[] { bars[1].CurvesMm[0][0], bars[1].CurvesMm[1][0] });
-            Assert.Equal("H90", bars[0].Start.HookTypeId);
+            Assert.Equal("H90", bars[0].End.HookTypeId);
 
             // B at the far end: 300..2300 from B is x = 3700..5700, the lap at 900 from B is x = 5100.
             SectionResult t = Expand(Set(lapped.Replace("'from_mm': 200, 'to_mm': 2200", "'from_mm': 300, 'to_mm': 2300")), Beam(6000, 0),
@@ -212,6 +212,28 @@ namespace Horizun.Core.Tests
             Assert.Equal(150 + 1500, mid.CurvesMm[0][0], 6);   // from_mm is from the start face at x = 150
             // Without between the two layers stand in each other.
             Assert.Equal(SectionRules.CodeLayersCoincide, Expand(Set(Three + ", " + Mid(2).Replace("'between': 'top', ", "")), Beam(), out _, out _).Code);
+        }
+
+        [Fact]
+        public void Two_bars_between_a_corner_pair_stand_at_thirds()
+        {
+            // 2#5 continuous + 2#5 bastones in a 300 beam: four bars evenly across.
+            string two = Three.Replace("'count': 3", "'count': 2");
+            SectionResult r = Expand(Set(two + ", " + Mid(2)), Beam(), out List<StructuralRebarRule> bars, out _);
+            Assert.True(r.Ok, r.Why);
+            StructuralRebarRule mid = bars.Single(b => b.Id.Contains("#mid"));
+            Assert.Equal(-34, mid.CurvesMm[0][1], 6);
+            Assert.Equal(68, mid.Layout.ArrayLengthMm.Value, 6);
+        }
+
+        [Fact]
+        public void Bars_between_a_lapped_pair_keep_their_gap()
+        {
+            // The lapped piece moves INTO the section (down from the top face), never across it.
+            string lapped = Three.Replace("'count': 3", "'count': 2").Replace("'extend'", "'laps': [ { 'at_mm': 1200, 'length_mm': 300 } ], 'extend'");
+            SectionResult r = Expand(Set(lapped + ", " + Mid(2)), Beam(), out List<StructuralRebarRule> bars, out _);
+            Assert.True(r.Ok, r.Why);
+            Assert.Equal(-34, bars.Single(b => b.Id.Contains("#mid")).CurvesMm[0][1], 6);
         }
 
         [Fact]

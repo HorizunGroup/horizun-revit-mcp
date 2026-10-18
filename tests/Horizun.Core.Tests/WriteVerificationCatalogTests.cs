@@ -212,6 +212,18 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Transform_move_batch_rejects_constraint_drift_before_commit()
+        {
+            string src = Command("TransformElementsCommand.cs");
+            int apply = src.IndexOf("foreach (Plan p in plans) Apply(doc, p);", StringComparison.Ordinal);
+            int check = src.IndexOf("if (plans.All(p => p.Operation == \"move\"))", apply, StringComparison.Ordinal);
+            int verify = src.IndexOf("if (Verify(doc, p, out JObject detail)) continue;", check, StringComparison.Ordinal);
+            int rollback = src.IndexOf("throw new InvalidOperationException(\"Move batch did not hold before commit", verify, StringComparison.Ordinal);
+            int commit = src.IndexOf("Guard.Commit(tx, txName);", rollback, StringComparison.Ordinal);
+            Assert.True(apply >= 0 && check > apply && verify > check && rollback > verify && commit > rollback);
+        }
+
+        [Fact]
         public void Create_elements_production_properties_are_a_checklist_too()
         {
             string src = Command("CreateElementsProductionVerification.cs");

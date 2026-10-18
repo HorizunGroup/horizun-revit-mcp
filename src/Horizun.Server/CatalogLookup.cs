@@ -387,18 +387,7 @@ namespace Horizun.Server
         }
 
         /// <summary>Lowercase, accent-stripped normalization used ONLY for operation=search matching.</summary>
-        private static string NormalizeForSearch(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return string.Empty;
-            string formD = s.Normalize(NormalizationForm.FormD);
-            var sb = new StringBuilder(formD.Length);
-            foreach (char c in formD)
-            {
-                if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
-                    sb.Append(c);
-            }
-            return sb.ToString().ToLowerInvariant();
-        }
+        private static string NormalizeForSearch(string s) => TextFold.Fold(s);
 
         /// <summary>Splits a normalized string into letter/digit runs — the "tokens" that operation=search matches on.</summary>
         private static List<string> Tokenize(string normalized)

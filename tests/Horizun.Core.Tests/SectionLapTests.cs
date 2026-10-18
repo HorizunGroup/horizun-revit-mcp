@@ -107,7 +107,8 @@ namespace Horizun.Core.Tests
             List<StructuralRebarRule> bars = Expand(Set("[ { 'at_mm': 3000, 'length_mm': 600 } ]", ends:
                 ", 'start': { 'hook_type': 'H90' }, 'end': { 'hook_type': 'H90' }"), out SectionResult r);
             Assert.True(r.Ok, r.Why);
-            Assert.Equal("H90", bars[0].Start.HookTypeId); Assert.Null(bars[0].End.HookTypeId);
+            // The first piece is laid from its lap back to its hook (Revit matches the one-hook shape that way round).
+            Assert.Null(bars[0].Start.HookTypeId); Assert.Equal("H90", bars[0].End.HookTypeId);
             Assert.Null(bars[1].Start.HookTypeId); Assert.Equal("H90", bars[1].End.HookTypeId);
         }
 

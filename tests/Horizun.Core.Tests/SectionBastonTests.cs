@@ -97,6 +97,25 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_middle_bar_beside_a_corner_pair_on_one_face_is_laid()
+        {
+            // 4#5 + 4#4 in a square column: the pair stands at the corners, the single bar at the
+            // middle of the face - they share the face and the stretch, never a station.
+            StructuralRequirementSet s = StructuralRequirementSet.Load(JObject.Parse(@"{
+  'schema': 'horizun.structural-requirements/1', 'units': 'millimeter',
+  'requirement_set': { 'id': 'cartilla', 'version': '1' },
+  'bar_types': [ { 'id': 'N5', 'type_name': '#5' }, { 'id': 'N4', 'type_name': '#4' } ],
+  'section_rules': [ { 'id': 'C1', 'host': { 'mark': 'C-1' }, 'cover': { 'distance_mm': 40 },
+    'layers': [ { 'name': 'top', 'face': 'top', 'count': 2, 'bar_type': 'N5', 'extend': 'host_length' },
+                { 'name': 'top-m', 'face': 'top', 'count': 1, 'bar_type': 'N4', 'extend': 'host_length' } ] } ] }"));
+            Assert.True(s.Ok, s.Error);
+            SectionResult r = SectionRules.Expand(s.SectionRules.Single(), Frame(), id => 16, null, out List<StructuralRebarRule> bars, out _);
+            Assert.True(r.Ok, r.Code + " " + r.Why);
+            StructuralRebarRule mid = bars.Single(b => b.Id.Contains("top-m"));
+            Assert.Equal(0, mid.CurvesMm[0][1], 6);   // the middle of a face 300 wide centred on v = 0
+        }
+
+        [Fact]
         public void Bastones_from_each_end_share_a_face()
         {
             StructuralRequirementSet s = TwoTopLayers("{ 'from': 'start', 'run_ratio': 0.25 }", "{ 'from': 'end', 'run_ratio': 0.25 }");

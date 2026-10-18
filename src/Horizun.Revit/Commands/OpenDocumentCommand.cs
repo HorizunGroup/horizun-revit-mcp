@@ -1,3 +1,4 @@
+using System.Linq;
 // -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
@@ -202,6 +203,14 @@ namespace Horizun.Revit.Commands
             string path = r.Path;
             if (plan.AlreadyOpen != null) return ActivateOpen(app, plan, r);
 
+            // A model loaded as a LINK in a document already open cannot be opened as a document of its own:
+            // Revit returns null with no dialog (measured 2026-10-16: ACA_EST_POR while ACA_ARQ_POR, which links it, was open).
+            string linkedIn = LinkedInOpenDocuments(app, path);
+            if (linkedIn != null)
+                return CommandResult.Fail("'" + Path.GetFileName(path) + "' is loaded as a LINK in the open document(s) " + linkedIn +
+                    ", and Revit cannot open a model that is linked in this session. Close those documents (or unload the link) " +
+                    "and retry. Nothing was opened.");
+
             Document opened;
             try
             {
@@ -217,7 +226,21 @@ namespace Horizun.Revit.Commands
             }
 
             if (opened == null)
-                return CommandResult.Fail("Revit returned no document for '" + path + "'. Nothing is confirmed open.");
+            {
+                // SAY WHAT REVIT ASKED: an open that silently returns nothing is almost always a dialog that was
+                // answered Cancel (measured 2026-10-16: 'Unresolved References' on a model from another team).
+                string asked = "";
+                try
+                {
+                    var seen = Interference.Current?.Seen;
+                    if (seen != null && seen.Count > 0)
+                        asked = " Revit raised while opening: " + string.Join(" | ", seen.Where(i => i.Kind == "dialog")
+                            .Select(i => (i.Description ?? "?") + " -> " + (i.Answered ?? "?")).Take(5)) +
+                            (r.OnOpenDialog == DialogAnswer.Dismiss ? "" : ". If the model is only to be READ, on_open_dialog='dismiss' answers 'continue'.");
+                }
+                catch { }
+                return CommandResult.Fail("Revit returned no document for '" + path + "'. Nothing is confirmed open." + asked);
+            }
 
             // --- Verify: is the ACTIVE document really the one asked for? -----
             Document nowActive = app.ActiveUIDocument != null ? app.ActiveUIDocument.Document : null;
@@ -345,6 +368,21 @@ namespace Horizun.Revit.Commands
                              "was upgraded when it was first opened, and saving it writes Revit " + plan.HostVersion +
                              " over that file.")
             });
+        }
+
+        /// <summary>The titles of the open documents that hold <paramref name="path"/> as a loaded link, or null.</summary>
+        static string LinkedInOpenDocuments(UIApplication app, string path)
+        {
+            try
+            {
+                var docs = app.Application.Documents.Cast<Document>().ToList();
+                if (!docs.Any(d => d.IsLinked && PathsEqual(d.PathName, path))) return null;
+                var hosts = docs.Where(d => !d.IsLinked && new FilteredElementCollector(d).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>()
+                                         .Any(li => { var ld = li.GetLinkDocument(); return ld != null && PathsEqual(ld.PathName, path); }))
+                                .Select(d => "'" + d.Title + "'").Distinct().ToList();
+                return hosts.Count > 0 ? string.Join(", ", hosts) : "(a document of this session)";
+            }
+            catch { return null; }
         }
 
         private static bool PathsEqual(string left, string right)

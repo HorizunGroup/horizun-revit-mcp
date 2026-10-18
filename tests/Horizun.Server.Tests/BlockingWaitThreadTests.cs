@@ -39,7 +39,7 @@ namespace Horizun.Server.Tests
         {
             string text = Source("src/Horizun.Server/Program.cs");
             // The only Task.Run left is the async heartbeat, which awaits and never blocks.
-            Assert.Equal(1, Regex.Matches(text, @"Task\.Run\(").Count);
+            Assert.Single(Regex.Matches(text, @"Task\.Run\("));
             Assert.Matches(new Regex(@"Task\.Run\(async "), text);
         }
     }

@@ -239,6 +239,10 @@ namespace Horizun.Revit.Commands
                 foreach (Element e in new FilteredElementCollector(doc).WherePasses(bboxFilter).WhereElementIsNotElementType())
                 {
                     if (!SpatialCoherence.IsPhysical(e)) continue;
+                    // WHAT THE ROUTE CONTINUES OR FEEDS is not in its way: an element with a FREE connector at the start or
+                    // the end (measured 2026-10-16: routing from a branch's free end refused as 'the start point is inside'
+                    // that very branch, and a route to a cabinet's connector would end inside the cabinet).
+                    if (FreeConnectorAt(e, start) || FreeConnectorAt(e, end)) continue;
                     AddBox(boxes, e, null, inflate, "host:" + Rid.Value(e.Id) + ":" + (e.Category?.Name ?? e.GetType().Name));
                 }
 
@@ -261,6 +265,19 @@ namespace Horizun.Revit.Commands
                     }
                 }
                 return boxes;
+            }
+
+            private static bool FreeConnectorAt(Element e, XYZ p)
+            {
+                ConnectorManager m = MepFacts.ManagerOf(e);
+                if (m == null) return false;
+                try
+                {
+                    foreach (Connector c in m.Connectors)
+                        if (c.ConnectorType == ConnectorType.End && !c.IsConnected && c.Origin.DistanceTo(p) <= 1.0 / 304.8) return true;
+                }
+                catch { }
+                return false;
             }
 
             private static void AddBox(List<RouteSearch.Box3> boxes, Element e, Transform worldTransform, double inflate, string name)

@@ -160,6 +160,7 @@ namespace Horizun.Revit.Commands
                 family = app.Application.NewFamilyDocument(template);
                 if (family == null || !family.IsFamilyDocument)
                     throw new InvalidOperationException("Revit did not create a family document from the template.");
+                RejectBoundSharedNames(project, family, plan);
                 View familyView = FindFamilyCreationView(family);
                 // Dimension views and dimension types resolve against the REAL family
                 // document, and deliberately before any transaction or nested load has
@@ -610,6 +611,7 @@ namespace Horizun.Revit.Commands
             refused = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refused != null) return refused;
             Family loaded = null;
+            bool alreadyLoaded = false;
             // A rollback is a CLAIM about the model, so it is only made when Revit's own
             // status confirms one; anything else keeps its uncertainty rather than being
             // asserted away.
@@ -623,7 +625,15 @@ namespace Horizun.Revit.Commands
                     try
                     {
                         if (!project.LoadFamily(source, new FamilyLoadOptions(overwriteValues), out loaded) || loaded == null)
-                            throw new InvalidOperationException("Revit's LoadFamily returned no loaded Family");
+                        {
+                            // THE SAME FAMILY, ALREADY THERE: Revit loads nothing and says false. Measured 2026-10-16:
+                            // reloading a library into a model that had it reported 16 of 16 families as failed loads.
+                            // The family by that name is the answer - re-read below like any other load.
+                            loaded = new FilteredElementCollector(project).OfClass(typeof(Family)).Cast<Family>()
+                                .FirstOrDefault(f => string.Equals(f.Name, expectedName, StringComparison.Ordinal));
+                            if (loaded == null) throw new InvalidOperationException("Revit's LoadFamily returned no loaded Family");
+                            alreadyLoaded = true;
+                        }
                         Guard.Commit(transaction, "load family into project");
                     }
                     catch
@@ -656,6 +666,8 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(new JObject
             {
                 ["operation"] = "load_existing_rfa",
+                ["already_loaded"] = alreadyLoaded,
+                ["already_loaded_means"] = alreadyLoaded ? "the project already held this family unchanged: Revit loaded nothing, and the family read back is the one already there" : null,
                 ["source_path"] = source,
                 ["source_sha256"] = SafeFileHash(source),
                 ["verified_by_reread"] = true,
@@ -970,6 +982,33 @@ namespace Horizun.Revit.Commands
             if (request["nested_instances"] != null && (!(request["nested_instances"] is JArray nestedArray) || nestedArray.Count != plan.NestedInstances.Count))
                 throw new ArgumentException("every nested_instances entry must be an object");
             return plan;
+        }
+
+        private static void RejectBoundSharedNames(Document project, Document family, FamilyPlan plan)
+        {
+            Category category = family.OwnerFamily?.FamilyCategory;
+            if (category == null || plan.Parameters.Count == 0) return;
+            var requested = new HashSet<string>(plan.Parameters.Select(p => p.Name), StringComparer.Ordinal);
+            var shared = new FilteredElementCollector(project).OfClass(typeof(SharedParameterElement))
+                .Cast<SharedParameterElement>().Where(p => requested.Contains(p.Name)).ToList();
+            if (shared.Count == 0) return;
+            var collisions = new List<string>();
+            DefinitionBindingMapIterator iterator = project.ParameterBindings.ForwardIterator();
+            iterator.Reset();
+            while (iterator.MoveNext())
+            {
+                Definition definition = iterator.Key;
+                if (definition == null || !requested.Contains(definition.Name) || !(iterator.Current is ElementBinding binding) ||
+                    !binding.Categories.Cast<Category>().Any(c => c.Id == category.Id)) continue;
+                SharedParameterElement match = shared.FirstOrDefault(p =>
+                    definition is ExternalDefinition external ? external.GUID == p.GuidValue :
+                    definition is InternalDefinition internalDefinition && internalDefinition.Id == p.Id);
+                if (match != null) collisions.Add(definition.Name + " (GUID " + match.GuidValue.ToString("D") + ")");
+            }
+            if (collisions.Count > 0)
+                throw new ArgumentException("Creating ordinary family parameters would duplicate shared parameters already bound to category '" +
+                    category.Name + "': " + string.Join(", ", collisions.Distinct(StringComparer.Ordinal)) +
+                    ". Omit these family parameters; address existing shared values by GUID after loading.");
         }
 
         private static Dictionary<string, FamilyParameter> EnsureParameters(FamilyManager fm, List<ParameterPlan> plans)
@@ -1314,8 +1353,16 @@ namespace Horizun.Revit.Commands
                 long id = row.Value<long>("element_id");
                 if (!(family.GetElement(Rid.Make(id)) is ConnectorElement connector)) throw new InvalidOperationException("created connector " + id + " was not re-read as ConnectorElement");
                 ConnectorPlan requested = connectorPlans[row.Value<string>("key")];
-                if (connector.IsPrimary != requested.Primary)
+                // Revit makes the FIRST connector of each domain primary by itself. Asked for primary, it must be; not asked,
+                // Revit's own choice stands and is reported (measured 2026-10-16: every family with a connector and no
+                // primary flag was refused as 'did not re-read', so no MEP family could be made at all).
+                if (requested.Primary && !connector.IsPrimary)
                     throw new InvalidOperationException("connector '" + requested.Key + "' primary state did not re-read as requested");
+                if (!requested.Primary && connector.IsPrimary && plan.Connectors.Any(x => x.Primary && x.Kind == requested.Kind))
+                    throw new InvalidOperationException("connector '" + requested.Key + "' re-read as primary although connector '" +
+                        plan.Connectors.First(x => x.Primary && x.Kind == requested.Kind).Key + "' was asked to be");
+                row["primary"] = connector.IsPrimary;
+                if (connector.IsPrimary && !requested.Primary) row["primary_means"] = "not asked for: Revit makes the first connector of its domain primary";
                 VerifyAssociation(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER), requested.DiameterParameter, "connector '" + requested.Key + "' diameter");
                 VerifyAssociation(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_WIDTH), requested.WidthParameter, "connector '" + requested.Key + "' width");
                 VerifyAssociation(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_HEIGHT), requested.HeightParameter, "connector '" + requested.Key + "' height");

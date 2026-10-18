@@ -89,6 +89,21 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_line_drawn_at_a_stray_Z_is_built_at_the_rule_height()
+        {
+            // measured 2026-10-16: plan lines at Z = -24.8 m and a 3D polyline from -29.8 m to 0
+            var flat = new JObject { ["kind"] = "conduit", ["start"] = new JArray(0, 0, -24792.0), ["end"] = new JArray(900, 0, -24792.0), [CadConversionPlanRules.OffsetFromLevelKey] = 2480.0 };
+            var tilted = new JObject { ["kind"] = "conduit", ["start"] = new JArray(0, 0, -29822.0), ["end"] = new JArray(0, 900, 0.0), [CadConversionPlanRules.OffsetFromLevelKey] = 2480.0 };
+            Assert.True(CadConversionPlanRules.ResolveOffsetFromLevel(flat, 2550));
+            Assert.True(CadConversionPlanRules.ResolveOffsetFromLevel(tilted, 2550));
+            foreach (var r in new[] { flat, tilted })
+            {
+                Assert.Equal(5030.0, ((JArray)r["start"])[2].Value<double>(), 6);
+                Assert.Equal(5030.0, ((JArray)r["end"])[2].Value<double>(), 6);
+            }
+        }
+
+        [Fact]
         public void A_row_without_the_key_is_untouched()
         {
             var row = new JObject { ["kind"] = "duct", ["start"] = new JArray(0, 0, 0.0), ["end"] = new JArray(1, 0, 0.0) };

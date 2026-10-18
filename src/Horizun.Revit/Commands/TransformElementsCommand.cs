@@ -226,6 +226,24 @@ namespace Horizun.Revit.Commands
                         doc.Regenerate();
                         foreach (Plan p in plans) GuardHosts(doc, p);
                     }
+                    // A batch of moves can change constraints on another target in
+                    // the same batch. Revit may accept every MoveElements call but
+                    // leave some targets short of their requested positions. Check
+                    // the final batch state while rollback is still possible.
+                    if (plans.All(p => p.Operation == "move"))
+                    {
+                        doc.Regenerate();
+                        var precommitFailures = new JArray();
+                        foreach (Plan p in plans)
+                        {
+                            if (Verify(doc, p, out JObject detail)) continue;
+                            detail["index"] = p.Index;
+                            precommitFailures.Add(detail);
+                        }
+                        if (precommitFailures.Count > 0)
+                            throw new InvalidOperationException("Move batch did not hold before commit; rolling back " +
+                                precommitFailures.Count + " operation(s): " + precommitFailures.ToString(Formatting.None));
+                    }
                     Guard.Commit(tx, txName);
                 }
                 catch (Exception ex)
@@ -656,14 +674,47 @@ namespace Horizun.Revit.Commands
                 case "set_curve":
                     foreach (ElementId id in p.Ids)
                     {
-                        var lc = doc.GetElement(id).Location as LocationCurve;
-                        if (lc != null) lc.Curve = p.Curve;
+                        Element el = doc.GetElement(id);
+                        var lc = el.Location as LocationCurve;
+                        if (lc == null) continue;
+                        // A RUN WHOSE OTHER END IS IN A NETWORK moves only the end that changes, by its connector:
+                        // replacing the curve makes Revit re-evaluate the held end and ask to disconnect it - a modal
+                        // question nobody answers, and the write rolls back. Measured 2026-10-16: carrying conduit ends
+                        // to their devices, every run with a fitting at its far end refused.
+                        if (el is MEPCurve mc && MoveOneEndByConnector(mc, lc.Curve, p.Curve)) continue;
+                        lc.Curve = p.Curve;
                     }
                     break;
                 case "wall_join":
                     foreach(var id in p.Ids) { if(p.JoinAllowed) WallUtils.AllowWallJoinAtEnd((Wall)doc.GetElement(id),p.JoinEnd); else WallUtils.DisallowWallJoinAtEnd((Wall)doc.GetElement(id),p.JoinEnd); }
                     break;
             }
+        }
+
+        /// <summary>
+        /// One end of an MEP run moved by its own connector, when exactly one end changes and the other is connected.
+        /// False (nothing done) otherwise, and the curve is replaced as before.
+        /// </summary>
+        private static bool MoveOneEndByConnector(MEPCurve run, Curve was, Curve want)
+        {
+            const double same = 0.5 / 304.8;
+            XYZ a0 = was.GetEndPoint(0), a1 = was.GetEndPoint(1), b0 = want.GetEndPoint(0), b1 = want.GetEndPoint(1);
+            XYZ stay = null, from = null, to = null;
+            if (a0.DistanceTo(b0) <= same && a1.DistanceTo(b1) > same) { stay = a0; from = a1; to = b1; }
+            else if (a1.DistanceTo(b1) <= same && a0.DistanceTo(b0) > same) { stay = a1; from = a0; to = b0; }
+            else if (a0.DistanceTo(b1) <= same && a1.DistanceTo(b0) > same) { stay = a0; from = a1; to = b0; }
+            else if (a1.DistanceTo(b0) <= same && a0.DistanceTo(b1) > same) { stay = a1; from = a0; to = b1; }
+            if (stay == null) return false;
+            Connector held = null, moving = null;
+            foreach (Connector c in run.ConnectorManager.Connectors)
+            {
+                if (c.ConnectorType != ConnectorType.End) continue;
+                if (c.Origin.DistanceTo(stay) <= same) held = c;
+                else if (c.Origin.DistanceTo(from) <= same) moving = c;
+            }
+            if (held == null || moving == null || !held.IsConnected || moving.IsConnected) return false;
+            moving.Origin = to;
+            return true;
         }
 
         private static bool Verify(Document doc, Plan p, out JObject detail)
