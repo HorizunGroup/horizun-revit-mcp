@@ -145,7 +145,7 @@ namespace Horizun.Core.Tests
             CadInterpretation read = CadInterpretationRules.Interpret(M102(), Set(), "h");
             List<CadCandidate> ducts = Ducts(read);
             Assert.Equal(7, ducts.Count);                                        // nothing was deleted
-            Assert.Single(ducts.Where(c => c.EligibleForAutomaticApply));        // only the duct that feeds it
+            Assert.Single(ducts, c => c.EligibleForAutomaticApply);               // only the duct that feeds it
             Assert.Equal(6, ducts.Count(c => !c.EligibleForAutomaticApply));     // 4 edges + 2 chords, held
             Assert.Contains(read.Unclaimed, u => u.Reason == "closed_loop_held_for_review");
             Assert.DoesNotContain(read.Unclaimed, u => u.Reason == "closed_figure_by_declared_rule");

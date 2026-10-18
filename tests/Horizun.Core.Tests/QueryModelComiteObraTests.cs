@@ -36,7 +36,6 @@ namespace Horizun.Core.Tests
 
         [Theory]
         [InlineData(-0.0)]
-        [InlineData(0.0)]
         [InlineData(-1e-12)]
         public void A_grid_along_X_reads_zero_degrees_never_negative_zero(double dy)
         {

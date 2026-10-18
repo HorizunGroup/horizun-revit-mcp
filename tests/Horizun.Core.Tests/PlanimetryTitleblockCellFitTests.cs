@@ -81,7 +81,7 @@ namespace Horizun.Core.Tests
             // 13 chars x 5 x 0.6 = 39 <= 40 fits; exactly 40 also fits.
             PlanimetryAuditResult r = PlanimetryRules.EvaluateRequirementSet(
                 Snapshot(Sheet(10, "1234567890123")), set, Options());
-            Assert.Empty(r.Findings.Where(x => x.Status == "failed"));
+            Assert.DoesNotContain(r.Findings, x => x.Status == "failed");
         }
 
         [Fact]
@@ -104,8 +104,8 @@ namespace Horizun.Core.Tests
             PlanimetryRequirementSet set = Set(NumberRule);
             SheetFact s = Sheet(10, null); s.Note("sheet_number", "SheetNumber threw");
             PlanimetryAuditResult r = PlanimetryRules.EvaluateRequirementSet(Snapshot(s), set, Options());
-            Assert.Single(r.Findings.Where(x => x.Status == "unknown"));
-            Assert.Empty(r.Findings.Where(x => x.Status == "failed"));
+            Assert.Single(r.Findings, x => x.Status == "unknown");
+            Assert.DoesNotContain(r.Findings, x => x.Status == "failed");
         }
 
         [Fact]

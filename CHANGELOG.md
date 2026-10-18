@@ -3,6 +3,12 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v3.0.2 (2026-10-18)
+
+- Corrected false verification and data loss when duplicating system and family types, reloading families, moving connected MEP elements, and opening documents with unresolved references.
+- Corrected CAD elevation, reinforcement geometry and overlap checks, glazed roof verification, and accented catalog search.
+- Rejected duplicate names for bound shared family parameters before loading. No tools, arguments, or capabilities were added.
+
 ## v3.0.1
 
 - The release runner now enables Python only in its isolated test data root and restores the owner's Python setting after each Revit year. The first v3.0.0 release gate copied the owner's disabled setting into the isolated root, leaving fixture-dependent probes without coverage. The owner's durable setting is never edited. The v3.0.0 tag remains immutable and did not publish a stable release.

@@ -196,7 +196,7 @@ namespace Horizun.Core.Tests
             int rows = requests.Sum(r => ((JArray)r["elements"]).Count);
             Assert.Equal(1, rows);                                   // the vent, not the drain
             Assert.Equal(2, plan.Actions.Count);                     // both are still PLANNED
-            Assert.Single(plan.Actions.Where(a => a.Blocked));
+            Assert.Single(plan.Actions, a => a.Blocked);
         }
     }
 }

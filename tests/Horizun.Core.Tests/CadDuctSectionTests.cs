@@ -200,7 +200,7 @@ namespace Horizun.Core.Tests
             var ducts = CadInterpretationRules.Interpret(ring, set, "h").Candidates.Where(c => c.ProposedKind == "duct").ToList();
             // NOTHING crosses this loop, so it is not read as a figure and not built either: its four edges are
             // proposed and HELD, and only the open line is a run a conversion would build (CadRingsTests).
-            Assert.Single(ducts.Where(c => c.EligibleForAutomaticApply));
+            Assert.Single(ducts, c => c.EligibleForAutomaticApply);
             Assert.Equal(4, ducts.Count(c => !c.EligibleForAutomaticApply));
             CadRequirementSet include = CadRequirementSet.Load(JObject.Parse((@"{ 'schema': 'horizun.cad-requirements/1',
               'requirement_set': { 'id': 's', 'version': '1.0.0', 'title': 't' }, 'source': { 'units': 'millimeter' },
