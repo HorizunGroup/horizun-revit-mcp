@@ -3,8 +3,8 @@
   Firma una GitHub Release en BORRADOR con el certificado Certum de HORIZUN GROUP S.A.S. y la publica.
 
 .DESCRIPTION
-  Pensado para correr en el runner self-hosted (etiqueta horizun-sign) bajo la cuenta de Pablo, con
-  SimplySign Desktop conectado, DESPUES de que Pablo apruebe el environment `firma-certum`.
+  Pensado para correr en el runner self-hosted (etiqueta horizun-sign) bajo la cuenta de firma, con
+  SimplySign Desktop conectado, DESPUES de que el revisor apruebe el environment `firma-certum`.
 
   1. Comprueba que se puede firmar (firma un archivo de prueba) ANTES de tocar nada.
   2. Descarga los assets del borrador.
