@@ -1,5 +1,7 @@
 # Releasing a stable version / Cómo se publica una versión estable
 
+**Una aprobación por versión: conecta SimplySign Desktop → Approve en `firma-certum` → listo.**
+
 A stable `vX.Y.Z` release is built and tested by CI, left as a **draft**, signed
 with the Certum certificate of HORIZUN GROUP S.A.S. and only then published.
 A published GitHub release is immutable (its assets cannot be replaced), which
@@ -107,3 +109,7 @@ MCP Registry. Si falla por SimplySign desconectado: reconectar y *Re-run failed
 jobs*. El runner de firma se arranca con
 `%USERPROFILE%\.horizun\sign-runners\iniciar-runners.ps1` (tarea programada
 *Horizun Sign Runners*).
+
+## Configuración de environments (2026-10-20)
+
+`firma-certum` es la única revisión humana. Se eliminó `release-signing`, que ya no aparecía en los workflows; el cambio se aplicó con `gh api`.
