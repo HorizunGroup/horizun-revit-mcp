@@ -68,7 +68,7 @@ The job runs on a repository-level self-hosted runner labelled `horizun-sign`
 account SimplySign Desktop is connected to. It is separate from the live-gate
 runner (pool `Horizun Revit Release`).
 
-- Start or check it: `C:\Users\pablo\.horizun\sign-runners\iniciar-runners.ps1`,
+- Start or check it: `%USERPROFILE%\.horizun\sign-runners\iniciar-runners.ps1`,
   or the scheduled task **Horizun Sign Runners** (`Start-ScheduledTask 'Horizun Sign Runners'`).
 - Check it in the repository **Settings > Actions > Runners**: it must be
   *Idle*. The live-gate runner is the scheduled task
@@ -105,5 +105,5 @@ pestaña Actions; el job firma el Setup, regenera `SHA256SUMS.txt` y
 `package-hashes.json`, verifica, sube, relee y publica. Después se publica en el
 MCP Registry. Si falla por SimplySign desconectado: reconectar y *Re-run failed
 jobs*. El runner de firma se arranca con
-`C:\Users\pablo\.horizun\sign-runners\iniciar-runners.ps1` (tarea programada
+`%USERPROFILE%\.horizun\sign-runners\iniciar-runners.ps1` (tarea programada
 *Horizun Sign Runners*).
