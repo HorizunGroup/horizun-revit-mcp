@@ -64,7 +64,7 @@ add-ins and the Claude Desktop extension are not changed by signing:
 ## The signing runner
 
 The job runs on a repository-level self-hosted runner labelled `horizun-sign`
-(`self-hosted, windows, horizun-sign`) under Pablo's Windows account, which is the
+(`self-hosted, windows, horizun-sign`) under the signing account, which is the
 account SimplySign Desktop is connected to. It is separate from the live-gate
 runner (pool `Horizun Revit Release`).
 
@@ -100,7 +100,7 @@ runner (pool `Horizun Revit Release`).
 ## Resumen en español
 
 La CI deja un **borrador** (14 assets) y el job `firmar-y-publicar` espera.
-Pablo conecta SimplySign Desktop y aprueba el environment `firma-certum` en la
+El revisor conecta SimplySign Desktop y aprueba el environment `firma-certum` en la
 pestaña Actions; el job firma el Setup, regenera `SHA256SUMS.txt` y
 `package-hashes.json`, verifica, sube, relee y publica. Después se publica en el
 MCP Registry. Si falla por SimplySign desconectado: reconectar y *Re-run failed
