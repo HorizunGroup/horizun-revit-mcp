@@ -353,10 +353,13 @@ is vulnerability-free or safe under arbitrary runtime inputs.
 ## 8. Unsigned releases and local trust
 
 The package pipeline reports the signature state and never implies a public trust
-chain it does not carry. Public releases, including 1.0+, are permanently
+chain it does not carry. The packages CI builds, including 1.0+, are permanently
 unsigned by policy: every owned payload binary and Setup must report
-`NotSigned`, the package declares that publisher identity is unavailable, and
-the bootstrap requires explicit `-AllowUnsigned`. Hashes, manifests and GitHub
+`NotSigned`, and the package declares that publisher identity is unavailable.
+From v3.0.2 the Setup alone is then signed with the Certum certificate of
+HORIZUN GROUP S.A.S. before the draft release is published
+([RELEASING.md](RELEASING.md)); the payload stays unsigned, and the bootstrap
+requires explicit `-AllowUnsigned` only for an unsigned Setup. Hashes, manifests and GitHub
 attestations prove byte identity and workflow provenance, not publisher identity.
 The source installer also supports an explicit, per-user self-signing workflow
 (`scripts/self-sign.ps1`):

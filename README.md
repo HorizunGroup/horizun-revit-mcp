@@ -191,9 +191,10 @@ arbitrary client-generated Python has a separate permission/evidence contract.
 - Setup includes the server runtime and matching Revit add-ins.
   **No Git, Visual Studio or .NET SDK is needed.**
 - Close Revit before running Setup.
-- Public releases are intentionally **unsigned**. SHA-256 checks verify the
-  downloaded bytes; they do not authenticate a Windows publisher. Windows and
-  Revit may show a publisher warning. See the [unsigned release policy](CODE-SIGNING-POLICY.md).
+- The server and add-ins are intentionally **unsigned**; from v3.0.2 the Setup is
+  signed by HORIZUN GROUP S.A.S. (Certum). SHA-256 checks verify the
+  downloaded bytes; they do not authenticate a Windows
+  publisher. Revit may show an unsigned add-in warning. See the [signing policy](CODE-SIGNING-POLICY.md).
 
 1. Open the release above and download `horizun-mcp-<version>-setup.exe` and
    `SHA256SUMS.txt` from **Assets**. The source ZIP is for development.

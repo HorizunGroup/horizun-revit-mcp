@@ -35,12 +35,20 @@ and push protection are repository settings, not files in this tree, and must al
 be enabled before stable promotion. A green custom scan does not claim that those
 platform controls are on.
 
-Public releases are unsigned by permanent policy, including version 1.0 and
-later. The bootstrap requires `-AllowUnsigned`, the README discloses the absence
-of publisher authentication, and `package-hashes.json` records
+The packages CI builds are unsigned by permanent policy, including version 1.0
+and later, and the server and add-ins stay unsigned. The bootstrap requires
+`-AllowUnsigned` for an unsigned Setup, the README discloses the absence of
+publisher authentication for the payload, and `package-hashes.json` records
 `authenticode: unsigned_by_policy` plus
-`publisher_identity_available: false`. The pipeline refuses an unexpected,
-invalid or self-signed Authenticode state instead of presenting it as trust.
+`publisher_identity_available: false` for the CI build. The pipeline refuses an
+unexpected, invalid or self-signed Authenticode state instead of presenting it
+as trust.
+
+From v3.0.2 the stable release is created as a draft and its Setup is signed
+with the Certum certificate of HORIZUN GROUP S.A.S. before publication, by the
+approval-gated `firmar-y-publicar` job (`scripts/firmar-release.ps1`); the
+cycle is in [RELEASING.md](RELEASING.md). Signing replaces the Setup's hash in
+`SHA256SUMS.txt` and `package-hashes.json` and nothing else.
 
 The release assurance chain is a protected tag, one clean commit stamped into
 every owned binary, full SHA-256 manifests, a CycloneDX SBOM, GitHub build

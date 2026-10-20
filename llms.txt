@@ -67,9 +67,11 @@ local policy and must fall back only when a typed response carries
 The release installer contains a self-contained Windows x64 MCP server plus a
 separate add-in payload for each supported Revit API year. Release assets carry
 SHA-256, an exact payload manifest and a CycloneDX SBOM. Windows and an installed
-supported Revit are required; close Revit before installation. Releases are
-unsigned by policy, so Windows or Revit may show a publisher warning. Verify the
-download as described in README.md. The bootstrap requires -AllowUnsigned.
+supported Revit are required; close Revit before installation. From v3.0.2 the
+Setup is signed by HORIZUN GROUP S.A.S. (Certum); the server and add-ins are
+unsigned by policy, so Revit may show an unsigned add-in warning. Verify the
+download as described in README.md. The bootstrap needs -AllowUnsigned only for
+an unsigned Setup (releases before v3.0.2).
 
 Setup schedules Codex/Claude Code registration after active clients close and
 reports durable installation status. Claude Desktop and ChatGPT Work have their

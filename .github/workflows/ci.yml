@@ -559,6 +559,10 @@ jobs:
             schema = 2; commit = $doc.Commit; workflow_sha = '${{ github.sha }}'
             built_utc = (Get-Date).ToUniversalTime().ToString('o')
             authenticode = 'unsigned_by_policy'; publisher_identity_available = $false
+            # This record describes the package CI built. Releases are signed afterwards
+            # (firmar-y-publicar): only the Setup, and its hash here is replaced by the
+            # signed Setup's hash. The server and add-ins inside stay unsigned.
+            release_signing = 'setup_signed_by_certum_after_ci'
             files = $hashes
           } | ConvertTo-Json -Depth 5 | Out-File dist/package-hashes.json -Encoding utf8
 
@@ -914,7 +918,11 @@ jobs:
           name: stable-live-matrix-${{ github.ref_name }}
           path: release/live
 
-      - name: Create or complete the stable GitHub release
+      # A stable release is created as a DRAFT and is never published here. A
+      # published GitHub release is immutable (assets cannot be replaced), so the
+      # Setup could not be signed afterwards. firmar-y-publicar signs the Setup
+      # with the Certum certificate and only then publishes the draft.
+      - name: Create or complete the stable GitHub release (as a draft)
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -930,6 +938,10 @@ jobs:
           fi
           expected=$(printf '%s\n' "${files[@]##*/}" | sort)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" != "true" ]; then
+              echo "Release $GITHUB_REF_NAME is already published; published releases are immutable and cannot be signed. Use a new version." >&2
+              exit 1
+            fi
             remote=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
             extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$remote"))
             if [ -n "$extra" ]; then
@@ -937,15 +949,38 @@ jobs:
               exit 1
             fi
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
-            gh release edit "$GITHUB_REF_NAME" --latest --prerelease=false --draft=false --notes-file release/release-notes.md
+            gh release edit "$GITHUB_REF_NAME" --prerelease=false --draft=true --notes-file release/release-notes.md
           else
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --notes-file release/release-notes.md --latest --title "Horizun Revit MCP $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --draft --notes-file release/release-notes.md --title "Horizun Revit MCP $GITHUB_REF_NAME"
           fi
           actual=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
           if [ "$actual" != "$expected" ]; then
-            printf 'Published stable asset inventory is not exact.\nExpected:\n%s\nActual:\n%s\n' "$expected" "$actual" >&2
+            printf 'Draft stable asset inventory is not exact.\nExpected:\n%s\nActual:\n%s\n' "$expected" "$actual" >&2
             exit 1
           fi
+
+  # Signs the Setup with the Certum certificate of HORIZUN GROUP S.A.S. and publishes
+  # the draft. Runs on the signing runner that has SimplySign Desktop, and waits for
+  # the required reviewer of the firma-certum environment. If SimplySign is
+  # disconnected the job fails BEFORE touching the draft; reconnect and re-run it.
+  # The release becomes latest when published (it is the newest stable version).
+  firmar-y-publicar:
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.repository == 'HorizunGroup/horizun-revit-mcp'
+    needs: publish-stable-release
+    runs-on: [self-hosted, windows, horizun-sign]
+    environment: firma-certum
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Sign the Setup, verify and publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/firmar-release.ps1 -Repo '${{ github.repository }}' -Tag '${{ github.ref_name }}'
 
   publish-preview-release:
     if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-preview.') && github.repository == 'HorizunGroup/horizun-revit-mcp'
@@ -1026,7 +1061,7 @@ jobs:
 
   publish-mcp-registry:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.repository == 'HorizunGroup/horizun-revit-mcp'
-    needs: [publish-stable-release, package]
+    needs: [firmar-y-publicar, package]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -31,15 +31,19 @@ del servidor MCP y los add-ins. **No necesitas Git, Visual Studio ni el SDK de
 4. Call `horizun_health` to verify the loaded version and active document.
    / Llama a `horizun_health` para verificar la versión y el documento activo.
 
-Public releases are unsigned by policy. Hashes verify the downloaded bytes but
-do not authenticate a Windows publisher; Windows/Revit may show a publisher
-warning. Las releases públicas no tienen firma de editor de Windows. Consulta
+From v3.0.2 the Setup is signed by HORIZUN GROUP S.A.S. (Certum): check the
+Digital Signatures tab in its properties. The server and add-ins it installs are
+unsigned by policy, so Revit may show an unsigned add-in warning, and earlier
+releases have an unsigned Setup. Hashes verify the downloaded bytes but do not
+authenticate a Windows publisher. Desde la v3.0.2 el Setup está firmado por
+HORIZUN GROUP S.A.S. (Certum); el servidor y los add-ins no lo están. Consulta
 la [política de firma](../CODE-SIGNING-POLICY.md).
 
 The optional [bootstrap](../install-release.ps1) performs the download and hash
-comparison automatically and requires the explicit `-AllowUnsigned` flag.
-El bootstrap opcional descarga y compara el hash automáticamente; requiere
-`-AllowUnsigned`.
+comparison automatically; it requires the explicit `-AllowUnsigned` flag only
+when the Setup is not signed (releases before v3.0.2).
+El bootstrap opcional descarga y compara el hash automáticamente; solo exige
+`-AllowUnsigned` si el Setup no está firmado (releases anteriores a la v3.0.2).
 
 ## Verify the downloaded installer / Verificar la descarga
 

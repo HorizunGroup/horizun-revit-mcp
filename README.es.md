@@ -198,9 +198,10 @@ arbitrario generado por el cliente tiene un contrato de permisos/evidencia apart
 - Setup incluye el runtime del servidor y los add-ins de Revit.
   **No necesitas Git, Visual Studio ni el SDK de .NET.**
 - Cierra Revit antes de instalar.
-- Las releases públicas **no tienen firma de editor**. El SHA-256 verifica los
-  bytes descargados; no autentica al editor de Windows. Windows y Revit pueden
-  mostrar un aviso. Consulta la [política de firma](CODE-SIGNING-POLICY.md).
+- El servidor y los add-ins **no tienen firma de editor**; desde la v3.0.2 el
+  Setup está firmado por HORIZUN GROUP S.A.S. (Certum). El SHA-256 verifica los
+  bytes descargados; no autentica al editor de Windows. Revit puede
+  mostrar un aviso de add-in sin firma. Consulta la [política de firma](CODE-SIGNING-POLICY.md).
 
 1. Abre la release del enlace y descarga `horizun-mcp-<version>-setup.exe` y
    `SHA256SUMS.txt` desde **Assets**. El ZIP de código fuente es para desarrollo.

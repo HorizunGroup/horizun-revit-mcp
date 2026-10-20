@@ -3,7 +3,8 @@
   Download the official Horizun setup from GitHub Releases, verify it against
   SHA256SUMS.txt from the SAME release, then launch it. No Git or .NET SDK.
 
-  Usage (public releases are unsigned and need -AllowUnsigned; read README.md first):
+  Usage (releases whose Setup is signed by HORIZUN GROUP S.A.S. need no acknowledgement; an unsigned
+  release, such as one published before 3.0.2, needs -AllowUnsigned; read README.md first):
     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1))) -AllowUnsigned
     powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned
     powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned -Version vX.Y.Z
@@ -30,9 +31,9 @@ param(
     [switch]$VerifyOnly,
     [switch]$NoClientCompletion,
     [switch]$NoLiveVerification,
-    # Public Horizun releases are unsigned by policy and require this explicit
-    # acknowledgement. Hash verification detects byte changes, but it is not
-    # Windows publisher authentication.
+    # Releases whose Setup is NOT signed by HORIZUN GROUP S.A.S. (Certum) are
+    # unsigned and require this explicit acknowledgement. Hash verification
+    # detects byte changes, but it is not Windows publisher authentication.
     [switch]$AllowUnsigned
 )
 $ErrorActionPreference = 'Stop'
@@ -115,18 +116,36 @@ function Get-HorizunCompletionOutcome([string]$State) {
     }
 }
 
+# The Setup of a stable release is signed AFTER CI builds it: scripts/firmar-release.ps1
+# signs only the Setup, with the Certum code-signing certificate of HORIZUN GROUP S.A.S.,
+# and publishes the draft. The payload inside stays unsigned and is covered by
+# manifest.json. A Setup is therefore either signed by that certificate (valid chain,
+# Certum issuer, Certum timestamp) or unsigned, and anything else is refused.
+function Test-HorizunCertumSetupSignature($Signature) {
+    if ($null -eq $Signature -or $Signature.Status -ne 'Valid') { return $false }
+    $signer = $Signature.SignerCertificate
+    if ($null -eq $signer) { return $false }
+    if ($signer.Subject -notmatch '(^|,\s*)O=HORIZUN GROUP S\.A\.S\.(,|$)') { return $false }
+    if ($signer.Issuer -notmatch 'Certum') { return $false }
+    $stamp = $Signature.TimeStamperCertificate
+    if ($null -eq $stamp -or $stamp.Subject -notmatch 'Certum') { return $false }
+    return $true
+}
+
 function Assert-HorizunSetupUnsigned([string]$Path, [bool]$UnsignedAllowed) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($signature.Status -ne 'NotSigned') {
-        throw "Public Horizun releases must be unsigned by policy; refused Authenticode state '$($signature.Status)'."
+    $certumSigned = Test-HorizunCertumSetupSignature $signature
+    if (-not $certumSigned -and $signature.Status -ne 'NotSigned') {
+        throw "Public Horizun releases must be unsigned by policy or signed by HORIZUN GROUP S.A.S. (Certum); refused Authenticode state '$($signature.Status)'."
     }
-    if (-not $UnsignedAllowed) {
+    if (-not $certumSigned -and -not $UnsignedAllowed) {
         throw 'Setup is unsigned. Re-run with -AllowUnsigned only if you accept that Windows cannot authenticate the publisher.'
     }
     $version = (Get-Item -LiteralPath $Path).VersionInfo
     if (([string]$version.CompanyName).Trim() -ne 'Horizun Group' -or ([string]$version.ProductName).Trim() -ne 'Horizun Revit MCP') {
-        throw "Unsigned Setup does not carry the expected Horizun product metadata. Company='$($version.CompanyName)' Product='$($version.ProductName)'"
+        throw "Setup does not carry the expected Horizun product metadata. Company='$($version.CompanyName)' Product='$($version.ProductName)'"
     }
+    return $certumSigned
 }
 
 function Invoke-HorizunSetupProcess([string]$FilePath, [string[]]$Arguments) {
@@ -215,9 +234,14 @@ try {
         throw "SHA-256 mismatch. Expected $expected but downloaded $actual. The installer was NOT launched."
     }
 
-    Assert-HorizunSetupUnsigned $setupPath ([bool]$AllowUnsigned)
-    Write-Host "[Horizun] WARNING: $($release.tag_name) is an official but UNSIGNED release." -ForegroundColor Yellow
-    Write-Host "          SHA-256 matched the release, but Windows cannot authenticate its publisher." -ForegroundColor Yellow
+    $certumSigned = Assert-HorizunSetupUnsigned $setupPath ([bool]$AllowUnsigned)
+    if ($certumSigned) {
+        Write-Host "[Horizun] $($release.tag_name) Setup is signed by HORIZUN GROUP S.A.S. (Certum) and SHA-256 matched the release." -ForegroundColor Green
+    }
+    else {
+        Write-Host "[Horizun] WARNING: $($release.tag_name) is an official but UNSIGNED release." -ForegroundColor Yellow
+        Write-Host "          SHA-256 matched the release, but Windows cannot authenticate its publisher." -ForegroundColor Yellow
+    }
     if ($VerifyOnly) {
         Write-Host '[Horizun] verification-only requested; Setup was NOT launched.' -ForegroundColor Green
         return

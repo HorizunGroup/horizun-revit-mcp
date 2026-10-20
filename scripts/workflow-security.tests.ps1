@@ -168,4 +168,27 @@ Assert-True ($ciGates.Count -ge 10) `
 Assert-True ($pushOnly.Count -eq 0) `
     "ci.yml runs these deployment gates and pr.yml does not: $($pushOnly -join ', '). A pull request would be green on exactly the checks that fail after the merge."
 
+# THE STABLE RELEASE IS SIGNED BEFORE IT IS PUBLISHED. A published GitHub release is
+# immutable, so publish-stable-release may only leave a DRAFT; the Certum-signing job
+# (self-hosted signing runner, protected environment, manual approval) is the only
+# route that publishes it, and the registry waits for that job.
+$stable = Get-JobBlock 'publish-stable-release'
+Assert-True ($stable -match 'gh release create[^\r\n]*--draft' -and $stable -notmatch '--draft=false') `
+    'publish-stable-release must create the stable release as a draft and never publish it.'
+Assert-True ($stable -match 'gh release edit[^\r\n]*--draft=true') `
+    'publish-stable-release must keep an existing release a draft when it completes it.'
+$signJob = Get-JobBlock 'firmar-y-publicar'
+Assert-True ($signJob -match 'needs:\s*publish-stable-release' -and
+             $signJob -match 'runs-on:\s*\[self-hosted, windows, horizun-sign\]' -and
+             $signJob -match 'environment:\s*firma-certum' -and
+             $signJob -match 'contents:\s*write' -and
+             $signJob -match 'scripts/firmar-release\.ps1 -Repo [^\r\n]*-Tag ') `
+    'firmar-y-publicar must wait for the draft, run on the signing runner under the firma-certum environment and call scripts/firmar-release.ps1.'
+Assert-True ((Get-JobBlock 'publish-mcp-registry') -match 'needs:\s*\[firmar-y-publicar,\s*package\]') `
+    'The MCP Registry may only be published after the release is signed and public.'
+Assert-True ([regex]::Matches($ci, '--draft=false').Count -eq 2) `
+    'Only the preview and validation-only channels may publish a release directly (stable is published by the signing job).'
+Assert-True (Test-Path -LiteralPath (Join-Path $repo 'scripts/firmar-release.ps1')) `
+    'scripts/firmar-release.ps1 is missing.'
+
 Write-Host "workflow security: PASS ($($workflowFiles.Count) workflows, immutable actions, PR isolated from self-hosted/signing)"

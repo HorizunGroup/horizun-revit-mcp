@@ -78,6 +78,32 @@ exit 7
     Assert 'without a record the per-user default is used' `
         ((Get-HorizunInstalledAppDir @($missing)) -eq (Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP')) (Get-HorizunInstalledAppDir @($missing))
 
+    # ---- 2b. A Setup signed by HORIZUN GROUP S.A.S. (Certum) is accepted; nothing else is. ----
+    # scripts/firmar-release.ps1 signs the Setup after CI. The bootstrap used to refuse any
+    # state but NotSigned, which would have rejected every correctly signed release.
+    function New-FakeSignature([string]$Status, [string]$Subject, [string]$Issuer, [string]$Stamp) {
+        [pscustomobject]@{
+            Status = $Status
+            SignerCertificate = $(if ($Subject) { [pscustomobject]@{ Subject = $Subject; Issuer = $Issuer } } else { $null })
+            TimeStamperCertificate = $(if ($Stamp) { [pscustomobject]@{ Subject = $Stamp } } else { $null })
+        }
+    }
+    $horizunSubject = 'CN=HORIZUN GROUP S.A.S., O=HORIZUN GROUP S.A.S., L=Cali, S=Valle del Cauca, C=CO'
+    $certumIssuer = 'CN=Certum Code Signing 2021 CA, O=Asseco Data Systems S.A., C=PL'
+    $certumStamp = 'CN=Certum Timestamp 2026, O=Asseco Data Systems S.A., C=PL'
+    Assert 'the Certum signature of HORIZUN GROUP S.A.S. is accepted' `
+        (Test-HorizunCertumSetupSignature (New-FakeSignature 'Valid' $horizunSubject $certumIssuer $certumStamp)) $null
+    Assert 'an invalid signature is refused' `
+        (-not (Test-HorizunCertumSetupSignature (New-FakeSignature 'HashMismatch' $horizunSubject $certumIssuer $certumStamp))) $null
+    Assert 'an unsigned file is not a Certum signature' `
+        (-not (Test-HorizunCertumSetupSignature (New-FakeSignature 'NotSigned' '' '' ''))) $null
+    Assert 'another publisher is refused' `
+        (-not (Test-HorizunCertumSetupSignature (New-FakeSignature 'Valid' 'CN=Someone Else, O=Someone Else' $certumIssuer $certumStamp))) $null
+    Assert 'a self-signed certificate is refused' `
+        (-not (Test-HorizunCertumSetupSignature (New-FakeSignature 'Valid' $horizunSubject $horizunSubject $certumStamp))) $null
+    Assert 'a signature without a Certum timestamp is refused' `
+        (-not (Test-HorizunCertumSetupSignature (New-FakeSignature 'Valid' $horizunSubject $certumIssuer ''))) $null
+
     # ---- 3. The file itself. ------------------------------------------------------------
     $bytes = [IO.File]::ReadAllBytes($bootstrap)
     $nonAscii = @($bytes | Where-Object { $_ -gt 127 }).Count
