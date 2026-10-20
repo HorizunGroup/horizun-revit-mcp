@@ -56,7 +56,7 @@ $script:ArchiveCache = @{} # hash original del contenedor -> ruta del contenedor
 $script:TopByHash = @{}    # hash original de un asset de primer nivel -> ruta
 $script:Done = @{}         # rutas de primer nivel ya procesadas
 $script:InProgress = @{}
-$workspace = Join-Path ([IO.Path]::GetTempPath()) ('horizun-firma-' + [guid]::NewGuid().ToString('N'))
+$workspace = Join-Path 'D:\Curso\firma\trabajo' ('horizun-firma-' + [guid]::NewGuid().ToString('N'))
 
 function Get-Digest([string] $Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function New-TempDir {
@@ -78,10 +78,6 @@ function Test-OurSignature($Signature) {
 }
 
 function Assert-Signature([string] $Path) {
-    if (-not $Prueba) {
-        & $SignTool verify /pa $Path | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "signtool verify fallo: $Path" }
-    }
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     if (-not (Test-OurSignature $signature)) {
         throw "Firma o sello Certum invalido: $Path (estado: $($signature.Status))"
@@ -90,11 +86,15 @@ function Assert-Signature([string] $Path) {
 }
 
 function Invoke-Sign([string] $Path) {
-    $signArgs = @('sign', '/sha1', $Thumbprint, '/fd', 'SHA256')
-    if (-not $Prueba) { $signArgs += @('/tr', 'http://time.certum.pl', '/td', 'SHA256') }
-    $signArgs += $Path
-    $out = & $SignTool @signArgs 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "signtool sign fallo ($Path): $($out | Select-Object -Last 3 | Out-String)" }
+    if ($Prueba) { throw 'La prueba local no esta habilitada en el flujo de cola.' }
+    $id = [guid]::NewGuid().ToString('N')
+    $base = 'D:\Curso\firma\cola'
+    $pending = Join-Path $base "pendiente\$id.json"
+    $done = Join-Path $base "hecho\$id.json"
+    @{ tipo = 'firmar'; archivos = @($Path.Replace('\', '/')) } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $pending -Encoding utf8
+    while (-not (Test-Path -LiteralPath $done)) { Start-Sleep -Seconds 5 }
+    $result = Get-Content -LiteralPath $done -Raw | ConvertFrom-Json
+    if (-not $result.ok) { throw "Fallo la firma local de ${Path}: $($result.detalle | ConvertTo-Json -Compress -Depth 4)" }
 }
 
 function Sign-Binary([string] $Path) {
@@ -250,6 +250,9 @@ function Update-TopSums([string] $Root) {
         foreach ($line in [IO.File]::ReadAllLines($sum.FullName)) {
             if ($line -match '^([a-fA-F0-9]{64})(\s+\*?)(.+)$') {
                 $target = Join-Path $Root $Matches[3]
+                # Un SHA256SUMS puede llevar rutas del artefacto de construccion (dist/x.whl, meta/x.mcpb)
+                # mientras los assets de la release son planos: se resuelve por nombre de archivo.
+                if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { $target = Join-Path $Root (Split-Path -Leaf $Matches[3]) }
                 if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "$($sum.Name) apunta a un archivo ausente: $($Matches[3])" }
                 $lines.Add("$(Get-Digest $target)$($Matches[2])$($Matches[3])")
             } else { $lines.Add($line) }
@@ -274,19 +277,11 @@ function Invoke-Gh {
 }
 
 try {
-    if (-not (Test-Path -LiteralPath $SignTool)) { throw "Falta signtool: $SignTool" }
     [IO.Directory]::CreateDirectory($workspace) | Out-Null
 
     # 0. Se puede firmar? Falla rapido y con un mensaje claro ANTES de tocar la release.
     $cert = Get-Item -LiteralPath "Cert:\CurrentUser\My\$Thumbprint" -ErrorAction SilentlyContinue
     if (-not $cert -or -not $cert.HasPrivateKey) { throw "El certificado $Thumbprint no esta en Cert:\CurrentUser\My con clave privada. Conecta SimplySign Desktop con la cuenta que corre el runner." }
-    $canary = Join-Path $workspace 'canary.ps1'
-    Set-Content -LiteralPath $canary -Value '# canary firma Horizun'
-    try { Invoke-Sign $canary; Assert-Signature $canary } catch {
-        throw "No se puede firmar (SimplySign desconectado o sesion caducada). Conecta SimplySign Desktop y vuelve a aprobar/ejecutar. Detalle: $($_.Exception.Message)"
-    }
-    $script:Signed.Clear(); $script:Checked.Clear()
-
     # 1. Assets.
     $assets = Join-Path $workspace 'assets'
     [IO.Directory]::CreateDirectory($assets) | Out-Null
