@@ -3,6 +3,10 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v3.0.3 (2026-10-19)
+
+- Mismos arreglos de 3.0.2, que no llegó a publicarse; primera versión con el instalador firmado por HORIZUN GROUP S.A.S. (Certum). Sin cambios funcionales.
+
 ## v3.0.2 (2026-10-18)
 
 - Corrected false verification and data loss when duplicating system and family types, reloading families, moving connected MEP elements, and opening documents with unresolved references.
