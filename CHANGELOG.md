@@ -8,6 +8,7 @@ assumed. Dates are the day the work landed.
 - Corrected false verification and data loss when duplicating system and family types, reloading families, moving connected MEP elements, and opening documents with unresolved references.
 - Corrected CAD elevation, reinforcement geometry and overlap checks, glazed roof verification, and accented catalog search.
 - Rejected duplicate names for bound shared family parameters before loading. No tools, arguments, or capabilities were added.
+- The Setup is signed with the certificate of HORIZUN GROUP S.A.S. (Certum); the server and add-ins it installs are byte-identical to the CI build and remain unsigned. No functional code changes. The release is now created as a draft and published only after signing (`docs/RELEASING.md`); the bootstrap accepts a Setup signed by that certificate without `-AllowUnsigned`.
 
 ## v3.0.1
 
