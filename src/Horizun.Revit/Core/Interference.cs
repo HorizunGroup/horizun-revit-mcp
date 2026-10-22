@@ -97,6 +97,7 @@ namespace Horizun.Revit.Core
 
         private readonly UIApplication _app;
         private readonly List<Interruption> _seen = new List<Interruption>();
+        private readonly List<Interruption> _between;
         private readonly ObservationCoverage _coverage = new ObservationCoverage();
         private bool _off;
 
@@ -131,6 +132,11 @@ namespace Horizun.Revit.Core
             catch { _coverage.SetSubscribed("dialogs", false); }
             try { _app.Application.FailuresProcessing += OnFailures; _coverage.SetSubscribed("failures", true); }
             catch { _coverage.SetSubscribed("failures", false); }
+            // What the idle watcher answered between commands (Revit's save reminder)
+            // is reported by the first command after it, so nobody learns it from a log.
+            // Kept apart from _seen: those are what THIS command raised, and a script's
+            // revit_raised() window and its counts must not move because of them.
+            _between = SaveReminderPolicy.Drain();
             _current = this;
         }
 
@@ -307,13 +313,16 @@ namespace Horizun.Revit.Core
             // Preserve the compact null for a genuinely quiet, fully watched command.
             // With partial observation, however, an empty list is not evidence of quiet:
             // publish the coverage facts even when the subscribed channel saw nothing.
-            if (_seen.Count == 0 && FullyObserved) return null;
+            if (_seen.Count == 0 && _between.Count == 0 && FullyObserved) return null;
 
             var items = new List<object>();
             foreach (Interruption i in _seen) items.Add(RaisedRecord.Describe(i));
+            var between = new List<object>();
+            foreach (Interruption i in _between) between.Add(RaisedRecord.Describe(i));
 
             return new
             {
+                between_commands = between,
                 observation_complete = FullyObserved,
                 dialogs_subscribed = DialogsSubscribed,
                 failures_subscribed = FailuresSubscribed,
@@ -361,6 +370,9 @@ namespace Horizun.Revit.Core
             Newtonsoft.Json.Linq.JObject block = RaisedRecord.Block(
                 watch == null ? null : watch.Seen,
                 watch != null && watch.FullyObserved);
+            var between = new Newtonsoft.Json.Linq.JArray();
+            if (watch != null) foreach (Interruption i in watch._between) between.Add(RaisedRecord.Describe(i));
+            block["between_commands"] = between;
             block["dialogs_observed"] = watch != null && watch.DialogsObserved;
             block["failures_observed"] = watch != null && watch.FailuresObserved;
             block["observation_complete"] = watch != null && watch.FullyObserved;

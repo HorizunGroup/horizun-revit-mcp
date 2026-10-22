@@ -614,6 +614,10 @@
          the declaration rule is arithmetic over strings, and the states that
          matter - a flapping title, a dialog replaced mid-count - are here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ModalSighting.cs" />
+    <!-- Revit's save reminder, answered between commands only while the bridge is in
+         use (v3.0.5 release gate, 2026-10-22). The decision is a dialog id and two
+         clocks; the Revit event that acts on it is IdleDialogWatcher. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\SaveReminderPolicy.cs" />
     <!-- Which discovery files are orphaned (5.24). The rule the add-in and the
          server share, so the states that matter - a legacy name that must never
          be touched, a recycled pid that must keep its file - are proved once. -->

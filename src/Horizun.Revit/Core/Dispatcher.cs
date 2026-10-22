@@ -189,6 +189,15 @@ namespace Horizun.Revit.Core
 
         public CommandResult Invoke(string wireId, string name, string paramsJson, int timeoutMs)
         {
+            // The bridge is in use from the moment a request arrives until it returns:
+            // Revit's save reminder is answered only inside that window (SaveReminderPolicy).
+            SaveReminderPolicy.RequestBegun();
+            try { return InvokeQueued(wireId, name, paramsJson, timeoutMs); }
+            finally { SaveReminderPolicy.RequestDone(); }
+        }
+
+        private CommandResult InvokeQueued(string wireId, string name, string paramsJson, int timeoutMs)
+        {
             if (_shuttingDown)
                 return CommandResult.FailWithDetail("Revit is shutting down. '" + name +
                     "' was not queued and NEVER RAN; nothing was executed or written.", RequestGate.NeverStartedDetail());

@@ -317,6 +317,16 @@ namespace Horizun.Core.Tests
                     Assert.Equal(on, off);
                     continue;
                 }
+                if (file.EndsWith("IdleDialogWatcher.cs", StringComparison.Ordinal))
+                {
+                    // Revit's save reminder between commands (v3.0.5 release gate):
+                    // DialogBoxShowing only, for the add-in's lifetime, detached at shutdown.
+                    var on = Regex.Matches(text, @"\.(\w+)\s*\+=").Cast<Match>().Select(m => m.Groups[1].Value).ToArray();
+                    var off = Regex.Matches(text, @"\.(\w+)\s*-=").Cast<Match>().Select(m => m.Groups[1].Value).ToArray();
+                    Assert.Equal(new[] { "DialogBoxShowing" }, on);
+                    Assert.Equal(on, off);
+                    continue;
+                }
                 foreach (string ev in new[] { "DocumentSaving", "DocumentSavingAs", "DocumentSynchronizingWithCentral",
                                               "DocumentClosing", "FileExporting", "DocumentOpened", "DocumentChanged",
                                               "ViewActivated", "Idling" })
