@@ -238,10 +238,17 @@ Check 'Inno distinguishes no matching manifests from enumeration failure' `
     ($installer -match 'YearRootAttributes := Win32GetFileAttributes\(YearRoot\)' -and
      $installer -match '\(EnumerationError = 2\) or \(EnumerationError = 3\) then Result := False' -and
      $installer -match 'EnumerationError := Win32GetLastError\(\)' -and
-     $installer -match '\(EnumerationError <> 0\) and \(EnumerationError <> 2\) and \(EnumerationError <> 18\) then exit' -and
+     $installer -match '\(EnumerationError <> 0\) and \(EnumerationError <> 2\) and \(EnumerationError <> 18\) then\s+begin\s+AddEvidence\([^;]+;\s+exit;' -and
      $installer -match 'EnumerationCompleted := EnumerationError = 18' -and
-     $installer -match 'if not EnumerationCompleted then exit') `
+     $installer -match 'if not EnumerationCompleted then\s+begin\s+AddEvidence\([^;]+;\s+exit;') `
     'directory probing or FindFirst can still turn access denied or an I/O error into a false absence'
+Check 'Inno names the file and separates an unreadable manifest from a duplicate AddInId' `
+    ($installer -match 'Kind := ConflictDuplicate' -and
+     $installer -match 'AddEvidence\(Unreadable, Candidate \+' -and
+     $installer -match 'parseError\.reason' -and
+     $installer -match 'if Unreadable <> '''' then exit;' -and
+     $installer -match 'This does not mean Horizun is installed') `
+    'an unreadable manifest is still reported as an existing Horizun install, or the file is not named'
 Check 'source deployment refuses reparse-point payload trees before recursive cleanup' `
     ($sourceInstall -match 'Assert-HorizunNoReparseTree \$serverInstall' -and
      (Get-Content (Join-Path $repo 'scripts/horizun-deploy.lib.ps1') -Raw) -match 'Refusing \$Label through a link or junction') 'source cleanup can traverse an attacker-controlled junction'

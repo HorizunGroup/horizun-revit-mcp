@@ -141,6 +141,13 @@ const
     shipped the 2024 build to Revit 2023 and the 2026 build to Revit 2025 - which
     fails at the first API call, not at load. 2022 is gone: it is not supported. }
   YearsCount = 5;
+  { Why the manifest preflight refused a year. A duplicate AddInId and a file the
+    preflight could not read are different problems with different fixes, and
+    reporting both as "already exists" sent a clean machine looking for a Horizun
+    install that was never there. }
+  ConflictNone = 0;
+  ConflictDuplicate = 1;
+  ConflictUnreadable = 2;
 var
   Years: array[0..4] of String;
   InstalledYears: String;
@@ -335,10 +342,17 @@ begin
   Result := True;
 end;
 
-function HasHorizunAddInIdConflict(AddinsRoot, Year, AllowedManifest: String): Boolean;
+procedure AddEvidence(var Evidence: String; Item: String);
+begin
+  if Evidence <> '' then Evidence := Evidence + #13#10;
+  Evidence := Evidence + '  ' + Item;
+end;
+
+function HasHorizunAddInIdConflict(AddinsRoot, Year, AllowedManifest: String;
+  var Kind: Integer; var Evidence: String): Boolean;
 var
   FindRec: TFindRec;
-  Candidate, Needle, CandidateId, YearRoot: String;
+  Candidate, Needle, CandidateId, YearRoot, Unreadable: String;
   I: Integer;
   EnumerationError, YearRootAttributes: LongWord;
   FoundManifest, EnumerationCompleted: Boolean;
@@ -347,10 +361,19 @@ begin
   { Any parse/inspection failure is a conflict: an unreadable manifest cannot be
     proven harmless before adding a second registration. MSXML 6 resolves XML
     character references in element text, but DTDs and external entities are
-    disabled before Load so duplicate detection cannot read outside the file. }
+    disabled before Load so duplicate detection cannot read outside the file.
+    Every refusal names the folder or file it is about, and an unreadable file
+    does not stop the scan: a real duplicate further on is still the finding. }
   Result := True;
-  if not TryNormalizeGuid('{#HorizunAddInId}', Needle) then exit;
+  Kind := ConflictUnreadable;
   YearRoot := AddinsRoot + '\' + Year;
+  Evidence := '';
+  Unreadable := '';
+  if not TryNormalizeGuid('{#HorizunAddInId}', Needle) then
+  begin
+    AddEvidence(Evidence, 'Horizun AddInId {#HorizunAddInId}: not a GUID');
+    exit;
+  end;
   YearRootAttributes := Win32GetFileAttributes(YearRoot);
   if YearRootAttributes = $FFFFFFFF then
   begin
@@ -358,9 +381,15 @@ begin
     { A genuinely absent year directory is harmless. Access denied, a sharing
       violation and every other failure cannot establish absence. }
     if (EnumerationError = 2) or (EnumerationError = 3) then Result := False;
+    if Result then AddEvidence(Evidence, YearRoot + ' (Windows error ' + IntToStr(EnumerationError) + ')')
+    else Kind := ConflictNone;
     exit;
   end;
-  if (YearRootAttributes and $10) = 0 then exit;
+  if (YearRootAttributes and $10) = 0 then
+  begin
+    AddEvidence(Evidence, YearRoot + ' (' + L('no es una carpeta', 'not a folder') + ')');
+    exit;
+  end;
   FoundManifest := FindFirst(YearRoot + '\*.addin', FindRec);
   EnumerationError := Win32GetLastError();
   if FoundManifest then
@@ -378,13 +407,24 @@ begin
             XmlDocument.resolveExternals := False;
             XmlDocument.setProperty('ProhibitDTD', True);
             XmlDocument.setProperty('SelectionLanguage', 'XPath');
-            if not XmlDocument.load(Candidate) then exit;
-            AddInIdNodes := XmlDocument.selectNodes('//*[local-name()="AddInId"]');
-            for I := 0 to AddInIdNodes.length - 1 do
-              if TryNormalizeGuid(String(AddInIdNodes.item[I].text), CandidateId) and
-                 (CandidateId = Needle) then exit;
+            if XmlDocument.load(Candidate) then
+            begin
+              AddInIdNodes := XmlDocument.selectNodes('//*[local-name()="AddInId"]');
+              for I := 0 to AddInIdNodes.length - 1 do
+                if TryNormalizeGuid(String(AddInIdNodes.item[I].text), CandidateId) and
+                   (CandidateId = Needle) then
+                begin
+                  Kind := ConflictDuplicate;
+                  Evidence := '';
+                  AddEvidence(Evidence, Candidate);
+                  exit;
+                end;
+            end
+            else
+              AddEvidence(Unreadable, Candidate + ' - ' + Trim(String(XmlDocument.parseError.reason)) +
+                          ' (' + L('linea ', 'line ') + IntToStr(XmlDocument.parseError.line) + ')');
           except
-            exit;
+            AddEvidence(Unreadable, Candidate + ' - ' + GetExceptionMessage);
           end;
         end;
         FoundManifest := FindNext(FindRec);
@@ -397,7 +437,13 @@ begin
     finally
       FindClose(FindRec);
     end;
-    if not EnumerationCompleted then exit;
+    Evidence := Unreadable;
+    if not EnumerationCompleted then
+    begin
+      AddEvidence(Evidence, YearRoot + ' (Windows error ' + IntToStr(EnumerationError) + ')');
+      exit;
+    end;
+    if Unreadable <> '' then exit;
   end;
   if not FoundManifest then
   begin
@@ -408,17 +454,42 @@ begin
       exists" block reported in discussion #37. Keep access, sharing and every
       unknown non-success error fail-closed, but accept 0 and the documented
       no-match results as a clean directory. }
-    if (EnumerationError <> 0) and (EnumerationError <> 2) and (EnumerationError <> 18) then exit;
+    if (EnumerationError <> 0) and (EnumerationError <> 2) and (EnumerationError <> 18) then
+    begin
+      AddEvidence(Evidence, YearRoot + ' (Windows error ' + IntToStr(EnumerationError) + ')');
+      exit;
+    end;
   end;
+  Kind := ConflictNone;
   Result := False;
+end;
+
+procedure RecordAddInIdConflict(AddinsRoot, Year, AllowedManifest: String;
+  var Duplicates, Unreadables: String);
+var
+  Kind: Integer;
+  Evidence: String;
+begin
+  if not HasHorizunAddInIdConflict(AddinsRoot, Year, AllowedManifest, Kind, Evidence) then exit;
+  if Kind = ConflictDuplicate then
+  begin
+    if Duplicates <> '' then Duplicates := Duplicates + #13#10;
+    Duplicates := Duplicates + 'Revit ' + Year + ':' + #13#10 + Evidence;
+  end
+  else
+  begin
+    if Unreadables <> '' then Unreadables := Unreadables + #13#10;
+    Unreadables := Unreadables + 'Revit ' + Year + ':' + #13#10 + Evidence;
+  end;
 end;
 
 function InitializeSetup: Boolean;
 var
   I: Integer;
-  ProgramFiles64, Conflicts, UserRoot, MachineRoot, ExpectedUserManifest: String;
+  ProgramFiles64, Duplicates, Unreadables, Refusal, UserRoot, MachineRoot, ExpectedUserManifest: String;
 begin
   Result := True;
+#ifndef PreflightTestRoot
   if RevitIsRunning then
   begin
     MsgBox(L('Revit esta abierto.' + #13#10#13#10 +
@@ -433,6 +504,7 @@ begin
     Result := False;
   end;
   if not Result then exit;
+#endif
 
   { Revit reads both ProgramData and AppData. Installing the same AddInId in both
     scopes is not an update: it is two competing add-ins. Refuse before Setup
@@ -440,28 +512,65 @@ begin
   InitYears;
   ProgramFiles64 := GetEnv('ProgramW6432');
   if ProgramFiles64 = '' then ProgramFiles64 := ExpandConstant('{commonpf}');
+#ifdef PreflightTestRoot
+  { Test build only (scripts/installer-preflight.tests.ps1 passes this define;
+    pack.ps1 never does): the preflight reads fixture folders instead of the real
+    Addins, every year is scanned whether or not Revit is installed, nothing is
+    shown, and Setup always stops after the preflight. }
+  UserRoot := '{#PreflightTestRoot}\user';
+  MachineRoot := '{#PreflightTestRoot}\machine';
+#else
   UserRoot := ExpandConstant('{userappdata}') + '\Autodesk\Revit\Addins';
   MachineRoot := ExpandConstant('{commonappdata}') + '\Autodesk\Revit\Addins';
-  Conflicts := '';
+#endif
+  Duplicates := '';
+  Unreadables := '';
   for I := 0 to YearsCount - 1 do
+#ifdef PreflightTestRoot
+    begin
+#else
     if FileExists(ProgramFiles64 + '\Autodesk\Revit ' + Years[I] + '\Revit.exe') then
     begin
+#endif
       ExpectedUserManifest := UserRoot + '\' + Years[I] + '\Horizun.addin';
-      if HasHorizunAddInIdConflict(MachineRoot, Years[I], '') or
-         HasHorizunAddInIdConflict(UserRoot, Years[I], ExpectedUserManifest) then
-        Conflicts := Conflicts + Years[I] + ', ';
+      RecordAddInIdConflict(MachineRoot, Years[I], '', Duplicates, Unreadables);
+      RecordAddInIdConflict(UserRoot, Years[I], ExpectedUserManifest, Duplicates, Unreadables);
     end;
-  if Conflicts <> '' then
+  if (Duplicates <> '') or (Unreadables <> '') then
   begin
-    MsgBox(L('Ya existe otro manifiesto con el AddInId de Horizun para Revit ' + Conflicts + #13#10#13#10 +
-             'Este instalador no crea un segundo manifiesto con el mismo AddInId, aunque el otro archivo se haya renombrado. ' +
-             'Quita o migra primero la instalacion para toda la maquina. No se ha cambiado nada.',
-             'Another manifest with the Horizun AddInId already exists for Revit ' + Conflicts + #13#10#13#10 +
-             'This installer refuses to create a second manifest with the same AddInId, even if the other file was renamed. ' +
-             'Remove or migrate the machine-wide installation first. Nothing has been changed.'),
-      mbError, MB_OK);
+    Refusal := '';
+    if Duplicates <> '' then
+      Refusal := L('Ya existe otro manifiesto con el AddInId de Horizun ({#HorizunAddInId}):' + #13#10 + Duplicates + #13#10#13#10 +
+                   'Este instalador no crea un segundo manifiesto con el mismo AddInId, aunque el otro archivo se haya renombrado. ' +
+                   'Quita o migra primero esa instalacion.',
+                   'Another manifest with the Horizun AddInId ({#HorizunAddInId}) already exists:' + #13#10 + Duplicates + #13#10#13#10 +
+                   'This installer refuses to create a second manifest with the same AddInId, even if the other file was renamed. ' +
+                   'Remove or migrate that installation first.');
+    if Unreadables <> '' then
+    begin
+      if Refusal <> '' then Refusal := Refusal + #13#10#13#10;
+      Refusal := Refusal +
+        L('No se pudo leer lo siguiente para comprobar que no registra ya el AddInId de Horizun ({#HorizunAddInId}):' + #13#10 +
+          Unreadables + #13#10#13#10 +
+          'Esto no significa que Horizun este instalado: el instalador se detiene porque no puede descartarlo. ' +
+          'Corrige el XML o los permisos de ese archivo o carpeta, o sacalo temporalmente de la carpeta Addins, y vuelve a ejecutar el instalador.',
+          'The following could not be read to confirm it does not already register the Horizun AddInId ({#HorizunAddInId}):' + #13#10 +
+          Unreadables + #13#10#13#10 +
+          'This does not mean Horizun is installed: the installer stops because it cannot rule it out. ' +
+          'Fix that file''s XML or permissions, or move it out of the Addins folder for now, and run the installer again.');
+    end;
+    { Logged before the dialog, so the Setup log names the file even when the
+      dialog is closed by killing Setup or never seen at all. }
+    Log('Manifest preflight refused: ' + Refusal);
+#ifndef PreflightTestRoot
+    MsgBox(Refusal + #13#10#13#10 + L('No se ha cambiado nada.', 'Nothing has been changed.'), mbError, MB_OK);
+#endif
     Result := False;
   end;
+#ifdef PreflightTestRoot
+  if Result then Log('Manifest preflight passed');
+  Result := False;
+#endif
 end;
 
 function InitializeUninstall: Boolean;
