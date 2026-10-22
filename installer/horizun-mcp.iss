@@ -489,6 +489,7 @@ var
   ProgramFiles64, Duplicates, Unreadables, Refusal, UserRoot, MachineRoot, ExpectedUserManifest: String;
 begin
   Result := True;
+#ifndef PreflightTestRoot
   if RevitIsRunning then
   begin
     MsgBox(L('Revit esta abierto.' + #13#10#13#10 +
@@ -503,6 +504,7 @@ begin
     Result := False;
   end;
   if not Result then exit;
+#endif
 
   { Revit reads both ProgramData and AppData. Installing the same AddInId in both
     scopes is not an update: it is two competing add-ins. Refuse before Setup
@@ -510,13 +512,26 @@ begin
   InitYears;
   ProgramFiles64 := GetEnv('ProgramW6432');
   if ProgramFiles64 = '' then ProgramFiles64 := ExpandConstant('{commonpf}');
+#ifdef PreflightTestRoot
+  { Test build only (scripts/installer-preflight.tests.ps1 passes this define;
+    pack.ps1 never does): the preflight reads fixture folders instead of the real
+    Addins, every year is scanned whether or not Revit is installed, nothing is
+    shown, and Setup always stops after the preflight. }
+  UserRoot := '{#PreflightTestRoot}\user';
+  MachineRoot := '{#PreflightTestRoot}\machine';
+#else
   UserRoot := ExpandConstant('{userappdata}') + '\Autodesk\Revit\Addins';
   MachineRoot := ExpandConstant('{commonappdata}') + '\Autodesk\Revit\Addins';
+#endif
   Duplicates := '';
   Unreadables := '';
   for I := 0 to YearsCount - 1 do
+#ifdef PreflightTestRoot
+    begin
+#else
     if FileExists(ProgramFiles64 + '\Autodesk\Revit ' + Years[I] + '\Revit.exe') then
     begin
+#endif
       ExpectedUserManifest := UserRoot + '\' + Years[I] + '\Horizun.addin';
       RecordAddInIdConflict(MachineRoot, Years[I], '', Duplicates, Unreadables);
       RecordAddInIdConflict(UserRoot, Years[I], ExpectedUserManifest, Duplicates, Unreadables);
@@ -544,10 +559,18 @@ begin
           'This does not mean Horizun is installed: the installer stops because it cannot rule it out. ' +
           'Fix that file''s XML or permissions, or move it out of the Addins folder for now, and run the installer again.');
     end;
-    MsgBox(Refusal + #13#10#13#10 + L('No se ha cambiado nada.', 'Nothing has been changed.'), mbError, MB_OK);
+    { Logged before the dialog, so the Setup log names the file even when the
+      dialog is closed by killing Setup or never seen at all. }
     Log('Manifest preflight refused: ' + Refusal);
+#ifndef PreflightTestRoot
+    MsgBox(Refusal + #13#10#13#10 + L('No se ha cambiado nada.', 'Nothing has been changed.'), mbError, MB_OK);
+#endif
     Result := False;
   end;
+#ifdef PreflightTestRoot
+  if Result then Log('Manifest preflight passed');
+  Result := False;
+#endif
 end;
 
 function InitializeUninstall: Boolean;

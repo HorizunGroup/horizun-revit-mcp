@@ -437,6 +437,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "installer compilation failed ($LASTEXITCODE)" }
           pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
           if ($LASTEXITCODE -ne 0) { throw "installer version consistency failed ($LASTEXITCODE)" }
+          pwsh scripts/installer-preflight.tests.ps1 -RequireIscc
+          if ($LASTEXITCODE -ne 0) { throw "installer preflight failed ($LASTEXITCODE)" }
           $setup = @(Get-ChildItem dist -Filter '*setup.exe' -File)
           if ($setup.Count -ne 1) { throw "expected one Setup, found $($setup.Count)" }
           if ((Get-AuthenticodeSignature -LiteralPath $setup[0].FullName).Status -ne 'NotSigned') {
