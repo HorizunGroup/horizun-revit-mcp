@@ -122,6 +122,12 @@ namespace Horizun.Revit
                 try { ModalProbe.CaptureUiThread(app.MainWindowHandle); }
                 catch (Exception mex) { Log.Warn("modal probe not available: " + mex.Message); }
 
+                // Revit's save reminder opens BETWEEN commands, where no command's
+                // watcher is listening, and every later request is refused behind it.
+                // Best effort: without it the bridge behaves exactly as before.
+                try { IdleDialogWatcher.Attach(app); }
+                catch (Exception wex) { Log.Warn("idle dialog watcher not available: " + wex.Message); }
+
                 string token = Discovery.NewToken();
                 _pipe = new PipeServer(_dispatcher, token);
                 _pipe.Start();
@@ -152,6 +158,7 @@ namespace Horizun.Revit
         public Result OnShutdown(UIControlledApplication app)
         {
             try { QueryCacheLifecycle.Detach(app); } catch { }
+            try { IdleDialogWatcher.Detach(app); } catch { }
             // ORDER MATTERS. Stop the pipe FIRST so nothing new can be queued while we
             // are closing the records of what is already there, then drain.
             try { _pipe?.Stop(); } catch { }

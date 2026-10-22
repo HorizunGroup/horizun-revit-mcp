@@ -77,7 +77,9 @@ namespace Horizun.Core.Tests
             Assert.Contains("SetSubscribed(\"failures\", true)", src);
             Assert.Contains("dialogs_observed = DialogsObserved", src);
             Assert.Contains("failures_observed = FailuresObserved", src);
-            Assert.Contains("if (_seen.Count == 0 && FullyObserved) return null", src);
+            // A quiet, fully watched command is still the compact null - unless a dialog was
+            // answered between commands, which the next reply must carry (SaveReminderPolicy).
+            Assert.Contains("if (_seen.Count == 0 && _between.Count == 0 && FullyObserved) return null", src);
             Assert.DoesNotContain("if (_seen.Count == 0) return null", src);
             Assert.Contains("dialogs_observed = raised[\"dialogs_observed\"]", python);
             Assert.Contains("failures_observed = raised[\"failures_observed\"]", python);
