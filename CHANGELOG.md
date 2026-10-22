@@ -3,6 +3,10 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v3.0.5 (2026-10-21)
+
+- Instalador: el chequeo de manifiestos de Revit distingue un AddInId de Horizun duplicado de un manifiesto o una carpeta Addins que no pudo leer, y nombra el archivo (con el motivo y la línea que da MSXML) o la carpeta (con el error de Windows). Un manifiesto ilegible de otro proveedor seguía bloqueando la instalación con "Another manifest with the Horizun AddInId already exists" sin decir cuál, en un equipo donde Horizun nunca se había instalado. El bloqueo sigue siendo fail-closed; ahora el mensaje dice que no significa que Horizun esté instalado y cómo destrabarlo, y queda completo en el log de Setup. Sin cambios en el servidor ni en los add-ins.
+
 ## v3.0.4 (2026-10-19)
 
 - Mismos arreglos de 3.0.2 y 3.0.3, que no llegaron a publicarse; primera versión con el instalador firmado por HORIZUN GROUP S.A.S. (Certum). Sin cambios funcionales.
