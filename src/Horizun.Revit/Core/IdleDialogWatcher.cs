@@ -70,7 +70,7 @@ namespace Horizun.Revit.Core
                 try
                 {
                     e.OverrideResult(SaveReminderPolicy.DoNotSaveResult);
-                    answered = "answered 'do not save' by the bridge between commands: Revit's save reminder blocks " +
+                    answered = "cancelled (not saved) by the bridge between commands: Revit's save reminder blocks " +
                                "every request while it is open, and nobody is at the keyboard. Nothing was saved and " +
                                "nothing in the model changed - the model still has unsaved work; save it when appropriate";
                 }

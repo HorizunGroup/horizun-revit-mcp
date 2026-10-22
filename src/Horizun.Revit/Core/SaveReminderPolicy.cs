@@ -18,6 +18,9 @@
 // as never started), exactly as before. The answer is never "save": writing the
 // user's file is a decision the bridge does not take for them.
 //
+// Which button. NOT the second command link: on this dialog 1002 is "Save the
+// project and set reminder intervals". The answer is Cancel (see DoNotSaveResult).
+//
 // When. Only while the bridge is IN USE - a request is waiting or one finished
 // within ActiveWindow. A person working in Revit on their own still gets their
 // reminder; it is only answered when an agent is driving the session, and then
@@ -38,10 +41,18 @@ namespace Horizun.Revit.Core
         public static readonly TimeSpan ActiveWindow = TimeSpan.FromMinutes(10);
 
         /// <summary>
-        /// The non-saving answer. The reminder's buttons are command links; the second
-        /// is "Do not save the project" (TaskDialogResult.CommandLink2 = 1002).
+        /// The non-saving answer: Cancel (IDCANCEL = 2). MEASURED in the Revit 2023 and 2024
+        /// journals of the failed gate run, TaskDialog_Project_Not_Saved_Recently offers
+        /// 1001 "Save the project", 1002 "Save the project and set reminder intervals",
+        /// 1003 "Do not save and set reminder intervals" (which opens the options) and the
+        /// common button Cancel. Both 1001 and 1002 SAVE. Cancel closes it without saving;
+        /// the same journal shows Interference answering it Cancel during a command and
+        /// Revit carrying on.
         /// </summary>
-        public const int DoNotSaveResult = 1002;
+        public const int DoNotSaveResult = 2;
+
+        /// <summary>The reminder's dialog id, as Revit's journal records it.</summary>
+        public const string ReminderDialogId = "TaskDialog_Project_Not_Saved_Recently";
 
         /// <summary>
         /// True for the save reminder's dialog id. Revit names it SaveReminder in its own

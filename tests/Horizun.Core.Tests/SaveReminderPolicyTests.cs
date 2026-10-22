@@ -43,6 +43,23 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void The_measured_reminder_id_is_recognised_and_answered_with_cancel()
+        {
+            // From the Revit 2023/2024 journals of the failed v3.0.5 gate run. On this
+            // dialog 1001 and 1002 both SAVE the project; only Cancel (2) does not.
+            Assert.True(SaveReminderPolicy.IsSaveReminder(SaveReminderPolicy.ReminderDialogId));
+            Assert.Equal(2, SaveReminderPolicy.DoNotSaveResult);
+        }
+
+        [Fact]
+        public void The_save_changes_prompt_of_a_closing_revit_is_never_answered()
+        {
+            // MEASURED 2026-10-22: quitting Revit raises TaskDialog_Save_File ("Do you want
+            // to save changes...?") between commands. It is the person's decision.
+            Assert.False(SaveReminderPolicy.ShouldAnswer("TaskDialog_Save_File", Now, Now, true));
+        }
+
+        [Fact]
         public void A_waiting_request_means_the_bridge_is_in_use()
         {
             Assert.True(SaveReminderPolicy.BridgeInUse(default(DateTime), Now, requestPending: true));
