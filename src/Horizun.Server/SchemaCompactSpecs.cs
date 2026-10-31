@@ -199,10 +199,11 @@ namespace Horizun.Server
                 }) },
 
             { "horizun_capture_view", Row(
-                "Export a view as a PNG so you can look at the model. Pass view_id or view_name. Use it to check geometry visually.",
+                "Export a view as a PNG so you can look at the model. Omit view_id and view_name for the ACTIVE view.",
                 new[] {
-                    A("view_id", "which view, by id", note: ""),
-                    A("view_name", "which view, by name", note: ""),
+                    // MEASURED (qwen3:8b): with no note it invented view_name "Active View" and view_id 0.
+                    A("view_id", "which view, by id", note: "ElementId of a view. Omit for the active view; never 0."),
+                    A("view_name", "which view, by name", note: "Exact view name. Omit for the active view."),
                     A("pixel_size", "image size", note: ""),
                     A("orientation", "top | front | right | isometric, when no view is named", note: "")
                     // display_style, element_ids, margin, hide_*: finishing touches
@@ -214,7 +215,7 @@ namespace Horizun.Server
                 "Create levels, walls, floors, rooms, family instances and more in one batch. Rehearse with dry_run, then apply with the token.",
                 new[] {
                     A("units", "every length and coordinate of the call is in this unit; the default surprises",
-                      note: "mm (default), m or feet: unit of EVERY length and coordinate in this call."),
+                      note: "Top level, not inside elements. mm (default), m or feet, for EVERY length in the call."),
                     A("elements", "the batch",
                       note: "1-2000 elements: a kind plus that kind's fields. All fields: horizun://contract/tools/horizun_create_elements/{kind}.")
                     // tabular_source (CSV batch), response_mode, validation_mode, transaction_name: not first-call material
@@ -225,7 +226,7 @@ namespace Horizun.Server
                     A("name", "level/grid/room name", note: "level, grid or room name."),
                     A("number", "a room's number is separate from its name and must be unique", note: "room: unique room number."),
                     A("level_id", "walls, floors, rooms and instances sit on a level",
-                      note: "ElementId of the level (find it with horizun_query_model categories=[\"Levels\"])."),
+                      note: "ElementId of a Level, read from horizun_query_model categories=[\"OST_Levels\"]. Never 0."),
                     A("type_id", "wall/floor/family type to use", note: "ElementId of the type (horizun_query_model include_types=true)."),
                     A("start", "wall start point. MEASURED trap: models treat Z as level-relative; it is absolute",
                       note: "wall: start [x,y,z] in `units`. Z is ABSOLUTE (internal origin), NOT relative to the level."),
@@ -276,8 +277,11 @@ namespace Horizun.Server
                 Items("writes",
                     A("target_id", "element id, or type id (a type id changes every instance of it)",
                       note: "Element id, or type id (a type id changes EVERY instance)."),
-                    A("target", "project_info instead of an id", note: "\"project_info\" to write Project Information."),
-                    A("parameter", "BuiltInParameter name, GUID or UI name", note: "Parameter name as shown in Revit."),
+                    // MEASURED (qwen3:8b): it sent target="project_info" together with a wall's target_id.
+                    A("target", "project_info instead of an id",
+                      note: "Omit for elements. Only \"project_info\" for Project Information, without target_id."),
+                    A("parameter", "BuiltInParameter name, GUID or UI name",
+                      note: "Name as Revit shows it in THIS model's language (e.g. Comments), or a BuiltInParameter."),
                     A("value", "the new value", note: "")
                 )) },
 

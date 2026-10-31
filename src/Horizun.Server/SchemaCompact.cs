@@ -259,9 +259,12 @@ namespace Horizun.Server
             switch (name)
             {
                 case "target_document":
-                    return isRequired ? "Document title (see horizun_health)." : "Document title (see horizun_health); omit for the active one.";
+                    // MEASURED (qwen3:8b, 2026-10-31): without "exact" a small model sends placeholders
+                    // such as "Active Document", "ACTIVE" or "".
+                    return isRequired ? "EXACT title of the open document, as horizun_health names it. Never a placeholder."
+                                      : "EXACT title from horizun_health; omit for the active one. Never a placeholder.";
                 case "target_document_title":
-                    return "Document title (see horizun_health); omit for the active one.";
+                    return "EXACT title from horizun_health; omit for the active one. Never a placeholder.";
                 case "dry_run":
                     return "";   // the instructions explain the flow once; the name and the default say the rest
                 case "confirmation_token":

@@ -82,7 +82,8 @@ namespace Horizun.Server.Tests
                 foreach (string sel in selections)
                     SchemaFacadeTests.WithDataRoot("{\"permission_profile\":\"" + p + "\"}", sel, () =>
                     {
-                        string[] full = Tools.List(true).Select(t => (string)t["name"]).ToArray();
+                        // The real full tools/list, which carries horizun_activate_toolset when it is offered.
+                        string[] full = SchemaFacade.List(SchemaSurface.Full, true).Select(t => (string)t["name"]).ToArray();
                         string[] compact = SchemaFacade.List(SchemaSurface.Compact, true).Select(t => (string)t["name"]).ToArray();
                         Assert.True(full.SequenceEqual(compact), p + "/" + (sel ?? "(none)") + ": compact differs from full");
                     });
@@ -548,6 +549,78 @@ namespace Horizun.Server.Tests
             {
                 try { Directory.Delete(root, true); } catch { }
             }
+        }
+
+        // ---- 8. the argument traps a small model fell into (battery, 2026-10-31) ---------------
+        //
+        // MEASURED with qwen3:8b over Ollama, 27 tasks, HORIZUN_TOOLSETS=local + compact: it picked
+        // the right tool 85 % of the time and still failed, because it filled arguments with
+        // placeholders the short schema did not rule out - target_document "Active Document",
+        // "ACTIVE" or "", view_name "Active View", view_id 0, level_id 0, target="project_info"
+        // beside a wall's target_id, `units` inside each element - and stopped at a clean
+        // rehearsal the user had asked to apply. Each note below names where the value comes from.
+
+        private static string Note(JObject inputSchema, params string[] path)
+        {
+            JToken node = inputSchema["properties"];
+            for (int i = 0; i < path.Length; i++)
+            {
+                node = node?[path[i]];
+                if (i < path.Length - 1) node = node?["items"]?["properties"];
+            }
+            return (string)node?["description"] ?? "";
+        }
+
+        [Fact]
+        public void Target_document_says_exact_title_and_forbids_placeholders()
+        {
+            foreach (string name in new[] { "horizun_create_elements", "horizun_write_params_verified", "horizun_capture_view" })
+            {
+                var c = (JObject)SchemaCompact.Publish(Tools.Find(name), false)["inputSchema"];
+                if (c["properties"]?["target_document"] == null) continue;
+                string d = Note(c, "target_document");
+                Assert.Contains("EXACT", d);
+                Assert.Contains("horizun_health", d);
+                Assert.Contains("placeholder", d);
+            }
+        }
+
+        [Fact]
+        public void Capture_view_says_omit_the_view_for_the_active_one()
+        {
+            JObject t = SchemaCompact.Publish(Tools.Find("horizun_capture_view"), false);
+            Assert.Contains("ACTIVE view", (string)t["description"]);
+            var c = (JObject)t["inputSchema"];
+            Assert.Contains("Omit", Note(c, "view_id"));
+            Assert.Contains("never 0", Note(c, "view_id"));
+            Assert.Contains("Omit", Note(c, "view_name"));
+        }
+
+        [Fact]
+        public void Create_elements_says_where_a_level_id_comes_from_and_where_units_go()
+        {
+            var c = (JObject)SchemaCompact.Publish(Tools.Find("horizun_create_elements"), false)["inputSchema"];
+            Assert.Contains("Top level", Note(c, "units"));
+            string level = Note(c, "elements", "level_id");
+            Assert.Contains("OST_Levels", level);
+            Assert.Contains("Never 0", level);
+        }
+
+        [Fact]
+        public void Write_params_says_target_is_only_for_project_info_and_names_are_in_the_model_language()
+        {
+            var c = (JObject)SchemaCompact.Publish(Tools.Find("horizun_write_params_verified"), false)["inputSchema"];
+            Assert.Contains("Omit for elements", Note(c, "writes", "target"));
+            Assert.Contains("language", Note(c, "writes", "parameter"));
+        }
+
+        [Fact]
+        public void Compact_instructions_forbid_placeholders_and_say_when_to_apply()
+        {
+            string s = ServerInstructions.CompactHead;
+            Assert.Contains("never invent placeholders", s);
+            Assert.Contains("If the user asked for it and the rehearsal is clean, apply", s);
+            Assert.True(s.Length <= 600, "compact instructions are " + s.Length + " characters");
         }
     }
 }
