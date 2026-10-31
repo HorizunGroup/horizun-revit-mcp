@@ -106,9 +106,11 @@ namespace Horizun.Server
                 "only horizun_health and this facade; every other tool is reached through it: read a tool's exact " +
                 "schema with " + DescribeToolName + ", then call it with " + CallToolName + ". A tool that is not " +
                 "listed is switched off by the permission profile or a disabled toolset (toolsets_not_active); ask " +
-                "the user to enable it.",
+                "the user to enable it. Pass query (what you want to do, Spanish or English) to get the best-matching " +
+                "tools ranked in matches; matches_not_active lists tools a disabled toolset is hiding.",
             ["inputSchema"] = JObject.Parse(@"{""type"":""object"",""properties"":{""toolset"":{""type"":""string"",
-""description"":""Only this toolset, e.g. read, model, documentation. Omit for every callable tool.""}},
+""description"":""Only this toolset, e.g. read, model, documentation. Omit for every callable tool.""},
+""query"":{""type"":""string"",""description"":""What you want to do, in your own words, e.g. borrar elemento, count walls. Returns the best matches.""}},
 ""additionalProperties"":false}"),
             ["outputSchema"] = OutputSchema(),
             ["annotations"] = Hints("List Tools", readOnly: true)
@@ -301,8 +303,24 @@ namespace Horizun.Server
         public static JObject ListTools(JObject args)
         {
             args = args ?? new JObject();
-            RejectUnknown(args, ListToolsName, "toolset");
+            RejectUnknown(args, ListToolsName, "toolset", "query");
             string filter = null;
+            List<string> queryTerms = null;
+            string queryText = null;
+            JToken q = args["query"];
+            if (q != null)
+            {
+                // DECISION: an empty or stopword-only query is REFUSED, not treated as "no
+                // filter". A model that sends query="" meant something and lost it; answering
+                // with the whole 20 KB list would hide that from it and spend its context.
+                if (q.Type != JTokenType.String) throw new ToolRefusal("'query' must be a string.");
+                queryText = ((string)q).Trim();
+                queryTerms = ToolSearch.Terms(queryText);
+                if (queryTerms.Count == 0)
+                    throw new ToolRefusal("'query' has no searchable words (it is empty, or only articles, numbers and " +
+                        "very short words). Say what you want to do, e.g. 'borrar elemento' or 'count walls', or omit " +
+                        "'query' to list every callable tool.");
+            }
             JToken f = args["toolset"];
             if (f != null)
             {
@@ -326,6 +344,9 @@ namespace Horizun.Server
                 var names = new JArray(reachable.Where(t => t.Toolsets.Contains(pack)).Select(t => t.Name));
                 if (names.Count > 0) groups[pack] = names;
             }
+            if (queryTerms != null)
+                return SearchAnswer(queryText, queryTerms, filter, reachable, active);
+
             foreach (ToolDef t in reachable)
             {
                 if (filter != null && !t.Toolsets.Contains(filter)) continue;
@@ -347,15 +368,92 @@ namespace Horizun.Server
             };
         }
 
+        /// <summary>Longest summary a search match carries.</summary>
+        internal const int MatchSummaryChars = 200;
+
+        /// <summary>
+        /// horizun_list_tools with a query. Same envelope as the plain answer (mode, toolset,
+        /// tools, toolsets, toolsets_not_active, next, hashes) so a client that reads those keeps
+        /// working, but 'tools' and 'toolsets' hold only the matches (a search must not ship all
+        /// of them), plus:
+        ///   matches            ranked, best first, at most 8, CALLABLE now: name, summary, toolsets, score;
+        ///   matches_not_active ranked, at most 5: tools the permission profile allows but the active
+        ///                      toolsets leave out - name, summary, toolsets, enable_toolsets (which of
+        ///                      their toolsets to ask the user to enable), score. NOT callable.
+        /// A tool the profile or the allow/deny lists turn off appears in neither: the candidate
+        /// lists come from the very filters tools/list uses (Tools.Advertisable and
+        /// Tools.InactiveByToolset).
+        /// </summary>
+        private static JObject SearchAnswer(string queryText, List<string> terms, string filter,
+                                            List<ToolDef> reachable, HashSet<string> active)
+        {
+            List<ToolDef> inactive = Tools.InactiveByToolset();
+            var corpus = reachable.Concat(inactive).ToList();
+            Func<ToolDef, bool> inSet = t => filter == null || t.Toolsets.Contains(filter);
+
+            var found = ToolSearch.Rank(terms, reachable.Where(inSet), corpus, ToolSearch.MaxMatches);
+            var foundOff = ToolSearch.Rank(terms, inactive.Where(inSet), corpus, ToolSearch.MaxNotActive);
+
+            var matches = new JArray();
+            var tools = new JObject();
+            var groups = new JObject();
+            foreach (var h in found)
+            {
+                matches.Add(new JObject
+                {
+                    ["name"] = h.Tool.Name,
+                    ["summary"] = Summary(h.Tool.Description, MatchSummaryChars),
+                    ["toolsets"] = new JArray(h.Tool.Toolsets),
+                    ["score"] = h.Score
+                });
+                tools[h.Tool.Name] = Summary(h.Tool.Description);
+                foreach (string pack in h.Tool.Toolsets.Where(active.Contains))
+                {
+                    if (groups[pack] == null) groups[pack] = new JArray();
+                    ((JArray)groups[pack]).Add(h.Tool.Name);
+                }
+            }
+            var off = new JArray();
+            foreach (var h in foundOff)
+                off.Add(new JObject
+                {
+                    ["name"] = h.Tool.Name,
+                    ["summary"] = Summary(h.Tool.Description, MatchSummaryChars),
+                    ["toolsets"] = new JArray(h.Tool.Toolsets),
+                    ["enable_toolsets"] = new JArray(h.Tool.Toolsets.Where(p => !active.Contains(p))),
+                    ["score"] = h.Score
+                });
+
+            return new JObject
+            {
+                ["mode"] = "facade",
+                ["toolset"] = filter == null ? (JToken)JValue.CreateNull() : filter,
+                ["query"] = queryText,
+                ["matches"] = matches,
+                ["matches_not_active"] = off,
+                ["tools"] = tools,
+                ["toolsets"] = groups,
+                ["toolsets_not_active"] = new JArray(ToolPacks.KnownPacks.Where(p => !active.Contains(p))
+                                                              .OrderBy(p => p, StringComparer.Ordinal)),
+                ["next"] = DescribeToolName + " {name} for the exact schema, then " + CallToolName +
+                           " {name, arguments}. matches_not_active are NOT callable: ask the user to enable one of " +
+                           "their enable_toolsets. horizun_health first: commands act on the ACTIVE document.",
+                ["contract_hash"] = Horizun.Contracts.Contract.Hash,
+                ["facade_hash"] = Hash
+            };
+        }
+
         /// <summary>The first sentence, or the first <see cref="SummaryChars"/> characters cut at a word.</summary>
-        internal static string Summary(string description)
+        internal static string Summary(string description) => Summary(description, SummaryChars);
+
+        internal static string Summary(string description, int limit)
         {
             string d = (description ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
-            for (int i = 20; i < d.Length - 1 && i < SummaryChars; i++)
+            for (int i = 20; i < d.Length - 1 && i < limit; i++)
                 if (d[i] == '.' && d[i + 1] == ' ') return d.Substring(0, i + 1);
-            if (d.Length <= SummaryChars) return d;
-            int cut = d.LastIndexOf(' ', SummaryChars - 3);
-            return d.Substring(0, cut > 40 ? cut : SummaryChars - 3).TrimEnd(',', ';', ':', ' ') + "...";
+            if (d.Length <= limit) return d;
+            int cut = d.LastIndexOf(' ', limit - 3);
+            return d.Substring(0, cut > 40 ? cut : limit - 3).TrimEnd(',', ';', ':', ' ') + "...";
         }
 
         // ---- horizun_describe_tool ----------------------------------------------------------------

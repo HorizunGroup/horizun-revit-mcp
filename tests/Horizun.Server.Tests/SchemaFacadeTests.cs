@@ -35,6 +35,8 @@ namespace Horizun.Server.Tests
         /// THE FACADE'S CEILING, declared here and nowhere else. tools/list in facade mode is
         /// horizun_health plus three meta-tools; 8 KiB is ~1.6 % of the 2.x worst case and
         /// leaves room for the descriptions to be read by a model, not compressed for one.
+        /// MEASURED (safe_write, task support advertised): 4035 B -> 4342 B when horizun_list_tools gained
+        /// its optional query argument (facade_hash 695dc0af... -> 92559b1e...). Ceiling unchanged (53 % used).
         /// </summary>
         internal const int FacadeCeilingBytes = 8 * 1024;
 

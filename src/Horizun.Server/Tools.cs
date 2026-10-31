@@ -220,6 +220,23 @@ namespace Horizun.Server
             return list;
         }
 
+        /// <summary>
+        /// Tools that exist and that the permission profile ALLOWS, but that the active
+        /// toolset selection leaves out: exactly what a user could switch on by enabling a
+        /// toolset. A tool the profile, denied_tools or allowed_tools turns off is NOT here
+        /// (IsEnabledIgnoringPacks refuses it), so this can never offer to unlock something a
+        /// toolset does not unlock. For discovery only (SchemaFacade search); nothing
+        /// dispatches from it.
+        /// </summary>
+        internal static List<ToolDef> InactiveByToolset()
+        {
+            Discovered live = Live();
+            var list = new List<ToolDef>();
+            foreach (var t in All)
+                if (!IsEnabled(t) && IsEnabledIgnoringPacks(t) && WithheldReason(t, live) == null) list.Add(t);
+            return list;
+        }
+
         /// <summary>Why a known tool is withheld from the list right now, or null - the live-bridge half.</summary>
         internal static string WithheldNow(ToolDef t) => WithheldReason(t, Live());
 

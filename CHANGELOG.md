@@ -3,6 +3,10 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Sin publicar
+
+- Modo fachada: `horizun_list_tools` acepta `query` (lo que quieres hacer, en español o inglés, con o sin tildes) y devuelve `matches` (hasta 8 herramientas llamables, ordenadas, con resumen ≤200 caracteres y toolsets) y `matches_not_active` (herramientas que el perfil permite pero los toolsets activos dejan fuera, con `enable_toolsets`; no son llamables). Se combina con `toolset`; un `query` vacío o solo de palabras vacías se rechaza con un mensaje claro. Sin `query` la respuesta es idéntica a la de antes. El vocabulario bilingüe vive en una tabla (`ToolSearch.Synonyms`) y se amplía con una línea. MEDIDO (safe_write, taskSupport anunciado): `tools/list` en fachada 4035 → 4342 B, `facade_hash` 695dc0af207077d37fc7b0ff → 92559b1e90ee348f01493a3c; `Contract.Hash` no se mueve.
+
 ## v3.0.6 (2026-10-22)
 
 - Los mismos arreglos de 3.0.5, que no llegó a publicarse: su puerta en vivo falló en Revit 2023 y 2024 por el recordatorio de guardado de Revit (arreglado abajo), y su tag protegido no se puede mover a un commit nuevo.

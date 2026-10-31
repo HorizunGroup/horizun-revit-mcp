@@ -219,6 +219,7 @@
     <Compile Include="..\..\src\Horizun.Server\Tools.cs" Link="Tools.cs" />
     <!-- The schema facade (3.0.0): the mode, the three meta-tools and the call unwrap. -->
     <Compile Include="..\..\src\Horizun.Server\SchemaFacade.cs" Link="SchemaFacade.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ToolSearch.cs" Link="ToolSearch.cs" />
     <!-- The contract schema check: the advertised-schema equivalence proof and schema_help judge arguments with the same rules. -->
     <Compile Include="..\..\src\Horizun.Server\ContractSchemaCheck.cs" Link="ContractSchemaCheck.cs" />
     <Compile Include="..\..\src\Horizun.Server\ContractVariants.cs" Link="ContractVariants.cs" />
