@@ -324,6 +324,17 @@ def check(task, run, bridge, fx_ids):
     return bool(ok)
 
 
+def stopped_at_rehearsal(task, run):
+    """A write task whose expected tool rehearsed successfully but was never applied: the
+    agent handed the confirmation back instead of finishing. Safe, but not done."""
+    if task["kind"] != "write":
+        return False
+    eff = [(effective(x)[0], effective(x)[1], x) for x in run["calls"]]
+    rehearsed = any(n in task["expected_tools"] and not x.get("is_error") and inp.get("dry_run") is not False
+                    for n, inp, x in eff)
+    return rehearsed and not any(n in task["expected_tools"] and applied(x) for n, _, x in eff)
+
+
 ORIENTATION = {"horizun_health", "horizun_target"}
 READS = {"get_document_info", "horizun_list_elements", "horizun_query_model", "horizun_navigate"}
 
@@ -410,7 +421,11 @@ def main():
                ("completed", "first_call_right", "first_action_right", "state", "seconds", "tokens_in", "tokens_out")},
                "tool_calls": len(run["calls"]), "calls": [effective(x)[0] for x in run["calls"]],
                "errors": sum(1 for x in run["calls"] if x.get("is_error")),
-               "answer": run["answer"][:600], "check_error": run.get("check_error")}
+               "answer": run["answer"][:600], "check_error": run.get("check_error"),
+               "stopped_at_rehearsal": stopped_at_rehearsal(task, run),
+               "call_detail": [{"name": effective(x)[0], "input": effective(x)[1], "is_error": x.get("is_error"),
+                                "error": (json.dumps(x.get("payload"), ensure_ascii=False)[:400]
+                                          if x.get("is_error") else None)} for x in run["calls"]]}
         rows.append(row)
         print(f"{t['id']:24} ok={row['completed']!s:5} first={row['first_call_right']!s:5} calls={row['tool_calls']:2} "
               f"tok={row['tokens_in']:7}+{row['tokens_out']:5} {row['seconds']:6}s {row['state']}", flush=True)

@@ -112,7 +112,10 @@ def measure(tools, instructions):
             "tool_chars": len(json.dumps(t, ensure_ascii=False, separators=(",", ":"))),
         })
     per_tool.sort(key=lambda r: -r["tool_chars"])
-    vectors = {t["name"]: Counter(words(t["name"].replace("_", " ") + " " + (t.get("description") or "")[:600]))
+    # The pointer every compact description ends with is shared boilerplate, not meaning.
+    def meaning(d):
+        return re.sub(r"Full schema: horizun://contract/tools/\S+", "", d or "")
+    vectors = {t["name"]: Counter(words(t["name"].replace("_", " ") + " " + meaning(t.get("description"))[:600]))
                for t in tools}
     names = sorted(vectors)
     pairs = []
