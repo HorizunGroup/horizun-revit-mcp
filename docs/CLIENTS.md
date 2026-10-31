@@ -131,6 +131,18 @@ env = { HORIZUN_SCHEMA_MODE = "facade" }
 If `HORIZUN_TOOLSETS=local` is also selected, put both keys in the same `env`
 table. Restart a client that does not refresh `tools/list` after this change.
 
+### Compact schemas: `HORIZUN_SCHEMA_MODE=compact`
+
+`compact` keeps the same tools as `full` (a toolset still decides which ones
+appear) but each shows a description of at most 200 characters and only its
+common arguments. It is for a small model that picks the right tool and then
+fills in its arguments badly. It combines with any `HORIZUN_TOOLSETS`; with
+`local` it measured about 21 000 characters instead of about 99 000. Calls are
+still validated against the complete contract, so an argument the short schema
+omits is accepted, and the exact schema is at `horizun://contract/tools/{tool}`.
+In this mode only, `horizun_query_model` answers `response_mode=compact` when
+you do not choose one.
+
 The full tool list is about 475 KB (roughly 120-160 thousand tokens), and every session
 pays for it before the first question. A model served on this machine, or any client with
 a short context window, can ask for the **`local`** toolset instead: ten tools -

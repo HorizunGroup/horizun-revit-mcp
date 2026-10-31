@@ -47,7 +47,12 @@ namespace Horizun.Server
         /// <summary>Every reachable tool with its abridged schema - the 2.x surface, byte for byte.</summary>
         Full,
         /// <summary>horizun_health plus list / describe / call; every other tool on demand.</summary>
-        Facade
+        Facade,
+        /// <summary>
+        /// The SAME tools as Full, short to read (SchemaCompact.cs): a description of at most 200
+        /// characters and only the common arguments. The call is still validated against the full contract.
+        /// </summary>
+        Compact
     }
 
     internal static class SchemaMode
@@ -77,13 +82,15 @@ namespace Horizun.Server
             source = "environment";
             if (string.Equals(v, "full", StringComparison.OrdinalIgnoreCase)) return SchemaSurface.Full;
             if (string.Equals(v, "facade", StringComparison.OrdinalIgnoreCase)) return SchemaSurface.Facade;
+            if (string.Equals(v, "compact", StringComparison.OrdinalIgnoreCase)) return SchemaSurface.Compact;
             source = "default";
             problem = EnvironmentVariable + "='" + (v.Length > 40 ? v.Substring(0, 40) + "..." : v) + "' is not a " +
-                      "schema mode; expected 'full' or 'facade'. Serving the default (" + Name(Default) + ").";
+                      "schema mode; expected 'full', 'facade' or 'compact'. Serving the default (" + Name(Default) + ").";
             return Default;
         }
 
-        public static string Name(SchemaSurface s) => s == SchemaSurface.Full ? "full" : "facade";
+        public static string Name(SchemaSurface s) =>
+            s == SchemaSurface.Full ? "full" : s == SchemaSurface.Compact ? "compact" : "facade";
     }
 
     internal static class SchemaFacade
@@ -197,6 +204,9 @@ namespace Horizun.Server
         {
             if (mode == SchemaSurface.Full)
                 return ToolsetActivation.AppendIfOffered(Tools.List(advertiseTaskSupport), advertiseTaskSupport);
+            // Compact is the surface a restricted local session uses, so it offers activation too.
+            if (mode == SchemaSurface.Compact)
+                return ToolsetActivation.AppendIfOffered(SchemaCompact.List(advertiseTaskSupport), advertiseTaskSupport);
 
             var arr = new JArray();
             ToolDef health = Tools.Advertisable().FirstOrDefault(t => t.Name == "horizun_health");
@@ -564,6 +574,7 @@ namespace Horizun.Server
                     ["problem"] = problem == null ? (JToken)JValue.CreateNull() : problem,
                     ["contract_hash"] = Horizun.Contracts.Contract.Hash,
                     ["facade_hash"] = Hash,
+                    ["compact_hash"] = SchemaCompact.Hash,
                     ["tools_list"] = new JObject
                     {
                         ["tools"] = list.Count,
@@ -573,6 +584,10 @@ namespace Horizun.Server
                     ["reachable_tools"] = Tools.Advertisable().Count,
                     ["means"] = mode == SchemaSurface.Full
                         ? "tools/list carries every reachable tool with its abridged schema (the 2.x surface)."
+                        : mode == SchemaSurface.Compact
+                        ? "compact mode: tools/list carries the same tools as full, each with a short description and only its common " +
+                          "arguments; every contract argument is still accepted and validated against the full contract " +
+                          "(horizun://contract/tools/{tool}). Reads that have a short response mode default to it."
                         : "tools/list carries horizun_health and " + ListToolsName + " / " + DescribeToolName + " / " +
                           CallToolName + "; the reachable tools are called through them, under the same gates. " +
                           SchemaMode.EnvironmentVariable + "=full restores the whole list."

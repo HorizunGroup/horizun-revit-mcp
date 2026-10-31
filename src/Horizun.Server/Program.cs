@@ -1458,6 +1458,12 @@ namespace Horizun.Server
                 return McpTasks.Create(prms, CallTool, ct);
             }
 
+            // COMPACT MODE ONLY: a read that has a short response mode and was not told which one
+            // gets the short one (SchemaCompact.ReadDefaults). Here, after the quarantine check and
+            // the task branch, so neither the quarantine shape nor the task's stored request sees it;
+            // an explicit response_mode from the caller is never replaced; writes are never touched.
+            args = SchemaCompact.ApplyReadDefaults(name, args, SchemaMode.Current);
+
             var clock = System.Diagnostics.Stopwatch.StartNew();
 
             // From here on every answer - success, refusal or failure - belongs to this tool,

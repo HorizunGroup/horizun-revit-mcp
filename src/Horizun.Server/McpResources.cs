@@ -283,6 +283,7 @@ namespace Horizun.Server
                 // The facade's identity beside the contract's: the two hashes are independent
                 // (SchemaFacade.cs), and the mode says which surface tools/list carries.
                 ["facade_hash"] = SchemaFacade.Hash,
+                ["compact_hash"] = SchemaCompact.Hash,
                 ["schema_mode"] = SchemaMode.Name(SchemaMode.Current),
                 ["bridge_protocol_version"] = Horizun.Contracts.Contract.ProtocolVersion,
                 // EVERY revision, not only the ones reachable through initialize.
