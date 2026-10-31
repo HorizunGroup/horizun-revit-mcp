@@ -206,7 +206,7 @@ namespace Horizun.Server
                 return ToolsetActivation.AppendIfOffered(Tools.List(advertiseTaskSupport), advertiseTaskSupport);
             // Compact is the surface a restricted local session uses, so it offers activation too.
             if (mode == SchemaSurface.Compact)
-                return ToolsetActivation.AppendIfOffered(SchemaCompact.List(advertiseTaskSupport), advertiseTaskSupport);
+                return ToolsetActivation.AppendIfOffered(SchemaCompact.List(advertiseTaskSupport), advertiseTaskSupport, compact: true);
 
             var arr = new JArray();
             ToolDef health = Tools.Advertisable().FirstOrDefault(t => t.Name == "horizun_health");

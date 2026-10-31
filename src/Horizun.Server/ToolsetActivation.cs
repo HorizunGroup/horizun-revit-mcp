@@ -64,11 +64,20 @@ namespace Horizun.Server
             }
         };
 
+        /// <summary>
+        /// The compact-mode text: the same tool, said within SchemaCompact.DescriptionMax like every
+        /// other compact description (the long one measured 372 characters).
+        /// </summary>
+        internal const string CompactDescription =
+            "Turn on one more toolset for this session only (e.g. documentacion, modelado). Never opens what the " +
+            "permission profile blocks. Use it when horizun_list_tools names a toolset to enable.";
+
         /// <summary>Adds the definition to a tools/list answer when it is offered.</summary>
-        public static JArray AppendIfOffered(JArray list, bool advertiseTaskSupport)
+        public static JArray AppendIfOffered(JArray list, bool advertiseTaskSupport, bool compact = false)
         {
             if (!Offered()) return list;
             JObject def = Definition();
+            if (compact) def["description"] = CompactDescription;
             if (advertiseTaskSupport)
                 def["execution"] = new JObject { ["taskSupport"] = "forbidden" };
             list.Add(def);

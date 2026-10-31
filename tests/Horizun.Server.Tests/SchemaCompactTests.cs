@@ -615,6 +615,23 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void The_activation_tool_obeys_the_compact_description_limit_too()
+        {
+            // It is a server meta-tool, not a contract row, so the per-tool limit above never saw it:
+            // MEASURED 372 characters in compact before this test.
+            SchemaFacadeTests.WithDataRoot("{\"permission_profile\":\"safe_write\"}", "local", () =>
+            {
+                JObject def = SchemaFacade.List(SchemaSurface.Compact, false).OfType<JObject>()
+                    .Single(t => (string)t["name"] == ToolsetActivation.Name);
+                Assert.True(((string)def["description"]).Length <= SchemaCompact.DescriptionMax,
+                            "activation description is " + ((string)def["description"]).Length + " characters");
+                JObject full = SchemaFacade.List(SchemaSurface.Full, false).OfType<JObject>()
+                    .Single(t => (string)t["name"] == ToolsetActivation.Name);
+                Assert.True(((string)full["description"]).Length > SchemaCompact.DescriptionMax, "full keeps the long text");
+            });
+        }
+
+        [Fact]
         public void Compact_instructions_forbid_placeholders_and_say_when_to_apply()
         {
             string s = ServerInstructions.CompactHead;
