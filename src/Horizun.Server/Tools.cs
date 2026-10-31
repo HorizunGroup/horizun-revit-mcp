@@ -241,6 +241,22 @@ namespace Horizun.Server
         internal static string WithheldNow(ToolDef t) => WithheldReason(t, Live());
 
         /// <summary>
+        /// May this tool be called right now (the same gate every dispatch asks)? Used to condition ADVICE:
+        /// the server must not tell an agent to use a tool the active toolsets hide from it.
+        /// </summary>
+        internal static bool IsCallable(string toolName) => DisabledReason(toolName) == null;
+
+        /// <summary>
+        /// True when the toolset selection - and nothing else - is what keeps this tool out. The permission
+        /// profile and the allow/deny lists are not asked: only the toolsets are.
+        /// </summary>
+        internal static bool HiddenByToolsetsOnly(string toolName)
+        {
+            ToolDef t = Find(toolName);
+            return t != null && !IsEnabled(t) && IsEnabledIgnoringPacks(t);
+        }
+
+        /// <summary>
         /// The list this server would publish if no tool pack were selected, at the same
         /// permission posture. It is the BASELINE for the discovery-cost measurement in
         /// Protocol/DiscoveryCost.cs and has no other caller: a client never sees it, and
@@ -277,7 +293,11 @@ namespace Horizun.Server
             {
                 if (!enabled(t)) continue;
                 if (WithheldReason(t, live) != null) continue;
-                arr.Add(Publish(t, advertiseTaskSupport));
+                JObject entry = Publish(t, advertiseTaskSupport);
+                // A task rides on horizun_submit_job; when the toolsets hide it (local alone) do not offer tasks.
+                if (advertiseTaskSupport && McpTasks.Supports(t) && !McpTasks.SupportsHere(t))
+                    entry["execution"]["taskSupport"] = "forbidden";
+                arr.Add(entry);
             }
             return arr;
         }

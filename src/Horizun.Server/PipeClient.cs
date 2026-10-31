@@ -142,6 +142,24 @@ namespace Horizun.Server
         /// </summary>
         public static Discovered Discover(string year) => Resolve(year, null, out _);
 
+
+        /// <summary>
+        /// What to tell a caller who must choose between Revit instances. horizun_target is the
+        /// answer only where it is callable; with `local` as the whole toolset it is hidden, and
+        /// pointing the agent at it would send it to a tool it cannot reach.
+        /// </summary>
+        internal static string TargetAdvice(bool yearAlreadyGiven = false)
+            => Tools.IsCallable("horizun_target")
+                ? "Call horizun_target with a pid to choose one" +
+                  (yearAlreadyGiven ? "." : ", or with a year if only one instance of it is running.")
+                : "This session cannot choose a target itself: ask the user to close the other Revit instance(s), " +
+                  "or to set HORIZUN_REVIT_YEAR in the MCP client configuration to the one to use.";
+
+        /// <summary>The "which Revits are there" sentence, with the same condition as <see cref="TargetAdvice"/>.</summary>
+        internal static string TargetListAdvice()
+            => Tools.IsCallable("horizun_target")
+                ? "Call horizun_target with no arguments to see the ones that have."
+                : "Ask the user which Revit instances are running with the Horizun add-in loaded.";
         /// <summary>
         /// Pick the Revit to talk to, and REFUSE rather than guess when more than one fits.
         ///
@@ -161,8 +179,7 @@ namespace Horizun.Server
             {
                 foreach (Discovered d in all)
                     if (d.Pid == pid.Value) return d;
-                refusal = "No Revit with process id " + pid.Value + " has published a bridge. Call horizun_target " +
-                          "with no arguments to see the ones that have.";
+                refusal = "No Revit with process id " + pid.Value + " has published a bridge. " + TargetListAdvice();
                 return null;
             }
 
@@ -183,9 +200,8 @@ namespace Horizun.Server
                 foreach (Discovered c in live) names.Add("Revit " + c.Year + " pid " + c.Pid);
                 refusal = live.Count + " Revit instances are running with the bridge loaded (" +
                           string.Join(", ", names) + ") and nothing says which one you mean. Refusing to pick: a " +
-                          "command sent to the wrong session is a correct edit to the wrong model. Call " +
-                          "horizun_target with a pid to choose one" +
-                          (string.IsNullOrEmpty(year) ? ", or with a year if only one instance of it is running." : ".");
+                          "command sent to the wrong session is a correct edit to the wrong model. " +
+                          TargetAdvice(!string.IsNullOrEmpty(year));
                 return null;
             }
 
@@ -544,7 +560,8 @@ namespace Horizun.Server
                     // What an identical retry does, machine-readable: runs freshly,
                     // replays the durable record, or cannot be proven. See CancellationAdvice.
                     ["retry"] = CancellationAdvice.ToJson(CancellationAdvice.Classify(nothingStarted, hasKey),
-                        hasKey, CancellationAdvice.BatchSize(args), sendClock.ElapsedMilliseconds)
+                        hasKey, CancellationAdvice.BatchSize(args), sendClock.ElapsedMilliseconds,
+                        submitJobAvailable: Tools.IsCallable("horizun_submit_job"))
                 };
                 ex.Data["horizun_transport_detail"] = detail;
                 throw;
@@ -617,7 +634,7 @@ namespace Horizun.Server
         private static string RetrySentence(JObject args, bool nothingStarted, long elapsedMs)
             => CancellationAdvice.Sentence(
                 CancellationAdvice.Classify(nothingStarted, CancellationAdvice.HasKey(args)),
-                CancellationAdvice.BatchSize(args), elapsedMs);
+                CancellationAdvice.BatchSize(args), elapsedMs, Tools.IsCallable("horizun_submit_job"));
 
         private sealed class CancelAttempt
         {

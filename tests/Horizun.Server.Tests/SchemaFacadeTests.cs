@@ -216,7 +216,15 @@ namespace Horizun.Server.Tests
             {
                 foreach (string pack in ToolPacks.KnownPacks)
                     WithDataRoot("{\"permission_profile\":\"unsafe_code\",\"enable_execute_python\":true}", pack, () =>
-                        Assert.Equal((int)ledger["profiles"]["pack:" + pack]["bytes"], Bytes(SchemaFacade.List(SchemaSurface.Full, true))));
+                    {
+                        // A restricted selection also advertises the server-only horizun_activate_toolset
+                        // (ToolsetActivation); the ledger pins the CONTRACT rows, so measure without it.
+                        JArray listed = SchemaFacade.List(SchemaSurface.Full, true);
+                        if ((string)listed.Last["name"] == ToolsetActivation.Name) listed.RemoveAt(listed.Count - 1);
+                        // local alone hides submit_job, so tasks are not offered ("forbidden" for "optional"); the ledger measured "optional".
+                        foreach (JToken t in listed) if (t["execution"] != null && (string)t["execution"]["taskSupport"] == "forbidden" && McpTasks.Supports(Tools.Find((string)t["name"]))) t["execution"]["taskSupport"] = "optional";
+                        Assert.Equal((int)ledger["profiles"]["pack:" + pack]["bytes"], Bytes(listed));
+                    });
             });
         }
 

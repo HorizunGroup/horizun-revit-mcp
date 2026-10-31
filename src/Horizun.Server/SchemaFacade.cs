@@ -195,7 +195,8 @@ namespace Horizun.Server
         /// <summary>What tools/list answers in <paramref name="mode"/>.</summary>
         public static JArray List(SchemaSurface mode, bool advertiseTaskSupport)
         {
-            if (mode == SchemaSurface.Full) return Tools.List(advertiseTaskSupport);
+            if (mode == SchemaSurface.Full)
+                return ToolsetActivation.AppendIfOffered(Tools.List(advertiseTaskSupport), advertiseTaskSupport);
 
             var arr = new JArray();
             ToolDef health = Tools.Advertisable().FirstOrDefault(t => t.Name == "horizun_health");
@@ -211,7 +212,7 @@ namespace Horizun.Server
                     };
                 arr.Add(def);
             }
-            return arr;
+            return ToolsetActivation.AppendIfOffered(arr, advertiseTaskSupport);
         }
 
         // ---- tools/call ---------------------------------------------------------------------
@@ -261,7 +262,8 @@ namespace Horizun.Server
                 why = CallToolName + " cannot call itself; name the tool directly." + Shape;
                 return false;
             }
-            if (Tools.Find(name) == null && name != ListToolsName && name != DescribeToolName)
+            if (Tools.Find(name) == null && name != ListToolsName && name != DescribeToolName &&
+                name != ToolsetActivation.Name)
             {
                 why = "Unknown tool '" + name + "'. " + ListToolsName + " names every tool this session can call. " +
                       "Nothing was run.";
@@ -288,6 +290,7 @@ namespace Horizun.Server
             {
                 case ListToolsName: return ListTools(args);
                 case DescribeToolName: return Describe(args);
+                case ToolsetActivation.Name: return ToolsetActivation.Answer(args);
                 case CallToolName:
                     // Reached only when UnwrapCall refused to unwrap, so this names why.
                     if (!TryInner(args, out _, out _, out string why)) throw new ToolRefusal(why);
@@ -325,16 +328,23 @@ namespace Horizun.Server
             if (f != null)
             {
                 if (f.Type != JTokenType.String) throw new ToolRefusal("'toolset' must be a string.");
-                filter = ((string)f).Trim().ToLowerInvariant();
-                if (!ToolPacks.KnownPacks.Contains(filter))
-                    throw new ToolRefusal("Unknown toolset '" + filter + "'. Known: " +
-                        string.Join(", ", ToolPacks.KnownPacks.OrderBy(k => k, StringComparer.Ordinal)) + ".");
+                // Names and Spanish aliases, any case or accents; an alias for SEVERAL toolsets
+                // (data, admin) is refused rather than guessed, so the answer is about one toolset.
+                string[] real = Horizun.Contracts.ToolsetCatalog.ExpandName((string)f);
+                if (real == null)
+                    throw new ToolRefusal("Unknown toolset '" + ((string)f).Trim() + "'. Known: " +
+                        string.Join(", ", ToolPacks.KnownPacks.OrderBy(k => k, StringComparer.Ordinal)) +
+                        ". Aliases: " + string.Join(", ", Horizun.Contracts.ToolsetCatalog.Aliases.Keys
+                            .OrderBy(k => k, StringComparer.Ordinal)) + ".");
+                if (real.Length != 1)
+                    throw new ToolRefusal("'" + ((string)f).Trim() + "' stands for several toolsets (" +
+                        string.Join(", ", real) + "); pass one of them.");
+                filter = real[0];
             }
 
             List<ToolDef> reachable = Tools.Advertisable();
             ToolPacks.Resolution sel = Settings.ActivePackResolution();
-            var active = new HashSet<string>(new[] { "core" }.Concat(sel.ActivePacks ?? ToolPacks.KnownPacks),
-                                             StringComparer.Ordinal);
+            var active = ToolPacks.ActiveNames(sel);
 
             var groups = new JObject();
             var tools = new JObject();
@@ -414,15 +424,23 @@ namespace Horizun.Server
                 }
             }
             var off = new JArray();
+            bool canActivate = ToolsetActivation.Offered();
             foreach (var h in foundOff)
-                off.Add(new JObject
+            {
+                var item = new JObject
                 {
                     ["name"] = h.Tool.Name,
                     ["summary"] = Summary(h.Tool.Description, MatchSummaryChars),
                     ["toolsets"] = new JArray(h.Tool.Toolsets),
                     ["enable_toolsets"] = new JArray(h.Tool.Toolsets.Where(p => !active.Contains(p))),
                     ["score"] = h.Score
-                });
+                };
+                // How to open it for this session, when a session may (an environment selection).
+                string first = h.Tool.Toolsets.FirstOrDefault(p => !active.Contains(p));
+                if (canActivate && first != null)
+                    item["activate"] = ToolsetActivation.Name + " {\"toolset\":\"" + first + "\"}";
+                off.Add(item);
+            }
 
             return new JObject
             {
@@ -436,7 +454,7 @@ namespace Horizun.Server
                 ["toolsets_not_active"] = new JArray(ToolPacks.KnownPacks.Where(p => !active.Contains(p))
                                                               .OrderBy(p => p, StringComparer.Ordinal)),
                 ["next"] = DescribeToolName + " {name} for the exact schema, then " + CallToolName +
-                           " {name, arguments}. matches_not_active are NOT callable: ask the user to enable one of " +
+                           " {name, arguments}. matches_not_active are NOT callable: call " + ToolsetActivation.Name + " as their activate field says (this session only), or ask the user to enable one of " +
                            "their enable_toolsets. horizun_health first: commands act on the ACTIVE document.",
                 ["contract_hash"] = Horizun.Contracts.Contract.Hash,
                 ["facade_hash"] = Hash
@@ -466,7 +484,7 @@ namespace Horizun.Server
             if (n == null || n.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)n))
                 throw new ToolRefusal(DescribeToolName + " needs 'name', the tool to describe, as a string.");
             string name = (string)n;
-            if (name == ListToolsName || name == DescribeToolName || name == CallToolName)
+            if (name == ListToolsName || name == DescribeToolName || name == CallToolName || name == ToolsetActivation.Name)
                 throw new ToolRefusal("'" + name + "' is a facade tool; its whole schema is in tools/list.");
             Horizun.Contracts.CommandContract c = Horizun.Contracts.Contract.Find(name);
             ToolDef def = Tools.Find(name);

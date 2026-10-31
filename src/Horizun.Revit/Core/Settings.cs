@@ -428,6 +428,8 @@ namespace Horizun.Revit.Core
             }
             if (!string.IsNullOrWhiteSpace(env)) r.SourceName = envName;
             else if (raw != null) r.SourceName = key;
+            // Session activations (horizun_activate_toolset) widen an ENVIRONMENT selection in this process only.
+            r = ToolPacks.WithSession(r);
             return r;
         }
 
@@ -439,7 +441,7 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static bool TrySetToolPacks(IEnumerable<string> packs, out string error)
         {
-            List<string> list = packs?.Select(p => (p ?? "").Trim().ToLowerInvariant())
+            List<string> list = packs?.Select(Horizun.Contracts.ToolsetCatalog.Normalize)
                                       .Where(p => p.Length > 0).Distinct().ToList();
             if (list != null && list.Count > 0)
             {
@@ -447,7 +449,7 @@ namespace Horizun.Revit.Core
                 // falls closed to core-only, which is safe and also nothing the user
                 // asked to happen.
                 var unknown = list.Where(p => p != ToolPacks.AllToken &&
-                                              !ToolPacks.KnownPacks.Contains(p)).ToList();
+                                              Horizun.Contracts.ToolsetCatalog.ExpandName(p) == null).ToList();
                 if (unknown.Count > 0)
                 {
                     error = "unknown pack name(s): " + string.Join(", ", unknown) + ". Known: " +

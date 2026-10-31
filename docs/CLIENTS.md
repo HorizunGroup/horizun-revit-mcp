@@ -133,14 +133,19 @@ table. Restart a client that does not refresh `tools/list` after this change.
 
 The full tool list is about 475 KB (roughly 120-160 thousand tokens), and every session
 pays for it before the first question. A model served on this machine, or any client with
-a short context window, can ask for the **`local`** toolset instead: reading (document
-facts, element listing and queries, model scan, quantities, view capture, navigation to
-an element - linked ones too - and model diff) and six typed
-writes (parameters, create, transform, delete, views, undo), with `horizun_health`,
-`horizun_target`, `horizun_job_status` and `horizun_submit_job` always on. It never
-carries the Python surface. Historically measured on the 2.2.0 candidate at the default `safe_write`
-profile: 17 tools, about 100 thousand characters (about 25 thousand tokens); at
-`full_write` the eighteenth, `horizun_capture_view`, appears as well.
+a short context window, can ask for the **`local`** toolset instead: ten tools -
+`horizun_health`, `get_document_info`, `horizun_list_elements`, `horizun_query_model`,
+`horizun_capture_view` and the typed writes `horizun_create_elements`,
+`horizun_write_params_verified`, `horizun_delete_verified`, `horizun_transform_elements`
+and `horizun_undo`. Selected **alone**, `local` does not bring `horizun_target`,
+`horizun_job_status` and `horizun_submit_job` (in a 54-task battery with a small model they
+were never used, or were called instead of `horizun_health`); add any other toolset
+(`local,documentation`) and the core returns. It never carries the Python surface.
+Measured 2026-10-31 at the default `safe_write` profile: 9 tools, 60,219 characters
+(about 15 thousand tokens), down from 17 tools and 98,557 characters; at `full_write`
+the tenth, `horizun_capture_view`, appears as well (10 tools, 62,792 characters).
+Model scan, model diff, quantities, navigation and view management left `local`; they stay
+in `read`, `audit`, `coordination` and `documentation`.
 
 Set it in the client's own server entry, so it applies to that client only:
 
@@ -163,11 +168,19 @@ env = { HORIZUN_TOOLSETS = "local" }
 }
 ```
 
-`horizun_health` then reports `toolsets.active` (`core`, `local`), the toolsets left out
+`horizun_health` then reports `toolsets.active` (`local`; `core` appears once another toolset is added), the toolsets left out
 (`toolsets_not_active`) and how many tools are not advertised (`tools_not_advertised`); a
 call to a hidden tool is refused naming the toolset that carries it. The permission profile
 still governs: `local` never widens what `safe_write` allows. Add more toolsets with a
 comma (`local,documentation`) when a task needs them.
+
+Toolset names also accept Spanish aliases, in any case and with or without accents:
+`lectura`/`consulta` (read), `modelado`/`modelo` (model), `arquitectura`, `estructura`,
+`documentacion`, `planimetria`, `auditoria`, `coordinacion`, `tablas` (schedules), `familia`,
+`interoperabilidad`, `administracion`. A session started with a toolset restriction in the client's
+environment can open one more for that session only with the `horizun_activate_toolset` tool
+(`{"toolset": "documentacion"}`); nothing is saved and a restart forgets it, and it never opens what the
+permission profile or `denied_tools`/`allowed_tools` turn off.
 
 ## ChatGPT Work
 

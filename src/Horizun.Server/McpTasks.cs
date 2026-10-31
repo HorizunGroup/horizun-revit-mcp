@@ -41,6 +41,15 @@ namespace Horizun.Server
             def.Name != "horizun_submit_job" && def.Name != "horizun_execute_python" &&
             def.Name != "horizun_request_python_access";
 
+        /// <summary>
+        /// Supports, AND the durable queue a task rides on is reachable in this session. A task is admitted
+        /// through horizun_submit_job; when the toolset selection hides it (`local` alone) a task would be
+        /// refused at the door, so it is not offered. Only the TOOLSETS are asked here - the permission
+        /// profile keeps deciding what it always decided.
+        /// </summary>
+        public static bool SupportsHere(ToolDef def) =>
+            Supports(def) && !Tools.HiddenByToolsetsOnly("horizun_submit_job");
+
         public static JObject Create(
             JObject toolCall, Func<JObject, CancellationToken, JToken> invokeTool, CancellationToken cancellationToken)
         {
@@ -49,6 +58,10 @@ namespace Horizun.Server
                 throw new McpError(-32602, "Invalid params: task augmentation requires an object 'task'.");
             string tool = RequiredString(toolCall, "name");
             ToolDef def = Tools.Find(tool);
+            if (Supports(def) && !SupportsHere(def))
+                throw new McpError(-32602,
+                    "'" + tool + "' cannot run as an MCP task in this session: tasks are admitted through " +
+                    "horizun_submit_job, which the active toolsets do not include. Call it normally.");
             if (!Supports(def))
                 throw new McpError(-32602,
                     "'" + tool + "' does not support MCP task augmentation. Host-resident tools, execute_python, " +

@@ -80,7 +80,7 @@ namespace Horizun.Server
                             ? d : null,
                         ["member_tools"] = ToolPacks.MembersOf(pack).Count,
                         ["requires"] = new JArray(ToolPacks.DependenciesOf(pack)),
-                        ["active"] = sel.ActivePacks == null || sel.ActivePacks.Contains(pack) || pack == "core",
+                        ["active"] = sel.ActivePacks == null || ToolPacks.ActiveNames(sel).Contains(pack),
                         // core + this toolset + its dependencies: what selecting it alone advertises.
                         ["if_selected_alone"] = Size(Tools.ListForPacks(new[] { pack }, advertiseTaskSupport))
                     });
@@ -114,10 +114,16 @@ namespace Horizun.Server
                 block["tools_list_approx_tokens"] = advertised["approx_tokens"];
                 // What the selection LEAVES OUT, so a client knows a tool exists before it asks for it.
                 ToolPacks.Resolution sel = Settings.ActivePackResolution();
-                var active = new HashSet<string>(new[] { "core" }.Concat(sel.ActivePacks ?? ToolPacks.KnownPacks), StringComparer.Ordinal);
+                var active = ToolPacks.ActiveNames(sel);
                 block["toolsets_not_active"] = new JArray(ToolPacks.KnownPacks.Where(p => !active.Contains(p))
                                                                      .OrderBy(p => p, StringComparer.Ordinal));
                 block["tools_not_advertised"] = Math.Max(0, Tools.ListIgnoringPacks(false).Count - (int)advertised["tools"]);
+                // horizun_activate_toolset: widens THIS process only; offered when the restriction is the environment's.
+                if (sel.Restricting)
+                {
+                    block["activation_available"] = ToolPacks.CanActivate(sel, out string cannotBecause);
+                    if (cannotBecause != null) block["activation_unavailable_because"] = cannotBecause;
+                }
                 block["details"] = ResourceUri;
                 return block;
             }
@@ -135,9 +141,11 @@ namespace Horizun.Server
                 ["restricting"] = sel.Restricting,
                 ["active"] = sel.ActivePacks == null
                     ? (JToken)"all"
-                    : new JArray(new[] { "core" }.Concat(sel.ActivePacks).Distinct()
+                    : new JArray(ToolPacks.ActiveNames(sel)
                                                    .OrderBy(p => p, StringComparer.Ordinal)),
                 ["chosen"] = sel.ChosenPacks == null ? (JToken)JValue.CreateNull() : new JArray(sel.ChosenPacks),
+                // What horizun_activate_toolset added for THIS process; the owner's choice is "chosen".
+                ["activated_this_session"] = new JArray(sel.ActivatedThisSession ?? new List<string>()),
                 ["added_by_dependency"] = sel.AddedByDependency == null
                     ? (JToken)JValue.CreateNull() : new JArray(sel.AddedByDependency),
                 ["problem"] = sel.Problem == null ? (JToken)JValue.CreateNull() : sel.Problem
