@@ -494,18 +494,42 @@ end;
   is: nobody already using the bridge sees a different list. Decided before
   Setup writes anything, so this install's own files cannot make it look old.
   --------------------------------------------------------------------------- }
+{ Test build only (scripts/installer-profile.tests.ps1 passes ProfileTestRoot; pack.ps1
+  never does): the home folder, LOCALAPPDATA and the uninstall key are fixture paths under
+  that root, Setup runs the detection and the write, logs them and stops. }
 function UserSettingsFile: String;
 begin
+#ifdef ProfileTestRoot
+  Result := '{#ProfileTestRoot}\home\.horizun\settings.json';
+#else
   Result := ExpandConstant('{%USERPROFILE}') + '\.horizun\settings.json';
+#endif
+end;
+
+function LocalAppDataRoot: String;
+begin
+#ifdef ProfileTestRoot
+  Result := '{#ProfileTestRoot}\localappdata';
+#else
+  Result := ExpandConstant('{localappdata}');
+#endif
+end;
+
+function UninstallKeyExists: Boolean;
+begin
+#ifdef ProfileTestRoot
+  Result := FileExists('{#ProfileTestRoot}\uninstall-key');
+#else
+  Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1') or
+            RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1');
+#endif
 end;
 
 function DetectFreshInstall: Boolean;
 begin
-  Result := not (FileExists(UserSettingsFile) or
-    RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1') or
-    RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1') or
-    DirExists(ExpandConstant('{localappdata}') + '\Programs\Horizun\MCP\server') or
-    FileExists(ExpandConstant('{localappdata}') + '\Horizun\install-status.json'));
+  Result := not (FileExists(UserSettingsFile) or UninstallKeyExists or
+    DirExists(LocalAppDataRoot + '\Programs\Horizun\MCP\server') or
+    FileExists(LocalAppDataRoot + '\Horizun\install-status.json'));
 end;
 
 procedure WriteFirstToolProfile;
@@ -532,6 +556,13 @@ var
 begin
   Result := True;
   FreshInstall := DetectFreshInstall;
+#ifdef ProfileTestRoot
+  if FreshInstall then Log('tool profile test: fresh install') else Log('tool profile test: existing install');
+  WriteFirstToolProfile;
+  Log('tool profile test: done');
+  Result := False;
+  exit;
+#endif
 #ifndef PreflightTestRoot
   if RevitIsRunning then
   begin

@@ -293,7 +293,7 @@ Check 'a new install is told apart before Setup writes anything' `
     ($installer -match '(?s)function InitializeSetup: Boolean;.*?Result := True;\s*FreshInstall := DetectFreshInstall;') `
     'FreshInstall is not the first thing InitializeSetup decides'
 Check 'the fresh-install test looks at settings.json, the uninstall key, the server folder and install status' `
-    ($installer -match '(?s)function DetectFreshInstall.*?FileExists\(UserSettingsFile\).*?_is1.*?Programs.Horizun.MCP.server.*?install-status\.json') `
+    ($installer -match '(?s)function UninstallKeyExists.*?_is1.*?function DetectFreshInstall.*?FileExists\(UserSettingsFile\) or UninstallKeyExists.*?Programs.Horizun.MCP.server.*?install-status\.json') `
     'DetectFreshInstall misses one of its four signs of an existing install'
 Check 'the tool profile is written only on a fresh install without settings.json' `
     ($installer -match "(?s)procedure WriteFirstToolProfile;.*?if \(not FreshInstall\) or FileExists\(Path\) then exit;") `
