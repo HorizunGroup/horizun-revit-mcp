@@ -96,8 +96,8 @@ Una corrida por configuración, salvo qwen3:8b final y su comparación (dos): un
 diferencia se explica en la sección 4. «Final» es la iteración 2 con `horizun_model_scan` de
 vuelta en `local`, que es lo que queda en esta rama.
 
-\* En esas corridas había otro Revit abierto en la misma máquina usando la GPU: los segundos no
-son comparables con las corridas anteriores.
+\* La segunda corrida (y la repetición sin `model_scan`) compartió Ollama y la GPU con otras
+corridas de qwen3:8b en la misma máquina: sus segundos no son comparables.
 
 **Qué mejoró, en números (de `local` antes a lo que queda en la rama):**
 - **Haiku:** mantiene los aciertos (26 → 26) con **58 % menos tokens de entrada** por tarea.
