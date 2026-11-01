@@ -38,6 +38,13 @@ CONFIGS = [
     # compact exists from the small-model work on; an older server refuses the mode and is skipped.
     ("local+compact", "safe_write", "compact", "local"),
     ("local+compact@full_write", "full_write", "compact", "local"),
+    # tool profiles (settings "tool_profile"); a new install writes esencial.
+    ("esencial", "safe_write", "full", None, "esencial"),
+    ("esencial+compact", "safe_write", "compact", None, "esencial"),
+    ("consulta", "safe_write", "full", None, "consulta"),
+    ("modelado", "safe_write", "full", None, "modelado"),
+    ("documentacion", "safe_write", "full", None, "documentacion"),
+    ("auditoria", "safe_write", "full", None, "auditoria"),
 ]
 
 STOP = set("""
@@ -63,13 +70,17 @@ def cosine(a, b):
     return num / den if den else 0.0
 
 
-def tools_list(server, profile, mode, toolsets, timeout):
+def tools_list(server, profile, mode, toolsets, timeout, tool_profile=None):
     root = tempfile.mkdtemp(prefix="hz-small-diag-")
     try:
         with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
-            json.dump({"permission_profile": profile, "enable_execute_python": False}, f)
+            settings = {"permission_profile": profile, "enable_execute_python": False}
+            if tool_profile:
+                settings["tool_profile"] = tool_profile
+            json.dump(settings, f)
         env = {k: v for k, v in os.environ.items()
-               if k not in ("HORIZUN_TOOLSETS", "HORIZUN_TOOL_PACKS", "HORIZUN_REVIT_YEAR", "HORIZUN_SCHEMA_MODE")}
+               if k not in ("HORIZUN_TOOLSETS", "HORIZUN_TOOL_PACKS", "HORIZUN_REVIT_YEAR", "HORIZUN_SCHEMA_MODE",
+                            "HORIZUN_PROFILE")}
         env["HORIZUN_DATA_ROOT"] = root
         env["HORIZUN_SCHEMA_MODE"] = mode
         if toolsets:
@@ -145,14 +156,16 @@ def main():
     ap.add_argument("--timeout", type=int, default=90)
     args = ap.parse_args()
     report = {"schema": "horizun.small-model-diagnostics/1", "token_rule": "ceil(chars/4)", "configs": {}}
-    for label, profile, mode, toolsets in CONFIGS:
+    for label, profile, mode, toolsets, *rest in CONFIGS:
+        tool_profile = rest[0] if rest else None
         try:
-            tools, instructions = tools_list(args.server, profile, mode, toolsets, args.timeout)
+            tools, instructions = tools_list(args.server, profile, mode, toolsets, args.timeout, tool_profile)
         except Exception as e:
             print(f"{label:18} skipped: {str(e)[:160]}")
             continue
         m = measure(tools, instructions)
-        m.update({"permission_profile": profile, "schema_mode": mode, "toolsets": toolsets})
+        m.update({"permission_profile": profile, "schema_mode": mode, "toolsets": toolsets,
+                  "tool_profile": tool_profile})
         report["configs"][label] = m
         print(f"{label:18} tools={m['tools']:4} bytes={m['bytes']:8} tokens~{m['tokens_est']:7} "
               f"desc>200={m['descriptions_over_200']:3} similar_pairs={len(m['similar_pairs'])}")

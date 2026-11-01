@@ -72,7 +72,13 @@ namespace Horizun.Server
                 _notify("notifications/tools/list_changed", null);
         }
 
-        internal static string Capture() => string.Join("\n", Tools.List(false)
+        // The REACHABLE set (what horizun_list_tools answers in facade mode) and what tools/list
+        // shows now, so a session change of a role profile's listing (ToolProfiles.cs) is
+        // announced like a settings change.
+        internal static string Capture() => Names(Tools.List(false)) + "\n--\n" +
+                                            Names(SchemaFacade.List(SchemaMode.Current, false));
+
+        private static string Names(JArray list) => string.Join("\n", list
             .OfType<JObject>()
             .Select(t => (string)t["name"])
             .OrderBy(n => n, StringComparer.Ordinal));

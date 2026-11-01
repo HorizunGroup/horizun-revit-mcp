@@ -224,6 +224,7 @@
     <Compile Include="..\..\src\Horizun.Server\SchemaCompactSpecs.cs" Link="SchemaCompactSpecs.cs" />
     <Compile Include="..\..\src\Horizun.Server\ToolSearch.cs" Link="ToolSearch.cs" />
     <Compile Include="..\..\src\Horizun.Server\ToolsetActivation.cs" Link="ToolsetActivation.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ToolProfiles.cs" Link="ToolProfiles.cs" />
     <!-- The contract schema check: the advertised-schema equivalence proof and schema_help judge arguments with the same rules. -->
     <Compile Include="..\..\src\Horizun.Server\ContractSchemaCheck.cs" Link="ContractSchemaCheck.cs" />
     <Compile Include="..\..\src\Horizun.Server\ContractVariants.cs" Link="ContractVariants.cs" />

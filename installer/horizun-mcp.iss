@@ -159,6 +159,7 @@ var
   YearDeployed: array[0..4] of Boolean;
   YearManifestWritten: array[0..4] of Boolean;
   InstallManifestWritten: Boolean;
+  FreshInstall: Boolean;
 
 { ONE LANGUAGE PER INSTALL, INCLUDING THE PARTS WRITTEN HERE.
 
@@ -483,12 +484,85 @@ begin
   end;
 end;
 
+{ ---------------------------------------------------------------------------
+  TOOL PROFILE ON A NEW INSTALL. tools/list carries every tool by default (~105k
+  tokens). A NEW install writes "tool_profile": "esencial" to the user's
+  settings.json, so clients start with the essential tools and the server tools
+  that reach every other one (ToolProfiles.cs). It is visibility only: the
+  permission profile and every other setting are untouched.
+  An UPGRADE, or a machine that already has settings.json, is left exactly as it
+  is: nobody already using the bridge sees a different list. Decided before
+  Setup writes anything, so this install's own files cannot make it look old.
+  --------------------------------------------------------------------------- }
+{ Test build only (scripts/installer-profile.tests.ps1 passes ProfileTestRoot; pack.ps1
+  never does): the home folder, LOCALAPPDATA and the uninstall key are fixture paths under
+  that root, Setup runs the detection and the write, logs them and stops. }
+function UserSettingsFile: String;
+begin
+#ifdef ProfileTestRoot
+  Result := '{#ProfileTestRoot}\home\.horizun\settings.json';
+#else
+  Result := ExpandConstant('{%USERPROFILE}') + '\.horizun\settings.json';
+#endif
+end;
+
+function LocalAppDataRoot: String;
+begin
+#ifdef ProfileTestRoot
+  Result := '{#ProfileTestRoot}\localappdata';
+#else
+  Result := ExpandConstant('{localappdata}');
+#endif
+end;
+
+function UninstallKeyExists: Boolean;
+begin
+#ifdef ProfileTestRoot
+  Result := FileExists('{#ProfileTestRoot}\uninstall-key');
+#else
+  Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1') or
+            RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1');
+#endif
+end;
+
+function DetectFreshInstall: Boolean;
+begin
+  Result := not (FileExists(UserSettingsFile) or UninstallKeyExists or
+    DirExists(LocalAppDataRoot + '\Programs\Horizun\MCP\server') or
+    FileExists(LocalAppDataRoot + '\Horizun\install-status.json'));
+end;
+
+procedure WriteFirstToolProfile;
+var
+  Path: String;
+begin
+  Path := UserSettingsFile;
+  if (not FreshInstall) or FileExists(Path) then exit;
+  if not ForceDirectories(ExtractFileDir(Path)) then
+  begin
+    Log('tool profile: could not create ' + ExtractFileDir(Path) + '; every tool stays listed.');
+    exit;
+  end;
+  if SaveStringToFile(Path, '{' + #13#10 + '  "tool_profile": "esencial"' + #13#10 + '}' + #13#10, False) then
+    Log('tool profile: new install, wrote tool_profile=esencial to ' + Path)
+  else
+    Log('tool profile: could not write ' + Path + '; every tool stays listed.');
+end;
+
 function InitializeSetup: Boolean;
 var
   I: Integer;
   ProgramFiles64, Duplicates, Unreadables, Refusal, UserRoot, MachineRoot, ExpectedUserManifest: String;
 begin
   Result := True;
+  FreshInstall := DetectFreshInstall;
+#ifdef ProfileTestRoot
+  if FreshInstall then Log('tool profile test: fresh install') else Log('tool profile test: existing install');
+  WriteFirstToolProfile;
+  Log('tool profile test: done');
+  Result := False;
+  exit;
+#endif
 #ifndef PreflightTestRoot
   if RevitIsRunning then
   begin
@@ -1007,6 +1081,8 @@ begin
       verification, they registered a payload that a failed verify then rolled
       back. RollbackDeployment clears ServerInstalled, so a rolled-back install
       starts nothing. }
+    { Before the helpers start a server that reads it. }
+    if ServerInstalled then WriteFirstToolProfile;
     if ServerInstalled then StartClientHelpers;
 
     { Old installers staged plugin payloads permanently under the application

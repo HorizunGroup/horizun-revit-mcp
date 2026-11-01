@@ -1706,6 +1706,7 @@ namespace Horizun.Server
                     // add-in cannot see, so the server reports it: which toolsets are active
                     // and how many characters/estimated tokens the tool list costs.
                     health["toolsets"] = ToolsetReport.HealthBlock();
+                    health["tool_profile"] = ToolProfiles.HealthBlock();
                     // Which surface tools/list carries (full or the facade), what it costs, and
                     // both identities: the contract hash the add-in shares, the facade's own.
                     health["schema_mode"] = SchemaFacade.HealthBlock();

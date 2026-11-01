@@ -38,8 +38,13 @@ namespace Horizun.Server
         /// </summary>
         internal static Action AfterActivation;
 
-        /// <summary>Is the tool offered right now: a restriction exists and a session may widen it.</summary>
-        public static bool Offered() => ToolPacks.CanActivate(Settings.ActivePackResolution(), out _);
+        /// <summary>
+        /// Is the tool offered right now: a restriction exists and a session may widen it, or a role
+        /// profile (ToolProfiles.cs) lists less than the session can call.
+        /// </summary>
+        public static bool Offered(bool profileAware = true) =>
+            ToolPacks.CanActivate(Settings.ActivePackResolution(), out _) ||
+            (profileAware && ToolProfiles.Current().Restricting);
 
         public static JObject Definition() => new JObject
         {
@@ -73,9 +78,10 @@ namespace Horizun.Server
             "permission profile blocks. Use it when horizun_list_tools names a toolset to enable.";
 
         /// <summary>Adds the definition to a tools/list answer when it is offered.</summary>
-        public static JArray AppendIfOffered(JArray list, bool advertiseTaskSupport, bool compact = false)
+        public static JArray AppendIfOffered(JArray list, bool advertiseTaskSupport, bool compact = false,
+                                             bool profileAware = true)
         {
-            if (!Offered()) return list;
+            if (!Offered(profileAware)) return list;
             JObject def = Definition();
             if (compact) def["description"] = CompactDescription;
             if (advertiseTaskSupport)
@@ -105,6 +111,11 @@ namespace Horizun.Server
             }
 
             ToolPacks.Resolution selection = Settings.ActivePackResolution();
+            bool profiled = ToolProfiles.Current().Restricting;
+            // Under a role profile, activation also SHOWS the toolset. When nothing restricts what may
+            // be called (or the settings file decided it), showing is all it does.
+            if (profiled && (!selection.Restricting || !ToolPacks.CanActivate(selection, out _)))
+                return Show(real, asked, selection.Restricting);
             if (!selection.Restricting)
                 return new JObject
                 {
@@ -156,9 +167,11 @@ namespace Horizun.Server
             try { AfterActivation?.Invoke(); } catch (Exception ex) { Log.Warn("tools/list_changed after activation: " + ex.Message); }
 
             ToolPacks.Resolution now = Settings.ActivePackResolution();
+            JArray newlyListed = profiled ? ShowNow(opened) : new JArray(newly);
             return new JObject
             {
                 ["restricting"] = true,
+                ["newly_listed"] = newlyListed,
                 ["toolset"] = real.Length == 1 ? real[0] : Horizun.Contracts.ToolsetCatalog.Normalize(asked),
                 ["requested"] = asked,
                 ["activated"] = new JArray(opened),
@@ -174,6 +187,42 @@ namespace Horizun.Server
                 ["next"] = "Call a newly available tool by name (horizun_describe_tool {name} shows its schema in " +
                            "facade mode). still_blocked tools stay refused for the reason given; only the machine's " +
                            "owner changes that."
+            };
+        }
+
+        // ---- role profiles: activation as visibility -----------------------------------------
+
+        private static JArray ShowNow(IEnumerable<string> toolsets)
+        {
+            var before = new HashSet<string>(ListedNow(), StringComparer.Ordinal);
+            ToolProfiles.ShowForSession(toolsets);
+            return new JArray(ListedNow().Where(n => !before.Contains(n)));
+        }
+
+        private static IEnumerable<string> ListedNow() =>
+            SchemaFacade.List(SchemaMode.Current, false).OfType<JObject>().Select(t => (string)t["name"]).ToList();
+
+        private static JObject Show(string[] real, string asked, bool restricting)
+        {
+            JArray newly = ShowNow(real);
+            if (newly.Count > 0)
+                try { AfterActivation?.Invoke(); } catch (Exception ex) { Log.Warn("tools/list_changed after activation: " + ex.Message); }
+            ToolProfiles.Resolution now = ToolProfiles.Current();
+            return new JObject
+            {
+                ["restricting"] = restricting,
+                ["toolset"] = real.Length == 1 ? real[0] : Horizun.Contracts.ToolsetCatalog.Normalize(asked),
+                ["requested"] = asked,
+                ["tool_profile"] = now.Name,
+                ["newly_listed"] = newly,
+                ["already_listed"] = newly.Count == 0,
+                ["shown_this_session"] = new JArray(now.ShownThisSession),
+                ["scope"] = "this server process only: nothing was written to settings.json or the environment, " +
+                            "and a restart forgets it",
+                ["tools_list_changed"] = "announced to clients that support notifications/tools/list_changed; others " +
+                                         "read tools/list again, or call the tools by name",
+                ["next"] = "Call a newly listed tool by name. Showing a toolset changes only what is listed: what the " +
+                           "permission profile refuses stays refused."
             };
         }
     }

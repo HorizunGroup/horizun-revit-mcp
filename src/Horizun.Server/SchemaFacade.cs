@@ -104,7 +104,7 @@ namespace Horizun.Server
 
         // ---- the three meta-tools ---------------------------------------------------------
 
-        private static JObject ListToolsDef() => new JObject
+        internal static JObject ListToolsDef() => new JObject
         {
             ["name"] = ListToolsName,
             ["title"] = "List Tools",
@@ -123,7 +123,7 @@ namespace Horizun.Server
             ["annotations"] = Hints("List Tools", readOnly: true)
         };
 
-        private static JObject DescribeToolDef() => new JObject
+        internal static JObject DescribeToolDef() => new JObject
         {
             ["name"] = DescribeToolName,
             ["title"] = "Describe Tool",
@@ -141,7 +141,7 @@ namespace Horizun.Server
             ["annotations"] = Hints("Describe Tool", readOnly: true)
         };
 
-        private static JObject CallToolDef() => new JObject
+        internal static JObject CallToolDef() => new JObject
         {
             ["name"] = CallToolName,
             ["title"] = "Call Tool",
@@ -193,20 +193,28 @@ namespace Horizun.Server
         /// </summary>
         public static string Hash => _hash.Value;
 
+        // A role profile (ToolProfiles.cs) lists the same three tools beside its own, so they answer
+        // there too; in an unrestricted full or compact session they do not exist.
         public static bool IsMetaTool(string name, SchemaSurface mode) =>
-            mode == SchemaSurface.Facade &&
-            (name == ListToolsName || name == DescribeToolName || name == CallToolName);
+            (name == ListToolsName || name == DescribeToolName || name == CallToolName) &&
+            (mode == SchemaSurface.Facade || ToolProfiles.Current().Restricting);
 
         // ---- tools/list ---------------------------------------------------------------------
 
         /// <summary>What tools/list answers in <paramref name="mode"/>.</summary>
         public static JArray List(SchemaSurface mode, bool advertiseTaskSupport)
         {
+            // A role profile narrows what full and compact SHOW (ToolProfiles.cs); with none, both are
+            // exactly what they always were.
             if (mode == SchemaSurface.Full)
-                return ToolsetActivation.AppendIfOffered(Tools.List(advertiseTaskSupport), advertiseTaskSupport);
+                return ToolProfiles.Current().Restricting
+                    ? ToolProfiles.Apply(Tools.List(advertiseTaskSupport), advertiseTaskSupport, compact: false)
+                    : ToolsetActivation.AppendIfOffered(Tools.List(advertiseTaskSupport), advertiseTaskSupport);
             // Compact is the surface a restricted local session uses, so it offers activation too.
             if (mode == SchemaSurface.Compact)
-                return ToolsetActivation.AppendIfOffered(SchemaCompact.List(advertiseTaskSupport), advertiseTaskSupport, compact: true);
+                return ToolProfiles.Current().Restricting
+                    ? ToolProfiles.Apply(SchemaCompact.List(advertiseTaskSupport), advertiseTaskSupport, compact: true)
+                    : ToolsetActivation.AppendIfOffered(SchemaCompact.List(advertiseTaskSupport), advertiseTaskSupport, compact: true);
 
             var arr = new JArray();
             ToolDef health = Tools.Advertisable().FirstOrDefault(t => t.Name == "horizun_health");
@@ -222,7 +230,8 @@ namespace Horizun.Server
                     };
                 arr.Add(def);
             }
-            return ToolsetActivation.AppendIfOffered(arr, advertiseTaskSupport);
+            // The facade already reaches every tool; a role profile does not change it.
+            return ToolsetActivation.AppendIfOffered(arr, advertiseTaskSupport, profileAware: false);
         }
 
         // ---- tools/call ---------------------------------------------------------------------
@@ -236,7 +245,7 @@ namespace Horizun.Server
         /// </summary>
         public static JObject UnwrapCall(JObject prms, SchemaSurface mode)
         {
-            if (mode != SchemaSurface.Facade || prms == null) return prms;
+            if (prms == null || (mode != SchemaSurface.Facade && !ToolProfiles.Current().Restricting)) return prms;
             JToken n = prms["name"];
             if (n == null || n.Type != JTokenType.String || (string)n != CallToolName) return prms;
             if (!TryInner(prms["arguments"], out string inner, out JToken innerArgs, out _)) return prms;
