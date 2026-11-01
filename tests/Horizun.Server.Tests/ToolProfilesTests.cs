@@ -367,28 +367,53 @@ namespace Horizun.Server.Tests
                 };
                 lines.AddRange(requests.Select(q => q.ToString(Formatting.None)));
 
+                // Like a real client, each request waits for the reply to the one before: the
+                // server answers tools/call off the reading thread, so a tools/list sent right
+                // behind an activation could otherwise be answered first (it was, on Linux CI).
                 var replies = new Dictionary<string, JObject>(StringComparer.Ordinal);
+                var received = new List<JObject>();
+                var gate = new object();
                 using (var proc = Process.Start(psi))
                 {
                     var stderr = proc.StandardError.ReadToEndAsync();
-                    var stdout = proc.StandardOutput.ReadToEndAsync();
-                    foreach (string l in lines) proc.StandardInput.WriteLine(l);
+                    var reader = new System.Threading.Thread(() =>
+                    {
+                        string raw;
+                        while ((raw = proc.StandardOutput.ReadLine()) != null)
+                        {
+                            string line = raw.Trim();
+                            if (line.Length == 0) continue;
+                            JObject msg;
+                            try { msg = JObject.Parse(line); } catch { continue; }
+                            lock (gate)
+                            {
+                                received.Add(msg);
+                                if (msg["id"] != null && msg["method"] == null) replies[(string)msg["id"]] = msg;
+                                System.Threading.Monitor.PulseAll(gate);
+                            }
+                        }
+                    }) { IsBackground = true };
+                    reader.Start();
+                    foreach (string l in lines)
+                    {
+                        proc.StandardInput.WriteLine(l);
+                        proc.StandardInput.Flush();
+                        string id = (string)JObject.Parse(l)["id"];
+                        if (id == null) continue;
+                        DateTime until = DateTime.UtcNow.AddSeconds(60);
+                        lock (gate)
+                            while (!replies.ContainsKey(id) && DateTime.UtcNow < until)
+                                System.Threading.Monitor.Wait(gate, TimeSpan.FromMilliseconds(200));
+                    }
                     proc.StandardInput.Close();
                     if (!proc.WaitForExit(120000))
                     {
                         try { proc.Kill(); } catch { }
                         throw new Xunit.Sdk.XunitException("server did not exit in 120 s");
                     }
+                    reader.Join(10000);
                     string err = stderr.GetAwaiter().GetResult();
-                    foreach (string raw in stdout.GetAwaiter().GetResult().Split('\n'))
-                    {
-                        string line = raw.Trim();
-                        if (line.Length == 0) continue;
-                        JObject msg;
-                        try { msg = JObject.Parse(line); } catch { continue; }
-                        all.Add(msg);
-                        if (msg["id"] != null && msg["method"] == null) replies[(string)msg["id"]] = msg;
-                    }
+                    lock (gate) all.AddRange(received);
                     foreach (string id in new[] { "1" }.Concat(requests.Select(q => (string)q["id"])))
                         Assert.True(replies.ContainsKey(id), "no reply to id " + id + "; stderr: " + err);
                 }
