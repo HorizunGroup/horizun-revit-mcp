@@ -108,91 +108,132 @@ Replace `<you>` with the real account path. JSON needs doubled backslashes;
 TOML single-quoted strings do not. Other clients should use that same expanded
 path and allow enough time for long Revit scans.
 
-## Local or short-context models: `HORIZUN_TOOLSETS=local`
+## Small and local models
 
-### Optional schema facade
+Every session pays for `tools/list` before the first question. A model served on this
+machine, or any client with a short context window, can see a smaller surface. Three settings
+do that, all in **the client's own** MCP server entry, and none widens the permission profile.
 
-3.0.0 defaults to `HORIZUN_SCHEMA_MODE=full`: each reachable typed tool is
-advertised directly. A client with a short context window can set
-`HORIZUN_SCHEMA_MODE=facade` in **its own** MCP server environment. It then
-sees `horizun_health`, `horizun_list_tools`, `horizun_describe_tool` and
-`horizun_call_tool`; the latter three discover the reachable tools, return
-exact schemas and dispatch the same typed calls. The bridge still checks the
-underlying permission profile and toolset. `horizun_health.schema_mode`
-reports the active mode. The facade is opt-in because an authenticated agent
-battery has not yet established better task completion.
+| Setting (`safe_write`) | Tools | `tools/list` |
+|---|---:|---:|
+| default (`HORIZUN_SCHEMA_MODE=full`) | 113 | 421 731 B (~105 000 tokens) |
+| `HORIZUN_TOOLSETS=local` | 10 | 61 645 B (~15 400 tokens) |
+| `HORIZUN_TOOLSETS=local` + `HORIZUN_SCHEMA_MODE=compact` | 10 | 14 257 B (~3 600 tokens) |
+| `HORIZUN_SCHEMA_MODE=facade` | 4 | 4 352 B (~1 100 tokens), schemas on demand |
 
-For a Codex entry that already points to the installed executable, add:
+Tokens are characters / 4, as `horizun_health` reports them. Measured 2026-10-31; how, and the
+full results, in [diagnostico-modelos-pequenos.md](diagnostico-modelos-pequenos.md).
 
-```toml
-env = { HORIZUN_SCHEMA_MODE = "facade" }
+### Which one to use
+
+In a 27-task battery on an English Revit 2024 (one run per setting):
+
+- **`local` + `compact`** for a small or local model. qwen3:8b over Ollama completed 15 of 27
+  tasks with it, against 12 with `local` alone before this change, using 79 % fewer input
+  tokens per task. Claude Haiku kept 25 of 27 against 26, using 58 % fewer.
+- **`local`** alone when the model reads long schemas well and you want every argument visible.
+- **`facade`** when the context is tiny. A small model struggles with its three steps (list,
+  describe, call): qwen3:8b completed 7 of 27.
+- **Neither** for a large model with a long context: the full list stays the default.
+
+### `HORIZUN_TOOLSETS=local`
+
+Ten tools: `horizun_health`, `get_document_info`, `horizun_list_elements`,
+`horizun_query_model`, `horizun_capture_view` (`full_write` and above), the typed writes
+`horizun_create_elements`, `horizun_write_params_verified`, `horizun_delete_verified`,
+`horizun_transform_elements`, `horizun_undo`, and `horizun_activate_toolset`. Selected
+**alone**, `local` does not bring `horizun_target`, `horizun_job_status` and
+`horizun_submit_job`: in the battery they were never used, or were called instead of
+`horizun_health`. Add any other toolset (`local,documentation`) and the core returns. Model
+scan, model diff, quantities, navigation and view management are in `read`, `audit`,
+`coordination` and `documentation`. `local` never carries the Python surface.
+
+### `HORIZUN_SCHEMA_MODE=compact`
+
+The same tools as `full`, since a toolset still decides which ones appear. Each tool shows a
+description of at most 200 characters and only its common arguments, and the short notes say
+where each value comes from: the exact document title from `horizun_health`, a level id from
+`horizun_query_model`, and that leaving out the view captures the active one. Calls are still
+validated against the complete contract. An argument the short schema leaves out is still
+accepted, and the exact schema is at `horizun://contract/tools/{tool}`. Dry run, confirmation
+and re-read are unchanged. In this mode only, `horizun_query_model` answers
+`response_mode=compact` when the call does not choose one.
+
+### `HORIZUN_SCHEMA_MODE=facade`
+
+`tools/list` carries `horizun_health`, `horizun_list_tools`, `horizun_describe_tool` and
+`horizun_call_tool`. `horizun_list_tools` takes `query`, a description of the task in Spanish or
+English with or without accents, for example `{"query": "cuántos muros hay"}`. It returns the
+best matches, and separately the tools that exist but sit in a toolset that is not active.
+`horizun_call_tool` is the same typed call, with the same checks.
+
+### Toolsets on demand and Spanish names
+
+A session whose client restricts toolsets in its **environment** (`HORIZUN_TOOLSETS`) can open
+one more for that session only with `horizun_activate_toolset {"toolset": "documentacion"}`.
+Nothing is saved, a restart forgets it, and it never opens what the permission profile or
+`denied_tools`/`allowed_tools` switch off. A selection saved in `settings.json` is also enforced
+by the add-in, so it is changed there, not from a session. Toolset names accept Spanish aliases
+in any case, with or without accents: `consulta`/`lectura` (read), `modelado`/`modelo` (model),
+`arquitectura`, `estructura`, `documentacion`, `planimetria`, `auditoria`, `coordinacion`,
+`tablas` (schedules), `familia`, `interoperabilidad` and `administracion`.
+
+`horizun_health` reports `toolsets.active`, `toolsets_not_active`, `tools_not_advertised`,
+`activated_this_session` and `schema_mode`. Restart a client that does not refresh
+`tools/list` after changing a setting.
+
+### Setting it per client
+
+Use the installed path the installer printed.
+
+**Claude Desktop** reads `claude_desktop_config.json` (`%APPDATA%\Claude\` on Windows; an MSIX
+install keeps it elsewhere, see above). Add `env` to the entry, then quit Claude Desktop
+completely and start it again:
+
+```json
+"horizun-revit": {
+  "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe",
+  "env": { "HORIZUN_TOOLSETS": "local", "HORIZUN_SCHEMA_MODE": "compact" }
+}
 ```
 
-If `HORIZUN_TOOLSETS=local` is also selected, put both keys in the same `env`
-table. Restart a client that does not refresh `tools/list` after this change.
-
-### Compact schemas: `HORIZUN_SCHEMA_MODE=compact`
-
-`compact` keeps the same tools as `full` (a toolset still decides which ones
-appear) but each shows a description of at most 200 characters and only its
-common arguments. It is for a small model that picks the right tool and then
-fills in its arguments badly. It combines with any `HORIZUN_TOOLSETS`; with
-`local` it measured about 21 000 characters instead of about 99 000. Calls are
-still validated against the complete contract, so an argument the short schema
-omits is accepted, and the exact schema is at `horizun://contract/tools/{tool}`.
-In this mode only, `horizun_query_model` answers `response_mode=compact` when
-you do not choose one.
-
-The full tool list is about 475 KB (roughly 120-160 thousand tokens), and every session
-pays for it before the first question. A model served on this machine, or any client with
-a short context window, can ask for the **`local`** toolset instead: ten tools -
-`horizun_health`, `get_document_info`, `horizun_list_elements`, `horizun_query_model`,
-`horizun_capture_view` and the typed writes `horizun_create_elements`,
-`horizun_write_params_verified`, `horizun_delete_verified`, `horizun_transform_elements`
-and `horizun_undo`. Selected **alone**, `local` does not bring `horizun_target`,
-`horizun_job_status` and `horizun_submit_job` (in a 54-task battery with a small model they
-were never used, or were called instead of `horizun_health`); add any other toolset
-(`local,documentation`) and the core returns. It never carries the Python surface.
-Measured 2026-10-31 at the default `safe_write` profile: 9 tools, 60,219 characters
-(about 15 thousand tokens), down from 17 tools and 98,557 characters; at `full_write`
-the tenth, `horizun_capture_view`, appears as well (10 tools, 62,792 characters).
-Model scan, model diff, quantities, navigation and view management left `local`; they stay
-in `read`, `audit`, `coordination` and `documentation`.
-
-Set it in the client's own server entry, so it applies to that client only:
+**Claude Code** takes the server name **before** `-e`, because `-e` accepts several `KEY=value`
+pairs and would read a name that follows it as one more:
 
 ```powershell
 $serverPath = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
-claude mcp add --scope user -e HORIZUN_TOOLSETS=local horizun-revit -- "$serverPath"
+claude mcp add --scope user horizun-revit -e HORIZUN_TOOLSETS=local -e HORIZUN_SCHEMA_MODE=compact -- "$serverPath"
 ```
+
+**Codex** (`%USERPROFILE%\.codex\config.toml`):
 
 ```toml
 [mcp_servers.horizun-revit]
 command = 'C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
-env = { HORIZUN_TOOLSETS = "local" }
+env = { HORIZUN_TOOLSETS = "local", HORIZUN_SCHEMA_MODE = "compact" }
 ```
 
-```json
-"horizun-revit": {
-  "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe",
-  "env": { "HORIZUN_TOOLSETS": "local" }
-}
-```
+**LM Studio** (0.3.17 or later) reads `mcp.json` in the `mcpServers` notation above; open it
+from **Program → Install → Edit mcp.json**. Load the model with a context length that fits
+(next section). Not yet verified here: that `env` reaches the server. Check
+`horizun_health.schema_mode` after the first call.
 
-`horizun_health` then reports `toolsets.active` (`local`; `core` appears once another toolset is added), the toolsets left out
-(`toolsets_not_active`) and how many tools are not advertised (`tools_not_advertised`); a
-call to a hidden tool is refused naming the toolset that carries it. The permission profile
-still governs: `local` never widens what `safe_write` allows. Add more toolsets with a
-comma (`local,documentation`) when a task needs them.
+**Ollama** serves the model and does tool calling. Ollama itself does not start MCP servers,
+so it needs an MCP client that talks to it. The battery used a minimal loop over Ollama's
+`/api/chat` that passes this server's tools to the model
+(`scripts/eval/small-model-battery.py --agent ollama`). That is the route measured here.
+Terminal MCP clients for Ollama, such as `ollmcp`, take the same `env` keys; they have not been
+verified with Horizun yet.
 
-Toolset names also accept Spanish aliases, in any case and with or without accents:
-`lectura`/`consulta` (read), `modelado`/`modelo` (model), `arquitectura`, `estructura`,
-`documentacion`, `planimetria`, `auditoria`, `coordinacion`, `tablas` (schedules), `familia`,
-`interoperabilidad`, `administracion`. A session started with a toolset restriction in the client's
-environment can open one more for that session only with the `horizun_activate_toolset` tool
-(`{"toolset": "documentacion"}`); nothing is saved and a restart forgets it, and it never opens what the
-permission profile or `denied_tools`/`allowed_tools` turn off.
+### Context window
+
+Local runtimes often start small; Ollama defaults to 4 096 tokens on GPUs under 24 GiB. The
+battery ran qwen3:8b with `num_ctx=32768`, which fits `local` + `compact` with room for
+replies. `local` alone (~15 400 tokens) also fits; `full` does not. On an 8 GB GPU,
+`OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` for `ollama serve` kept 76 % of the
+model on the GPU, against 61 % without them. Check what the runtime allocated under `CONTEXT`
+and `PROCESSOR` in `ollama ps`.
 
 ## ChatGPT Work
 
