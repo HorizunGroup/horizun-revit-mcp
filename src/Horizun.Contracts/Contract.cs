@@ -182,7 +182,7 @@ namespace Horizun.Contracts
         private static readonly Dictionary<string, string> DescriptionMap =
             new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                [Core] = "Always on, welded to every selection: health, target, job status, submit job.",
+                [Core] = "Welded to every selection: health, target, job status, submit job - except when local is the whole selection, which keeps only health.",
                 ["read"] = "Read the model: document facts, element listing and queries, model scan, schedules " +
                            "data, dimensions, 2D detail, planimetry, quantities, structure and CAD reading, capture.",
                 ["model"] = "Typed model writes: create/transform/delete elements, parameters, keynotes, shared " +
@@ -205,9 +205,10 @@ namespace Horizun.Contracts
                                        "links, catalog lookup, budget comparison, workflow procedures.",
                 ["powerbi"] = "Power BI push and selection exchange, Excel read/write, budget comparison.",
                 ["administration"] = "Document session, open/save, relinquish, script promotion, repair memory.",
-                ["local"] = "For local or short-context models: reading (document facts, element listing and " +
-                            "queries, model scan, quantities, capture, navigation, model diff) and six typed writes (parameters, create, " +
-                            "transform, delete, views, undo). Never the Python surface. About a fifth of the full list.",
+                ["local"] = "For local or short-context models, eleven tools: horizun_health, document facts, element " +
+                            "listing and query, model scan, capture, and the typed writes (create, parameters, delete, transform, " +
+                            "undo). Selected ALONE it drops the core tools target, job_status and submit_job (add any " +
+                            "other toolset, or activate one, and the core returns). Never the Python surface.",
                 ["unsafe_code"] = "The Python surface: execute_python (still gated by the owner's grant) and the " +
                                   "access request."
             };
@@ -222,7 +223,26 @@ namespace Horizun.Contracts
             {
                 ["families"] = new[] { "family" },
                 ["data"] = new[] { "schedules", "interoperability", "powerbi" },
-                ["admin"] = new[] { "administration", "unsafe_code" }
+                ["admin"] = new[] { "administration", "unsafe_code" },
+                // Spanish names for the existing toolsets (product owner, 2026-10). Keys are stored
+                // WITHOUT accents and lower-case: Normalize folds whatever a person types onto them
+                // (Documentación, DOCUMENTACION). They are aliases, never toolsets: nothing declares
+                // membership in one, so a membership guarded above cannot be widened through a name.
+                // "local" needs none - it is already its own name.
+                ["consulta"] = new[] { "read" },
+                ["lectura"] = new[] { "read" },
+                ["modelado"] = new[] { "model" },
+                ["modelo"] = new[] { "model" },
+                ["arquitectura"] = new[] { "architecture" },
+                ["estructura"] = new[] { "structure" },
+                ["documentacion"] = new[] { "documentation" },
+                ["planimetria"] = new[] { "planimetry" },
+                ["auditoria"] = new[] { "audit" },
+                ["coordinacion"] = new[] { "coordination" },
+                ["tablas"] = new[] { "schedules" },
+                ["familia"] = new[] { "family" },
+                ["interoperabilidad"] = new[] { "interoperability" },
+                ["administracion"] = new[] { "administration" }
             };
 
         public static IReadOnlyDictionary<string, string> Descriptions => DescriptionMap;
@@ -231,25 +251,50 @@ namespace Horizun.Contracts
 
         public static IReadOnlyDictionary<string, string[]> Aliases => AliasMap;
 
+        /// <summary>
+        /// The spelling a toolset or alias name is compared in: trimmed, lower-case, accents
+        /// removed. "Documentación", " DOCUMENTACION " and "documentacion" are one name.
+        /// </summary>
+        public static string Normalize(string name)
+        {
+            string folded = (name ?? "").Trim().ToLowerInvariant().Normalize(System.Text.NormalizationForm.FormD);
+            var sb = new System.Text.StringBuilder(folded.Length);
+            foreach (char c in folded)
+                if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark)
+                    sb.Append(c);
+            return sb.ToString().Normalize(System.Text.NormalizationForm.FormC);
+        }
+
+        /// <summary>
+        /// The real toolsets a name stands for, or null when it is neither a toolset nor an
+        /// alias. A toolset answers itself; an alias answers what it expands to.
+        /// </summary>
+        public static string[] ExpandName(string name)
+        {
+            string n = Normalize(name);
+            if (DescriptionMap.ContainsKey(n)) return new[] { n };
+            return AliasMap.TryGetValue(n, out string[] targets) ? targets : null;
+        }
+
         // One row per tool, in contract order except core, whose four come first in the
         // order the core guard pins.
         private static readonly List<KeyValuePair<string, string[]>> Rows = new List<KeyValuePair<string, string[]>>
         {
             // ---- core: welded to every selection -----------------------------------
-            Row("horizun_health", Core),
+            Row("horizun_health", Core, "local"),
             Row("horizun_target", Core),
             Row("horizun_job_status", Core),
             Row("horizun_submit_job", Core),
 
             // ---- reading the model --------------------------------------------------
             Row("get_document_info", "read", "local"),
-            Row("horizun_navigate", "read", "local"),
+            Row("horizun_navigate", "read"),
             Row("horizun_list_elements", "read", "local"),
             Row("horizun_query_model", "read", "mep", "local"),
             Row("horizun_model_scan", "read", "audit", "local"),
             Row("horizun_file_info", "read", "coordination"),
-            Row("horizun_model_diff", "audit", "coordination", "powerbi", "local"),
-            Row("horizun_quantities", "read", "coordination", "local"),
+            Row("horizun_model_diff", "audit", "coordination", "powerbi"),
+            Row("horizun_quantities", "read", "coordination"),
             Row("horizun_capture_view", "read", "documentation", "planimetry", "audit", "local"),
             Row("horizun_verify_changes", "read", "coordination", "audit", "mep"),
 
@@ -332,7 +377,7 @@ namespace Horizun.Contracts
             Row("horizun_apply_cad_plan", "model", "cad"),
 
             // ---- documentation and planimetry -------------------------------------------
-            Row("horizun_manage_views", "documentation", "local"),
+            Row("horizun_manage_views", "documentation"),
             Row("horizun_plan_views", "documentation"),
             Row("horizun_annotate", "documentation"),
             Row("horizun_edit_dimensions", "documentation"),

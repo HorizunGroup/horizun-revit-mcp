@@ -75,7 +75,7 @@ namespace Horizun.Server
         /// server treats as a proof that nothing started ("FIFO queue", "NEVER
         /// STARTED") unless that verdict is the one being given.
         /// </summary>
-        public static string Sentence(string verdict, int batchSize, long elapsedMs)
+        public static string Sentence(string verdict, int batchSize, long elapsedMs, bool submitJobAvailable = true)
         {
             string s;
             switch (verdict)
@@ -95,7 +95,10 @@ namespace Horizun.Server
                         "the model before sending anything again.";
                     break;
             }
-            if (elapsedMs >= LongWaitMs)
+            // Only advise the queue when the session can reach it: with `local` as the whole toolset
+            // submit_job and job_status are hidden, and telling the agent to use them would send it to a
+            // tool it cannot call.
+            if (elapsedMs >= LongWaitMs && submitJobAvailable)
                 s += " This call waited " + (elapsedMs / 1000) + " s" +
                      (batchSize > 0 ? " for a batch of " + batchSize + " items" : "") +
                      "; work that outlives the client's timeout belongs in horizun_submit_job, polled with " +
@@ -103,7 +106,8 @@ namespace Horizun.Server
             return s;
         }
 
-        public static JObject ToJson(string verdict, bool hasIdempotencyKey, int batchSize, long elapsedMs)
+        public static JObject ToJson(string verdict, bool hasIdempotencyKey, int batchSize, long elapsedMs,
+                                     bool submitJobAvailable = true)
         {
             var o = new JObject
             {
@@ -113,7 +117,7 @@ namespace Horizun.Server
                 ["batch_items"] = batchSize,
                 ["waited_ms"] = elapsedMs
             };
-            if (elapsedMs >= LongWaitMs) o["prefer"] = "horizun_submit_job";
+            if (elapsedMs >= LongWaitMs && submitJobAvailable) o["prefer"] = "horizun_submit_job";
             return o;
         }
     }

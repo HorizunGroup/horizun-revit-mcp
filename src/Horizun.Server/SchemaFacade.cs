@@ -47,7 +47,12 @@ namespace Horizun.Server
         /// <summary>Every reachable tool with its abridged schema - the 2.x surface, byte for byte.</summary>
         Full,
         /// <summary>horizun_health plus list / describe / call; every other tool on demand.</summary>
-        Facade
+        Facade,
+        /// <summary>
+        /// The SAME tools as Full, short to read (SchemaCompact.cs): a description of at most 200
+        /// characters and only the common arguments. The call is still validated against the full contract.
+        /// </summary>
+        Compact
     }
 
     internal static class SchemaMode
@@ -77,13 +82,15 @@ namespace Horizun.Server
             source = "environment";
             if (string.Equals(v, "full", StringComparison.OrdinalIgnoreCase)) return SchemaSurface.Full;
             if (string.Equals(v, "facade", StringComparison.OrdinalIgnoreCase)) return SchemaSurface.Facade;
+            if (string.Equals(v, "compact", StringComparison.OrdinalIgnoreCase)) return SchemaSurface.Compact;
             source = "default";
             problem = EnvironmentVariable + "='" + (v.Length > 40 ? v.Substring(0, 40) + "..." : v) + "' is not a " +
-                      "schema mode; expected 'full' or 'facade'. Serving the default (" + Name(Default) + ").";
+                      "schema mode; expected 'full', 'facade' or 'compact'. Serving the default (" + Name(Default) + ").";
             return Default;
         }
 
-        public static string Name(SchemaSurface s) => s == SchemaSurface.Full ? "full" : "facade";
+        public static string Name(SchemaSurface s) =>
+            s == SchemaSurface.Full ? "full" : s == SchemaSurface.Compact ? "compact" : "facade";
     }
 
     internal static class SchemaFacade
@@ -106,9 +113,11 @@ namespace Horizun.Server
                 "only horizun_health and this facade; every other tool is reached through it: read a tool's exact " +
                 "schema with " + DescribeToolName + ", then call it with " + CallToolName + ". A tool that is not " +
                 "listed is switched off by the permission profile or a disabled toolset (toolsets_not_active); ask " +
-                "the user to enable it.",
+                "the user to enable it. Pass query (what you want to do, Spanish or English) to get the best-matching " +
+                "tools ranked in matches; matches_not_active lists tools a disabled toolset is hiding.",
             ["inputSchema"] = JObject.Parse(@"{""type"":""object"",""properties"":{""toolset"":{""type"":""string"",
-""description"":""Only this toolset, e.g. read, model, documentation. Omit for every callable tool.""}},
+""description"":""Only this toolset, e.g. read, model, documentation. Omit for every callable tool.""},
+""query"":{""type"":""string"",""description"":""What you want to do, in your own words, e.g. borrar elemento, count walls. Returns the best matches.""}},
 ""additionalProperties"":false}"),
             ["outputSchema"] = OutputSchema(),
             ["annotations"] = Hints("List Tools", readOnly: true)
@@ -193,7 +202,11 @@ namespace Horizun.Server
         /// <summary>What tools/list answers in <paramref name="mode"/>.</summary>
         public static JArray List(SchemaSurface mode, bool advertiseTaskSupport)
         {
-            if (mode == SchemaSurface.Full) return Tools.List(advertiseTaskSupport);
+            if (mode == SchemaSurface.Full)
+                return ToolsetActivation.AppendIfOffered(Tools.List(advertiseTaskSupport), advertiseTaskSupport);
+            // Compact is the surface a restricted local session uses, so it offers activation too.
+            if (mode == SchemaSurface.Compact)
+                return ToolsetActivation.AppendIfOffered(SchemaCompact.List(advertiseTaskSupport), advertiseTaskSupport, compact: true);
 
             var arr = new JArray();
             ToolDef health = Tools.Advertisable().FirstOrDefault(t => t.Name == "horizun_health");
@@ -209,7 +222,7 @@ namespace Horizun.Server
                     };
                 arr.Add(def);
             }
-            return arr;
+            return ToolsetActivation.AppendIfOffered(arr, advertiseTaskSupport);
         }
 
         // ---- tools/call ---------------------------------------------------------------------
@@ -259,7 +272,8 @@ namespace Horizun.Server
                 why = CallToolName + " cannot call itself; name the tool directly." + Shape;
                 return false;
             }
-            if (Tools.Find(name) == null && name != ListToolsName && name != DescribeToolName)
+            if (Tools.Find(name) == null && name != ListToolsName && name != DescribeToolName &&
+                name != ToolsetActivation.Name)
             {
                 why = "Unknown tool '" + name + "'. " + ListToolsName + " names every tool this session can call. " +
                       "Nothing was run.";
@@ -286,6 +300,7 @@ namespace Horizun.Server
             {
                 case ListToolsName: return ListTools(args);
                 case DescribeToolName: return Describe(args);
+                case ToolsetActivation.Name: return ToolsetActivation.Answer(args);
                 case CallToolName:
                     // Reached only when UnwrapCall refused to unwrap, so this names why.
                     if (!TryInner(args, out _, out _, out string why)) throw new ToolRefusal(why);
@@ -301,22 +316,45 @@ namespace Horizun.Server
         public static JObject ListTools(JObject args)
         {
             args = args ?? new JObject();
-            RejectUnknown(args, ListToolsName, "toolset");
+            RejectUnknown(args, ListToolsName, "toolset", "query");
             string filter = null;
+            List<string> queryTerms = null;
+            string queryText = null;
+            JToken q = args["query"];
+            if (q != null)
+            {
+                // DECISION: an empty or stopword-only query is REFUSED, not treated as "no
+                // filter". A model that sends query="" meant something and lost it; answering
+                // with the whole 20 KB list would hide that from it and spend its context.
+                if (q.Type != JTokenType.String) throw new ToolRefusal("'query' must be a string.");
+                queryText = ((string)q).Trim();
+                queryTerms = ToolSearch.Terms(queryText);
+                if (queryTerms.Count == 0)
+                    throw new ToolRefusal("'query' has no searchable words (it is empty, or only articles, numbers and " +
+                        "very short words). Say what you want to do, e.g. 'borrar elemento' or 'count walls', or omit " +
+                        "'query' to list every callable tool.");
+            }
             JToken f = args["toolset"];
             if (f != null)
             {
                 if (f.Type != JTokenType.String) throw new ToolRefusal("'toolset' must be a string.");
-                filter = ((string)f).Trim().ToLowerInvariant();
-                if (!ToolPacks.KnownPacks.Contains(filter))
-                    throw new ToolRefusal("Unknown toolset '" + filter + "'. Known: " +
-                        string.Join(", ", ToolPacks.KnownPacks.OrderBy(k => k, StringComparer.Ordinal)) + ".");
+                // Names and Spanish aliases, any case or accents; an alias for SEVERAL toolsets
+                // (data, admin) is refused rather than guessed, so the answer is about one toolset.
+                string[] real = Horizun.Contracts.ToolsetCatalog.ExpandName((string)f);
+                if (real == null)
+                    throw new ToolRefusal("Unknown toolset '" + ((string)f).Trim() + "'. Known: " +
+                        string.Join(", ", ToolPacks.KnownPacks.OrderBy(k => k, StringComparer.Ordinal)) +
+                        ". Aliases: " + string.Join(", ", Horizun.Contracts.ToolsetCatalog.Aliases.Keys
+                            .OrderBy(k => k, StringComparer.Ordinal)) + ".");
+                if (real.Length != 1)
+                    throw new ToolRefusal("'" + ((string)f).Trim() + "' stands for several toolsets (" +
+                        string.Join(", ", real) + "); pass one of them.");
+                filter = real[0];
             }
 
             List<ToolDef> reachable = Tools.Advertisable();
             ToolPacks.Resolution sel = Settings.ActivePackResolution();
-            var active = new HashSet<string>(new[] { "core" }.Concat(sel.ActivePacks ?? ToolPacks.KnownPacks),
-                                             StringComparer.Ordinal);
+            var active = ToolPacks.ActiveNames(sel);
 
             var groups = new JObject();
             var tools = new JObject();
@@ -326,6 +364,9 @@ namespace Horizun.Server
                 var names = new JArray(reachable.Where(t => t.Toolsets.Contains(pack)).Select(t => t.Name));
                 if (names.Count > 0) groups[pack] = names;
             }
+            if (queryTerms != null)
+                return SearchAnswer(queryText, queryTerms, filter, reachable, active);
+
             foreach (ToolDef t in reachable)
             {
                 if (filter != null && !t.Toolsets.Contains(filter)) continue;
@@ -347,15 +388,100 @@ namespace Horizun.Server
             };
         }
 
+        /// <summary>Longest summary a search match carries.</summary>
+        internal const int MatchSummaryChars = 200;
+
+        /// <summary>
+        /// horizun_list_tools with a query. Same envelope as the plain answer (mode, toolset,
+        /// tools, toolsets, toolsets_not_active, next, hashes) so a client that reads those keeps
+        /// working, but 'tools' and 'toolsets' hold only the matches (a search must not ship all
+        /// of them), plus:
+        ///   matches            ranked, best first, at most 8, CALLABLE now: name, summary, toolsets, score;
+        ///   matches_not_active ranked, at most 5: tools the permission profile allows but the active
+        ///                      toolsets leave out - name, summary, toolsets, enable_toolsets (which of
+        ///                      their toolsets to ask the user to enable), score. NOT callable.
+        /// A tool the profile or the allow/deny lists turn off appears in neither: the candidate
+        /// lists come from the very filters tools/list uses (Tools.Advertisable and
+        /// Tools.InactiveByToolset).
+        /// </summary>
+        private static JObject SearchAnswer(string queryText, List<string> terms, string filter,
+                                            List<ToolDef> reachable, HashSet<string> active)
+        {
+            List<ToolDef> inactive = Tools.InactiveByToolset();
+            var corpus = reachable.Concat(inactive).ToList();
+            Func<ToolDef, bool> inSet = t => filter == null || t.Toolsets.Contains(filter);
+
+            var found = ToolSearch.Rank(terms, reachable.Where(inSet), corpus, ToolSearch.MaxMatches);
+            var foundOff = ToolSearch.Rank(terms, inactive.Where(inSet), corpus, ToolSearch.MaxNotActive);
+
+            var matches = new JArray();
+            var tools = new JObject();
+            var groups = new JObject();
+            foreach (var h in found)
+            {
+                matches.Add(new JObject
+                {
+                    ["name"] = h.Tool.Name,
+                    ["summary"] = Summary(h.Tool.Description, MatchSummaryChars),
+                    ["toolsets"] = new JArray(h.Tool.Toolsets),
+                    ["score"] = h.Score
+                });
+                tools[h.Tool.Name] = Summary(h.Tool.Description);
+                foreach (string pack in h.Tool.Toolsets.Where(active.Contains))
+                {
+                    if (groups[pack] == null) groups[pack] = new JArray();
+                    ((JArray)groups[pack]).Add(h.Tool.Name);
+                }
+            }
+            var off = new JArray();
+            bool canActivate = ToolsetActivation.Offered();
+            foreach (var h in foundOff)
+            {
+                var item = new JObject
+                {
+                    ["name"] = h.Tool.Name,
+                    ["summary"] = Summary(h.Tool.Description, MatchSummaryChars),
+                    ["toolsets"] = new JArray(h.Tool.Toolsets),
+                    ["enable_toolsets"] = new JArray(h.Tool.Toolsets.Where(p => !active.Contains(p))),
+                    ["score"] = h.Score
+                };
+                // How to open it for this session, when a session may (an environment selection).
+                string first = h.Tool.Toolsets.FirstOrDefault(p => !active.Contains(p));
+                if (canActivate && first != null)
+                    item["activate"] = ToolsetActivation.Name + " {\"toolset\":\"" + first + "\"}";
+                off.Add(item);
+            }
+
+            return new JObject
+            {
+                ["mode"] = "facade",
+                ["toolset"] = filter == null ? (JToken)JValue.CreateNull() : filter,
+                ["query"] = queryText,
+                ["matches"] = matches,
+                ["matches_not_active"] = off,
+                ["tools"] = tools,
+                ["toolsets"] = groups,
+                ["toolsets_not_active"] = new JArray(ToolPacks.KnownPacks.Where(p => !active.Contains(p))
+                                                              .OrderBy(p => p, StringComparer.Ordinal)),
+                ["next"] = DescribeToolName + " {name} for the exact schema, then " + CallToolName +
+                           " {name, arguments}. matches_not_active are NOT callable: call " + ToolsetActivation.Name + " as their activate field says (this session only), or ask the user to enable one of " +
+                           "their enable_toolsets. horizun_health first: commands act on the ACTIVE document.",
+                ["contract_hash"] = Horizun.Contracts.Contract.Hash,
+                ["facade_hash"] = Hash
+            };
+        }
+
         /// <summary>The first sentence, or the first <see cref="SummaryChars"/> characters cut at a word.</summary>
-        internal static string Summary(string description)
+        internal static string Summary(string description) => Summary(description, SummaryChars);
+
+        internal static string Summary(string description, int limit)
         {
             string d = (description ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
-            for (int i = 20; i < d.Length - 1 && i < SummaryChars; i++)
+            for (int i = 20; i < d.Length - 1 && i < limit; i++)
                 if (d[i] == '.' && d[i + 1] == ' ') return d.Substring(0, i + 1);
-            if (d.Length <= SummaryChars) return d;
-            int cut = d.LastIndexOf(' ', SummaryChars - 3);
-            return d.Substring(0, cut > 40 ? cut : SummaryChars - 3).TrimEnd(',', ';', ':', ' ') + "...";
+            if (d.Length <= limit) return d;
+            int cut = d.LastIndexOf(' ', limit - 3);
+            return d.Substring(0, cut > 40 ? cut : limit - 3).TrimEnd(',', ';', ':', ' ') + "...";
         }
 
         // ---- horizun_describe_tool ----------------------------------------------------------------
@@ -368,7 +494,7 @@ namespace Horizun.Server
             if (n == null || n.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)n))
                 throw new ToolRefusal(DescribeToolName + " needs 'name', the tool to describe, as a string.");
             string name = (string)n;
-            if (name == ListToolsName || name == DescribeToolName || name == CallToolName)
+            if (name == ListToolsName || name == DescribeToolName || name == CallToolName || name == ToolsetActivation.Name)
                 throw new ToolRefusal("'" + name + "' is a facade tool; its whole schema is in tools/list.");
             Horizun.Contracts.CommandContract c = Horizun.Contracts.Contract.Find(name);
             ToolDef def = Tools.Find(name);
@@ -448,6 +574,7 @@ namespace Horizun.Server
                     ["problem"] = problem == null ? (JToken)JValue.CreateNull() : problem,
                     ["contract_hash"] = Horizun.Contracts.Contract.Hash,
                     ["facade_hash"] = Hash,
+                    ["compact_hash"] = SchemaCompact.Hash,
                     ["tools_list"] = new JObject
                     {
                         ["tools"] = list.Count,
@@ -457,6 +584,10 @@ namespace Horizun.Server
                     ["reachable_tools"] = Tools.Advertisable().Count,
                     ["means"] = mode == SchemaSurface.Full
                         ? "tools/list carries every reachable tool with its abridged schema (the 2.x surface)."
+                        : mode == SchemaSurface.Compact
+                        ? "compact mode: tools/list carries the same tools as full, each with a short description and only its common " +
+                          "arguments; every contract argument is still accepted and validated against the full contract " +
+                          "(horizun://contract/tools/{tool}). Reads that have a short response mode default to it."
                         : "tools/list carries horizun_health and " + ListToolsName + " / " + DescribeToolName + " / " +
                           CallToolName + "; the reachable tools are called through them, under the same gates. " +
                           SchemaMode.EnvironmentVariable + "=full restores the whole list."

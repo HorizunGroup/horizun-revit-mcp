@@ -220,8 +220,41 @@ namespace Horizun.Server
             return list;
         }
 
+        /// <summary>
+        /// Tools that exist and that the permission profile ALLOWS, but that the active
+        /// toolset selection leaves out: exactly what a user could switch on by enabling a
+        /// toolset. A tool the profile, denied_tools or allowed_tools turns off is NOT here
+        /// (IsEnabledIgnoringPacks refuses it), so this can never offer to unlock something a
+        /// toolset does not unlock. For discovery only (SchemaFacade search); nothing
+        /// dispatches from it.
+        /// </summary>
+        internal static List<ToolDef> InactiveByToolset()
+        {
+            Discovered live = Live();
+            var list = new List<ToolDef>();
+            foreach (var t in All)
+                if (!IsEnabled(t) && IsEnabledIgnoringPacks(t) && WithheldReason(t, live) == null) list.Add(t);
+            return list;
+        }
+
         /// <summary>Why a known tool is withheld from the list right now, or null - the live-bridge half.</summary>
         internal static string WithheldNow(ToolDef t) => WithheldReason(t, Live());
+
+        /// <summary>
+        /// May this tool be called right now (the same gate every dispatch asks)? Used to condition ADVICE:
+        /// the server must not tell an agent to use a tool the active toolsets hide from it.
+        /// </summary>
+        internal static bool IsCallable(string toolName) => DisabledReason(toolName) == null;
+
+        /// <summary>
+        /// True when the toolset selection - and nothing else - is what keeps this tool out. The permission
+        /// profile and the allow/deny lists are not asked: only the toolsets are.
+        /// </summary>
+        internal static bool HiddenByToolsetsOnly(string toolName)
+        {
+            ToolDef t = Find(toolName);
+            return t != null && !IsEnabled(t) && IsEnabledIgnoringPacks(t);
+        }
 
         /// <summary>
         /// The list this server would publish if no tool pack were selected, at the same
@@ -260,7 +293,11 @@ namespace Horizun.Server
             {
                 if (!enabled(t)) continue;
                 if (WithheldReason(t, live) != null) continue;
-                arr.Add(Publish(t, advertiseTaskSupport));
+                JObject entry = Publish(t, advertiseTaskSupport);
+                // A task rides on horizun_submit_job; when the toolsets hide it (local alone) do not offer tasks.
+                if (advertiseTaskSupport && McpTasks.Supports(t) && !McpTasks.SupportsHere(t))
+                    entry["execution"]["taskSupport"] = "forbidden";
+                arr.Add(entry);
             }
             return arr;
         }

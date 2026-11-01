@@ -178,7 +178,9 @@ namespace Horizun.Server
                     description = "Start every Revit task against a measured target.";
                     body =
                         "Call horizun_health first. Confirm the reachable Revit year, process and active document. " +
-                        "If more than one Revit is reachable, use horizun_target instead of guessing. Do not write " +
+                        "If more than one Revit is reachable, " + (Tools.IsCallable("horizun_target")
+                            ? "use horizun_target instead of guessing"
+                            : "do not guess: ask the user which one to use") + ". Do not write " +
                         "until the objective, target elements and acceptance evidence are unambiguous.";
                     break;
                 case "verified-change":

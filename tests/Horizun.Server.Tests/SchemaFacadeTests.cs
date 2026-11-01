@@ -35,6 +35,8 @@ namespace Horizun.Server.Tests
         /// THE FACADE'S CEILING, declared here and nowhere else. tools/list in facade mode is
         /// horizun_health plus three meta-tools; 8 KiB is ~1.6 % of the 2.x worst case and
         /// leaves room for the descriptions to be read by a model, not compressed for one.
+        /// MEASURED (safe_write, task support advertised): 4035 B -> 4342 B when horizun_list_tools gained
+        /// its optional query argument (facade_hash 695dc0af... -> 92559b1e...). Ceiling unchanged (53 % used).
         /// </summary>
         internal const int FacadeCeilingBytes = 8 * 1024;
 
@@ -214,7 +216,15 @@ namespace Horizun.Server.Tests
             {
                 foreach (string pack in ToolPacks.KnownPacks)
                     WithDataRoot("{\"permission_profile\":\"unsafe_code\",\"enable_execute_python\":true}", pack, () =>
-                        Assert.Equal((int)ledger["profiles"]["pack:" + pack]["bytes"], Bytes(SchemaFacade.List(SchemaSurface.Full, true))));
+                    {
+                        // A restricted selection also advertises the server-only horizun_activate_toolset
+                        // (ToolsetActivation); the ledger pins the CONTRACT rows, so measure without it.
+                        JArray listed = SchemaFacade.List(SchemaSurface.Full, true);
+                        if ((string)listed.Last["name"] == ToolsetActivation.Name) listed.RemoveAt(listed.Count - 1);
+                        // local alone hides submit_job, so tasks are not offered ("forbidden" for "optional"); the ledger measured "optional".
+                        foreach (JToken t in listed) if (t["execution"] != null && (string)t["execution"]["taskSupport"] == "forbidden" && McpTasks.Supports(Tools.Find((string)t["name"]))) t["execution"]["taskSupport"] = "optional";
+                        Assert.Equal((int)ledger["profiles"]["pack:" + pack]["bytes"], Bytes(listed));
+                    });
             });
         }
 

@@ -971,7 +971,12 @@ namespace Horizun.Server
             // registry and no second permission check: a step is dispatched by the code
             // that dispatches every other call, or it is not dispatched.
             ProcedureRun.Invoker = (call, token) => CallTool(call, token);
-            try { _toolListMonitor = new ToolListMonitor(NotifyChange); }
+            try
+            {
+                _toolListMonitor = new ToolListMonitor(NotifyChange);
+                // horizun_activate_toolset changes the list; announce it now rather than at the next 30 s tick.
+                ToolsetActivation.AfterActivation = () => _toolListMonitor?.CheckNow();
+            }
             catch (Exception ex)
             {
                 // tools/list still re-reads settings on every call. Only the convenience
@@ -1046,7 +1051,7 @@ namespace Horizun.Server
             "UI thread. Do not resend it assuming the model is untouched. " +
             CancellationAdvice.Sentence(
                 CancellationAdvice.Classify(false, CancellationAdvice.HasKey(args)),
-                CancellationAdvice.BatchSize(args), ms);
+                CancellationAdvice.BatchSize(args), ms, Tools.IsCallable("horizun_submit_job"));
 
         /// <summary>
         /// A tool call BLOCKS for its whole round trip to Revit, so it gets a thread of its
@@ -1399,7 +1404,7 @@ namespace Horizun.Server
             // The facade's own tools answer here, in this process, and touch neither the
             // contract nor Revit. A horizun_call_tool reaching this point is one UnwrapCall
             // refused to unwrap, and Answer says why.
-            if (SchemaFacade.IsMetaTool(name, SchemaMode.Current))
+            if (SchemaFacade.IsMetaTool(name, SchemaMode.Current) || name == ToolsetActivation.Name)
             {
                 if (prms?["task"] != null)
                     throw new McpError(-32602, "'" + name + "' does not support MCP task augmentation; call it " +
@@ -1452,6 +1457,12 @@ namespace Horizun.Server
                 RequireTasksProtocol();
                 return McpTasks.Create(prms, CallTool, ct);
             }
+
+            // COMPACT MODE ONLY: a read that has a short response mode and was not told which one
+            // gets the short one (SchemaCompact.ReadDefaults). Here, after the quarantine check and
+            // the task branch, so neither the quarantine shape nor the task's stored request sees it;
+            // an explicit response_mode from the caller is never replaced; writes are never touched.
+            args = SchemaCompact.ApplyReadDefaults(name, args, SchemaMode.Current);
 
             var clock = System.Diagnostics.Stopwatch.StartNew();
 
@@ -1548,7 +1559,9 @@ namespace Horizun.Server
                         ? "Error: no Revit is reachable. Is Revit running with the Horizun add-in loaded?"
                         : "Error: no Revit " + year + " is reachable. That target was chosen explicitly (" +
                           (target.Year != null ? "horizun_target" : "HORIZUN_REVIT_YEAR") +
-                          "); call horizun_target to see which Revit versions did publish a bridge.") + refused, true);
+                          "); " + (Tools.IsCallable("horizun_target")
+                              ? "call horizun_target to see which Revit versions did publish a bridge."
+                              : "ask the user which Revit versions are running with the Horizun add-in loaded.")) + refused, true);
             }
 
             // A discovery file can outlive the Revit that wrote it (a crash, or a close that

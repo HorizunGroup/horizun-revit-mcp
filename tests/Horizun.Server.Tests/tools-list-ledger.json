@@ -145,7 +145,7 @@
     "pack:documentation": {"tools":44,"bytes":168039},
     "pack:family": {"tools":39,"bytes":141697},
     "pack:interoperability": {"tools":50,"bytes":213709},
-    "pack:local": {"tools":18,"bytes":102004},
+    "pack:local": {"tools":11,"bytes":72084},
     "pack:mep": {"tools":62,"bytes":234406},
     "pack:model": {"tools":56,"bytes":216022},
     "pack:planimetry": {"tools":46,"bytes":179452},
