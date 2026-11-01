@@ -20,20 +20,21 @@ de datos temporal y vacía, y mide la respuesta `{"tools":[...]}` en UTF-8.
 |---|---:|---:|---:|---:|
 | completa (`full`, por defecto), **antes y después** | 113 | 421 731 | 105 300 | 112 |
 | `HORIZUN_TOOLSETS=local`, antes | 17 | 99 400 | 24 800 | 16 |
-| `HORIZUN_TOOLSETS=local`, después | 10 | 61 645 | 15 400 | 9 |
+| `HORIZUN_TOOLSETS=local`, después | 11 | 70 470 | 17 600 | 10 |
 | `HORIZUN_SCHEMA_MODE=facade`, antes | 4 | 4 045 | 1 000 | 4 |
 | `HORIZUN_SCHEMA_MODE=facade`, después (con `query`) | 4 | 4 352 | 1 100 | 4 |
-| **`local` + `HORIZUN_SCHEMA_MODE=compact`, después** | **10** | **14 257** | **3 600** | **0** |
-| `local` + `compact`, `full_write` | 11 | 15 206 | 3 800 | 0 |
+| **`local` + `HORIZUN_SCHEMA_MODE=compact`, después** | **11** | **15 393** | **3 850** | **0** |
+| `local` + `compact`, `full_write` | 12 | 16 342 | 4 100 | 0 |
 
-El modo completo queda **byte a byte igual**. En `local`, la décima herramienta de
+El modo completo queda **byte a byte igual**. En `local`, la undécima herramienta de
 `safe_write` es `horizun_activate_toolset`; con `full_write` aparece además
-`horizun_capture_view`.
+`horizun_capture_view`. `horizun_model_scan` volvió a `local` después de medir la iteración 2
+(sección 4): sin ella, 10 herramientas y 14 257 bytes.
 
 **Dónde estaba el peso de `local` antes:** `horizun_create_elements` ocupaba 31 838
 caracteres (un tercio de todo), `horizun_manage_views` 11 710, `horizun_query_model` 9 241
 (33 argumentos) y `horizun_model_scan` 8 779. En `compact` ocupan 3 504, 1 922, 2 262 y
-1 135 caracteres; `manage_views` y `model_scan` además salieron de `local`.
+1 135 caracteres; `manage_views` además salió de `local`.
 
 **Herramientas que se confunden** (coseno entre nombre y descripción, sin tildes ni palabras
 vacías, umbral 0,35). En el modo completo hay 40 parejas parecidas: las más altas son
@@ -74,7 +75,7 @@ Indicadores:
 
 ## 3. Resultados
 
-Una sola corrida por configuración: una diferencia de 1–2 tareas está dentro del ruido.
+Una corrida por configuración, salvo qwen3:8b final y su comparación (dos): una diferencia de 1–2 tareas está dentro del ruido.
 
 | | Config | Aciertos | Herramienta correcta a la primera | Primera acción correcta | Tokens de entrada por tarea (mediana) | Segundos por tarea (mediana) |
 |---|---|---:|---:|---:|---:|---:|
@@ -87,16 +88,23 @@ Una sola corrida por configuración: una diferencia de 1–2 tareas está dentro
 | qwen3:8b, antes | `facade` | 6 (22 %) | 9 (33 %) | 9 (33 %) | 20 725 | 70,4 |
 | qwen3:8b, después | `local` | 11 (41 %) | 22 (81 %) | 22 (81 %) | 50 524 | 24,6 |
 | qwen3:8b, después | `facade` | 7 (26 %) | 15 (56 %) | 15 (56 %) | 20 152 | 38,0 |
-| **qwen3:8b, después** | **`compact`** | **15 (56 %)** | 21 (78 %) | 22 (81 %) | **23 677** | **12,4** |
+| qwen3:8b, después | `compact` | 15 (56 %) | 21 (78 %) | 22 (81 %) | 23 677 | 12,4 |
+| Haiku, final | `compact` + `model_scan` | **26 (96 %)** | 18 (67 %) | 26 (96 %) | **63 451** | 10,4 |
+| qwen3:8b, final (2 corridas) | `compact` + `model_scan` | **12 y 12 (44 %)** | 20 y 20 (74 %) | 24 y 22 | **32 588 y 24 748** | 17,5 y 29,3* |
 
 `compact` es la iteración 2. La primera versión de `compact` dio 11/27 con qwen3:8b; la
-diferencia se explica en la sección 4.
+diferencia se explica en la sección 4. «Final» es la iteración 2 con `horizun_model_scan` de
+vuelta en `local`, que es lo que queda en esta rama.
 
-**Qué mejoró, en números:**
-- **qwen3:8b, de `local` antes a `compact`:** pasa de 12 a 15 aciertos (+3 tareas). Los tokens
-  de entrada por tarea bajan **79 %** y el tiempo por tarea **81 %** (de 64 s a 12 s).
-- **Haiku, de `local` antes a `compact`:** mantiene los aciertos (26 → 25, dentro del ruido) con
-  **58 % menos tokens de entrada** por tarea.
+\* En esas corridas había otro Revit abierto en la misma máquina usando la GPU: los segundos no
+son comparables con las corridas anteriores.
+
+**Qué mejoró, en números (de `local` antes a lo que queda en la rama):**
+- **Haiku:** mantiene los aciertos (26 → 26) con **58 % menos tokens de entrada** por tarea.
+- **qwen3:8b:** mantiene los aciertos (12 → 12, en dos corridas) con **71–78 % menos tokens de
+  entrada** por tarea. Sin `model_scan` llegó a 15 y 14 aciertos (ver sección 4).
+- El tiempo por tarea de qwen3:8b bajó de 64 s a 12 s en la iteración 2 sin carga externa; las
+  corridas finales no son comparables en tiempo.
 - **La fachada con el buscador** sube un poco con qwen3:8b (6 → 7 aciertos, y la herramienta
   correcta a la primera de 33 % a 56 %). Sigue siendo la peor opción para un modelo de 8B:
   listar, describir y llamar en tres pasos le cuesta demasiado.
@@ -126,22 +134,26 @@ aciertos.
 - **Se le escapan las peticiones de varios pasos**: interferencias, vista nueva, crear y
   deshacer.
 
-**Regresión por una decisión de esta rama: r13 («resumen de salud del modelo»).** Antes, Haiku
-la resolvía con `horizun_model_scan`. Con `model_scan` fuera de `local` falla en todas las
-configuraciones nuevas. Haiku tampoco recurre a `horizun_activate_toolset`. Hay dos salidas:
-volver a poner `model_scan` en `local` (1 135 caracteres en `compact`, medido), o dejarla en `read` y
-enseñar el camino desde el buscador.
+**r13 («resumen de salud del modelo») y `model_scan`.** Con `model_scan` fuera de `local`, r13
+fallaba en todas las configuraciones nuevas y Haiku no recurría a `horizun_activate_toolset`.
+Con `model_scan` de vuelta (1 135 caracteres más en `compact`), r13 pasa en 3 de 3 corridas
+aisladas con cada modelo y en las baterías completas. **El costo, medido con dos corridas de
+cada versión:** qwen3:8b baja de 15 y 14 aciertos a 12 y 12. Pierde en las dos corridas r05, r06,
+r09 y w19, casi siempre por poner el relleno `ACTIVE_DOCUMENT_TITLE` en `target_document`; ese
+relleno ya aparecía antes (16 llamadas de 68 contra 17 de 64), pero cae en otras tareas. La
+descripción de `model_scan` no lo explica: qwen3:8b es sensible a cualquier cambio de la lista.
+Haiku sube de 25 a 26. La decisión fue dejar `model_scan` en `local`.
 
 **Haiku falla poco y por razones distintas:**
-- `w18` (mover una puerta) en `compact`;
-- `r13`, por la regresión anterior;
+- `w18` (mover una puerta) en `compact` sin `model_scan`;
+- `r13` sin `model_scan` (ver arriba);
 - `s26` (interferencias) en `local` antes: resolvió la pregunta con lecturas y no con
   `horizun_clash`.
 
 ## 5. Lo que no se midió
 
-- **Una sola corrida por configuración.** Con 27 tareas, ±1–2 tareas es ruido. Una
-  comparación más firme necesita 3 o más repeticiones.
+- **Pocas corridas.** Una por configuración, dos en la comparación de `model_scan` con qwen3:8b.
+  Con 27 tareas, ±1–2 tareas es ruido; una comparación firme necesita 3 o más.
 - **Otros modelos** (llama 3.x, gpt-4o-mini, LM Studio con otros modelos): no se corrieron.
 - **Clientes reales** (Claude Desktop, LM Studio, un cliente MCP para Ollama): la batería usa
   `claude -p` y un bucle propio sobre Ollama. La guía de clientes marca qué está verificado.

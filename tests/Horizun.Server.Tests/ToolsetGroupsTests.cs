@@ -2,7 +2,7 @@
 // Horizun Server tests - original Horizun code.
 //
 // TOOLSET GROUPS FOR SMALL MODELS (product-owner decisions, 2026-10). Proved from the outside:
-//   1. local is ten tools, and when it is the WHOLE selection the core tools target /
+//   1. local is eleven tools, and when it is the WHOLE selection the core tools target /
 //      job_status / submit_job are neither advertised nor callable (health stays);
 //      with any other toolset added, or with no restriction, the core is welded as before;
 //   2. horizun_activate_toolset widens the selection for THIS server process only, never
@@ -28,10 +28,10 @@ namespace Horizun.Server.Tests
     {
         private const string Activate = "horizun_activate_toolset";
 
-        private static readonly string[] LocalTen =
+        private static readonly string[] LocalEleven =
         {
             "horizun_health", "get_document_info", "horizun_list_elements", "horizun_query_model",
-            "horizun_capture_view", "horizun_create_elements", "horizun_write_params_verified",
+            "horizun_model_scan", "horizun_capture_view", "horizun_create_elements", "horizun_write_params_verified",
             "horizun_delete_verified", "horizun_transform_elements", "horizun_undo"
         };
 
@@ -39,14 +39,15 @@ namespace Horizun.Server.Tests
 
         private static string[] Names(JArray list) => list.Select(t => (string)t["name"]).ToArray();
 
-        // ---- 1. local = ten, and the core exception ------------------------------------
+        // ---- 1. local = eleven, and the core exception ------------------------------------
 
         [Fact]
-        public void Local_is_exactly_ten_tools_and_the_five_removed_stay_in_their_other_toolsets()
+        public void Local_is_exactly_eleven_tools_and_the_four_removed_stay_in_their_other_toolsets()
         {
-            Assert.Equal(LocalTen.OrderBy(n => n, StringComparer.Ordinal),
+            Assert.Equal(LocalEleven.OrderBy(n => n, StringComparer.Ordinal),
                          ToolPacks.MembersOf("local").OrderBy(n => n, StringComparer.Ordinal));
-            foreach (string gone in new[] { "horizun_model_scan", "horizun_model_diff", "horizun_quantities",
+            Assert.Contains("horizun_model_scan", ToolPacks.MembersOf("local"));   // r13: model health summary
+            foreach (string gone in new[] { "horizun_model_diff", "horizun_quantities",
                                             "horizun_navigate", "horizun_manage_views" })
             {
                 Assert.DoesNotContain(gone, ToolPacks.MembersOf("local"));
@@ -61,11 +62,11 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
-        public void Local_alone_advertises_ten_without_target_job_status_and_submit_job()
+        public void Local_alone_advertises_eleven_without_target_job_status_and_submit_job()
         {
             using (Session.With("{\"permission_profile\":\"full_write\"}", toolsets: "local"))
             {
-                Assert.Equal(LocalTen.OrderBy(n => n, StringComparer.Ordinal),
+                Assert.Equal(LocalEleven.OrderBy(n => n, StringComparer.Ordinal),
                              Names(Tools.List(false)).OrderBy(n => n, StringComparer.Ordinal));
                 foreach (string hidden in CoreHidden)
                 {
@@ -74,7 +75,7 @@ namespace Horizun.Server.Tests
                     Assert.Contains("local", why);
                 }
                 Assert.Null(Tools.DisabledReason("horizun_health"));
-                Assert.True(ToolPacks.Resolve("local", null, false).Tools().SetEquals(LocalTen));
+                Assert.True(ToolPacks.Resolve("local", null, false).Tools().SetEquals(LocalEleven));
             }
         }
 

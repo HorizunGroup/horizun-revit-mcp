@@ -269,15 +269,15 @@ namespace Horizun.Server.Tests
 
         // ---- the "local" toolset: local or short-context models (owner, 2026-10-10; narrowed 2026-10) ----
 
-        // TEN tools (product owner, 2026-10): horizun_health, document facts, element listing and query,
-        // capture, and the five typed writes. Out of local, still in their other toolsets: model_scan,
+        // ELEVEN tools (product owner, 2026-10): horizun_health, document facts, element listing and query, model_scan,
+        // capture, and the five typed writes. Out of local, still in their other toolsets:
         // model_diff, quantities, navigate, manage_views. And when local is the WHOLE selection the core
         // tools target / job_status / submit_job are not welded on (MEASURED in a 54-task battery with
         // Claude Haiku: never used; qwen3:8b called horizun_target 8 times instead of horizun_health).
         private static readonly string[] LocalMembers =
         {
             "horizun_health", "get_document_info", "horizun_list_elements", "horizun_query_model",
-            "horizun_capture_view", "horizun_write_params_verified", "horizun_create_elements",
+            "horizun_model_scan", "horizun_capture_view", "horizun_write_params_verified", "horizun_create_elements",
             "horizun_transform_elements", "horizun_delete_verified", "horizun_undo"
         };
 
@@ -285,7 +285,9 @@ namespace Horizun.Server.Tests
         // characters at safe_write (101,130 at full_write) -> 9 tools / 60,219 characters at safe_write
         // (62,792 at full_write, 10 tools). The budget is that measurement + 10 %; growing past it must be a
         // decision, not an accident. (Previous: 99,771 measured 2026-10-10 on the 2.2.0 candidate.)
-        private const long LocalMeasuredCharacters = 60219;
+        // 2026-10-31, model_scan back in local (the "model health summary" task failed without it):
+        // 10 tools / 68,960 characters at safe_write.
+        private const long LocalMeasuredCharacters = 68960;
         private const long LocalBudgetCharacters = LocalMeasuredCharacters + LocalMeasuredCharacters / 10;
 
         [Fact]
@@ -324,7 +326,7 @@ namespace Horizun.Server.Tests
                 JObject size = ToolsetReport.Size(Tools.List(false));
                 _out.WriteLine("HORIZUN_TOOLSETS=local -> " + size.ToString(Formatting.None));
                 // The permission profile still governs: at the shipped safe_write, capture_view (it writes
-                // an image outside the document) is hidden, so local advertises the other nine.
+                // an image outside the document) is hidden, so local advertises the other ten.
                 var names = Tools.List(false).OfType<JObject>().Select(x => (string)x["name"]).OrderBy(n => n, StringComparer.Ordinal);
                 Assert.Equal(LocalMembers.Where(n => n != "horizun_capture_view").OrderBy(n => n, StringComparer.Ordinal), names);
                 Assert.True((long)size["characters"] <= LocalBudgetCharacters,
@@ -334,7 +336,7 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
-        public void At_full_write_local_advertises_all_ten()
+        public void At_full_write_local_advertises_all_eleven()
         {
             WithIsolation("{\"permission_profile\":\"full_write\"}", null, "local", () =>
             {

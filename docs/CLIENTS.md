@@ -117,8 +117,8 @@ do that, all in **the client's own** MCP server entry, and none widens the permi
 | Setting (`safe_write`) | Tools | `tools/list` |
 |---|---:|---:|
 | default (`HORIZUN_SCHEMA_MODE=full`) | 113 | 421 731 B (~105 000 tokens) |
-| `HORIZUN_TOOLSETS=local` | 10 | 61 645 B (~15 400 tokens) |
-| `HORIZUN_TOOLSETS=local` + `HORIZUN_SCHEMA_MODE=compact` | 10 | 14 257 B (~3 600 tokens) |
+| `HORIZUN_TOOLSETS=local` | 11 | 70 470 B (~17 600 tokens) |
+| `HORIZUN_TOOLSETS=local` + `HORIZUN_SCHEMA_MODE=compact` | 11 | 15 393 B (~3 850 tokens) |
 | `HORIZUN_SCHEMA_MODE=facade` | 4 | 4 352 B (~1 100 tokens), schemas on demand |
 
 Tokens are characters / 4, as `horizun_health` reports them. Measured 2026-10-31; how, and the
@@ -126,11 +126,11 @@ full results, in [diagnostico-modelos-pequenos.md](diagnostico-modelos-pequenos.
 
 ### Which one to use
 
-In a 27-task battery on an English Revit 2024 (one run per setting):
+In a 27-task battery on an English Revit 2024:
 
-- **`local` + `compact`** for a small or local model. qwen3:8b over Ollama completed 15 of 27
-  tasks with it, against 12 with `local` alone before this change, using 79 % fewer input
-  tokens per task. Claude Haiku kept 25 of 27 against 26, using 58 % fewer.
+- **`local` + `compact`** for a small or local model. Claude Haiku completed 26 of 27 tasks
+  with it, as many as with `local` alone before this change, using 58 % fewer input tokens per
+  task. qwen3:8b over Ollama completed 12 of 27 in two runs, as before, using 71–78 % fewer.
 - **`local`** alone when the model reads long schemas well and you want every argument visible.
 - **`facade`** when the context is tiny. A small model struggles with its three steps (list,
   describe, call): qwen3:8b completed 7 of 27.
@@ -138,14 +138,14 @@ In a 27-task battery on an English Revit 2024 (one run per setting):
 
 ### `HORIZUN_TOOLSETS=local`
 
-Ten tools: `horizun_health`, `get_document_info`, `horizun_list_elements`,
-`horizun_query_model`, `horizun_capture_view` (`full_write` and above), the typed writes
+Eleven tools: `horizun_health`, `get_document_info`, `horizun_list_elements`,
+`horizun_query_model`, `horizun_model_scan`, `horizun_capture_view` (`full_write` and above), the typed writes
 `horizun_create_elements`, `horizun_write_params_verified`, `horizun_delete_verified`,
 `horizun_transform_elements`, `horizun_undo`, and `horizun_activate_toolset`. Selected
 **alone**, `local` does not bring `horizun_target`, `horizun_job_status` and
 `horizun_submit_job`: in the battery they were never used, or were called instead of
 `horizun_health`. Add any other toolset (`local,documentation`) and the core returns. Model
-scan, model diff, quantities, navigation and view management are in `read`, `audit`,
+diff, quantities, navigation and view management are in `read`, `audit`,
 `coordination` and `documentation`. `local` never carries the Python surface.
 
 ### `HORIZUN_SCHEMA_MODE=compact`
@@ -230,7 +230,7 @@ verified with Horizun yet.
 
 Local runtimes often start small; Ollama defaults to 4 096 tokens on GPUs under 24 GiB. The
 battery ran qwen3:8b with `num_ctx=32768`, which fits `local` + `compact` with room for
-replies. `local` alone (~15 400 tokens) also fits; `full` does not. On an 8 GB GPU,
+replies. `local` alone (~17 600 tokens) also fits; `full` does not. On an 8 GB GPU,
 `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` for `ollama serve` kept 76 % of the
 model on the GPU, against 61 % without them. Check what the runtime allocated under `CONTEXT`
 and `PROCESSOR` in `ollama ps`.

@@ -205,8 +205,8 @@ namespace Horizun.Contracts
                                        "links, catalog lookup, budget comparison, workflow procedures.",
                 ["powerbi"] = "Power BI push and selection exchange, Excel read/write, budget comparison.",
                 ["administration"] = "Document session, open/save, relinquish, script promotion, repair memory.",
-                ["local"] = "For local or short-context models, ten tools: horizun_health, document facts, element " +
-                            "listing and query, capture, and the typed writes (create, parameters, delete, transform, " +
+                ["local"] = "For local or short-context models, eleven tools: horizun_health, document facts, element " +
+                            "listing and query, model scan, capture, and the typed writes (create, parameters, delete, transform, " +
                             "undo). Selected ALONE it drops the core tools target, job_status and submit_job (add any " +
                             "other toolset, or activate one, and the core returns). Never the Python surface.",
                 ["unsafe_code"] = "The Python surface: execute_python (still gated by the owner's grant) and the " +
@@ -291,7 +291,7 @@ namespace Horizun.Contracts
             Row("horizun_navigate", "read"),
             Row("horizun_list_elements", "read", "local"),
             Row("horizun_query_model", "read", "mep", "local"),
-            Row("horizun_model_scan", "read", "audit"),
+            Row("horizun_model_scan", "read", "audit", "local"),
             Row("horizun_file_info", "read", "coordination"),
             Row("horizun_model_diff", "audit", "coordination", "powerbi"),
             Row("horizun_quantities", "read", "coordination"),
