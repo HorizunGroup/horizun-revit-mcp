@@ -150,6 +150,30 @@ Haiku sube de 25 a 26. La decisión fue dejar `model_scan` en `local`.
 - `s26` (interferencias) en `local` antes: resolvió la pregunta con lecturas y no con
   `horizun_clash`.
 
+## 4b. Perfiles de herramientas (lo que escribe una instalación nueva)
+
+Un perfil decide qué herramientas MUESTRA `tools/list`, no cuáles se pueden llamar: las demás se
+alcanzan con `horizun_list_tools`, `horizun_call_tool` y `horizun_activate_toolset`. Una
+instalación nueva escribe `"tool_profile": "esencial"`; una actualización no cambia. Tamaño de
+`tools/list` (`safe_write`): `esencial` 14 herramientas y 72 566 B (≈18 100 tokens, −83 % frente a
+la lista completa); `esencial` + `compact` 17 687 B (≈4 400 tokens, −96 %).
+
+Batería de 27 tareas, Revit 2024 en inglés, perfil en `settings.json` sin `HORIZUN_TOOLSETS`:
+
+| | Config | Aciertos | Primera acción correcta | Tokens de entrada por tarea (mediana) |
+|---|---|---:|---:|---:|
+| Haiku (2 corridas) | `esencial` | 26 y 25 | 27 y 26 | 155 947 y 116 557 |
+| **Haiku (2 corridas)** | **`esencial` + `compact`** | **26 y 26** | 26 y 27 | **54 644 y 55 609** |
+| qwen3:8b | `esencial` | 11 | 24 | 66 435 |
+| **qwen3:8b** | **`esencial` + `compact`** | **13** | 25 | **23 398** |
+
+- Con `compact`, `esencial` rinde igual o un poco mejor que `local` + `compact` (Haiku 26 frente a
+  26; qwen3:8b 13 frente a 12 y 12) y además deja alcanzable todo lo demás.
+- Sin `compact`, qwen3:8b llama 25 veces a las herramientas de servidor (`horizun_call_tool` y
+  compañía) en lugar de llamar directo, y acierta menos: para un modelo de 8B conviene
+  `esencial` + `compact`.
+- Una corrida de qwen3:8b por configuración, sin carga externa en la GPU.
+
 ## 5. Lo que no se midió
 
 - **Pocas corridas.** Una por configuración, dos en la comparación de `model_scan` con qwen3:8b.

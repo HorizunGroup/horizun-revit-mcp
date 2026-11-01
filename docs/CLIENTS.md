@@ -108,6 +108,51 @@ Replace `<you>` with the real account path. JSON needs doubled backslashes;
 TOML single-quoted strings do not. Other clients should use that same expanded
 path and allow enough time for long Revit scans.
 
+## Tool profiles: a shorter list at the start of every session
+
+A client without deferred tool loading reads the whole `tools/list` before the first
+question: about 105 000 tokens for the 113 tools of `safe_write`. A **tool profile** lists the
+tools of one role instead, and every other tool stays callable.
+
+| Profile (`safe_write`) | Lists | `tools/list` |
+|---|---:|---:|
+| `completo` (no profile; an upgrade keeps it) | 113 | 421 731 B (~105 000 tokens) |
+| **`esencial`** (written by a new install) | 14 | 72 566 B (~18 100 tokens) |
+| `esencial` + `HORIZUN_SCHEMA_MODE=compact` | 14 | 17 687 B (~4 400 tokens) |
+| `consulta` | 37 | 149 849 B (~37 400 tokens) |
+| `documentacion` | 34 | 157 401 B (~39 300 tokens) |
+| `modelado` | 58 | 208 744 B (~52 100 tokens) |
+| `auditoria` | 55 | 208 364 B (~52 000 tokens) |
+
+- `esencial`: the `local` tools (health, document facts, list and query, model scan, capture,
+  the typed writes, undo).
+- `consulta` adds reading; `modelado` adds model writes, architecture, structure and MEP;
+  `documentacion` adds views, sheets, annotation, planimetry and schedules; `auditoria` adds
+  reading, audits, clash and coordination. A comma-separated list of toolsets also works
+  (`documentacion,read`). English names are accepted (`essential`, `query`, `modeling`,
+  `documentation`, `audit`, `full`).
+- **It is visibility, not permission.** A profile also lists `horizun_list_tools` (search every
+  callable tool, Spanish or English), `horizun_describe_tool`, `horizun_call_tool` (call any
+  callable tool by name) and `horizun_activate_toolset` (show one more toolset for this
+  session). A tool the profile does not list can still be called, under the same permission
+  profile, dry run and re-read. What the permission profile, `denied_tools`, `allowed_tools`
+  or `HORIZUN_TOOLSETS` refuse stays refused, and a profile never lists it.
+- **Where it comes from**, first match wins: `HORIZUN_PROFILE` in the client's MCP server
+  entry, then `"tool_profile"` in `%USERPROFILE%\.horizun\settings.json`, then nothing, which
+  is `completo`. A **new** install writes `"tool_profile": "esencial"`; an upgrade, or a
+  machine that already has `settings.json`, is left as it was. An unknown name lists every
+  tool and `horizun_health.tool_profile.problem` says why.
+- `horizun_health.tool_profile` reports the profile, its source, how many tools are listed
+  and how many are callable.
+
+Measured in the 27-task battery on an English Revit 2024: with `esencial` + `compact`, Claude
+Haiku completed 26 of 27 tasks in two runs (about 55 000 input tokens per task) and qwen3:8b 13 of
+27 (about 23 400). For a small or local model, add `HORIZUN_SCHEMA_MODE=compact` to the client
+entry. Details in [diagnostico-modelos-pequenos.md](diagnostico-modelos-pequenos.md).
+
+To see every tool again, set `"tool_profile": "completo"` in `settings.json` (or
+`HORIZUN_PROFILE=completo` in the client) and restart the client.
+
 ## Small and local models
 
 Every session pays for `tools/list` before the first question. A model served on this

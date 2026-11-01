@@ -18,6 +18,8 @@ FIRST Horizun tool call was a right one, how many calls it took, and tokens.
 Configs: local    HORIZUN_TOOLSETS=local
          facade   HORIZUN_SCHEMA_MODE=facade
          compact  HORIZUN_TOOLSETS=local + HORIZUN_SCHEMA_MODE=compact
+         esencial HORIZUN_PROFILE=esencial (what a new install writes)
+         esencial-compact  HORIZUN_PROFILE=esencial + HORIZUN_SCHEMA_MODE=compact
 The bridge state root (HORIZUN_DATA_ROOT) and Revit year come from --data-root and
 --revit-year and are passed to every server process, so a run never reads or writes
 another installation's state.
@@ -44,6 +46,8 @@ CONFIGS = {
     "local": {"HORIZUN_TOOLSETS": "local"},
     "facade": {"HORIZUN_SCHEMA_MODE": "facade"},
     "compact": {"HORIZUN_TOOLSETS": "local", "HORIZUN_SCHEMA_MODE": "compact"},
+    "esencial": {"HORIZUN_PROFILE": "esencial"},
+    "esencial-compact": {"HORIZUN_PROFILE": "esencial", "HORIZUN_SCHEMA_MODE": "compact"},
 }
 META_TOOLS = {"horizun_list_tools", "horizun_describe_tool", "horizun_activate_toolset"}
 SYSTEM_PROMPT = ("You operate Autodesk Revit through the Horizun tools. Use the tools to answer; "
