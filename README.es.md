@@ -21,10 +21,30 @@ el runtime del servidor y los add-ins.
 
 **[Descargar](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** ·
 **[Ver demostración](https://www.youtube.com/watch?v=tlFs5p3EM4M)** ·
-[Novedades de la 3.0](#novedades-de-la-30) ·
+[Novedades de la 4.0](#novedades-de-la-40-hecho-para-modelos-pequeños) ·
 [Instalar con Claude Desktop Free](#video-de-instalación-claude-desktop-free) ·
 [Todas las herramientas](#catálogo-completo-de-herramientas) ·
 [Suboperaciones](#suboperaciones-y-modos) · [Pruebas](#probado-en-revit-evidencia-publicada) · [Instalar](#instalar)
+
+## Novedades de la 4.0: hecho para modelos pequeños
+
+Cada herramienta que lista un servidor MCP se le envía al modelo en cada
+conversación. La 4.0 baja ese costo sin quitar ninguna capacidad, para que
+modelos más baratos y rápidos (Claude Haiku, planes gratuitos, modelos locales)
+puedan trabajar en Revit.
+
+| Lo que recibe el modelo al empezar | Herramientas listadas | Tokens de `tools/list` (aprox.) |
+|---|---:|---:|
+| Antes de la 4.0: el catálogo completo | 125 | ~105 000 |
+| 4.0 por defecto en una instalación nueva: perfil `esencial` | 14 | ~18 100 |
+| `esencial` + `HORIZUN_SCHEMA_MODE=compact` | 14 | ~4 400 |
+| toolset `local` + `compact` (para modelos locales) | 11 | ~3 850 |
+
+- **Perfiles de herramientas:** una instalación nueva arranca con el perfil `esencial`. Todas las demás herramientas se siguen pudiendo llamar con `horizun_list_tools` (búsqueda en español o inglés), `horizun_call_tool` y `horizun_activate_toolset`, que abre un toolset más para la sesión. Perfiles por rol: `consulta`, `modelado`, `documentacion`, `auditoria` y `completo`. Una actualización conserva la lista completa. Ver [perfiles de herramientas](docs/CLIENTS.md#tool-profiles-a-shorter-list-at-the-start-of-every-session).
+- **Esquemas compactos:** `HORIZUN_SCHEMA_MODE=compact` muestra descripciones cortas y solo los argumentos comunes; el esquema exacto se sigue entregando cuando se pide.
+- **Medido, no estimado:** en una batería de 27 tareas con Revit en inglés, Claude Haiku completó 26 de 27 con 58 % menos tokens de entrada. qwen3:8b con Ollama completó 12 de 27 con 71–78 % menos: los modelos locales de 8B sirven para tareas sencillas, todavía no para producción completa. Configuración por cliente (Claude Desktop, Claude Code, Codex, LM Studio y Ollama) en [modelos pequeños y locales](docs/CLIENTS.md#small-and-local-models) y mediciones en el [diagnóstico](docs/diagnostico-modelos-pequenos.md).
+
+No se quitó ni se renombró ninguna herramienta ni se agregó ningún argumento obligatorio; el número 4.0 marca la nueva experiencia por defecto.
 
 ## Novedades de la 3.0
 
@@ -32,8 +52,6 @@ el runtime del servidor y los add-ins.
 - **Interoperabilidad:** `horizun_exchange` emite y verifica manifiestos `horizun.exchange/0`, transporta identidad de modelo y comprueba planes de corrección antes y después de aplicarlos. Véanse los [detalles de herramientas](docs/TOOLS-EXTENDED.md).
 - **Esquemas a petición:** `full` sigue predeterminado. `HORIZUN_SCHEMA_MODE=facade` por cliente muestra health y tres herramientas de descubrimiento y llamada que obtienen los esquemas exactos cuando se necesitan. La reducción medida de `tools/list` aún no tiene una comparación de agentes completada. Véanse la [configuración](docs/CLIENTS.md) y las [mediciones](docs/plans/lazy-schema-3.0.md).
 - **Toolset local:** `HORIZUN_TOOLSETS=local` reduce la superficie tipada anunciada para clientes de contexto corto y conserva los permisos. El modo de esquema y el toolset son independientes.
-- **Perfiles de herramientas (sin publicar):** una instalación nueva muestra el perfil `esencial`, 14 herramientas (unos 18 100 tokens de `tools/list` en lugar de 105 000; unos 4 400 con `HORIZUN_SCHEMA_MODE=compact`), y todas las demás se pueden seguir llamando con `horizun_list_tools`, `horizun_call_tool` y `horizun_activate_toolset`. Perfiles por rol: `consulta`, `modelado`, `documentacion`, `auditoria` y `completo`. Una actualización conserva la lista completa. Ver [perfiles de herramientas](docs/CLIENTS.md#tool-profiles-a-shorter-list-at-the-start-of-every-session).
-- **Modelos pequeños y locales (sin publicar):** `local` pasa a once herramientas; `HORIZUN_SCHEMA_MODE=compact` las muestra con descripciones cortas y solo los argumentos comunes (`local` + `compact`: unos 3 850 tokens de `tools/list`, frente a unos 24 800 de `local` antes); `horizun_list_tools` acepta `query` en español o inglés, y `horizun_activate_toolset` abre un toolset más para la sesión. En una batería de 27 tareas con Revit en inglés, Claude Haiku mantuvo 26 de 27 tareas con 58 % menos tokens de entrada, y qwen3:8b con Ollama mantuvo 12 de 27 con 71–78 % menos. Configuración por cliente (Claude Desktop, Claude Code, Codex, LM Studio y Ollama) en [modelos pequeños y locales](docs/CLIENTS.md#small-and-local-models) y mediciones en el [diagnóstico](docs/diagnostico-modelos-pequenos.md).
 
 Para actualizar una instalación existente, sigue la [migración a 3.0](docs/MIGRATION-3.0.md): el protocolo 3 exige actualizar juntos servidor y add-in. Las [notas de versión](docs/plans/release-notes-3.0.0.md) resumen la entrega.
 
