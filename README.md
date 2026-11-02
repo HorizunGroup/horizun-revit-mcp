@@ -20,10 +20,29 @@ The downloadable Windows installer includes the server runtime and Revit add-ins
 
 **[Download](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** ·
 **[Watch the demo](https://www.youtube.com/watch?v=tlFs5p3EM4M)** ·
-[What's new in 3.0](#whats-new-in-30) ·
+[What's new in 4.0](#whats-new-in-40-built-for-small-models) ·
 [Install with Claude Desktop Free](#installation-video-claude-desktop-free) ·
 [All tools](#complete-tool-catalog) · [Suboperations](#suboperations-and-modes) ·
 [Release evidence](#tested-in-revit-published-release-evidence) · [Install](#install)
+
+## What's new in 4.0: built for small models
+
+Every tool an MCP server lists is sent to the model in every conversation. 4.0
+cuts that cost without removing a single capability, so cheaper and faster
+models (Claude Haiku, free plans, local models) can drive Revit.
+
+| What the model receives at the start | Tools listed | `tools/list` tokens (approx.) |
+|---|---:|---:|
+| Before 4.0: the full catalog | 125 | ~105 000 |
+| 4.0 default on a new install: `esencial` profile | 14 | ~18 100 |
+| `esencial` + `HORIZUN_SCHEMA_MODE=compact` | 14 | ~4 400 |
+| `local` toolset + `compact` (for local models) | 11 | ~3 850 |
+
+- **Tool profiles:** a new install starts with the `esencial` profile. Every other tool stays callable through `horizun_list_tools` (search in Spanish or English), `horizun_call_tool` and `horizun_activate_toolset`, which opens one more toolset for the session. Role profiles: `consulta`, `modelado`, `documentacion`, `auditoria`, `completo`. An upgrade keeps the full list. See [tool profiles](docs/CLIENTS.md#tool-profiles-a-shorter-list-at-the-start-of-every-session).
+- **Compact schemas:** `HORIZUN_SCHEMA_MODE=compact` shows short descriptions and only the common arguments; exact schemas are still served on demand.
+- **Measured, not estimated:** in a 27-task battery on an English Revit, Claude Haiku completed 26 of 27 tasks with 58 % fewer input tokens. qwen3:8b over Ollama completed 12 of 27 with 71–78 % fewer: local 8B models work for simple tasks, not yet for full production. See [small and local models](docs/CLIENTS.md#small-and-local-models) and the [measurements](docs/diagnostico-modelos-pequenos.md).
+
+No tool was removed or renamed and no required argument was added; the 4.0 number marks the new default experience.
 
 ## What's new in 3.0
 
@@ -31,8 +50,6 @@ The downloadable Windows installer includes the server runtime and Revit add-ins
 - **Interoperability:** `horizun_exchange` emits and verifies `horizun.exchange/0` manifests, carries model identity, and checks review correction plans before and after applying them. See [tool details](docs/TOOLS-EXTENDED.md).
 - **Schema on demand:** `full` remains the default. Set `HORIZUN_SCHEMA_MODE=facade` per client to expose health and three server-side discovery/call tools, which retrieve exact schemas as needed. The measured reduction in `tools/list` size has not yet been paired with a completed agent comparison. See [client setup](docs/CLIENTS.md) and [measurements](docs/plans/lazy-schema-3.0.md).
 - **Local toolset:** `HORIZUN_TOOLSETS=local` narrows the advertised typed surface for short-context clients while preserving the permission gate. The schema mode and toolset are independent.
-- **Tool profiles (unreleased):** a new install lists the `esencial` profile, 14 tools (~18 100 tokens of `tools/list` instead of ~105 000; ~4 400 with `HORIZUN_SCHEMA_MODE=compact`), and every other tool stays callable through `horizun_list_tools`, `horizun_call_tool` and `horizun_activate_toolset`. Role profiles: `consulta`, `modelado`, `documentacion`, `auditoria`, `completo`. An upgrade keeps the full list. See [tool profiles](docs/CLIENTS.md#tool-profiles-a-shorter-list-at-the-start-of-every-session).
-- **Small and local models (unreleased):** `local` is now eleven tools, `HORIZUN_SCHEMA_MODE=compact` shows them with short descriptions and only the common arguments (`local` + `compact`: about 3 850 tokens of `tools/list`, against about 24 800 for `local` before), `horizun_list_tools` takes a `query` in Spanish or English, and `horizun_activate_toolset` opens one more toolset for a session. In a 27-task battery on an English Revit, Claude Haiku kept 26 of 27 tasks with 58 % fewer input tokens, and qwen3:8b over Ollama kept 12 of 27 with 71–78 % fewer. See [small and local models](docs/CLIENTS.md#small-and-local-models) and the [measurements](docs/diagnostico-modelos-pequenos.md).
 
 For existing installations, follow [Migration to 3.0](docs/MIGRATION-3.0.md): protocol 3 requires the server and add-in to be updated together. [Release notes](docs/plans/release-notes-3.0.0.md) summarize the release.
 
