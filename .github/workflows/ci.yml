@@ -158,14 +158,14 @@ jobs:
 
       - name: Publish the client-name scan
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sensitive-scan
           path: artifacts/scan
 
       - name: Publish test results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results
           path: artifacts/tests
@@ -391,7 +391,7 @@ jobs:
 
       - name: Upload the immutable unsigned payload
         id: unsigned-payload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-payload-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -458,7 +458,7 @@ jobs:
 
       - name: Upload immutable package inputs
         id: package-input
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-package-input-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -585,7 +585,7 @@ jobs:
 
       - name: Publish the final unsigned package
         id: final-package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: horizun-mcp-package
           path: |
@@ -801,7 +801,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "installed unsigned release verification failed ($LASTEXITCODE)" }
 
       - name: Publish the installed release-chain evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: installed-release-chain
           # Every live job starts from a clean checkout. The orchestrator needs
@@ -855,7 +855,7 @@ jobs:
       # actually needs. Publishing only the green ones is publishing nothing.
       - name: Publish the live-verification results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: live-verification-${{ matrix.year }}
           path: artifacts/live
@@ -895,7 +895,7 @@ jobs:
           }
 
       - name: Publish the complete stable matrix
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: stable-live-matrix-${{ github.ref_name }}
           path: live/live-*.json
