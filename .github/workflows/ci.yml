@@ -416,7 +416,6 @@ jobs:
     env:
       HORIZUN_FIRMA_COLA: ${{ vars.HORIZUN_FIRMA_COLA }}
       HORIZUN_FIRMA_TRABAJO: ${{ vars.HORIZUN_FIRMA_TRABAJO }}
-    env:
       NUGET_PACKAGES: ${{ github.workspace }}\.horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-compile-installer
     permissions:
       actions: read

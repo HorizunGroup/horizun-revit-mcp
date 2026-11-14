@@ -66,6 +66,14 @@ foreach ($jobName in 'package','public-integrity') {
 }
 Assert-True ($ci -notmatch 'signpath/|SIGNPATH_|SIGNING_CERT_THUMBPRINT|sign-payload:|sign-installer:') `
     'Release CI signs only through the local signing queue on the signing runner: no credential or third-party signing route.'
+# GitHub refuses a workflow with a key repeated in one mapping ("workflow file issue", no log),
+# while most YAML parsers keep the last value silently. A job with two env: blocks shipped that way.
+foreach ($job in [regex]::Matches($ci, '(?ms)^  ([A-Za-z0-9_-]+):[ \t]*\r?\n(.*?)(?=^  [A-Za-z0-9_-]+:[ \t]*\r?\n|\z)')) {
+    foreach ($key in 'env','permissions','outputs','steps','runs-on','environment','if','needs','strategy','timeout-minutes') {
+        $count = [regex]::Matches($job.Groups[2].Value, "(?m)^    $([regex]::Escape($key)):").Count
+        Assert-True ($count -le 1) "Job $($job.Groups[1].Value) declares '$key' $count times; GitHub rejects the whole workflow."
+    }
+}
 Assert-True ($ci -match "authenticode = 'signed_by_certum'" -and
              $ci -match 'publisher_identity_available = \$true' -and
              $ci -match 'Get-HorizunReleaseSignatureProblems') `
