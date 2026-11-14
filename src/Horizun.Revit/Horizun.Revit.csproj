@@ -190,4 +190,14 @@
     <!-- The single declaration of every command, shared with the other half. -->
     <Compile Include="..\Horizun.Contracts\Contract.cs" />
   </ItemGroup>
+  <!-- IronPython.StdLib copies distutils' Windows installer stubs (lib\distutils\command\wininst-*.exe,
+       7 unsigned executables). bdist_wininst is never run inside Revit, and an unsigned .exe has
+       no place in a signed payload, so they are removed from the output after every build. -->
+  <Target Name="HorizunDropPythonInstallers" AfterTargets="Build">
+    <ItemGroup>
+      <_HorizunWininst Include="$(OutDir)lib\distutils\command\wininst-*.exe" />
+    </ItemGroup>
+    <Delete Files="@(_HorizunWininst)" />
+  </Target>
+
 </Project>
