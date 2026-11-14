@@ -313,6 +313,10 @@ foreach ($year in 2023, 2024, 2025, 2026, 2027) {
     Get-ChildItem $bin -Filter *.dll -File | ForEach-Object { Copy-Item $_.FullName $out -Force }
     $lib = Join-Path $bin 'lib'
     if (Test-Path $lib) { Copy-Item $lib (Join-Path $out 'lib') -Recurse -Force }
+    # The standard library is source: an executable in it (distutils' wininst-*.exe) is never run by Revit
+    # and would ship unsigned. The csproj removes them; this refuses a payload where one came back.
+    $libExe = @(Get-ChildItem (Join-Path $out 'lib') -Recurse -File -Include *.exe, *.dll -ErrorAction SilentlyContinue)
+    if ($libExe.Count) { throw "lib for $year carries executables ($($libExe.Name -join ', ')): they would ship unsigned" }
     # The ribbon icons. Same omission as the deploy library's: *.dll and lib were
     # the whole list, and a missing icon degrades silently to an imageless button.
     $res = Join-Path $bin 'Resources'
