@@ -143,6 +143,27 @@ try {
         ($log.Contains("$fixtures\user\2026\One.addin") -and $log.Contains("$fixtures\user\2026\Two.addin")) `
         'only the first unreadable manifest was named'
 
+    # Issue #70: an add-in can install a FOLDER named *.addin (Autodesk's BIM 360
+    # Issues add-in does). FindFirst('*.addin') returns it; parsing it as XML failed
+    # with "msxml6.dll: Access is denied" and refused the whole install.
+    $log = Invoke-Preflight 'folder-named-addin' {
+        New-Item -ItemType Directory -Force -Path "$fixtures\machine\2025\Vendor.Revit.Issues.Addin" | Out-Null
+        Set-Content -LiteralPath "$fixtures\machine\2025\Vendor.Revit.Issues.Addin\payload.dll" -Value 'not a manifest'
+        New-Item -ItemType Directory -Force -Path "$fixtures\user\2025\Empty.addin" | Out-Null
+        Write-Manifest "$fixtures\machine\2025\Vendor.addin" (Addin ([guid]::NewGuid().ToString()))
+    }
+    Check 'a folder named *.addin is not read as a manifest (issue #70)' `
+        ($log -match $passed -and $log -notmatch $refused -and -not $log.Contains('Issues.Addin')) `
+        'a folder whose name ends in .addin was parsed as a manifest'
+
+    $log = Invoke-Preflight 'folder-named-addin-beside-duplicate' {
+        New-Item -ItemType Directory -Force -Path "$fixtures\user\2025\A.addin" | Out-Null
+        Write-Manifest "$fixtures\user\2025\Z-dup.addin" (Addin $horizunId.ToString())
+    }
+    Check 'skipping a *.addin folder still finds a real duplicate after it' `
+        ($log -match $duplicate -and $log.Contains("$fixtures\user\2025\Z-dup.addin")) `
+        'the duplicate after a *.addin folder was not found'
+
     $log = Invoke-Preflight 'year-is-a-file' {
         New-Item -ItemType Directory -Force -Path "$fixtures\user" | Out-Null
         Set-Content -LiteralPath "$fixtures\user\2024" -Value 'not a folder'

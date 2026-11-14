@@ -35,8 +35,8 @@ If the user asked you to install it, this is the whole procedure.
 For “install this repo” or “install everything necessary”, use the published
 installer. It includes the MCP server runtime and the add-ins; Git and the .NET
 SDK are not required. Check Windows, an installed Revit 2023–2027, and that Revit
-is closed first. Read the unsigned-release disclosure in README.md before using
-the explicit acknowledgement below.
+is closed first. From v4.0.1 the Setup and every binary it installs are signed
+(Certum); `-AllowUnsigned` is only needed for an old release with an unsigned Setup.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned
@@ -304,8 +304,8 @@ Si el usuario te pidió "instálalo", este documento es el procedimiento complet
 Ante «instala este repo» o «instala todo lo necesario», usa el instalador
 publicado. Incluye el runtime del servidor MCP y los add-ins; no necesita Git ni
 el SDK de .NET. Comprueba primero Windows, Revit 2023–2027 instalado y Revit
-cerrado. Lee el aviso sobre las releases sin firma en README.md antes de usar
-la aceptación explícita del siguiente comando.
+cerrado. Desde la v4.0.1 el Setup y todos los binarios que instala van firmados
+(Certum); `-AllowUnsigned` solo hace falta para una release vieja con el Setup sin firma.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned

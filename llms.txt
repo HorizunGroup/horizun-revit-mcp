@@ -68,8 +68,8 @@ The release installer contains a self-contained Windows x64 MCP server plus a
 separate add-in payload for each supported Revit API year. Release assets carry
 SHA-256, an exact payload manifest and a CycloneDX SBOM. Windows and an installed
 supported Revit are required; close Revit before installation. From v3.0.2 the
-Setup is signed by HORIZUN GROUP S.A.S. (Certum); the server and add-ins are
-unsigned by policy, so Revit may show an unsigned add-in warning. Verify the
+Setup and every binary it installs are signed by HORIZUN GROUP S.A.S. (Certum)
+from v4.0.1, so Windows Smart App Control lets them load. Verify the
 download as described in README.md. The bootstrap needs -AllowUnsigned only for
 an unsigned Setup (releases before v3.0.2).
 

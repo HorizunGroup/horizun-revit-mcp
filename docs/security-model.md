@@ -350,16 +350,17 @@ small documented set of high-confidence static risk rules. JSON and SARIF make
 the result archivable. This is deterministic triage, not proof that the library
 is vulnerability-free or safe under arbitrary runtime inputs.
 
-## 8. Unsigned releases and local trust
+## 8. Release signing and local trust
 
 The package pipeline reports the signature state and never implies a public trust
-chain it does not carry. The packages CI builds, including 1.0+, are permanently
-unsigned by policy: every owned payload binary and Setup must report
-`NotSigned`, and the package declares that publisher identity is unavailable.
-From v3.0.2 the Setup alone is then signed with the Certum certificate of
-HORIZUN GROUP S.A.S. before the draft release is published
-([RELEASING.md](RELEASING.md)); the payload stays unsigned, and the bootstrap
-requires explicit `-AllowUnsigned` only for an unsigned Setup. Hashes, manifests and GitHub
+chain it does not carry. From v4.0.1 every signable binary of the payload and
+the Setup are signed with the Certum certificate of HORIZUN GROUP S.A.S. before
+packaging (`compile-installer`, behind the `firma-certum` approval;
+[RELEASING.md](RELEASING.md)), and `verify-release.ps1 -RequireSigned` refuses
+any other state, a self-signed or unsigned file included. Windows Smart App
+Control blocks unsigned binaries, which is why signing only the Setup (v3.0.2 to
+v4.0.0) was not enough. The bootstrap requires explicit `-AllowUnsigned` only for
+an unsigned Setup. Hashes, manifests and GitHub
 attestations prove byte identity and workflow provenance, not publisher identity.
 The source installer also supports an explicit, per-user self-signing workflow
 (`scripts/self-sign.ps1`):

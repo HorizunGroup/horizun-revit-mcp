@@ -68,6 +68,16 @@ WizardStyle=modern
 ; Per-user install: the add-in folders live under %APPDATA% and need no elevation.
 PrivilegesRequired=lowest
 UninstallDisplayName={#AppName} {#AppVersion}
+; RELEASE SIGNING. pack.ps1 -InstallerOnly -Sign defines HorizunSign and the sign
+; tool "horizun" (scripts/firmar-cola.ps1). Inno then signs Setup itself, the
+; uninstaller AND the temporary self-copy Setup runs from %TEMP%. Signing Setup
+; after compilation leaves that self-copy unsigned, and Smart App Control blocks
+; it (error 4551, issue #74). The payload (server and add-ins) is signed in the
+; stage before this compile.
+#ifdef HorizunSign
+SignTool=horizun
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
@@ -399,7 +409,11 @@ begin
     try
       repeat
         Candidate := AddinsRoot + '\' + Year + '\' + FindRec.Name;
-        if (AllowedManifest = '') or (CompareText(Candidate, AllowedManifest) <> 0) then
+        { A FOLDER whose name ends in .addin (an Autodesk add-in installs one) is not
+          a manifest: Revit reads files only. Parsing it as XML failed with "Access is
+          denied" and blocked the install (issue #70). Only files are manifests. }
+        if ((FindRec.Attributes and $10) = 0) and
+           ((AllowedManifest = '') or (CompareText(Candidate, AllowedManifest) <> 0)) then
         begin
           try
             XmlDocument := CreateOleObject('Msxml2.DOMDocument.6.0');

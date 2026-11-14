@@ -31,13 +31,14 @@ del servidor MCP y los add-ins. **No necesitas Git, Visual Studio ni el SDK de
 4. Call `horizun_health` to verify the loaded version and active document.
    / Llama a `horizun_health` para verificar la versión y el documento activo.
 
-From v3.0.2 the Setup is signed by HORIZUN GROUP S.A.S. (Certum): check the
-Digital Signatures tab in its properties. The server and add-ins it installs are
-unsigned by policy, so Revit may show an unsigned add-in warning, and earlier
-releases have an unsigned Setup. Hashes verify the downloaded bytes but do not
-authenticate a Windows publisher. Desde la v3.0.2 el Setup está firmado por
-HORIZUN GROUP S.A.S. (Certum); el servidor y los add-ins no lo están. Consulta
-la [política de firma](../CODE-SIGNING-POLICY.md).
+From v4.0.1 the Setup and every binary it installs (server, add-ins and the
+libraries they load) are signed by HORIZUN GROUP S.A.S. (Certum): check the
+Digital Signatures tab in their properties. Windows Smart App Control blocks
+unsigned binaries, so releases before v4.0.1 (unsigned server and add-ins) do not
+run with it on. Desde la v4.0.1 el Setup y todos los binarios que instala están
+firmados por HORIZUN GROUP S.A.S. (Certum); antes de la v4.0.1 el servidor y los
+add-ins no lo estaban y el Control inteligente de aplicaciones los bloquea.
+Consulta la [política de firma](../CODE-SIGNING-POLICY.md).
 
 The optional [bootstrap](../install-release.ps1) performs the download and hash
 comparison automatically; it requires the explicit `-AllowUnsigned` flag only
@@ -68,7 +69,7 @@ con el plan gratuito; [pasos completos / complete steps](CLIENTS.md#claude-deskt
 ## First Revit start / Primer arranque de Revit
 
 Revit may show an add-in security prompt on first launch. After verifying the
-package and accepting the unsigned-release policy, choose **Always Load** to
+package and its HORIZUN GROUP S.A.S. signature, choose **Always Load** to
 allow the add-in. Check the other monitors if Revit appears to be waiting with
 no visible dialog. With a document open, the **Horizun Hub** ribbon tab and its
 **Estado del puente** button show the local bridge state; verify the client
