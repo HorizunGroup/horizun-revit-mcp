@@ -52,7 +52,8 @@ IronPython, the Dynamic Language Runtime and PdfPig; on the server
 `horizun-mcp.exe`, `horizun-mcp.dll` and PdfPig), recomputes the manifest, and
 compiles Setup with Inno's sign tool (`pack.ps1 -InstallerOnly -Sign`), which
 signs Setup, the uninstaller and the temporary copy Setup runs from `%TEMP%`.
-SimplySign must be connected for both approvals. Third-party files already
+SimplySign must be connected for both approvals. The queue and work folders of the signing machine come from the repository
+variables `HORIZUN_FIRMA_COLA` and `HORIZUN_FIRMA_TRABAJO`; without them nothing is signed. Third-party files already
 signed by their publisher (.NET runtime, Newtonsoft.Json) are left as they are.
 The Claude Desktop extension has nothing to sign:
 

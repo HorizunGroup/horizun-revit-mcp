@@ -7,8 +7,12 @@
   The release signing machine does not hold the key in a build: a signing service watches
   <Queue>\pendiente for {"tipo":"firmar","archivos":[...]} requests, signs them with SimplySign
   (which a person keeps connected) and writes <Queue>\hecho\<id>.json. The service only signs
-  files under D:\, so every file is copied to a private folder under -WorkRoot, signed there,
-  verified and copied back. A file already signed by that certificate with a timestamp is left
+  files under its own roots, so every file is copied to a private folder under -WorkRoot, signed
+  there, verified and copied back.
+
+  The queue and work folders belong to the signing machine and are not in this repository: pass
+  -Queue / -WorkRoot, or set HORIZUN_FIRMA_COLA / HORIZUN_FIRMA_TRABAJO (CI sets them from the
+  repository variables of the same names). Without them nothing is signed. A file already signed by that certificate with a timestamp is left
   as it is.
 
   Used twice by a release:
@@ -24,8 +28,8 @@
 param(
     [Parameter(Mandatory, Position = 0, ValueFromRemainingArguments)]
     [string[]]$Path,
-    [string]$Queue = 'D:\Curso\firma\cola',
-    [string]$WorkRoot = 'D:\Curso\firma\trabajo',
+    [string]$Queue = $env:HORIZUN_FIRMA_COLA,
+    [string]$WorkRoot = $env:HORIZUN_FIRMA_TRABAJO,
     [string]$Thumbprint = 'D19F95C700EFEB78F03B6A2F9F6FBF87BF9BF8FA',
     [int]$TimeoutMinutes = 60
 )
@@ -41,6 +45,9 @@ if ($env:HORIZUN_FIRMA_PRUEBA_COLA) {
     $Thumbprint = $env:HORIZUN_FIRMA_PRUEBA_THUMBPRINT
     $issuerLike = '*'; $stampLike = $null
     Write-Warning "[firma] REHEARSAL: test queue $Queue, certificate $Thumbprint (not a release signature)"
+}
+if (-not $Queue -or -not $WorkRoot) {
+    throw 'No signing queue configured: pass -Queue and -WorkRoot, or set HORIZUN_FIRMA_COLA and HORIZUN_FIRMA_TRABAJO. Nothing was signed.'
 }
 
 function Test-HorizunCertum([string]$File) {

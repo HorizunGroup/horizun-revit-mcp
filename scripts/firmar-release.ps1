@@ -56,7 +56,13 @@ $script:ArchiveCache = @{} # hash original del contenedor -> ruta del contenedor
 $script:TopByHash = @{}    # hash original de un asset de primer nivel -> ruta
 $script:Done = @{}         # rutas de primer nivel ya procesadas
 $script:InProgress = @{}
-$workspace = Join-Path 'D:\Curso\firma\trabajo' ('horizun-firma-' + [guid]::NewGuid().ToString('N'))
+# The signing machine's queue and work folders are not in this repository (HORIZUN_FIRMA_COLA /
+# HORIZUN_FIRMA_TRABAJO; CI sets them from the repository variables of the same names).
+$colaFirma = $env:HORIZUN_FIRMA_COLA
+$trabajoFirma = $env:HORIZUN_FIRMA_TRABAJO
+if (-not $trabajoFirma) { throw 'Falta HORIZUN_FIRMA_TRABAJO (carpeta de trabajo de la maquina de firma). No se firmo nada.' }
+if (-not $Prueba -and -not $colaFirma) { throw 'Falta HORIZUN_FIRMA_COLA (cola del servicio de firma). No se firmo nada.' }
+$workspace = Join-Path $trabajoFirma ('horizun-firma-' + [guid]::NewGuid().ToString('N'))
 
 function Get-Digest([string] $Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function New-TempDir {
@@ -88,7 +94,7 @@ function Assert-Signature([string] $Path) {
 function Invoke-Sign([string] $Path) {
     if ($Prueba) { throw 'La prueba local no esta habilitada en el flujo de cola.' }
     $id = [guid]::NewGuid().ToString('N')
-    $base = 'D:\Curso\firma\cola'
+    $base = $colaFirma
     $pending = Join-Path $base "pendiente\$id.json"
     $done = Join-Path $base "hecho\$id.json"
     @{ tipo = 'firmar'; archivos = @($Path.Replace('\', '/')) } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $pending -Encoding utf8
