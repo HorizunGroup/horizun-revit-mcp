@@ -39,6 +39,9 @@ param(
     # Stable releases are permanently unsigned; this explicit acknowledgement
     # prevents absence of publisher identity from being mistaken for trust.
     [switch]$AllowUnsigned,
+    # A release from 4.0.1 on: every binary of the payload and Setup must be signed,
+    # own files by HORIZUN GROUP S.A.S. with Certum (issues #74, #75).
+    [switch]$RequireSigned,
     # The installer can write a per-run result file. CI must pass the exact file
     # it asked Setup to create instead of reading a global leftover in {app}.
     [string]$InstallResult,
@@ -236,7 +239,17 @@ if ($mcpbFiles.Count -eq 1) {
 # Public releases deliberately carry no Authenticode publisher identity. The
 # switch is an acknowledgement, not a temporary compatibility exception.
 $own = @(Get-HorizunOwnBinaries $Stage)
-if (-not $AllowUnsigned) {
+if ($RequireSigned) {
+    if ($AllowUnsigned) { Write-Error '-RequireSigned and -AllowUnsigned contradict each other'; exit 2 }
+    Check 'the manifest declares the package signed' ([bool]$doc.Signed) 'manifest.Signed is false'
+    $setupFiles = @()
+    if ($Installer) { $setupFiles = @($Installer) }
+    else { $setupFiles = @(Get-ChildItem (Join-Path $repo 'dist') -Filter '*setup.exe' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
+    $sigProblems = @(Get-HorizunReleaseSignatureProblems $Stage $setupFiles)
+    Check ('every payload binary and Setup is signed (' + (@(Get-HorizunSignableBinaries $Stage).Count + $setupFiles.Count) + ' checked)') `
+          ($sigProblems.Count -eq 0) (($sigProblems | Select-Object -First 8) -join '; ')
+}
+elseif (-not $AllowUnsigned) {
     Check 'the caller explicitly acknowledges the unsigned release policy' $false `
           'pass -AllowUnsigned only after accepting that Windows cannot authenticate the publisher'
 }
@@ -272,8 +285,14 @@ $installerSha = $null
 if ($Installer -and (Test-Path $Installer)) {
     $installerSha = Sha $Installer
     $installerSignature = Get-HorizunSignatureInfo $Installer
-    Check 'installer is unsigned by public-release policy' ($installerSignature.Status -eq 'NotSigned') `
-          "unexpected Authenticode state $($installerSignature.Status)"
+    if ($RequireSigned) {
+        Check 'installer is signed by HORIZUN GROUP S.A.S. (Certum)' (Test-HorizunReleaseSignature $Installer) `
+              "Authenticode state $($installerSignature.Status)"
+    }
+    else {
+        Check 'installer is unsigned by public-release policy' ($installerSignature.Status -eq 'NotSigned') `
+              "unexpected Authenticode state $($installerSignature.Status)"
+    }
     $newerPayload = @(Get-ChildItem $Stage -Recurse -File |
                       Where-Object { $_.LastWriteTimeUtc -gt (Get-Item $Installer).LastWriteTimeUtc })
     # The installer must be NEWER than everything it wrapped. Otherwise it is a
@@ -472,7 +491,7 @@ $report = [pscustomobject]@{
     stage             = $Stage
     installer         = $Installer
     installer_sha256  = $installerSha
-    signature_policy  = $(if ($AllowUnsigned) { 'unsigned_by_policy' } else { 'unsigned_unacknowledged' })
+    signature_policy  = $(if ($RequireSigned) { 'signed_by_certum' } elseif ($AllowUnsigned) { 'unsigned_by_policy' } else { 'unsigned_unacknowledged' })
     install_result    = $InstallResult
     checked_installed = [bool]$Installed
     installed         = $installedReport

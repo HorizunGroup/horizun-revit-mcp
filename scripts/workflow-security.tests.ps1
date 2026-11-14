@@ -39,10 +39,12 @@ Assert-True ($ci -match '(?s)build-stage:.*?needs:\s*\[revit-free,\s*windows-dep
     'The self-hosted stage build must not proceed when the Windows deployment gate failed.'
 Assert-True ($ci -match '(?s)revit-addin:.*?group:\s*\$\{\{\s*vars\.REVIT_RUNNER_GROUP\s*\}\}') `
     'Revit jobs must target the externally configured Revit runner group.'
-foreach ($jobName in 'build-stage','compile-installer') {
-    Assert-True ($ci -match "(?s)$([regex]::Escape($jobName)):.*?group:\s*\$\{\{\s*vars\.REVIT_RUNNER_GROUP\s*\}\}.*?labels:\s*\[self-hosted, windows, revit\]") `
-        "$jobName must target the licensed Revit runner group."
-}
+Assert-True ($ci -match "(?s)build-stage:.*?group:\s*\$\{\{\s*vars\.REVIT_RUNNER_GROUP\s*\}\}.*?labels:\s*\[self-hosted, windows, revit\]") `
+    'build-stage must target the licensed Revit runner group.'
+# compile-installer signs (issues #74, #75): only on the signing runner, behind the
+# reviewer of firma-certum, and only in the canonical repository.
+Assert-True ($ci -match "(?s)  compile-installer:\s*\r?\n\s+if:[^\r\n]*github\.repository == 'HorizunGroup/horizun-revit-mcp'[^\r\n]*\r?\n\s+needs: build-stage\r?\n\s+runs-on: \[self-hosted, windows, horizun-sign\]\r?\n\s+environment: firma-certum") `
+    'compile-installer must run on the signing runner behind the firma-certum environment, in the canonical repository only.'
 
 function Get-JobBlock([string]$name) {
     $match = [regex]::Match($ci, "(?ms)^  $([regex]::Escape($name)):\s*\r?\n(?:(?!^  [a-zA-Z0-9_-]+:\s*$).)*")
@@ -63,11 +65,11 @@ foreach ($jobName in 'package','public-integrity') {
         "$jobName must run on a disposable hosted runner without release secrets."
 }
 Assert-True ($ci -notmatch 'signpath/|SIGNPATH_|SIGNING_CERT_THUMBPRINT|sign-payload:|sign-installer:') `
-    'Permanent unsigned release CI must contain no public-signing route or credential.'
-Assert-True ($ci -match "authenticode = 'unsigned_by_policy'" -and
-             $ci -match 'publisher_identity_available = \$false' -and
-             $ci -match "Status -ne 'NotSigned'") `
-    'The release workflow must disclose and enforce the exact unsigned state.'
+    'Release CI signs only through the local signing queue on the signing runner: no credential or third-party signing route.'
+Assert-True ($ci -match "authenticode = 'signed_by_certum'" -and
+             $ci -match 'publisher_identity_available = \$true' -and
+             $ci -match 'Get-HorizunReleaseSignatureProblems') `
+    'The release workflow must disclose and enforce that every binary and Setup are signed.'
 foreach ($handoff in
     'artifact-ids: ${{ needs.build-stage.outputs.payload-artifact-id }}',
     'artifact-ids: ${{ needs.compile-installer.outputs.package-input-artifact-id }}',

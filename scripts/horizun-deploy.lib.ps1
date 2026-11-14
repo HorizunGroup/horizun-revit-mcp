@@ -510,6 +510,55 @@ function Get-HorizunOwnBinaries([string]$Stage) {
   and by verify-release, so a file signed or altered AFTER the manifest was
   written is caught rather than shipped.
 #>
+<#
+  Every binary of the payload Windows will load: the server's .exe/.dll and the top
+  level .dll of each add-in year, own AND redistributed. Smart App Control blocks an
+  unsigned DLL whoever wrote it (IronPython and PdfPig ship unsigned), so a release
+  signs each one that carries no signature. One that is already signed (the .NET
+  runtime, Newtonsoft) keeps its publisher's signature. The Python standard library
+  under lib\ is data the add-in reads, not code Windows loads, and is left as is.
+#>
+function Get-HorizunSignableBinaries([string]$Stage) {
+    $files = @()
+    $server = Join-Path $Stage 'server'
+    if (Test-Path $server) { $files += @(Get-ChildItem $server -File | Where-Object { $_.Extension -in '.exe', '.dll' }) }
+    foreach ($year in @(Get-ChildItem (Join-Path $Stage 'plugin') -Directory -ErrorAction SilentlyContinue)) {
+        $files += @(Get-ChildItem $year.FullName -File -Filter '*.dll')
+    }
+    $files | ForEach-Object { $_.FullName }
+}
+
+# The release signature: valid public chain, HORIZUN GROUP S.A.S. as the
+# organisation, a Certum issuer and a Certum timestamp. Nothing else is a release
+# signature, however "Valid" a self-signed or private certificate reads locally.
+function Test-HorizunReleaseSignature([string]$Path) {
+    $s = Get-AuthenticodeSignature -LiteralPath $Path
+    return ($s.Status -eq 'Valid' -and $s.SignerCertificate -and
+            $s.SignerCertificate.Subject -match '(^|,\s*)O=HORIZUN GROUP S\.A\.S\.(,|$)' -and
+            $s.SignerCertificate.Issuer -match 'Certum' -and
+            $s.TimeStamperCertificate -and $s.TimeStamperCertificate.Subject -match 'Certum')
+}
+
+# Every reason a signed release is NOT fully signed, empty when it is: each own
+# binary and each Setup carries the release signature, and every other binary
+# Windows loads carries SOME valid signature (its publisher's, or ours when it
+# shipped with none).
+function Get-HorizunReleaseSignatureProblems([string]$Stage, [string[]]$Installers) {
+    $problems = @()
+    $own = @(Get-HorizunOwnBinaries $Stage)
+    foreach ($p in @($own) + @($Installers | Where-Object { $_ })) {
+        if (-not (Test-HorizunReleaseSignature $p)) {
+            $problems += "$(Split-Path $p -Leaf): not signed by HORIZUN GROUP S.A.S. (Certum, timestamped) - $((Get-AuthenticodeSignature -LiteralPath $p).Status)"
+        }
+    }
+    foreach ($p in @(Get-HorizunSignableBinaries $Stage)) {
+        if ($own -contains $p) { continue }
+        $status = "$((Get-AuthenticodeSignature -LiteralPath $p).Status)"
+        if ($status -ne 'Valid') { $problems += "$($p.Substring($Stage.Length).TrimStart('\','/')): $status" }
+    }
+    $problems
+}
+
 function Test-HorizunStageMatchesManifest([string]$Stage) {
     $manifestPath = Join-Path $Stage 'manifest.json'
     if (-not (Test-Path $manifestPath)) { return @("no manifest at $manifestPath") }

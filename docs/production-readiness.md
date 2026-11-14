@@ -7,8 +7,9 @@ A source change does not rerun or refresh these measurements.
 
 “Production-ready” means every repository, packaging and live-model gate is
 present and fail-closed. It does **not** mean that Autodesk endorses the product
-or that Windows can authenticate its publisher: public releases are permanently
-unsigned by owner policy.
+by itself that Windows can authenticate its publisher. (From v4.0.1 every
+released binary and Setup are signed by HORIZUN GROUP S.A.S.; the historical rows
+below predate that and describe the unsigned policy of their time.)
 
 ## What this repository can prove without buying a certificate
 

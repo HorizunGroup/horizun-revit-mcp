@@ -181,14 +181,15 @@ if ($hzCall -notmatch 'reply\.result\.structuredContent') { Fail 'hz-call no lon
 if ($ci -notmatch '\(\?m\)\^failed\[ \\t\]\*=\[ \\t\]\*\\S') {
     Fail 'CI install-result parsing can again read the line after an empty failed= as a failed year'
 }
-if ($ci -notmatch 'verify-release\.ps1 -AllowUnsigned -Installed -InstallResult') {
-    Fail 'tag-only package CI no longer verifies the exact installed result under the explicit unsigned policy'
+if ($ci -notmatch 'verify-release\.ps1 -RequireSigned -Installed -InstallResult') {
+    Fail 'tag-only package CI no longer verifies that the exact installed result is fully signed'
 }
 if ($ci -match 'signpath/|SIGNPATH_|SIGNING_CERT_THUMBPRINT|sign-payload:|sign-installer:' -or
-    $ci -notmatch "authenticode = 'unsigned_by_policy'" -or
-    $ci -notmatch 'publisher_identity_available = \$false' -or
-    $ci -notmatch "Status -ne 'NotSigned'") {
-    Fail 'permanent unsigned release boundary or its machine-readable disclosure has drifted'
+    $ci -notmatch "authenticode = 'signed_by_certum'" -or
+    $ci -notmatch 'publisher_identity_available = \$true' -or
+    $ci -notmatch 'pack\.ps1 -SignStage -InstallerOnly -Sign' -or
+    $ci -notmatch 'Get-HorizunReleaseSignatureProblems') {
+    Fail 'the signed release boundary (issues #74, #75) or its machine-readable disclosure has drifted'
 }
 foreach ($handoff in
     'needs.build-stage.outputs.payload-artifact-id',
@@ -206,15 +207,15 @@ foreach ($selfHostedJob in 'build-stage','compile-installer') {
         Fail "$selfHostedJob can receive release credentials or a protected secret environment"
     }
 }
-if ($ci -notmatch '(?s)public-integrity:.*?runs-on:\s*windows-latest.*?unsigned_by_policy' -or
+if ($ci -notmatch '(?s)public-integrity:.*?runs-on:\s*windows-latest.*?signed_by_certum' -or
     $ci -notmatch 'needs: \[package, public-integrity, stable-release-evidence\]') {
-    Fail 'stable publication no longer proves the permanent unsigned integrity contract on a clean hosted runner'
+    Fail 'stable publication no longer proves the signed integrity contract on a clean hosted runner'
 }
 if ($ci -notmatch '(?s)Create or complete the stable GitHub release.*?GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}.*?gh release') {
     Fail 'stable release publication can no longer identify the repository without a checkout'
 }
-if ($ci -notmatch '(?s)install-package:.*?startsWith\(github\.ref,\s*''refs/tags/v''\).*?verify-release\.ps1 -AllowUnsigned -Installed -InstallResult') {
-    Fail 'installed verification is no longer tag-only and explicitly unsigned'
+if ($ci -notmatch '(?s)install-package:.*?startsWith\(github\.ref,\s*''refs/tags/v''\).*?verify-release\.ps1 -RequireSigned -Installed -InstallResult') {
+    Fail 'installed verification is no longer tag-only and fully signed'
 }
 if ($ci -notmatch 'publish-preview-release:' -or $ci -notmatch '--prerelease' -or
     $ci -notmatch 'publish-validation-release:' -or
@@ -265,16 +266,17 @@ foreach ($overlayFile in @(if (Test-Path $overlayDir) { Get-ChildItem $overlayDi
 $signingPolicy = Get-Content (Join-Path $repo 'CODE-SIGNING-POLICY.md') -Raw
 $privacyPolicy = Get-Content (Join-Path $repo 'docs/PRIVACY.md') -Raw
 $codeowners = Get-Content (Join-Path $repo '.github/CODEOWNERS') -Raw
-if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'intentionally[\s>]*\*\*unsigned\*\*' -or
-    $readme -notmatch 'do not authenticate a Windows[\s>]+publisher') {
-    Fail 'README no longer exposes the permanent unsigned trust boundary'
+if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'every binary[\s>]+it installs[\s>]+are[\s>]+\*\*signed\*\*' -or
+    $readme -notmatch 'Smart App Control') {
+    Fail 'README no longer states that every installed binary is signed (issues #74, #75)'
 }
-if ($signingPolicy -notmatch 'including version 1\.0' -or
-    $signingPolicy -notmatch 'authenticode: unsigned_by_policy' -or
-    $signingPolicy -notmatch 'publisher_identity_available: false' -or
+if ($signingPolicy -notmatch 'every binary a release installs and its Setup are signed' -or
+    $signingPolicy -notmatch 'authenticode: signed_by_certum' -or
+    $signingPolicy -notmatch 'publisher_identity_available: true' -or
+    $signingPolicy -notmatch 'verify-release\.ps1 -RequireSigned' -or
     $signingPolicy -notmatch 'must never describe an invalid, expired, privately trusted or\s+self-signed signature as public trust' -or
     $signingPolicy -notmatch 'docs/PRIVACY\.md') {
-    Fail 'unsigned release policy no longer states its trust, integrity and privacy boundaries'
+    Fail 'release signing policy no longer states its trust, integrity and privacy boundaries'
 }
 if ($privacyPolicy -notmatch 'does not automatically upload' -or $privacyPolicy -notmatch 'horizun_power_bi_push' -or $privacyPolicy -notmatch 'horizun_execute_python') {
     Fail 'privacy policy no longer names the automatic and user-requested data boundaries'

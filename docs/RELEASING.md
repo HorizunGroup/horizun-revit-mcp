@@ -31,7 +31,8 @@ is why nothing is published before it is signed. The policy is in
 6. **Approve** the `firma-certum` environment in the **Actions** tab of the run.
 7. The job runs `scripts/firmar-release.ps1`, which, on the draft:
    - signs a canary first and stops if SimplySign is not connected;
-   - downloads the assets and signs the Horizun setup (`*horizun*` executables);
+   - downloads the assets and verifies the Horizun setup, already signed by
+     `compile-installer` (it signs any `*horizun*` executable that is not);
    - regenerates `SHA256SUMS.txt` and `package-hashes.json` (and any hash that
      points at the signed file), and verifies every signature with `signtool` and
      `Get-AuthenticodeSignature` (certificate thumbprint, Certum issuer, Certum
@@ -43,22 +44,30 @@ is why nothing is published before it is signed. The policy is in
 
 ## What is signed and what is not
 
-Only the Setup (`horizun-mcp-X.Y.Z-setup.exe`) is signed. The server, the
-add-ins and the Claude Desktop extension are not changed by signing:
+From v4.0.1 the stage is signed BEFORE Setup is compiled: `compile-installer`
+runs on the signing runner behind its own `firma-certum` approval (so a release
+asks for two approvals), signs every signable binary of the stage through the
+local signing queue (`pack.ps1 -SignStage`: per Revit year `Horizun.Revit.dll`,
+IronPython, the Dynamic Language Runtime and PdfPig; on the server
+`horizun-mcp.exe`, `horizun-mcp.dll` and PdfPig), recomputes the manifest, and
+compiles Setup with Inno's sign tool (`pack.ps1 -InstallerOnly -Sign`), which
+signs Setup, the uninstaller and the temporary copy Setup runs from `%TEMP%`.
+SimplySign must be connected for both approvals. Third-party files already
+signed by their publisher (.NET runtime, Newtonsoft.Json) are left as they are.
+The Claude Desktop extension has nothing to sign:
 
 - `.mcpb` contains only a manifest, icons, README and LICENSE; it has no
   executable to sign, so its hash in `server.json` (the MCP Registry metadata)
   and in `SHA256SUMS.txt` stays valid.
-- The payload inside the Setup keeps the bytes that `stage/manifest.json` hashes
-  and that `verify-release.ps1 -Installed` compares after installation.
+- The payload inside the Setup keeps the signed bytes that `stage/manifest.json`
+  hashes and that `verify-release.ps1 -RequireSigned -Installed` compares after
+  installation.
 - `release-notes.md` (the release body) does not pin the Setup hash.
 - No hash of the Setup is pinned anywhere in the repository (`docs/INSTALL.md`
   tells users to compare against `SHA256SUMS.txt` of the same release).
-- `package-hashes.json` records `authenticode: unsigned_by_policy` for the CI
-  build and `release_signing: setup_signed_by_certum_after_ci`; its Setup hash and
-  size are replaced by the signed ones.
-- The GitHub build attestations and the CycloneDX SBOM bind the CI-built Setup;
-  the published Setup differs from it only by the Authenticode signature.
+- `package-hashes.json` records `authenticode: signed_by_certum` and
+  `release_signing: payload_and_setup_signed_by_certum_in_ci`.
+- The GitHub build attestations and the CycloneDX SBOM bind the signed Setup.
 - `install-release.ps1` accepts a Setup signed by HORIZUN GROUP S.A.S. (valid,
   Certum issuer, Certum timestamp) without `-AllowUnsigned` and still accepts an
   unsigned Setup with it.

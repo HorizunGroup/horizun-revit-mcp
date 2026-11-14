@@ -7,7 +7,7 @@
   "generated_from_contract_hash": "e44f15ba2c5bbc64f7555ae8",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
   "code_candidate_commit": "02e67e74f5d32989c592a8832f5d11ba9c7fd890",
-  "code_candidate_version": "4.0.0",
+  "code_candidate_version": "4.0.1",
   "code_candidate_stamp_source": "product_version",
   "source_tree_clean_at_generation": true,
   "source_tree_head_at_generation": "02e67e74f5d32989c592a8832f5d11ba9c7fd890",

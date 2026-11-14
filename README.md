@@ -210,10 +210,10 @@ arbitrary client-generated Python has a separate permission/evidence contract.
 - Setup includes the server runtime and matching Revit add-ins.
   **No Git, Visual Studio or .NET SDK is needed.**
 - Close Revit before running Setup.
-- The server and add-ins are intentionally **unsigned**; from v3.0.2 the Setup is
-  signed by HORIZUN GROUP S.A.S. (Certum). SHA-256 checks verify the
-  downloaded bytes; they do not authenticate a Windows
-  publisher. Revit may show an unsigned add-in warning. See the [signing policy](CODE-SIGNING-POLICY.md).
+- From v4.0.1 Setup and every binary it installs are **signed** by HORIZUN GROUP
+  S.A.S. (Certum), so Windows Smart App Control lets the server and the add-ins
+  load. SHA-256 checks verify the downloaded bytes. Revit asks once to
+  **Always Load** an add-in from a new publisher. See the [signing policy](CODE-SIGNING-POLICY.md).
 
 1. Open the release above and download `horizun-mcp-<version>-setup.exe` and
    `SHA256SUMS.txt` from **Assets**. The source ZIP is for development.
@@ -248,7 +248,8 @@ steps above; the [client guide](docs/CLIENTS.md#claude-desktop) provides the wri
 ### Optional PowerShell bootstrap
 
 This downloads the release installer, checks its hash and runs Setup quietly.
-`-AllowUnsigned` acknowledges the publisher status described above. The same
+`-AllowUnsigned` is only needed for an old release with an unsigned Setup (before
+v3.0.2); for a signed Setup it changes nothing. The same
 client-specific final steps still apply; use `-Interactive` for the wizard.
 
 ```powershell

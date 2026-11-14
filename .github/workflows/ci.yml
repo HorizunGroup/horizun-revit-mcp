@@ -101,7 +101,7 @@ jobs:
             echo "::error::Installable releases require an explicit REVIT_RUNNER_GROUP repository variable."
             exit 1
           fi
-          echo "::warning::Horizun releases are unsigned by policy. SHA-256, manifest, SBOM, provenance attestation and the complete live matrix prove the released bytes, but do not provide a Windows publisher identity."
+          echo "::notice::From 4.0.1 every binary of a Horizun release and its Setup are signed with the Certum certificate of HORIZUN GROUP S.A.S. before packaging (compile-installer, environment firma-certum)."
 
       - name: Restore
         run: |
@@ -402,12 +402,17 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # SIGN, THEN WRAP. Smart App Control blocks every unsigned binary it is asked to
+  # load (issues #74, #75), and signing Setup after it is compiled leaves both the
+  # payload inside it and the temporary copy Setup runs from %TEMP% unsigned. So the
+  # payload is signed in the stage and Setup is compiled with Inno's sign tool, on
+  # the signing runner (SimplySign, local signing queue) after a reviewer approves
+  # the firma-certum environment. Every hash downstream describes the signed bytes.
   compile-installer:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.') && github.repository == 'HorizunGroup/horizun-revit-mcp'
     needs: build-stage
-    runs-on:
-      group: ${{ vars.REVIT_RUNNER_GROUP }}
-      labels: [self-hosted, windows, revit]
+    runs-on: [self-hosted, windows, horizun-sign]
+    environment: firma-certum
     env:
       NUGET_PACKAGES: ${{ github.workspace }}\.horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-compile-installer
     permissions:
@@ -427,23 +432,22 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Revalidate the stage and compile its installer
+      - name: Revalidate the stage, sign it and compile its signed installer
         shell: pwsh
         run: |
           . ./scripts/horizun-deploy.lib.ps1
           $mismatch = @(Test-HorizunStageMatchesManifest 'dist/stage')
           if ($mismatch.Count) { throw "downloaded stage/manifest mismatch: $($mismatch -join '; ')" }
-          pwsh scripts/pack.ps1 -InstallerOnly
-          if ($LASTEXITCODE -ne 0) { throw "installer compilation failed ($LASTEXITCODE)" }
+          pwsh scripts/pack.ps1 -SignStage -InstallerOnly -Sign
+          if ($LASTEXITCODE -ne 0) { throw "signing or installer compilation failed ($LASTEXITCODE)" }
           pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
           if ($LASTEXITCODE -ne 0) { throw "installer version consistency failed ($LASTEXITCODE)" }
           pwsh scripts/installer-preflight.tests.ps1 -RequireIscc
           if ($LASTEXITCODE -ne 0) { throw "installer preflight failed ($LASTEXITCODE)" }
           $setup = @(Get-ChildItem dist -Filter '*setup.exe' -File)
           if ($setup.Count -ne 1) { throw "expected one Setup, found $($setup.Count)" }
-          if ((Get-AuthenticodeSignature -LiteralPath $setup[0].FullName).Status -ne 'NotSigned') {
-            throw 'public release installer must be unsigned by policy'
-          }
+          $problems = @(Get-HorizunReleaseSignatureProblems 'dist/stage' @($setup[0].FullName))
+          if ($problems.Count) { throw "release is not fully signed: $(($problems | Select-Object -First 8) -join '; ')" }
 
       - name: Archive the complete stage with its build timestamps
         shell: pwsh
@@ -460,7 +464,7 @@ jobs:
         id: package-input
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: unsigned-package-input-${{ github.run_id }}-${{ github.run_attempt }}
+          name: signed-package-input-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/*setup.exe
             dist/stage.zip
@@ -502,7 +506,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Reconstruct and verify the unsigned package
+      - name: Reconstruct and verify the signed package
         shell: pwsh
         run: |
           Expand-Archive -LiteralPath dist/stage.zip -DestinationPath dist/stage-expanded
@@ -517,12 +521,8 @@ jobs:
           $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) +
                      @(Get-ChildItem dist -Filter '*setup.exe' -File)
           if ($targets.Count -ne 8) { throw "expected seven payload binaries and one Setup; found $($targets.Count)" }
-          foreach ($file in $targets) {
-            $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
-            if ($sig.Status -ne 'NotSigned') {
-              throw "release artifact must be unsigned by policy, not $($sig.Status): $($file.FullName)"
-            }
-          }
+          $problems = @(Get-HorizunReleaseSignatureProblems 'dist/stage' @($targets[-1].FullName))
+          if ($problems.Count) { throw "release is not fully signed: $(($problems | Select-Object -First 8) -join '; ')" }
           pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
           if ($LASTEXITCODE -ne 0) { throw "final version consistency failed ($LASTEXITCODE)" }
 
@@ -560,11 +560,10 @@ jobs:
           [pscustomobject]@{
             schema = 2; commit = $doc.Commit; workflow_sha = '${{ github.sha }}'
             built_utc = (Get-Date).ToUniversalTime().ToString('o')
-            authenticode = 'unsigned_by_policy'; publisher_identity_available = $false
-            # This record describes the package CI built. Releases are signed afterwards
-            # (firmar-y-publicar): only the Setup, and its hash here is replaced by the
-            # signed Setup's hash. The server and add-ins inside stay unsigned.
-            release_signing = 'setup_signed_by_certum_after_ci'
+            authenticode = 'signed_by_certum'; publisher_identity_available = $true
+            # Every binary of the payload and Setup were signed before packaging
+            # (compile-installer); firmar-y-publicar re-verifies and publishes.
+            release_signing = 'payload_and_setup_signed_by_certum_in_ci'
             files = $hashes
           } | ConvertTo-Json -Depth 5 | Out-File dist/package-hashes.json -Encoding utf8
 
@@ -583,7 +582,7 @@ jobs:
           subject-path: dist/*setup.exe
           sbom-path: dist/sbom.json
 
-      - name: Publish the final unsigned package
+      - name: Publish the final signed package
         id: final-package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -618,7 +617,7 @@ jobs:
             10.0.400
             8.0.424
 
-      - name: Download the exact unsigned package
+      - name: Download the exact signed package
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.package.outputs.package-artifact-id }}
@@ -629,26 +628,24 @@ jobs:
         shell: pwsh
         run: |
           $record = Get-Content dist/package-hashes.json -Raw | ConvertFrom-Json
-          if ($record.authenticode -ne 'unsigned_by_policy' -or $record.publisher_identity_available -ne $false) {
-            throw 'package does not disclose the permanent unsigned-release policy'
+          if ($record.authenticode -ne 'signed_by_certum' -or $record.publisher_identity_available -ne $true) {
+            throw 'package record does not state that every binary is signed by HORIZUN GROUP S.A.S. (Certum)'
           }
           Expand-Archive -LiteralPath dist/stage.zip -DestinationPath dist/stage -Force
           . ./scripts/horizun-deploy.lib.ps1
           $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) +
                      @(Get-ChildItem dist -Filter '*setup.exe' -File)
-          if ($targets.Count -ne 8) { throw "expected eight unsigned release targets, found $($targets.Count)" }
-          foreach ($file in $targets) {
-            $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
-            if ($sig.Status -ne 'NotSigned') { throw "unexpected signature state $($sig.Status): $($file.FullName)" }
-          }
+          if ($targets.Count -ne 8) { throw "expected eight signed release targets, found $($targets.Count)" }
+          $problems = @(Get-HorizunReleaseSignatureProblems 'dist/stage' @($targets[-1].FullName))
+          if ($problems.Count) { throw "release is not fully signed: $(($problems | Select-Object -First 8) -join '; ')" }
           $extension = @(Get-ChildItem dist -Filter '*.mcpb' -File)
           if ($extension.Count -ne 1) { throw 'missing exported extension' }
           pwsh scripts/generate-mcp-manifest.ps1 -OutFile dist/server.json -PackagePath $extension[0].FullName -RequirePackage -Check
           if ($LASTEXITCODE -ne 0) { throw 'published extension metadata differs from its bytes' }
           $stagedExtension = Join-Path 'dist/stage/server/integrations/claude-desktop' $extension[0].Name
           if ((Get-FileHash $stagedExtension).Hash -ne (Get-FileHash $extension[0].FullName).Hash) { throw 'extension differs from the installed payload' }
-          pwsh scripts/verify-release.ps1 -AllowUnsigned
-          if ($LASTEXITCODE -ne 0) { throw "unsigned release-chain verification failed ($LASTEXITCODE)" }
+          pwsh scripts/verify-release.ps1 -RequireSigned
+          if ($LASTEXITCODE -ne 0) { throw "signed release-chain verification failed ($LASTEXITCODE)" }
 
   # ---------------------------------------------------------------------------
   # Install exactly once. Reinstalling the identical package before every Revit
@@ -792,13 +789,13 @@ jobs:
       # commit, and is it the one in the tree".
       - name: Verify one clean commit from source to what is installed
         shell: pwsh
-        # Public releases are unsigned by policy. The explicit switch prevents a
-        # missing publisher identity from ever being mistaken for signed trust.
+        # Every binary is signed by HORIZUN GROUP S.A.S. (Certum); -RequireSigned
+        # refuses any other state, a self-signed or unsigned file included.
         # The result path is the exact per-run file requested in the install step,
         # never the global result left by an earlier install.
         run: |
-          pwsh scripts/verify-release.ps1 -AllowUnsigned -Installed -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
-          if ($LASTEXITCODE -ne 0) { throw "installed unsigned release verification failed ($LASTEXITCODE)" }
+          pwsh scripts/verify-release.ps1 -RequireSigned -Installed -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
+          if ($LASTEXITCODE -ne 0) { throw "installed signed release verification failed ($LASTEXITCODE)" }
 
       - name: Publish the installed release-chain evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
