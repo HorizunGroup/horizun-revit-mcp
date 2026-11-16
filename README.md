@@ -643,7 +643,7 @@ Horizun Hub teaches, in Spanish, how to direct AI agents in real construction an
 New to agents? Level 1 of [Opera agentes de IA desde cero](https://horizunhub.com/academia/agentes-ia-desde-cero/?utm_source=github&utm_medium=readme&utm_campaign=horizun-revit-mcp) is free with an account.
 
 Built in Colombia 🇨🇴 and maintained by Horizun Group as part of
-[Horizun Hub](https://horizunhub.com). The bridge is organisation-neutral;
+[Horizun Hub](https://horizunhub.com/revit-mcp/?utm_source=github&utm_medium=readme&utm_campaign=revit-mcp). The bridge is organisation-neutral;
 project standards and catalogs are supplied as inputs. The optional
 [standards pack](standards/README.md) provides editable examples.
 
