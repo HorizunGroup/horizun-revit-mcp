@@ -33,6 +33,24 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Active_request_with_unknown_outcome_blocks_more_model_work_until_completion()
+        {
+            var gate = new RequestGate();
+            var request = gate.Begin("a", "{}", out _);
+            Assert.Same(request, gate.Take());
+            Assert.False(gate.Abandon(request));
+
+            Assert.True(gate.HasUnobservedExecution);
+            Assert.Null(gate.Begin("b", "{}", out string refusal));
+            Assert.Contains("Nothing was queued", refusal);
+            Assert.Equal(0, gate.PendingCount);
+
+            gate.Complete(request);
+            Assert.False(gate.HasUnobservedExecution);
+            Assert.NotNull(gate.Begin("c", "{}", out _));
+        }
+
+        [Fact]
         public void Take_consumes_one_entry_so_duplicate_callbacks_do_not_run_it_twice()
         {
             var gate = new RequestGate();
@@ -137,8 +155,8 @@ namespace Horizun.Core.Tests
             string refusal;
             var a = gate.Begin("a", "{}", out refusal);
             gate.Take();
-            gate.Abandon(a);
             var b = gate.Begin("b", "{}", out refusal);
+            gate.Abandon(a);
 
             Assert.NotNull(b);
             Assert.Contains("caller stopped waiting", gate.BusyWith());
