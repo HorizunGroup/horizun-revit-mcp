@@ -220,7 +220,7 @@ namespace Horizun.Revit.Core
             if (req == null)
             {
                 Log.Warn($"'{name}' refused: {refusal}");
-                return CommandResult.Fail(refusal);
+                return CommandResult.FailWithDetail(refusal, RequestGate.NeverStartedDetail());
             }
             if (req.CancelledBeforeStart)
             {
@@ -361,6 +361,8 @@ namespace Horizun.Revit.Core
                 var timeoutDetail = new JObject
                 {
                     ["never_started"] = removedBeforeStart,
+                    ["execution_state"] = removedBeforeStart ? "not_started" : "running",
+                    ["wire_id"] = req.WireId,
                     ["transaction_status"] = removedBeforeStart ? "not_started" : "unknown"
                 };
                 if (modalNowDetail != null) timeoutDetail["modal_dialog"] = modalNowDetail.ToJson();
@@ -449,6 +451,10 @@ namespace Horizun.Revit.Core
 
         private CommandResult SubmitJobWithoutWaitingForUi(string name, string paramsJson)
         {
+            if (_gate.HasUnobservedExecution)
+                return CommandResult.FailWithDetail(
+                    "Revit still has an unobserved execution. No new job was queued. Check the outstanding result first.",
+                    RequestGate.NeverStartedDetail());
             JObject request;
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }

@@ -76,6 +76,10 @@ namespace Horizun.Revit.Core
         public int PendingCount { get { lock (_lock) return _pending.Count; } }
         public int Capacity => _maxDepth;
         public bool HasPending { get { lock (_lock) return _pending.Count > 0; } }
+        public bool HasUnobservedExecution
+        {
+            get { lock (_lock) return _inFlight?.Abandoned == true; }
+        }
 
         public JObject Observe(string wireId)
         {
@@ -136,6 +140,13 @@ namespace Horizun.Revit.Core
                     cancelled.Signal();
                     refusal = null;
                     return cancelled;
+                }
+
+                if (_inFlight?.Abandoned == true)
+                {
+                    refusal = "Revit is executing a request whose caller stopped waiting. " +
+                              "Nothing was queued. Check its result before sending more model work.";
+                    return null;
                 }
 
                 if (_pending.Count >= _maxDepth)
@@ -265,6 +276,7 @@ namespace Horizun.Revit.Core
 
                 if (_inFlight != null && string.Equals(_inFlight.WireId, wireId, StringComparison.Ordinal))
                 {
+                    _inFlight.Abandoned = true;
                     detail = "already_running";
                     return false;
                 }
@@ -299,6 +311,8 @@ namespace Horizun.Revit.Core
         public static CommandResult AwaitClaimed(Request req, string name, int timeoutMs)
         {
             if (!req.Wait(timeoutMs))
+            {
+                req.Abandoned = true;
                 return CommandResult.FailWithDetail(
                     "'" + name + "' timed out after " + timeoutMs + " ms. Revit refused to queue this request's own " +
                     "ExternalEvent raise, but the UI thread had already claimed it through another one, so it " +
@@ -307,9 +321,11 @@ namespace Horizun.Revit.Core
                     new JObject
                     {
                         ["never_started"] = false,
+                        ["execution_state"] = "running",
                         ["still_running"] = true,
                         ["transaction_status"] = "unknown"
                     });
+            }
             return req.Result ?? CommandResult.Fail("'" + name + "' produced no result.");
         }
 
@@ -321,6 +337,7 @@ namespace Horizun.Revit.Core
         public static Newtonsoft.Json.Linq.JObject NeverStartedDetail() => new Newtonsoft.Json.Linq.JObject
         {
             ["never_started"] = true,
+            ["execution_state"] = "not_started",
             ["transaction_status"] = "not_started"
         };
 
