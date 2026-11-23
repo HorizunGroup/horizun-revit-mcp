@@ -22,7 +22,7 @@ namespace Horizun.Core.Tests
 {
     public class GeometryOptionsRulesTests
     {
-        
+
 
         /// <summary>
         /// Every `new Options` in the add-in: an initializer that sets DetailLevel

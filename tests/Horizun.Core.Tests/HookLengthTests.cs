@@ -31,59 +31,59 @@ namespace Horizun.Core.Tests
       'layout': { 'rule': 'fixed_number', 'number': 4, 'array_length_mm': 300 }
   } ]";
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         [Fact]
         public void The_finding_code_is_published()

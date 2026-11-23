@@ -7,13 +7,13 @@ namespace Horizun.Core.Tests
 {
     public class ClashDocumentScopeTests
     {
-        
 
-        
 
-        
 
-        
+
+
+
+
 
         [Fact]
         public void Boolean_retry_keeps_both_failed_orientations_unknown()

@@ -704,19 +704,19 @@ namespace Horizun.Core.Tests
             Assert.Contains("Zed", (string)row["what"]);
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
 
         // ---- families: oblique junction rules ---------------------------------------------
 
@@ -769,25 +769,25 @@ namespace Horizun.Core.Tests
             Assert.Null(JunctionRuleClassifier.WyeSubstitution(3, "HZ_Wye: Std", "HZ_Wye: Std", new KeyValuePair<string, string>[0]));
         }
 
-        
+
 
         private static List<string> Codes(JObject block) => ((JArray)block["findings"]).Select(f => (string)f["code"]).ToList();
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
 
         // ---- get_schedule_data: why schedule_id names no readable schedule ------------------
 
@@ -855,15 +855,15 @@ namespace Horizun.Core.Tests
             Assert.Contains("(20 in all, horizun_list_schedules lists them)", ScheduleIdMessages.Refusal(ScheduleIdHit.NoElement, 4, null, null, many));
         }
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
 
         // ---- IFC delivery names ------------------------------------------------------------
 
@@ -879,17 +879,17 @@ namespace Horizun.Core.Tests
             return c;
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
 
         [System.Runtime.InteropServices.DllImport("kernel32.dll")]
         private static extern int GetACP();
@@ -905,15 +905,15 @@ namespace Horizun.Core.Tests
             return System.Text.Encoding.GetEncoding(page == 65001 ? 1252 : page);
         }
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
 
         private static string Source(params string[] parts)
         {

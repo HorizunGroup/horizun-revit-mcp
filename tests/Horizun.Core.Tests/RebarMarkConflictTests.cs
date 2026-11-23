@@ -51,31 +51,31 @@ namespace Horizun.Core.Tests
             return f.OfType<JObject>().Single();
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         [Fact]
         public void The_code_is_bar_mark_conflict_and_the_old_code_is_gone()

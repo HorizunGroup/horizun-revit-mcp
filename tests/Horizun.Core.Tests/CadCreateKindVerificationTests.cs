@@ -43,9 +43,9 @@ namespace Horizun.Core.Tests
             return source.Substring(start, end - start);
         }
 
-        
 
-        
+
+
 
         [Fact]
         public void And_the_builder_reads_that_profile_as_a_CHAIN_rather_than_closing_it()

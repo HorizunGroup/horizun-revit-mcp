@@ -104,7 +104,7 @@ namespace Horizun.Core.Tests
 
     public class Mz13Int6Tests
     {
-        
+
 
         private static IList<KeyValuePair<string, JObject>> NoSaved() => new List<KeyValuePair<string, JObject>>();
 
@@ -116,23 +116,23 @@ namespace Horizun.Core.Tests
             foreach (string g in all) Assert.True(Guid.TryParse(g, out _), g);
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
 
         private static string RepoRoot()
         {

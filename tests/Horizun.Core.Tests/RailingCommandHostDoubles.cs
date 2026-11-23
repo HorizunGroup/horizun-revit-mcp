@@ -143,7 +143,7 @@ namespace Autodesk.Revit.DB
         public static Func<Document, string, Element> UniqueIdLookup;
         public static Action<Document> SyncHook;
         internal Func<string, Element> TestLookupUniqueId;
-        
+
         internal Func<Action> CaptureFixtureState;
         internal Horizun.Revit.Core.ConfirmationStore FixtureConfirmations;
         public Element GetElement(string uniqueId) => TestLookupUniqueId != null ? TestLookupUniqueId(uniqueId)

@@ -414,7 +414,7 @@ namespace Horizun.Core.Tests
             Assert.Throws<ArgumentException>(() =>
                 PdfPrintPolicy.Parse(new JObject { ["placement"] = "lower_left", ["zoom"] = "zoom", ["zoom_percentage"] = 50, ["origin_offset_x"] = 1, ["origin_offset_y"] = 2 }, "inches", 2026));
         }
-    
+
         [Fact]
         public void Default_page_at_the_declared_titleblock_is_verified_when_the_outline_is_larger()
         {

@@ -33,5 +33,3 @@ namespace Horizun.Core.Tests
         }
     }
 }
-
-

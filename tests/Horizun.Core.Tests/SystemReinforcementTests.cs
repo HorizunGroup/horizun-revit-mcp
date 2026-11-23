@@ -26,7 +26,7 @@ namespace Horizun.Core.Tests
   'units': 'millimeter',
   'bar_types': [ { 'id': 'T10', 'type_name': '10M' }, { 'id': 'T12', 'type_name': '12M' } ],";
 
-        
+
 
         private const string Area = @"
   'area_rules': [ {
@@ -65,61 +65,61 @@ namespace Horizun.Core.Tests
       'cover_offset_mm': 10
   } ]";
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         // ============================================== pure geometry checks
 
@@ -127,43 +127,43 @@ namespace Horizun.Core.Tests
 
         private static List<double[]> Pts(params double[][] p) => p.ToList();
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         [Fact]
         public void What_the_audit_does_not_compare_is_named()
@@ -174,6 +174,6 @@ namespace Horizun.Core.Tests
             Assert.Contains(RebarFinding.SystemParameterDiffers, RebarFinding.All);
         }
 
-        
+
 }
 }

@@ -55,11 +55,11 @@ namespace Horizun.Core.Tests
         private static string Store() => Source("src", "Horizun.Revit", "Core", "CadProvenanceStore.cs");
         private static string Fixture() => Source("src", "Horizun.Revit", "Core", "CadProvenanceV1Fixture.cs");
 
-        
 
-        
 
-        
+
+
+
 
         // ------------------------------------------------------------ the fixture
 
@@ -86,7 +86,7 @@ namespace Horizun.Core.Tests
             }
         }
 
-        
+
 
         /// <summary>Two walls on one drawing, so a model can hold one claimable element and one ambiguous one.</summary>
         private static List<CadSegment> TwoWalls()
@@ -100,20 +100,20 @@ namespace Horizun.Core.Tests
             };
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
     }
 }

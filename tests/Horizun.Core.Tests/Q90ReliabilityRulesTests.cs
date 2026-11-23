@@ -28,7 +28,7 @@ namespace Horizun.Core.Tests
             r.Remove("include"); r.Remove("element_ids"); r["view_ids"] = new JArray(10); Assert.NotNull(ViewVisibilityRules.Validate(r));
         }
 
-        
+
 
         [Fact]
         public void Mesh_input_does_not_ignore_format_specific_arguments()

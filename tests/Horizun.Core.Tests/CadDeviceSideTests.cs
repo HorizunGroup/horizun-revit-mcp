@@ -26,25 +26,25 @@ namespace Horizun.Core.Tests
     {
         private static readonly CadVector North = new CadVector(0, 1);
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
 
         [Fact]
         public void A_wall_based_family_is_placed_on_its_wall_line_and_faces_the_drawn_side()

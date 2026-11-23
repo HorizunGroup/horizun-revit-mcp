@@ -67,7 +67,7 @@ namespace Horizun.Core.Tests
             Assert.NotNull(ElementIdentityGuard.Resolve(JArray.Parse("[{\"unique_id\":\"missing\"}]"), ById, ByUid));
             Assert.NotNull(ElementIdentityGuard.Resolve(JArray.Parse("[{\"unique_id\":\"wanted\",\"target\":\"project_info\"}]"), ById, ByUid));
         }
-    
+
         private static JObject Req(string json) => JObject.Parse(json);
         private static JObject Check(JObject r, string tool) => ElementIdentityGuard.ResolveRequest(r, tool, ById, ByUid, () => false);
 

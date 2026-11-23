@@ -68,9 +68,9 @@ namespace Horizun.Core.Tests
             Assert.Empty((JArray)result["response_omissions"]);
             Assert.True((bool)result["complete"]);
         }
-        
-        
-        
+
+
+
         static JObject Rooms() => JObject.Parse(@"{
           'workflow':{'name':'document_rooms','room_plan':{'room_ids':[1],'plan_view_id':10,'template_view_id':20,
           'kinds':['plan'],'units':'mm','scale':50,'margin':500,'name_pattern':'{room_number}-{kind}','orient_to_walls':true},

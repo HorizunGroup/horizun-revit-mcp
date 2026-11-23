@@ -70,7 +70,7 @@ namespace Horizun.Core.Tests
             };
         }
 
-        
+
 
         /// <summary>A bar as RebarFacts.Describe(doc, bar, includePositions: true) publishes it.</summary>
         private static JObject Observed(long id, double modelDia, double[][] drawn, double[][] asDeclared,
@@ -232,7 +232,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(RebarOverlap.KindIntersection, Plan(null, inB1, inB2).Pairs.Single().Kind);
         }
 
-        
+
 
         private const string ColumnStirrups = @", 'stirrups': { 'bar_type': 'N10', 'allow_new_shape': true,
       'start': { 'hook_type': 'H135' }, 'end': { 'hook_type': 'H135' },
@@ -244,15 +244,15 @@ namespace Horizun.Core.Tests
             UMin = 0, UMax = 3000, VMin = -300, VMax = 300, WMin = -200, WMax = 200
         };
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
 
         [Fact]
         public void A_declared_coupler_joint_end_to_end_is_excused_and_undeclared_it_is_an_intersection()
@@ -386,13 +386,13 @@ namespace Horizun.Core.Tests
             Assert.Equal(RebarOverlap.AlongsideDegrees, (double)j["alongside_within_degrees"]);
         }
 
-        
 
-        
 
-        
 
-        
+
+
+
+
 
         // ------------------------------------------------------ duplicate_bar
         //

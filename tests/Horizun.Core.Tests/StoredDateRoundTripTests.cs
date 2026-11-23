@@ -85,7 +85,7 @@ namespace Horizun.Core.Tests
             Assert.Equal("later", UndoRules.Last(batches, out _).Id);
         }
 
-        
+
 
         [Fact]
         public void The_repair_memory_keeps_its_dates_and_trims_oldest_first()

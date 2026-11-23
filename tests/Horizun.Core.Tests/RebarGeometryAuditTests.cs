@@ -32,29 +32,29 @@ namespace Horizun.Core.Tests
             return f.OfType<JObject>().Select(x => (string)x["code"]).ToList();
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
 
         // ------------------------------------------------------------- parsing
 
@@ -73,17 +73,17 @@ namespace Horizun.Core.Tests
             Assert.Null(RebarAuditRules.PointsOf(new JObject()));
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
 
         // D1, option A (owner, measured 4.75 mm alike in Revit 2024-2027): a stirrup declared
         // CLOSED with a hook at both ends comes back from Revit's as-declared form OPEN at its
@@ -101,8 +101,8 @@ namespace Horizun.Core.Tests
             };
         }
 
-        
 
-        
+
+
     }
 }

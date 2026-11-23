@@ -843,7 +843,7 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
   y ya no tienen. Un agente no puede encenderla; `horizun_health` muestra
   `sync_only_grant_enabled`. Apagada, la decisión es la que `int/4.2` tenía antes de esta opción (safe_write más la
   autorización del dueño, full_write, unsafe_code); frente a 4.1 es NUEVA (véase el párrafo anterior). La opción solo agrega textos,
-  health y el hash de contrato. 
+  health y el hash de contrato.
   **Qué protege de verdad los ajustes del dueño.** Las dos concesiones de sincronización (`allow_sync_only_grant`,
   `sync_with_central_owner_granted`) son booleanos simples en `settings.json` y se leen tal como están escritos. Cualquier proceso
   que corra con los permisos del usuario puede editar ese archivo: Python ejecutado con `horizun_execute_python` (`unsafe_code`),

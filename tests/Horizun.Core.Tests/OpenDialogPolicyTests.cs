@@ -60,4 +60,3 @@ namespace Horizun.Core.Tests
         }
     }
 }
-

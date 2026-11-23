@@ -78,9 +78,9 @@ namespace Horizun.Core.Tests
             Assert.Equal(RebarLayoutRules.CodeNotFinite, p.Code);
         }
 
-        
 
-        
+
+
 
         // ====================================================== unbounded counts
 
@@ -156,17 +156,17 @@ namespace Horizun.Core.Tests
             Assert.Equal(RebarLayoutRules.CodeStatedNotUsed, bad.Code);
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
 
         // ==================================================== coverage words
 
@@ -198,7 +198,7 @@ namespace Horizun.Core.Tests
             Assert.Throws<ArgumentException>(() => StructuralCoverage.Weakest(new string[] { null }));
         }
 
-        
+
 
         private static JObject Expected()
         {
@@ -243,38 +243,38 @@ namespace Horizun.Core.Tests
             return f.OfType<JObject>().Select(o => (string)o["code"]).ToList();
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     }
 }

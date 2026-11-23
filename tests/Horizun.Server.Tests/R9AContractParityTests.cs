@@ -120,5 +120,3 @@ namespace Horizun.Server.Tests
         }
     }
 }
-
-

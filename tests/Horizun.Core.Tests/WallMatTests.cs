@@ -87,13 +87,13 @@ namespace Horizun.Core.Tests
         private const string Horizontal = @"'name': 'h', 'bar_type': 'N16', 'direction': [ 1, 0, 0 ], 'offset_from_face_mm': 48,
       'end_cover_mm': 40, 'side_cover_mm': 40, 'layout': { 'rule': 'maximum_spacing', 'spacing_mm': 200 }, 'allow_new_shape': true";
 
-        
 
-        
 
-        
 
-        
+
+
+
+
 
         [Fact]
         public void A_trimmed_bar_keeps_its_hooks_only_at_the_hosts_edges()

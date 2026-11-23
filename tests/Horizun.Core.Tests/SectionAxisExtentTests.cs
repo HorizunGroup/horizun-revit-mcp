@@ -18,7 +18,7 @@ namespace Horizun.Core.Tests
 {
     public class SectionAxisExtentTests
     {
-        
+
 
         private const string FromB = "{ 'name': 'bottom', 'face': 'bottom', 'count': 2, 'bar_type': 'N5', 'start': { 'hook_type': 'H90' }, " +
                                      "'extend': { 'axis': 'B', 'toward': 'C', 'from_mm': 200, 'to_mm': 2200 } }";
@@ -32,21 +32,21 @@ namespace Horizun.Core.Tests
             AxisStations = new Dictionary<string, double> { ["B"] = bAt, ["C"] = cAt }
         };
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
 
         [Fact]
         public void A_grid_s_station_is_where_the_host_s_axis_crosses_it_in_plan()
@@ -60,7 +60,7 @@ namespace Horizun.Core.Tests
             Assert.StartsWith(SectionRules.CodeAxisParallel, p);
         }
 
-        
+
 
         // ---- BARS BETWEEN CONTINUOUS BARS (layer.between) ----------------------------------------
         private const string Three = "{ 'name': 'top', 'face': 'top', 'count': 3, 'bar_type': 'N5', 'extend': { 'from_mm': 1000, 'to_mm': 4000 } }";
@@ -69,18 +69,18 @@ namespace Horizun.Core.Tests
             "{ 'name': 'mid', 'face': '" + face + "', 'count': " + count + ", 'bar_type': 'N5', 'between': '" + between + "', " +
             "'extend': { 'from_mm': " + from + ", 'to_mm': " + to + " } }";
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
     }
 }

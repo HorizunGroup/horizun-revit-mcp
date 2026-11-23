@@ -522,7 +522,7 @@ namespace Horizun.Revit.Core
                         double x = near[0] + i * step, y = near[1] + j * step;
                         double d = Math.Sqrt((x - near[0]) * (x - near[0]) + (y - near[1]) * (y - near[1]));
                         if (d > maxRadius + 1e-9) continue;
-                        if (d < bestD - 1e-9 || (Math.Abs(d - bestD) <= 1e-9 && best != null && (Math.Atan2(j, i) < Math.Atan2(best[1] - near[1], best[0] - near[0])))) 
+                        if (d < bestD - 1e-9 || (Math.Abs(d - bestD) <= 1e-9 && best != null && (Math.Atan2(j, i) < Math.Atan2(best[1] - near[1], best[0] - near[0]))))
                         {
                             if (free(x, y)) { best = new[] { x, y }; bestD = d; }
                         }

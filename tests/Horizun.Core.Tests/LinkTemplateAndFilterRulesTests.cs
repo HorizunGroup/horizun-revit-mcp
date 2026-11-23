@@ -287,19 +287,19 @@ namespace Horizun.Core.Tests
             Assert.False(LinkViewVisibilityRules.HiddenByFilter(true, true, () => false));
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
 
         [Fact]
         public void Carried_assumptions_reach_the_top_of_the_reply_once()

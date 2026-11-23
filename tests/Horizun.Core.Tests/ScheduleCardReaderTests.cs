@@ -102,7 +102,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(600, (double)span["tolerance_mm"], 3);
         }
 
-        
+
 
         [Fact]
         public void Without_declared_bar_type_names_no_set_is_proposed_and_the_reply_says_which()
@@ -115,7 +115,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("#4", (string)why["why"]);
         }
 
-        
+
 
         [Fact]
         public void A_baston_is_read_but_not_proposed_because_the_host_start_face_is_not_on_the_card()
@@ -410,7 +410,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(6200, (double)top["to_station_mm"], 3);
         }
 
-        
+
 
         [Fact]
         public void A_box_around_several_cards_is_no_card_s_frame()
@@ -424,7 +424,7 @@ namespace Horizun.Core.Tests
             Assert.Empty((JArray)r["refusals"]);
         }
 
-        
+
 
         // ---------------------------------------------------------------- wall card
 
@@ -596,7 +596,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("table", (string)r["tables_not_read"]);
         }
 
-        
+
 
         [Fact]
         public void Dwg_texts_anchored_at_their_start_leave_the_axis_stations_uncertain_and_nothing_is_proposed()

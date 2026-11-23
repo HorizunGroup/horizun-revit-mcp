@@ -59,39 +59,39 @@ namespace Horizun.Core.Tests
             return ifc;
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         // =====================================================================
         // Header and trailer
@@ -288,10 +288,10 @@ namespace Horizun.Core.Tests
             return report;
         }
 
-        
 
-        
 
-        
+
+
+
     }
 }

@@ -44,31 +44,31 @@ namespace Horizun.Core.Tests
             ["ExportUserDefinedPsetsFileName"] = path
         };
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         private static IfcStepReader.Document Ifc(string data)
         {
@@ -80,9 +80,9 @@ namespace Horizun.Core.Tests
             return d;
         }
 
-        
 
-        
+
+
 
         private static System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, JObject>> Saved(params object[] pairs)
         {
@@ -92,45 +92,45 @@ namespace Horizun.Core.Tests
             return l;
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         private const string TwoSetsIfc =
             "#2=IFCWALL('0aaaaaaaaaaaaaaaaaaaW1',$,'A',$,$,$,$,$,.SOLIDWALL.);\n" +
@@ -142,11 +142,11 @@ namespace Horizun.Core.Tests
             "#14=IFCRELDEFINESBYPROPERTIES('0aaaaaaaaaaaaaaaaaaaR1',$,$,$,(#2),#10);\n" +
             "#15=IFCRELDEFINESBYTYPE('0aaaaaaaaaaaaaaaaaaaR2',$,$,$,(#2),#4);";
 
-        
 
-        
 
-        
+
+
+
 
         [Fact]
         public void The_confirmation_token_binds_ifc_setup_and_strict_and_every_earlier_field()

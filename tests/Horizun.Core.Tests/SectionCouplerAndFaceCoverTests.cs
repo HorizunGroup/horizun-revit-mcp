@@ -16,7 +16,7 @@ namespace Horizun.Core.Tests
 {
     public class SectionCouplerAndFaceCoverTests
     {
-        
+
 
         private static SectionHostFrame Frame() => new SectionHostFrame
         {
@@ -24,25 +24,25 @@ namespace Horizun.Core.Tests
             UMin = 0, UMax = 6000, VMin = -150, VMax = 150, WMin = -500, WMax = 0
         };
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
 
         // --------------------------------------------------------------- audit
 
@@ -54,13 +54,13 @@ namespace Horizun.Core.Tests
                 new JObject { ["end"] = 1, ["coupler_id"] = couplerAt1, ["coupler_readable"] = readable })
         };
 
-        
 
-        
 
-        
 
-        
+
+
+
+
 
         [Fact]
         public void A_missing_coupler_is_now_checked_and_an_incompatible_one_still_is_not()
@@ -71,16 +71,16 @@ namespace Horizun.Core.Tests
             Assert.Contains(RebarFinding.CouplerTypeDiffers, RebarFinding.All);
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
     }
 }

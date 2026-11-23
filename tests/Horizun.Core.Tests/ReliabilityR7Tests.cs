@@ -11,7 +11,7 @@ namespace Horizun.Core.Tests
 {
     public class ReliabilityR7Tests
     {
-        
+
 
         [Fact]
         public void An_unreadable_category_makes_the_view_and_batch_partial()

@@ -19,7 +19,7 @@ namespace Horizun.Core.Tests
 {
     public class RebarIntoCoverTests
     {
-        
+
 
         private static SectionHostFrame Column() => new SectionHostFrame
         {
@@ -27,13 +27,13 @@ namespace Horizun.Core.Tests
             UMin = 0, UMax = 3000, VMin = -200, VMax = 200, WMin = -200, WMax = 200
         };
 
-        
 
-        
 
-        
 
-        
+
+
+
+
 
         [Fact]
         public void ARuleDeclaredAsItselfCarriesNoSectionCover() =>

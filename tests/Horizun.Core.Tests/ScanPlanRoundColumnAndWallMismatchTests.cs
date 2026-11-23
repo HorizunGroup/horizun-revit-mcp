@@ -14,11 +14,11 @@ namespace Horizun.Core.Tests
 {
     public class ScanPlanRoundColumnAndWallMismatchTests
     {
-        
 
-        
 
-        
+
+
+
 
         [Fact]
         public void A_curved_wall_refused_by_its_arc_names_the_curve_and_its_numbers()
@@ -113,7 +113,7 @@ namespace Horizun.Core.Tests
             Assert.True(double.IsNaN(ArcTolerance.ShapeOffMm(0, 0, R, new System.Collections.Generic.List<double[]>())));
         }
 
-        
+
 
         private static string Source(params string[] parts)
         {

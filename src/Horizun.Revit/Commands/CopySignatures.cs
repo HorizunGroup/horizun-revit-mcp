@@ -192,6 +192,6 @@ namespace Horizun.Revit.Commands
                         ? doc.GetElement(layer.DeckProfileId)?.Name + "/" + layer.DeckEmbeddingType : "")
             }).ToArray();
         }
-    
+
     }
 }

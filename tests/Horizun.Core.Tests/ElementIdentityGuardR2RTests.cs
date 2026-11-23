@@ -132,9 +132,9 @@ namespace Horizun.Core.Tests
                 "{\"target_document\":\"T\",\"finding_set_fingerprint\":\"fs:x\",\"actions\":[{\"finding_id\":\"f:1\",\"element_ids\":[7],\"unique_ids\":[\"u7\"]}]}" };
         }
 
-        
 
-        
+
+
 
         [Fact]
         public void B1_an_identity_at_the_plan_level_of_a_child_is_consumed_before_the_child_parses_it()
@@ -504,7 +504,7 @@ namespace Horizun.Core.Tests
             SortedDictionary<string, string> names = ForMutationNames();
             var viaRunner = new HashSet<string>(StringComparer.Ordinal)
             {   // ModelEditRunner.Run(app, json, Name, ...) passes the command's own Name
-                "horizun_create_railing", "horizun_join_geometry", "horizun_manage_curtain", 
+                "horizun_create_railing", "horizun_join_geometry", "horizun_manage_curtain",
                 "horizun_planimetry_ops", "horizun_room_finishes", "horizun_sheet_layout", "horizun_slab_shape",
                 "horizun_view_crop", "horizun_view_visibility", "horizun_wall_finish", "horizun_wall_sweep"
             };

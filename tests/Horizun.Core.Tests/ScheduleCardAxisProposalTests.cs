@@ -37,7 +37,7 @@ namespace Horizun.Core.Tests
             return p;
         }
 
-        
+
 
         private static void Extent(JToken e, double from, double to)
         {
@@ -47,13 +47,13 @@ namespace Horizun.Core.Tests
             Assert.Equal(to, (double)e["to_mm"], 3);
         }
 
-        
 
-        
 
-        
 
-        
+
+
+
+
 
         [Fact]
         public void Two_bars_overlapping_on_one_face_are_not_proposed_because_where_each_stands_is_not_on_the_card()
@@ -85,7 +85,7 @@ namespace Horizun.Core.Tests
             s.Above(callout, (k.X(4.0) + k.X(6.2)) / 2, k.TopY + 8, BeamCardSpec.H);
         });
 
-        
+
 
         [Fact]
         public void A_group_the_declaration_does_not_resolve_stays_refused_by_name()
@@ -107,7 +107,7 @@ namespace Horizun.Core.Tests
             };
         });
 
-        
+
 
         [Fact]
         public void Face_slots_declares_only_what_it_names()
@@ -147,7 +147,7 @@ namespace Horizun.Core.Tests
             Assert.Contains(r["requirement_set_not_proposed"], n => (string)n["code"] == "bar_end_continues_parallel");
         }
 
-        
+
 
         [Fact]
         public void A_card_that_writes_one_axis_name_twice_is_not_proposed()

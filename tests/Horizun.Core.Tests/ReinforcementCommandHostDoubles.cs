@@ -114,15 +114,15 @@ namespace Horizun.Revit.Commands
 
         public static void ForgetMeshes() { }
         public static IReadOnlyList<string> AllCodes => Array.Empty<string>();
-        
-        
-        
-        
+
+
+
+
         public static JObject DescribeCoverRow(ResolvedCoverRow row, int index) => new JObject();
 
-        
 
-        
+
+
     }
 
     public sealed class ResolvedRebarRow
@@ -142,7 +142,7 @@ namespace Horizun.Revit.Commands
         public long HostId { get; set; }
         public bool Applied { get; set; }
         public bool FailRead { get; set; }
-        
+
         public bool Ok => true;
         public bool AlreadyRight => false;
         public string Code => throw new NotSupportedException();
@@ -158,22 +158,22 @@ namespace Horizun.Revit.Commands
     {
         public bool Ok => throw new NotSupportedException();
         public CommandResult Refusal => throw new NotSupportedException();
-        
+
         public JObject Chunking => throw new NotSupportedException();
     }
 
     internal static class SystemReinforcementResolver
     {
         public static IReadOnlyList<string> AllCodes => Array.Empty<string>();
-        
-        
+
+
     }
 
     internal sealed class ResolvedSystemRow
     {
         public long ElementId { get; set; }
         public bool FailRead { get; set; }
-        
+
         public string RuleId => throw new NotSupportedException();
         public bool Ok => true;
         public bool Required => throw new NotSupportedException();

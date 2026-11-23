@@ -18,7 +18,7 @@ namespace Horizun.Core.Tests
     {
         private const string Hash = "sha-of-the-drawing";
 
-        
+
 
         private static string WallRule(double minConfidence = 0.0, string layers = "[\"A-WALL*\"]") =>
             @"[{ 'id': 'walls', 'precedence': 10, 'layers': LAYERS, 'produces': 'wall',
@@ -32,37 +32,37 @@ namespace Horizun.Core.Tests
         private static CadSegment Seg(double x1, double y1, double x2, double y2, string layer) =>
             new CadSegment(new CadPoint(x1, y1), new CadPoint(x2, y2), layer);
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         [Fact]
         public void A_narrower_pairing_alongside_but_OUTSIDE_the_band_stays_its_own_wall()
@@ -79,16 +79,16 @@ namespace Horizun.Core.Tests
             Assert.False(CadTopologyRules.IsInnerBoundaryOf(outerA, insideIt, 2, 1));
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
     }
 }

@@ -544,23 +544,23 @@ namespace Horizun.Core.Tests
             Assert.Empty(CopyRepresentationRules.Map(new[] { source }, new[] { copy }, null));
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
 
         // Common cross-section sample grid for the convex extrusions in these tests.
         // Different denominators keep the sample centres off the tested diagonal.

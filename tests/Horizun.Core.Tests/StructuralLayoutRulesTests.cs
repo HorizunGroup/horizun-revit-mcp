@@ -555,7 +555,7 @@ namespace Horizun.Core.Tests
             Assert.False(StructuralLayoutRules.ColumnOccupiesLevel(3000 / Ft, 6000 / Ft, elevation));
             Assert.False(StructuralLayoutRules.BeamBelongsToLevel(null, 694, 2950 / Ft, elevation));
         }
-    
+
         [Theory]
         [InlineData(700)]
         [InlineData(600)]

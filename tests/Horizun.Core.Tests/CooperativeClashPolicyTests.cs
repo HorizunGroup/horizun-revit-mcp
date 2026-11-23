@@ -19,13 +19,13 @@ namespace Horizun.Core.Tests
             return File.ReadAllText(Path.Combine(new[] { root.FullName }.Concat(parts).ToArray()));
         }
 
-        
 
-        
 
-        
 
-        
+
+
+
+
 
         // ---- M1: a view or a save does not kill the clash; a change ends it with a clear state ---
 
@@ -112,15 +112,15 @@ namespace Horizun.Core.Tests
             Assert.False((bool)JObject.Parse(w.PartialResultJson)["valid"]);
         }
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
 
         // ---- M3: checkpoints and job records are bounded -----------------------------------------
 

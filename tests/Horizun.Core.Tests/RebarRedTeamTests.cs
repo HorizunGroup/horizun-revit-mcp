@@ -134,9 +134,9 @@ namespace Horizun.Core.Tests
             Assert.DoesNotContain("squared up", r.Components[0].Why);
         }
 
-        
 
-        
+
+
 
         // ---------------------------------------------------------------- 4
 
@@ -146,24 +146,24 @@ namespace Horizun.Core.Tests
           ""units"": ""millimeter"",
           ""bar_types"": [ { ""id"": ""t"", ""type_name"": ""12M"", ""nominal_diameter_mm"": 12 } ],";
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
     }
 }

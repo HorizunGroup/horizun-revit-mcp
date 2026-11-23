@@ -14,9 +14,9 @@ namespace Horizun.Core.Tests
     /// </summary>
     public class IntegrationReviewCancellationTests
     {
-        
 
-        
+
+
 
         // ------------------------------------------------------------------ M2 / M3
 

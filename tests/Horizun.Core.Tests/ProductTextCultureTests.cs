@@ -33,9 +33,9 @@ namespace Horizun.Core.Tests
             Assert.DoesNotContain("2,5", text);
         }
 
-        
 
-        
+
+
 
         [Fact]
         public void The_root_cause_details_write_their_millimetres_invariant()

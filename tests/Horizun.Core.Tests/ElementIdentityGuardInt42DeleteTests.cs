@@ -89,7 +89,7 @@ namespace Horizun.Core.Tests
         public void Every_operation_that_says_it_removes_something_in_a_4_2_tool_is_either_judged_a_deletion_or_justified()
         {
             // The enum values of the tools new in 4.2 that mean "take away" without using one of the delete words.
-            string[] tools = { "horizun_planimetry_ops", "horizun_sheet_layout", "horizun_room_finishes", 
+            string[] tools = { "horizun_planimetry_ops", "horizun_sheet_layout", "horizun_room_finishes",
                                "horizun_pack_sheets", "horizun_manage_revisions", "horizun_manage_schedules", "horizun_structural_connections",
                                "horizun_manage_materials", "horizun_link_schedule" };
             string[] takeAway = { "clear", "detach", "drop", "unplace", "unlink", "discard", "reset", "prune", "replace", "overwrite" };

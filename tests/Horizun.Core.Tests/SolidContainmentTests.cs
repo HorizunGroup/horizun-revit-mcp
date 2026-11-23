@@ -171,7 +171,7 @@ namespace Horizun.Core.Tests
             Assert.True(v.Evaluated);
         }
 
-        
+
 
         [Fact]
         public void RotatedBeam_ABarOnTheRotatedAxisIsInside()

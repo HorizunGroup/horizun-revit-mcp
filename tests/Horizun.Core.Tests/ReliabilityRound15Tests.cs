@@ -165,7 +165,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(new long[] { 20, 101, 103 }, view.HiddenIds.OrderBy(hidden => hidden));
         }
 
-        
+
 
         private static void ConfirmUnhide(ICommand tool, UIApplication app, JObject request)
         {

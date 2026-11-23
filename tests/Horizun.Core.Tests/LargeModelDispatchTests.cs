@@ -72,7 +72,7 @@ namespace Horizun.Core.Tests
             Assert.True(accepted.Success);
             Assert.Equal(1, cmd.Calls);
         }
-        
+
 
         [Fact]
         public void Federated_counts_include_links_and_unavailable_link_is_unknown()
@@ -113,6 +113,6 @@ namespace Horizun.Core.Tests
             Assert.Equal(0, cmd.Calls);
         }
 
-        
+
     }
 }

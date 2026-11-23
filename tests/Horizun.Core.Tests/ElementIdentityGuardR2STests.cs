@@ -303,7 +303,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("DocumentGate.ForMutation(app, request, name)", runner);   // the runner gates with the name it is given
             string[] viaRunner =
             {
-                "horizun_create_railing", "horizun_join_geometry", "horizun_manage_curtain", 
+                "horizun_create_railing", "horizun_join_geometry", "horizun_manage_curtain",
                 "horizun_planimetry_ops", "horizun_room_finishes", "horizun_sheet_layout", "horizun_slab_shape",
                 "horizun_view_crop", "horizun_view_visibility", "horizun_wall_finish", "horizun_wall_sweep"
             };
@@ -423,7 +423,7 @@ namespace Horizun.Core.Tests
         // The tools new in 4.2: the sweep of user-keyed maps reaches every one of them, and each free-form object they declare is either listed or justified.
         private static readonly string[] Tools42 =
         {
-            "horizun_planimetry_ops", "horizun_sheet_layout", "horizun_room_finishes", 
+            "horizun_planimetry_ops", "horizun_sheet_layout", "horizun_room_finishes",
             "horizun_pack_sheets", "horizun_manage_revisions", "horizun_manage_schedules", "horizun_structural_connections",
             "horizun_manage_materials", "horizun_link_schedule"
         };

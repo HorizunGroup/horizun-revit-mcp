@@ -424,15 +424,15 @@ namespace Horizun.Core.Tests
             ]
           }]";
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
 
         [Fact]
         public void A_mat_with_no_covers_or_depth_is_laid_at_the_host_cover_and_says_it_assumed_them()
@@ -528,11 +528,11 @@ namespace Horizun.Core.Tests
             Assert.Contains("75 mm is taken for a foundation", (string)cover["why"]);
         }
 
-        
 
-        
 
-        
+
+
+
 
         [Fact]
         public void Two_crossing_layers_in_one_plane_clash_only_where_their_patches_meet()

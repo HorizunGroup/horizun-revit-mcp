@@ -41,7 +41,7 @@ namespace Horizun.Core.Tests
             Assert.Null(MaterialPatternRules.Pick(Patterns, "  "));
             Assert.Contains("drafting or model", MaterialPatternRules.NotFound("Hatch 45"));
         }
-    
+
 
         [Fact]
         public void A_cut_pattern_takes_drafting_patterns_only()

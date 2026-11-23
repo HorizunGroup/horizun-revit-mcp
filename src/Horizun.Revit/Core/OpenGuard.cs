@@ -485,4 +485,3 @@ namespace Horizun.Revit.Core
         private static bool? SafeBool(Func<bool> f) { try { return f(); } catch { return null; } }
     }
 }
-

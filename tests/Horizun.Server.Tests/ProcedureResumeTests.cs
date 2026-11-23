@@ -320,7 +320,7 @@ namespace Horizun.Server.Tests
             Assert.False((bool)ProcedureRun.IssueLoansFromScan(scan)["coverage_complete"]);
         }
 
-        
+
 
         [Fact]
         public void Issue_requires_verified_save_before_export_and_in_final_verdict()

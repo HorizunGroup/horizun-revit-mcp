@@ -16,7 +16,7 @@ namespace Autodesk.Revit.DB
         {
             var view = new View3D { Id = new ElementId(doc.NextElementId++), Document = doc };
             doc.Elements.Add(view.Id.Value, view);
-            
+
             return view;
         }
         public void AddFilter(ElementId id) => throw new NotSupportedException();

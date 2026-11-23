@@ -154,7 +154,7 @@ namespace Horizun.Core.Tests
             Assert.Equal("floor_wall_overlap_after_unmeasured", RoomFinishPlanRules.FloorWallOverlapChangeProblem(0, -0.01, 0.000001));
         }
 
-    
+
         [Theory]
         // floor from 0 to 0.1 ft, tolerance 0.003 ft
         [InlineData(-10, -0.5, "wall_below_floor")]      // wall of the storey below, ends under the floor

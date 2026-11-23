@@ -37,52 +37,52 @@ namespace Horizun.Core.Tests
             return m;
         }
 
-        
 
-        
+
+
 
         private const string Hoop = "{ 'shape': 'M_T6', 'kind': 'lapped_circle' }";
         private const string Spiral = "{ 'shape': 'M_SP', 'kind': 'spiral', 'pitch_mm': 75, 'base_finishing_turns': 1, 'top_finishing_turns': 2 }";
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         // ---------------------------------------------------------- re-reading
 
@@ -103,17 +103,17 @@ namespace Horizun.Core.Tests
             return pts;
         }
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
 
         // --------------------------------------------------------------- audit
 
@@ -159,11 +159,11 @@ namespace Horizun.Core.Tests
             };
         }
 
-        
 
-        
 
-        
+
+
+
 
         [Fact]
         public void The_placement_survives_its_own_json()

@@ -95,9 +95,9 @@ namespace Horizun.Core.Tests
         private static OverlapReport Check(IList<Fake> fakes, StructuralClearances c = null) =>
             RebarOverlap.Check(Members(fakes), c ?? new StructuralClearances(), Tol);
 
-        
 
-        
+
+
 
         // Two beams crossing at a joint, 300 x 500, bottoms at z = 0: BX along X, BY along Y. 16 mm bars,
         // 40 mm cover to the stirrup... the bottom bars at z = 50 and the top bars at z = 450, in BOTH beams.
@@ -109,7 +109,7 @@ namespace Horizun.Core.Tests
             F("BY-top", 5002, 16, new[] { P(0, -2000, 450), P(0, 2000, 450) }, new double[] { 1, 0, 0 }, new double[] { 0 }, P(0, 0, 250))
         };
 
-        
+
 
         // ---------------------------------------------------------- the joint
 
@@ -122,11 +122,11 @@ namespace Horizun.Core.Tests
             Assert.All(r.Pairs, p => Assert.Equal(RebarOverlap.RelationCrossing, p.Relation));
         }
 
-        
 
-        
 
-        
+
+
+
 
         // -------------------------------------------------------------- U legs
 
@@ -138,35 +138,35 @@ namespace Horizun.Core.Tests
             F("U-INF", 5001, 12, new[] { P(50, 0, 400), P(50, 0, 50), P(3950, 0, 50), P(3950, 0, 400) }, new double[] { 0, 1, 0 }, new double[] { 0 }, P(2000, 0, 250))
         };
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
         private static string SetJsonWithout() => @"{
   'schema': 'horizun.structural-requirements/1', 'units': 'millimeter',
@@ -176,12 +176,12 @@ namespace Horizun.Core.Tests
     { 'id': 'r1', 'host': { 'element_ids': [ 1 ] }, 'bar_type': 'N16', 'allow_new_shape': true, 'style': 'standard',
       'curve_mm': [ [0,0,0], [1000,0,0] ], 'normal': [0,1,0], 'layout': { 'rule': 'single' } } ] }".Replace('\'', '"');
 
-        
 
-        
 
-        
 
-        
+
+
+
+
     }
 }

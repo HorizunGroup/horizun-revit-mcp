@@ -63,8 +63,8 @@ namespace Horizun.Core.Tests
         public void A_window_past_the_host_is_refused() =>
             Assert.Equal(MatRules.CodeWindowOutsideTheHost, Expand(Comp(spreadFrom: 3500, spreadTo: 4500), out _).Code);
 
-        
 
-        
+
+
     }
 }

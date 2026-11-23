@@ -123,5 +123,3 @@ try {
 }
 $end = Complete-HzRun -Run $run -ArtifactDir $ArtifactDir
 exit $end.ExitCode
-
-

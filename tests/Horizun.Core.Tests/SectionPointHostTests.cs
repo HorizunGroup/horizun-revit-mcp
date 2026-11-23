@@ -49,7 +49,7 @@ namespace Horizun.Core.Tests
         public void Declaring_vertical_does_not_make_anything_else_a_column() =>
             Assert.NotNull(SectionRules.PointHostRefusal("OST_GenericModel", true));
 
-        
+
 
         private static string Body(string axis) => @"{
   'schema': 'horizun.structural-requirements/1', 'units': 'millimeter', 'requirement_set': { 'id': 'p', 'version': '1' },

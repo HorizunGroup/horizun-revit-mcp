@@ -15,7 +15,7 @@ namespace Horizun.Core.Tests
 {
     public class SectionLapTests
     {
-        
+
 
         private static SectionHostFrame Frame() => new SectionHostFrame
         {
@@ -23,44 +23,44 @@ namespace Horizun.Core.Tests
             UMin = 0, UMax = 6000, VMin = -150, VMax = 150, WMin = -500, WMax = 0
         };
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
+
+
+
+
+
 
         // ------------------------------------------------------------ the audit
 
         private static List<double[]> Line(double u0, double u1, double v = 0) =>
             new List<double[]> { new[] { u0, v, 0.0 }, new[] { u1, v, 0.0 } };
 
-        
 
-        
 
-        
 
-        
 
-        
 
-        
+
+
+
+
+
+
 
         [Fact]
         public void Laps_are_checked_and_say_how_far()

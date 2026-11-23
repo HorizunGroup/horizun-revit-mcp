@@ -261,9 +261,9 @@ namespace Horizun.Core.Tests
             Assert.False((bool)Newtonsoft.Json.Linq.JObject.Parse((string)result["payload"])["valid"]);
         }
 
-        
 
-        
+
+
 
         [Fact]
         public void Cancellation_accepted_at_last_slice_is_visible_at_terminal_decision()

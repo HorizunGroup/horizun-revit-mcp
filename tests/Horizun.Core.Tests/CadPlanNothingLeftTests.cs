@@ -12,13 +12,13 @@ namespace Horizun.Core.Tests
 {
     public class CadPlanNothingLeftTests
     {
-        
 
-        
 
-        
 
-        
+
+
+
+
 
         [Fact]
         public void The_fall_not_applied_refusal_is_a_precondition_not_a_schema_error()
@@ -31,8 +31,8 @@ namespace Horizun.Core.Tests
             Assert.Equal(ErrorCodes.PrecondicionNoCumplida, ErrorCodes.Classify(message, detail).Code);
         }
 
-        
 
-        
+
+
     }
 }

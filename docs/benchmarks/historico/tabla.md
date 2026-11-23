@@ -38,4 +38,3 @@ El total pasó de 21,4 % en v1.0.0 a 96,4 % en 6.0.0. El mayor salto fue de 5.1.
 
 - Los recálculos coinciden con los resúmenes por criterio de la tabla del JSON. Los subtotales del bloque de filas agrupan ambos criterios en las diez versiones. Documentación contiene 35 filas y usa 34 por criterio. Estructura contiene 23 filas y usa 14 por criterio. Por ejemplo, en 8b83c2ec esos subtotales mezclados son 29/35 (82,9 %) y 14/23 (60,9 %), respectivamente.
 - Los puntajes de Documentación coinciden entre criterios en las diez versiones. Sus curvas se superponen.
-
