@@ -296,7 +296,7 @@ namespace Horizun.Core.Tests
             Assert.False(ExportDeliveryRules.LooksLikeFolder(@"C:\out\set.v2", p => false));
         }
 
-        [Fact]
+        [WindowsFact]
         public void A_folder_output_takes_the_folders_name_as_stem()
             => Assert.Equal(@"C:\out\emision\emision.pdf", ExportDeliveryRules.FolderStem(@"C:\out\emision\"));
 

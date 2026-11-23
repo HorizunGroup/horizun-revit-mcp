@@ -78,7 +78,7 @@ namespace Horizun.Server.Tests
             Assert.Contains("{param:PROFILE|}", iss);
         }
 
-        [Fact]
+        [WindowsFact]
         public void A_new_install_writes_the_profile_and_keeps_every_other_key()
         {
             WithSettings("{\"permission_profile\":\"full_write\",\"denied_tools\":[\"horizun_undo\"]}", path =>
@@ -92,7 +92,7 @@ namespace Horizun.Server.Tests
             });
         }
 
-        [Fact]
+        [WindowsFact]
         public void An_upgrade_that_keeps_writes_nothing_and_the_server_keeps_the_full_list()
         {
             const string before = "{\"permission_profile\":\"safe_write\"}";
@@ -109,7 +109,7 @@ namespace Horizun.Server.Tests
             });
         }
 
-        [Fact]
+        [WindowsFact]
         public void Garbage_is_refused_and_an_unreadable_settings_file_is_never_rewritten()
         {
             WithSettings("{\"permission_profile\":\"safe_write\"}", path =>

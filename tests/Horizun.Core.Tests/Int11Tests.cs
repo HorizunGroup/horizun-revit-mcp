@@ -102,7 +102,7 @@ namespace Horizun.Core.Tests
             finally { Done(target, active); }
         }
 
-        [Fact]
+        [WindowsFact]
         public void The_expected_document_alias_and_a_full_path_name_the_target_too()
         {
             var (app, target, active) = TwoDocuments(targetWrites: 1, activeWrites: 4);

@@ -28,7 +28,7 @@ namespace Horizun.Core.Tests
             Assert.Null(OpenRecoveryPolicy.OpenRefusal(false, false));
         }
 
-        [Fact]
+        [WindowsFact]
         public void Recovery_document_requires_confirmed_save_as_to_another_path()
         {
             Assert.NotNull(OpenRecoveryPolicy.SaveRefusal(true, false, false, @"C:\models\original.rvt", @"C:\models\original.rvt"));
@@ -37,7 +37,7 @@ namespace Horizun.Core.Tests
             Assert.Null(OpenRecoveryPolicy.SaveRefusal(true, true, true, @"C:\models\original.rvt", @"C:\models\copy.rvt"));
         }
 
-        [Fact]
+        [WindowsFact]
         public void Recovery_save_as_rejects_overwrite_even_before_destination_exists()
         {
             Assert.NotNull(OpenRecoveryPolicy.SaveRefusal(true, true, true, @"C:\models\original.rvt", @"C:\models\copy.rvt", true));

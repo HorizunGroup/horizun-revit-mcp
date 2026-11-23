@@ -33,7 +33,7 @@ public class R4ADocumentTargetTests
         Assert.Equal(DocMatchOutcome.None, DocumentMatcher.FindTarget(open, @"C:\other\target.rvt").Outcome);
     }
 
-    [Theory]
+    [Horizun.Core.Tests.WindowsTheory]
     [InlineData("horizun_execute_python")]
     [InlineData("horizun_query_model")]
     [InlineData("horizun_write_params_verified")]

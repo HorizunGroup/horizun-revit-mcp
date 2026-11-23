@@ -508,7 +508,7 @@ namespace Horizun.Core.Tests
             Assert.False(string.IsNullOrEmpty(error));
         }
 
-        [Fact]
+        [WindowsFact]
         public void Well_formed_paper_options_parse()
         {
             PdfQaOptions o = PdfQa.Parse(JObject.Parse(@"{viewports:true, compare_to:'C:\\x\\antes.pdf',

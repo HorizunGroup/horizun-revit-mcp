@@ -10,7 +10,7 @@ namespace Horizun.Core.Tests
 {
     public class Q90FinalRegressionTests
     {
-        [Theory]
+        [WindowsTheory]
         [InlineData("pdf")]
         [InlineData("png")]
         [InlineData("dwg")]
@@ -75,7 +75,7 @@ namespace Horizun.Core.Tests
             }
         }
 
-        [Fact]
+        [WindowsFact]
         public void Apply_refuses_a_destination_directory_that_arrived_after_planning()
         {
             string folder = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -99,7 +99,7 @@ namespace Horizun.Core.Tests
             }
         }
 
-        [Fact]
+        [WindowsFact]
         public void Apply_blocks_replacing_the_new_destination_or_its_parent_during_export()
         {
             string root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

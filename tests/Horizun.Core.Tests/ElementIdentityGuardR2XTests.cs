@@ -132,7 +132,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(new[] { before + ">" + now }, renamed);                              // the Revit-bound history is told as well
         }
 
-        [Fact]
+        [WindowsFact]
         public void The_document_key_of_a_file_is_built_in_one_place_and_the_tool_and_the_events_use_it()
         {
             Assert.Equal(@"path:c:\models\a.rvt", DocumentLifecycleRules.PathKey(@"C:/Models/A.rvt"));        // R2Y m-2: one spelling for both separators

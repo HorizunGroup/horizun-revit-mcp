@@ -191,7 +191,7 @@ namespace Horizun.Core.Tests
 
         // ------------------------------------------------------------------ m-2: the document key
 
-        [Fact]
+        [WindowsFact]
         public void The_document_key_is_one_for_both_separators_case_dots_and_trailing_separators()
         {
             string key = DocumentLifecycleRules.PathKey(@"C:\Models\Sub\A.rvt");
@@ -203,7 +203,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(DocumentLifecycleRules.PathKey(@"C:\Models\Sub"), DocumentLifecycleRules.PathKey(@"C:\Models\Sub\\"));
         }
 
-        [Fact]
+        [WindowsFact]
         public void The_document_key_of_a_relative_path_is_the_one_of_its_absolute_path()
         {
             string absolute = System.IO.Path.GetFullPath("r2y-relative-model.rvt");
@@ -211,7 +211,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(DocumentLifecycleRules.PathKey(absolute), DocumentLifecycleRules.PathKey(@".\r2y-relative-model.rvt"));
         }
 
-        [Fact]
+        [WindowsFact]
         public void The_document_key_of_a_network_path_keeps_its_share_and_does_not_depend_on_the_separator()
         {
             string unc = DocumentLifecycleRules.PathKey(@"\\Server\Share\Projects\A.rvt");
@@ -221,7 +221,7 @@ namespace Horizun.Core.Tests
             Assert.NotEqual(unc, DocumentLifecycleRules.PathKey(@"\\Server\Other\Projects\A.rvt"));
         }
 
-        [Fact]
+        [WindowsFact]
         public void The_root_of_a_drive_keeps_its_separator()
         {
             Assert.Equal(@"path:c:\", DocumentLifecycleRules.PathKey(@"C:\"));

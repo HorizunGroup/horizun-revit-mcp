@@ -182,7 +182,7 @@ namespace Horizun.Core.Tests
             Assert.False(OutputPages.ValidJobId(""));
         }
 
-        [Fact]
+        [WindowsFact]
         public void Files_are_named_by_job_and_page_size_and_belong_to_their_job()
         {
             Assert.Equal("job-1.50000.json", OutputPages.FileName("job-1", 50000));
