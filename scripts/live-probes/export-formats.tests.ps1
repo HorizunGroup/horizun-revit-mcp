@@ -9,13 +9,10 @@ $script:HzProbeModules = @()
 $module = $script:HzProbeModules | Where-Object { $_.Name -eq 'export-formats' }
 if (-not $module) { 'module did not register'; exit 1 }
 
-function New-Ctx([bool]$gate, [bool]$hasRooms = $true, [bool]$withTemplate = $true) {
-    $state = @{ applies = New-Object System.Collections.Generic.List[string]; nextId = 900; copied = $false; created = @{}; deleted = @(); mainReads = 0; mainFlip = $false; sheet = $null; companionRole = 'xref'; noDoors = $false; doorBrought = $false; doorName = $null }
+function New-Ctx([bool]$gate, [bool]$hasRooms = $true, [bool]$withWallType = $true) {
+    $state = @{ applies = New-Object System.Collections.Generic.List[string]; nextId = 900; copied = $withWallType; created = @{}; deleted = @(); mainReads = 0; mainFlip = $false; sheet = $null; companionRole = 'xref'; noDoors = $false }
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('hz-export-probe-test-' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Force -Path $root
-    # A fake Autodesk template folder: the wall type is brought BY NAME from it when missing.
-    $tplRoot = Join-Path $root 'templates'
-    if ($withTemplate) { $null = New-Item -ItemType Directory -Force -Path (Join-Path $tplRoot 'English'); Set-Content -LiteralPath (Join-Path $tplRoot 'English\DefaultMetric.rte') -Value 'fake' }
     $call = {
         param($tool, $arguments)
         if ($tool -eq 'horizun_query_model') {
@@ -35,7 +32,7 @@ function New-Ctx([bool]$gate, [bool]$hasRooms = $true, [bool]$withTemplate = $tr
         }
         if ($arguments.format -eq 'rfa' -and $arguments.category -eq 'OST_Walls') { return @{ isError = $true; text = 'No loadable family to export in category ''OST_Walls''. Nothing was exported.' } }
         if ($arguments.format -eq 'rfa') {
-            if ($state.noDoors -and -not $state.doorBrought) { return @{ isError = $true; text = "No loadable family to export in category 'OST_Doors'. Nothing was exported." } }
+            if ($state.noDoors) { return @{ isError = $true; text = "No loadable family to export in category 'OST_Doors'. Nothing was exported." } }
             $fams = @([pscustomobject]@{ id = 71; name = 'Single-Flush' }, [pscustomobject]@{ id = 70; name = 'Double-Glass' })
             return @{ isError = $false; data = [pscustomobject]@{ dry_run = $true; families = $fams } }
         }
@@ -46,10 +43,6 @@ function New-Ctx([bool]$gate, [bool]$hasRooms = $true, [bool]$withTemplate = $tr
         $state.applies.Add($key)
         $ok = { param($data) @{ stage = 'apply'; answer = @{ isError = $false; data = $data; text = 'ok' } } }
         if ($tool -eq 'horizun_delete_verified') { $state.deleted = @($arguments.ids); return (& $ok ([pscustomobject]@{})) }
-        if ($tool -eq 'horizun_copy_between_documents') {
-            if ($arguments.category -eq 'OST_Doors') { $state.doorBrought = $true; $state.doorName = [string]$arguments.type_names[0] } else { $state.copied = $true }
-            return (& $ok ([pscustomobject]@{}))
-        }
         if ($tool -eq 'horizun_create_elements') {
             $id = $state.nextId; $state.nextId++
             $kind = [string]$arguments.elements[0].kind
@@ -83,7 +76,7 @@ function New-Ctx([bool]$gate, [bool]$hasRooms = $true, [bool]$withTemplate = $tr
         }
         return @{ stage = 'apply'; answer = @{ isError = $true; text = 'unexpected apply' } }
     }.GetNewClosure()
-    return [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $root; RunId = 'r1'; WriteGate = $gate; Call = $call; Apply = $apply; State = $state; TemplateRoot = $tplRoot }
+    return [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $root; RunId = 'r1'; WriteGate = $gate; Call = $call; Apply = $apply; State = $state }
 }
 
 $fails = 0
@@ -101,11 +94,11 @@ foreach ($n in $catalog) { Check "passes: $n" ($by[$n].Outcome -eq 'pass') }
 Check 'the rfa case exports the family first by NAME, not by position' ($by[$catalog[5]].Detail -match 'Double-Glass')
 Check 'the probe deletes the views it duplicated' ($ctx.State.applies.Contains('exp-cleanup'))
 Check 'gbxml stages its own level, four walls, a room and a space' ($ctx.State.created.level -and $ctx.State.created.room -and $ctx.State.created.space -and $ctx.State.created.wall3)
-Check 'the wall type is brought BY NAME and deleted after the walls, newest first' ($ctx.State.applies.Contains('exp-gb-walltype') -and ($ctx.State.deleted -contains 41) -and ($ctx.State.deleted[0] -eq $ctx.State.created.space) -and ($ctx.State.deleted[-1] -lt $ctx.State.created.level))
+Check 'the staged gbxml model is deleted newest first, never the document''s wall type' (($ctx.State.deleted -notcontains 41) -and ($ctx.State.deleted[0] -eq $ctx.State.created.space))
 
 $bare = New-Ctx $false $true; $bare.State.noDoors = $true
 $byBare = Run-Module $bare
-Check 'a document with no loadable door brings one BY NAME from the template, then exports it' (($byBare[$catalog[5]].Outcome -eq 'pass') -and ($bare.State.doorName -eq 'M_Single-Flush: 0915 x 2134mm'))
+Check 'a document with no loadable door is not_covered for the rfa case, never a pass' ($byBare[$catalog[5]].Outcome -eq 'not_covered')
 Check 'the sheet cases export the own sheet, and the sheet is deleted with the views' (($ctx.State.applies.Contains('exp-sheet-dwg-linked')) -and ($ctx.State.applies.Contains('exp-sheet-dwg-bound')) -and ($ctx.State.applies.Contains('exp-sheet-dgn')) -and ($ctx.State.deleted -contains $ctx.State.sheet))
 $odd = New-Ctx $false $true; $odd.State.companionRole = 'unexpected'
 $byOdd = Run-Module $odd
@@ -119,6 +112,6 @@ $by = Run-Module (New-Ctx $false $false)
 Check 'own room and space staged yet refused as no spaces: gbxml FAILS, never unverified' ($by[$catalog[4]].Outcome -eq 'fail' -and $by[$catalog[4]].Detail -match 'no spaces')
 
 $by = Run-Module (New-Ctx $false $true $false)
-Check 'no template: gbxml is unverified and names why, never pass' ($by[$catalog[4]].Outcome -eq 'unverified' -and $by[$catalog[4]].Detail -match 'no Autodesk template')
+Check 'no wall type: gbxml is unverified and names why, never pass' ($by[$catalog[4]].Outcome -eq 'unverified' -and $by[$catalog[4]].Detail -match 'holds no')
 
 if ($fails) { "export-formats probe tests: $fails FAILED"; exit 1 } else { 'export-formats probe tests: ALL PASS'; exit 0 }

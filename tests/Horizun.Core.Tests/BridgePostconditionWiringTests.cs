@@ -28,6 +28,23 @@ namespace Horizun.Core.Tests
             File.ReadAllText(Path.Combine(RepoRoot(), relative.Replace('/', Path.DirectorySeparatorChar)));
 
         [Fact]
+        public void Enabling_worksharing_is_recorded_but_not_blamed_for_old_spatial_defects()
+        {
+            // Live 2024 (Snowdon, 2026-10-18): enable changed the workset of every element and the
+            // data-only fallback reported six railing overlaps the sample already had as this
+            // call's doing, with "fix or undo". The reply now declares geometry_untouched and the
+            // spatial pass honours it after the change ledger has recorded the write.
+            string enable = Source("src/Horizun.Revit/Commands/ManageWorksetsEnable.cs");
+            string spatial = Source("src/Horizun.Revit/Core/SpatialAfterWrite.cs");
+            Assert.Contains("[\"geometry_untouched\"] = true", enable);
+            Assert.Contains("done[\"document\"] = doc.Title", enable);
+            int record = spatial.IndexOf("ChangeLedger.Record(tool, d);", StringComparison.Ordinal);
+            int skip = spatial.IndexOf("if (GeometryUntouched(result)) return;", StringComparison.Ordinal);
+            int fallback = spatial.IndexOf("DataOnlyFallback(tool, watch, result); return;", StringComparison.Ordinal);
+            Assert.True(record > 0 && skip > record && fallback > skip, "geometry_untouched must skip the spatial pass after recording the change");
+        }
+
+        [Fact]
         public void Open_commands_refuse_unproven_active_or_cloud_identity()
         {
             string open = Source("src/Horizun.Revit/Commands/OpenDocumentCommand.cs");
@@ -77,9 +94,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("SetSubscribed(\"failures\", true)", src);
             Assert.Contains("dialogs_observed = DialogsObserved", src);
             Assert.Contains("failures_observed = FailuresObserved", src);
-            // A quiet, fully watched command is still the compact null - unless a dialog was
-            // answered between commands, which the next reply must carry (SaveReminderPolicy).
-            Assert.Contains("if (_seen.Count == 0 && _between.Count == 0 && FullyObserved) return null", src);
+            Assert.Contains("if (_seen.Count == 0 && FullyObserved) return null", src);
             Assert.DoesNotContain("if (_seen.Count == 0) return null", src);
             Assert.Contains("dialogs_observed = raised[\"dialogs_observed\"]", python);
             Assert.Contains("failures_observed = raised[\"failures_observed\"]", python);

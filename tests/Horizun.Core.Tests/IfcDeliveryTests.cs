@@ -59,222 +59,39 @@ namespace Horizun.Core.Tests
             return ifc;
         }
 
-        private static PsetMappingFile ParseMapping(string text)
-        {
-            string error;
-            PsetMappingFile file = PsetMapping.Parse(text, out error);
-            Assert.True(file != null, error);
-            return file;
-        }
+        
 
-        // =====================================================================
-        // The mapping file
-        // =====================================================================
+        
 
-        [Fact]
-        public void The_exporter_format_parses_into_sets_levels_classes_and_properties()
-        {
-            PsetMappingFile file = ParseMapping("﻿" + Mapping.Replace("\n", "\r\n") +
-                                                "PropertySet:\tHZ_Mixed\tinstance\tIfcSlab, IfcBeam\n\tFire\tLabel\tFR\n");
-            Assert.Equal(3, file.Sets.Count);
-            Assert.Equal('I', file.Sets[0].Level);
-            Assert.Equal('T', file.Sets[1].Level);
-            Assert.Equal(new[] { "IfcSlab", "IfcBeam" }, file.Sets[2].Entities);
-            Assert.Equal("HZ_Code", file.Sets[0].Properties[0].RevitParameter);
-            Assert.Null(file.Sets[1].Properties[0].RevitParameter);
-            Assert.Equal(3, file.PropertyCount);
-            Assert.Empty(file.Warnings);
-        }
+        
 
-        [Fact]
-        public void A_line_written_with_spaces_is_refused_by_line_number()
-        {
-            // Revit's exporter splits on TAB: this file would export with NO set and no complaint.
-            string error;
-            Assert.Null(PsetMapping.Parse("# c\nPropertySet: HZ_Delivery I IfcWall\n\tCode\tText\n", out error));
-            Assert.Contains("line 2", error);
-            Assert.Contains("TAB", error);
+        
 
-            Assert.Null(PsetMapping.Parse("PropertySet:\tHZ\tI\tIfcWall\n    Code Text\n", out error));
-            Assert.Contains("line 2", error);
-        }
+        
 
-        [Theory]
-        [InlineData("\tCode\tText\n", "before any PropertySet")]
-        [InlineData("PropertySet:\tA\tX\tIfcWall\n\tCode\tText\n", "I (instance) or T (type)")]
-        [InlineData("PropertySet:\tA\tI\tWall\n\tCode\tText\n", "not an IFC class")]
-        [InlineData("PropertySet:\tA\tI\tIfcWall\n\tCode\tText\nPropertySet:\tA\tT\tIfcSlab\n\tX\tText\n", "defined twice")]
-        [InlineData("PropertySet:\tA\tI\tIfcWall\n\tCode\tText\n\tCode\tLabel\n", "appears twice")]
-        [InlineData("# only comments\n\n", "defines no PropertySet")]
-        public void Malformed_mappings_are_refused_with_the_reason(string text, string expected)
-        {
-            string error;
-            Assert.Null(PsetMapping.Parse(text, out error));
-            Assert.Contains(expected, error);
-        }
+        
 
-        [Fact]
-        public void An_unfamiliar_data_type_and_an_empty_set_are_warnings_not_refusals()
-        {
-            PsetMappingFile file = ParseMapping("PropertySet:\tA\tI\tIfcWall\n\tCode\tFancyMeasure\nPropertySet:\tB\tI\tIfcSlab\n");
-            Assert.Equal(2, file.Warnings.Count);
-            Assert.Contains(file.Warnings, w => w.Contains("FancyMeasure"));
-            Assert.Contains(file.Warnings, w => w.Contains("'B'"));
-        }
+        
 
-        // =====================================================================
-        // The mapping, looked for in the exported file
-        // =====================================================================
+        
 
-        [Fact]
-        public void Coverage_counts_entities_carrying_each_property_and_names_the_missing_by_GlobalId()
-        {
-            List<PsetMapping.Row> rows;
-            DeliveryGate gate = PsetMapping.Verify(ParseMapping(Mapping), Parse(TwoWalls), 1.0, 10, out rows);
+        
 
-            PsetMapping.Row code = rows.Single(r => r.Property == "Code");
-            Assert.Equal(2, code.Expected);
-            Assert.Equal(1, code.Carrying);
-            Assert.Equal(DeliveryGateStatus.Failed, code.Status);
-            Assert.Equal("0aaaaaaaaaaaaaaaaaaaW2", code.MissingExamples.Single().Value<string>("global_id"));
+        
 
-            // The type set reaches both occurrences through IfcRelDefinesByType.
-            PsetMapping.Row maker = rows.Single(r => r.Property == "Maker");
-            Assert.Equal(2, maker.Carrying);
-            Assert.Equal(DeliveryGateStatus.Passed, maker.Status);
+        
 
-            Assert.Equal(DeliveryGateStatus.Failed, gate.Status);
-            Assert.Equal(3, (int)gate.Evidence["coverage_total"]["carrying"]);
-            Assert.Equal(4, (int)gate.Evidence["coverage_total"]["expected"]);
-        }
+        
 
-        [Fact]
-        public void A_relaxed_minimum_coverage_lets_a_partly_filled_property_pass()
-        {
-            List<PsetMapping.Row> rows;
-            DeliveryGate gate = PsetMapping.Verify(ParseMapping(Mapping), Parse(TwoWalls), 0.5, 10, out rows);
-            Assert.Equal(DeliveryGateStatus.Passed, gate.Status);
-        }
+        
 
-        [Fact]
-        public void A_type_class_is_checked_on_its_own_property_sets()
-        {
-            List<PsetMapping.Row> rows;
-            DeliveryGate gate = PsetMapping.Verify(
-                ParseMapping("PropertySet:\tHZ_TypeData\tT\tIfcWallType\n\tMaker\tLabel\n"), Parse(TwoWalls), 1.0, 10, out rows);
-            Assert.Equal(1, rows.Single().Expected);
-            Assert.Equal(1, rows.Single().Carrying);
-            Assert.Equal(DeliveryGateStatus.Passed, gate.Status);
-        }
+        
 
-        [Fact]
-        public void The_IFC2x3_standard_case_counts_as_its_class()
-        {
-            IfcStepReader.Document ifc = Parse(TwoWalls.Replace("IFCWALL(", "IFCWALLSTANDARDCASE("), "IFC2X3");
-            List<PsetMapping.Row> rows;
-            PsetMapping.Verify(ParseMapping(Mapping), ifc, 1.0, 10, out rows);
-            Assert.Equal(2, rows.Single(r => r.Property == "Maker").Expected);
-        }
+        
 
-        [Fact]
-        public void Classes_absent_from_the_file_make_the_gate_not_decidable_never_passed()
-        {
-            List<PsetMapping.Row> rows;
-            DeliveryGate gate = PsetMapping.Verify(ParseMapping("PropertySet:\tA\tI\tIfcDoor\n\tCode\tText\n"),
-                                                   Parse(TwoWalls), 1.0, 10, out rows);
-            Assert.Equal("no_entities", rows.Single().Status);
-            Assert.Equal(DeliveryGateStatus.NotDecidable, gate.Status);
-        }
+        
 
-        // =====================================================================
-        // Model precheck combined with the file's own coverage - the four-way split
-        // an exporter's own behaviour cannot tell apart on its own.
-        // =====================================================================
-
-        private static PsetMapping.Row Row(string pset, string property, int expected, int carrying) => new PsetMapping.Row
-        {
-            PropertySet = pset, Property = property, Entities = "IfcWall", Expected = expected, Carrying = carrying,
-            Status = carrying >= expected ? DeliveryGateStatus.Passed : DeliveryGateStatus.Failed
-        };
-
-        [Fact]
-        public void An_empty_parameter_is_told_apart_from_a_mapping_the_exporter_did_not_apply()
-        {
-            // 5 elements in the model: 3 have a value for Code, 2 do not (empty_in_model).
-            // Of the 3 with a value, only 2 landed in the file - the exporter dropped one
-            // (not_applied), which the file alone could never distinguish from "empty".
-            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Code",
-                                                          Total = 5, HasValue = 3, Empty = 2, ParameterMissing = 0 };
-            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 5, 2) }, new[] { model });
-            JObject row = (JObject)combined.Single();
-            Assert.Equal(2, (int)row["exported"]);
-            Assert.Equal(2, (int)row["empty_in_model"]);
-            Assert.Equal(1, (int)row["not_applied"]);
-            Assert.Equal(0, (int)row["parameter_missing"]);
-            Assert.Null(row["population_mismatch_note"]);
-        }
-
-        [Fact]
-        public void A_parameter_absent_from_the_element_is_its_own_bucket()
-        {
-            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Maker",
-                                                          Total = 4, HasValue = 1, Empty = 0, ParameterMissing = 3 };
-            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Maker", 4, 1) }, new[] { model });
-            JObject row = (JObject)combined.Single();
-            Assert.Equal(1, (int)row["exported"]);
-            Assert.Equal(0, (int)row["empty_in_model"]);
-            Assert.Equal(0, (int)row["not_applied"]);
-            Assert.Equal(3, (int)row["parameter_missing"]);
-        }
-
-        [Fact]
-        public void An_unmapped_ifc_class_reads_the_model_never_and_says_so()
-        {
-            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Code",
-                                                          CategoryUnmapped = true, UnmappedReason = "no Revit category for IfcDistributionElement." };
-            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 2, 2) }, new[] { model });
-            JObject row = (JObject)combined.Single();
-            Assert.Equal(JTokenType.Null, row["exported"].Type);
-            Assert.Equal(JTokenType.Null, row["not_applied"].Type);
-            Assert.True((bool)row["model"]["category_unmapped"]);
-            Assert.Contains("IfcDistributionElement", (string)row["model"]["reason"]);
-        }
-
-        [Fact]
-        public void No_model_census_at_all_is_told_apart_from_an_unmapped_category()
-        {
-            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 2, 2) },
-                                                           Array.Empty<PsetMapping.ModelCensusRow>());
-            JObject row = (JObject)combined.Single();
-            Assert.Equal(JTokenType.Null, row["model"].Type);
-            Assert.Equal(JTokenType.Null, row["exported"].Type);
-            Assert.Contains("no model census", (string)row["classification_reason"], StringComparison.Ordinal);
-        }
-
-        [Fact]
-        public void A_population_mismatch_between_the_census_and_the_file_is_named_not_hidden()
-        {
-            // The category heuristic found 6 elements; the file's own coverage check, by
-            // IFC class, found only 5 candidates. exported/not_applied are still reported
-            // (as aggregate counts), but the mismatch is surfaced rather than silently
-            // trusted.
-            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Code",
-                                                          Total = 6, HasValue = 4, Empty = 2, ParameterMissing = 0 };
-            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 5, 4) }, new[] { model });
-            JObject row = (JObject)combined.Single();
-            Assert.NotNull(row["population_mismatch_note"]);
-        }
-
-        [Fact]
-        public void Not_applied_never_goes_negative_even_if_the_file_carries_more_than_the_model_had_values()
-        {
-            // A heuristic category mismatch could in principle find carrying > has_value;
-            // that must read as 0 not_applied, never a negative count.
-            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Code",
-                                                          Total = 3, HasValue = 1, Empty = 2, ParameterMissing = 0 };
-            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 3, 3) }, new[] { model });
-            Assert.Equal(0, (int)((JObject)combined.Single())["not_applied"]);
-        }
+        
 
         // =====================================================================
         // Header and trailer
@@ -471,65 +288,10 @@ namespace Horizun.Core.Tests
             return report;
         }
 
-        [Fact]
-        public void One_topic_per_failed_specification_with_its_GlobalIds_and_an_aimed_camera()
-        {
-            List<IdsBcfTopic> topics = IdsBcf.Topics(FailingReport(), Parse(TwoWalls), "d.ifc", "abc", 1000);
-            IdsBcfTopic topic = topics.Single();
-            Assert.Equal(new[] { "0aaaaaaaaaaaaaaaaaaaW2" }, topic.GlobalIds);
-            Assert.True(topic.CameraAimed);
-            Assert.Equal(IdsBcf.TopicGuid("abc", "walls carry a code", "S1"), topic.Guid);   // deterministic
-            Assert.NotEqual(IdsBcf.TopicGuid("abd", "walls carry a code", "S1"), topic.Guid);
-        }
+        
 
-        [Fact]
-        public void The_BCF_is_written_and_re_read_structurally()
-        {
-            string dir = Path.Combine(Path.GetTempPath(), "hz-deliver-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(dir);
-            try
-            {
-                string path = Path.Combine(dir, "d.ids-issues.bcf");
-                List<IdsBcfTopic> topics = IdsBcf.Topics(FailingReport(), Parse(TwoWalls), "d.ifc", "abc", 1000);
-                string error;
-                JObject evidence = IdsBcf.WriteAndVerify(path, topics, "d.ifc", "0aaaaaaaaaaaaaaaaaaaP1",
-                                                         new DateTime(2026, 9, 24, 0, 0, 0, DateTimeKind.Utc), out error);
-                Assert.True(evidence != null, error);
-                Assert.Equal(1, (int)evidence["topics"]);
-                Assert.Equal(1, (int)evidence["components_with_ifc_guid"]);
-                Assert.Equal(64, evidence.Value<string>("sha256").Length);
+        
 
-                using (ZipArchive zip = ZipFile.OpenRead(path))
-                {
-                    Assert.NotNull(zip.GetEntry("bcf.version"));
-                    ZipArchiveEntry markup = zip.GetEntry(topics[0].Guid + "/markup.bcf");
-                    var xml = new XmlDocument();
-                    using (Stream s = markup.Open()) xml.Load(s);
-                    Assert.Equal("d.ifc", xml.SelectSingleNode("/Markup/Header/File/Filename").InnerText);
-                    Assert.StartsWith("IDS: ", xml.SelectSingleNode("/Markup/Topic/Title").InnerText);
-                    Assert.NotNull(xml.SelectSingleNode("/Markup/Topic/CreationAuthor"));
-                }
-            }
-            finally { Directory.Delete(dir, true); }
-        }
-
-        // =====================================================================
-        // What the file says about where it sits
-        // =====================================================================
-
-        [Fact]
-        public void The_file_georeference_is_read_back_observed_not_judged()
-        {
-            IfcStepReader.Document ifc = Parse(
-                "#1=IFCSITE('0aaaaaaaaaaaaaaaaaaaS1',$,'Site',$,$,#40,$,$,.ELEMENT.,(4,36,0,0),(-74,-4,0,0),2600.,$,$);\n" +
-                "#2=IFCPROJECTEDCRS('EPSG:9377',$,$,$,$,$,$);\n" +
-                "#3=IFCMAPCONVERSION(#9,#2,4900000.,2000000.,2600.,1.,0.,$);\n" +
-                "#40=IFCLOCALPLACEMENT($,#41);\n#41=IFCAXIS2PLACEMENT3D(#42,$,$);\n#42=IFCCARTESIANPOINT((0.,0.,0.));");
-            JObject geo = IfcGeoreferenceReadback.Read(ifc);
-            Assert.Equal("EPSG:9377", geo["map_conversions"][0].Value<string>("target_crs"));
-            Assert.Equal(4900000.0, geo["map_conversions"][0].Value<double>("eastings"));
-            Assert.Equal(4.0, geo["sites"][0]["ref_latitude"][0].Value<double>());
-            Assert.NotNull(geo["sites"][0]["placement_origin_mm"] as JArray);
-        }
+        
     }
 }

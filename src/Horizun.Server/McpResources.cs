@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP server — standard MCP Resources.
 //
 // These are intentionally virtual horizun:// resources, not file:// paths. An
@@ -57,10 +57,6 @@ namespace Horizun.Server
                         "Which toolsets (tool packs) this session advertises, and the measured size of tools/list " +
                         "with and without the selection, in characters and estimated tokens.",
                         "application/json", Encoding.UTF8.GetByteCount(ToolsetText())),
-                    // The MCP App. It is listed like any other resource because it IS
-                    // one; what makes it an app is its mime type and the tool that
-                    // names it, not a separate listing mechanism.
-                    McpAppResources.Definition(),
                     ImpactPreviewApp.Definition()
                 }
             };
@@ -83,8 +79,6 @@ namespace Horizun.Server
                 case WorkflowsUri: mime = "application/json"; text = WorkflowText(); break;
                 case ProjectContextSchemaUri: mime = "application/schema+json"; text = ProjectContext.SchemaText; break;
                 case ToolsetReport.ResourceUri: mime = "application/json"; text = ToolsetText(); break;
-                case McpAppResources.ClashViewerUri:
-                    return AppContent(uri, McpAppResources.Html(), McpAppResources.ResourceMeta());
                 case ImpactPreviewApp.Uri:
                     return AppContent(uri, ImpactPreviewApp.Html(), ImpactPreviewApp.ResourceMeta());
                 default:
@@ -116,7 +110,7 @@ namespace Horizun.Server
             {
                 new JObject
                 {
-                    ["uri"] = uri, ["mimeType"] = McpAppResources.AppMimeType,
+                    ["uri"] = uri, ["mimeType"] = ImpactPreviewApp.AppMimeType,
                     ["text"] = html, ["_meta"] = meta
                 }
             }
@@ -212,7 +206,10 @@ namespace Horizun.Server
             ["toolsets"] = new JArray(c.Toolsets ?? new string[0]),
             ["external_content"] = c.ExternalContent,
             ["input_schema"] = c.InputSchema?.DeepClone(),
-            ["output_schema"] = c.OutputSchema?.DeepClone()
+            ["output_schema"] = c.OutputSchema?.DeepClone(),
+            // A covered writer also accepts the element-identity fields tools/list does not repeat (P1-4). input_schema stays the
+            // contract's exact schema; the identity fields travel beside it. Null (omitted) for any other tool.
+            ["identity_fields"] = IdentitySchema.Fields(c.Name)
         };
 
         private static string ContractText()
@@ -240,7 +237,8 @@ namespace Horizun.Server
                 ["mcp_paused_means"] = "When true, only horizun_health is available until the local Revit owner resumes MCP.",
                 ["force_read_only_on_workshared"] = Horizun.Revit.Core.Settings.ForceReadOnlyOnWorkshared,
                 ["sync_with_central_owner_granted"] = Horizun.Revit.Core.Settings.SyncWithCentralOwnerEnabled,
-                ["sync_with_central_owner_granted_means"] = "The machine owner's grant for synchronize with central (Advanced options). The typed operation also needs permission_profile=full_write; force_read_only_on_workshared wins over it.",
+                ["sync_only_grant_enabled"] = Horizun.Revit.Core.Settings.SyncOnlyGrantEnabled,
+                ["sync_with_central_owner_granted_means"] = "The machine owner's grant for synchronize with central (Advanced options). Through horizun_save_document the typed operation needs only safe_write plus this grant (horizun_document_session needs full_write); force_read_only_on_workshared wins over it.",
                 ["execute_python_allowed"] = python,
                 ["execute_python_temporary_grant_until_utc"] = until == null
                     ? JValue.CreateNull() : JToken.FromObject(until.Value.ToString("O")),
@@ -283,7 +281,6 @@ namespace Horizun.Server
                 // The facade's identity beside the contract's: the two hashes are independent
                 // (SchemaFacade.cs), and the mode says which surface tools/list carries.
                 ["facade_hash"] = SchemaFacade.Hash,
-                ["compact_hash"] = SchemaCompact.Hash,
                 ["schema_mode"] = SchemaMode.Name(SchemaMode.Current),
                 ["bridge_protocol_version"] = Horizun.Contracts.Contract.ProtocolVersion,
                 // EVERY revision, not only the ones reachable through initialize.

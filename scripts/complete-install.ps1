@@ -2,20 +2,24 @@
 <#
   Finish a Horizun installation without racing an active Claude or Codex.
 
-  If a requested client is open, this script records the pending work, installs
-  a CurrentUser resume entry, and starts a hidden helper. The helper waits for a
-  real quiet window, registers beside every existing MCP entry, verifies the
-  resulting configuration, then waits for the first Revit start and calls
-  horizun_health through the installed MCP server.
+  ONE PASS, IN THE FOREGROUND. If a requested client is open, nothing is edited:
+  the state says which client to close and the helper exits 3. Run it again (the
+  Start menu entry "Horizun - complete installation", or Setup's Retry) once the
+  client is closed. With every client closed it registers beside every existing
+  MCP entry, verifies the configuration, and tries horizun_health once through the
+  installed server; if Revit is not running yet the state is awaiting_revit.
 
-  This is intentionally per-user and needs no administrator rights. The resume
-  entry is removed after live verification, by -CancelPending, or during
-  uninstall. Re-running the script is safe.
+  There is no logon resume entry, no hidden background worker and no PowerShell
+  relaunched from here: an antivirus behaviour engine read exactly that pattern
+  (a hidden, policy-bypassing PowerShell re-armed at every sign-in) as malware
+  (Norton IDP.HEUR.26, field report 2026-11-03). The register and verify helpers
+  run in this same process. Entries left in HKCU Run by older releases are
+  removed on every run and by -CancelPending. Re-running the script is safe.
 
-  Exit codes: 0 completed or safely scheduled
+  Exit codes: 0 completed (registered; live check passed, disabled, or pending Revit)
               1 failed
               2 no supported client could be identified
-              3 still pending when a detached wait reached its deadline
+              3 pending: a client is open, or another completion run holds the lock
 #>
 [CmdletBinding()]
 param(
@@ -23,27 +27,28 @@ param(
     [string]$Client = 'Auto',
     [string]$Name = 'horizun-revit',
     [string]$ServerPath,
+    # Accepted for compatibility with older Setup and Run-entry command lines.
+    # Nothing waits any more, so they change nothing.
     [int]$WaitTimeoutMinutes = 1440,
     [switch]$Detached,
+    [switch]$NoResume,
     [switch]$LiveOnly,
     [switch]$NoLiveWait,
-    [switch]$NoResume,
     [switch]$StatusOnly,
     [switch]$CancelPending,
+    # The Start menu entry passes this so the window stays until it is read.
+    [switch]$Pause,
     [string]$StatusPath,
     [string]$Generation,
     # Deterministic harness hook. When supplied, each non-empty line names a
     # client considered running; normal installs always inspect real processes.
     [string]$ClientStateFile,
-    # Test hook: the registry key holding the resume entry. Tests point it at a
-    # throwaway key under HKCU:\Software\HorizunTest; installs never pass it.
+    # Test hook: the registry key swept for entries of older releases. Tests point
+    # it at a throwaway key under HKCU:\Software\HorizunTest; installs never pass it.
     [string]$RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 )
 $ErrorActionPreference = 'Stop'
 
-if ($WaitTimeoutMinutes -lt 1 -or $WaitTimeoutMinutes -gt 10080) {
-    throw 'WaitTimeoutMinutes must be between 1 and 10080 (seven days).'
-}
 if (-not $ServerPath) {
     # Installed, this script lives in <app>\server\client-tools, so the server it
     # belongs to is its own sibling wherever Setup put <app>; the per-user default
@@ -59,27 +64,13 @@ if (-not $Generation) { $Generation = [guid]::NewGuid().ToString('N') }
 if ($Generation -notmatch '^[A-Za-z0-9_-]{8,80}$') { throw 'Generation must be an opaque ASCII identifier (8..80 characters).' }
 
 . (Join-Path $PSScriptRoot 'client-process.lib.ps1')
+# Publish-HorizunAtomicFile / Remove-HorizunOrphanTempFiles: every status write here is an
+# atomic replace that survives an existing or locked destination (field report, 3.7.0).
+. (Join-Path $PSScriptRoot 'integration-status.lib.ps1')
 $register = Join-Path $PSScriptRoot 'register-client.ps1'
 $verify = Join-Path $PSScriptRoot 'verify-install.ps1'
-$defaultRunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runKey = $RunKey
 $runNamePrefix = 'HorizunMCPCompleteInstall-'
-$runName = $runNamePrefix + $Generation
-# WHICH System32. A 32-bit process does not get the real one: Windows redirects
-# System32 to SysWOW64 underneath it, and conhost.exe DOES NOT EXIST there. Setup
-# is a 32-bit program, so when it launched this script the redirected lookup came
-# back empty and Start-Process reported 'The system cannot find the file
-# specified' - which named the symptom and hid the cause. Sysnative is the only
-# way a 32-bit process reaches the native directory, and it exists ONLY for a
-# 32-bit process, so the branch is both ways round.
-$nativeSystemDir = if ([Environment]::Is64BitProcess) { Join-Path $env:SystemRoot 'System32' }
-                   else { Join-Path $env:SystemRoot 'Sysnative' }
-$powerShellExe = Join-Path $nativeSystemDir 'WindowsPowerShell\v1.0\powershell.exe'
-# -WindowStyle Hidden stops hiding anything once Windows Terminal is the
-# default console host (Windows 11): every hidden relaunch shows a terminal
-# window, and the awaiting_revit worker shows it for up to 24 hours. conhost
-# --headless forces the windowless legacy host regardless of that setting.
-$conhostExe = Join-Path $nativeSystemDir 'conhost.exe'
 $currentGenerationPath = "$StatusPath.current"
 $generationStatusPath = "$StatusPath.generation-$Generation.json"
 $verificationPath = "$generationStatusPath.verification.json"
@@ -87,22 +78,6 @@ $verificationPath = "$generationStatusPath.verification.json"
 function Get-CurrentGeneration {
     if (-not (Test-Path -LiteralPath $currentGenerationPath -PathType Leaf)) { return $null }
     try { return (Get-Content -LiteralPath $currentGenerationPath -Raw).Trim() } catch { return $null }
-}
-
-function Remove-StaleResumeEntries {
-    # Entries that are NOT this generation's: the legacy un-suffixed name from
-    # pre-generation installs, and suffixed entries of superseded generations.
-    # Safe on every path because it never touches $runName itself. This used to
-    # live only inside Claim-Generation, and the logon resume path exits BEFORE
-    # claiming - so an orphaned legacy entry relaunched a visible window at
-    # every logon and the script never cleaned it (measured on this machine,
-    # 2026-08-21: HorizunMCPCompleteInstall from a pre-generation install).
-    if ($NoResume) { return }
-    foreach ($name in @(Get-RunValueNames | Where-Object {
-        $_ -eq 'HorizunMCPCompleteInstall' -or ($_ -like "$runNamePrefix*" -and $_ -ne $runName)
-    })) {
-        Remove-ItemProperty -LiteralPath $runKey -Name $name -ErrorAction SilentlyContinue
-    }
 }
 
 function Get-RunValueNames {
@@ -114,89 +89,41 @@ function Get-RunValueNames {
     return @((Get-Item -LiteralPath $runKey).GetValueNames())
 }
 
-# A failing generation retries at logon, but not forever: a failure that is not
-# transient would relaunch the helper at every sign-in. After this many failed
-# attempts the generation removes its own resume entry and says so in its state.
-$maxResumeAttempts = 3
-
-function Register-FailedAttempt {
-    $path = "$generationStatusPath.attempts"
-    $count = 0
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-        [void][int]::TryParse(((Get-Content -LiteralPath $path -Raw) + '').Trim(), [ref]$count)
-    }
-    $count++
-    $dir = Split-Path -Parent $path
-    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    Set-Content -LiteralPath $path -Value $count -Encoding ASCII
-    $cleared = $NoResume -or $count -ge $maxResumeAttempts
-    if ($cleared) { Clear-Resume }
-    return [pscustomobject]@{
-        resume_attempts     = $count
-        resume_attempts_max = $maxResumeAttempts
-        resume_cleared      = [bool]$cleared
+function Remove-LegacyResumeEntries {
+    # Releases up to 4.2 re-armed this helper at every sign-in through HKCU Run
+    # (the un-suffixed legacy name and one suffixed name per generation). Nothing
+    # writes those entries any more; every run removes whatever an older release
+    # left, and only names with our fixed prefix.
+    foreach ($name in @(Get-RunValueNames | Where-Object {
+        $_ -eq 'HorizunMCPCompleteInstall' -or $_ -like "$runNamePrefix*"
+    })) {
+        Remove-ItemProperty -LiteralPath $runKey -Name $name -ErrorAction SilentlyContinue
     }
 }
 
-function Attempt-Note($Attempt) {
-    if ($Attempt.resume_cleared) {
-        return " Attempt $($Attempt.resume_attempts) of $($Attempt.resume_attempts_max): the logon retry was removed; run the installer or this helper again once the cause is fixed."
+function Invoke-HorizunHelper([string]$Path, [hashtable]$Arguments) {
+    # In this process, never a second powershell.exe: the helpers are scripts of
+    # this same folder, and a chained relaunch with a bypassed policy is one of
+    # the behaviours an antivirus reads as malware. A helper's `exit N` comes
+    # back as $LASTEXITCODE; a throw is that helper failing, exit 1.
+    $global:LASTEXITCODE = 0
+    try { & $Path @Arguments | Out-Host }
+    catch {
+        Write-Warning "$(Split-Path -Leaf $Path): $($_.Exception.Message)"
+        return 1
     }
-    return " Attempt $($Attempt.resume_attempts) of $($Attempt.resume_attempts_max): it will be retried at the next sign-in."
+    return [int]$LASTEXITCODE
 }
 
 function Claim-Generation {
     $dir = Split-Path -Parent $StatusPath
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $tmp = "$currentGenerationPath.tmp-$([guid]::NewGuid().ToString('N'))"
-    Set-Content -LiteralPath $tmp -Value $Generation -Encoding ASCII
-    Move-Item -LiteralPath $tmp -Destination $currentGenerationPath -Force
-    Remove-StaleResumeEntries
+    Write-HorizunAtomicText -Path $currentGenerationPath -Text $Generation -Encoding ASCII
+    # Temporaries left by a run that died between write and publish (field report).
+    $null = Remove-HorizunOrphanTempFiles -Path $StatusPath
 }
 
 function Test-CurrentGeneration { return (Get-CurrentGeneration) -eq $Generation }
-
-function Remove-LegacyServerBackups {
-    # Source installers before the external rollback ledger kept executable
-    # backups below server\replaced-*. A client racing the update can keep one
-    # DLL locked until that client exits. This finisher runs after the quiet
-    # window, which is the first reliable opportunity to remove it.
-    $serverRoot = Split-Path -Parent $ServerPath
-    if (-not (Test-Path -LiteralPath $serverRoot -PathType Container)) { return }
-    $rootFull = [IO.Path]::GetFullPath($serverRoot).TrimEnd('\')
-    $rootPrefix = $rootFull + '\'
-    foreach ($old in @(Get-ChildItem -LiteralPath $rootFull -Directory -Filter 'replaced-*' -ErrorAction SilentlyContinue)) {
-        $full = [IO.Path]::GetFullPath($old.FullName)
-        if (-not $full.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
-        if (($old.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            Write-Warning "Refusing to recursively clean reparse-point legacy backup: $full"
-            continue
-        }
-        try { Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop }
-        catch { Write-Warning "Legacy server backup remains in use and will be retried by a later completion: $full ($($_.Exception.Message))" }
-    }
-
-    # In-use legacy images are quarantined beside server\ so the exact runtime
-    # payload stays clean. They are ours only when the fixed prefix is present;
-    # never enumerate or delete any broader parent content.
-    $installRoot = Split-Path -Parent $rootFull
-    $installPrefix = [IO.Path]::GetFullPath($installRoot).TrimEnd('\') + '\'
-    # Only the verified quarantine prefix is disposable here. Never touch
-    # .install-rollback-*: that name may belong to a concurrently running source
-    # install whose undo ledger still needs it.
-    foreach ($pattern in '.legacy-backup-*') {
-        foreach ($old in @(Get-ChildItem -LiteralPath $installRoot -Directory -Filter $pattern -ErrorAction SilentlyContinue)) {
-            $full = [IO.Path]::GetFullPath($old.FullName)
-            if (-not $full.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
-            if (($old.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                Write-Warning "Refusing to recursively clean reparse-point deferred backup: $full"
-                continue
-            }
-            try { Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop }
-            catch { Write-Warning "Deferred backup remains in use and will be retried later: $full ($($_.Exception.Message))" }
-        }
-    }
-}
 
 function Write-State([string]$State, [string]$Detail, [string]$ResolvedClient, $Extra) {
     if (-not (Test-CurrentGeneration)) { return $false }
@@ -227,11 +154,13 @@ function Write-State([string]$State, [string]$Detail, [string]$ResolvedClient, $
         }
         catch { }
     }
-    $tmp = "$generationStatusPath.tmp-$([guid]::NewGuid().ToString('N'))"
-    [pscustomobject]$doc | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $tmp -Encoding UTF8
-    Move-Item -LiteralPath $tmp -Destination $generationStatusPath -Force
-    Copy-Item -LiteralPath $generationStatusPath -Destination $StatusPath -Force
-    Write-Host "[Horizun] $State - $Detail" -ForegroundColor $(if ($State -match 'failed') { 'Red' } elseif ($State -match 'waiting|awaiting|scheduled') { 'Yellow' } else { 'Green' })
+    # Each file is replaced atomically, retrying a destination that exists or is held
+    # open: Move-Item -Force/Copy-Item -Force failed here with "Cannot create a file when
+    # that file already exists" and "file in use" and left completion_failed behind.
+    $json = [pscustomobject]$doc | ConvertTo-Json -Depth 20
+    Write-HorizunAtomicText -Path $generationStatusPath -Text $json
+    Write-HorizunAtomicText -Path $StatusPath -Text $json
+    Write-Host "[Horizun] $State - $Detail" -ForegroundColor $(if ($State -match 'failed') { 'Red' } elseif ($State -match 'waiting|awaiting|pending') { 'Yellow' } else { 'Green' })
     return
 }
 
@@ -288,53 +217,6 @@ function Running-Clients([string]$Resolved) {
     return @(Requested-Clients $Resolved | Where-Object { Client-IsRunning $_ })
 }
 
-function Get-ResumeCommand([string]$Resolved) {
-    $quotedScript = '"' + $PSCommandPath.Replace('"', '""') + '"'
-    $quotedServer = '"' + $ServerPath.Replace('"', '""') + '"'
-    $quotedStatus = '"' + $StatusPath.Replace('"', '""') + '"'
-    $command = ('"{0}" --headless "{1}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File {2} -Client {3} -ServerPath {4} -StatusPath {5} -WaitTimeoutMinutes {6} -Detached' -f `
-        $conhostExe, $powerShellExe, $quotedScript, $Resolved, $quotedServer, $quotedStatus, $WaitTimeoutMinutes)
-    $command += ' -Generation ' + $Generation
-    if ($NoLiveWait) { $command += ' -NoLiveWait' }
-    if ($ClientStateFile) { $command += ' -ClientStateFile "' + $ClientStateFile.Replace('"', '""') + '"' }
-    if ($RunKey -ne $defaultRunKey) { $command += ' -RunKey "' + $RunKey.Replace('"', '""') + '"' }
-    return $command
-}
-
-function Set-Resume([string]$Resolved) {
-    if ($NoResume) { return }
-    if (-not (Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey -Force | Out-Null }
-    Set-ItemProperty -Path $runKey -Name $runName -Value (Get-ResumeCommand $Resolved) -Type String
-}
-
-function Clear-Resume {
-    if (Test-Path -LiteralPath $runKey) {
-        Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
-    }
-}
-
-function Start-DetachedWorker([string]$Resolved, [switch]$OnlyLive) {
-    $arguments = @(
-        '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
-        '-File', ('"' + $PSCommandPath + '"'), '-Client', $Resolved,
-        '-ServerPath', ('"' + $ServerPath + '"'),
-        '-StatusPath', ('"' + $StatusPath + '"'),
-        '-WaitTimeoutMinutes', $WaitTimeoutMinutes, '-Detached', '-Generation', $Generation
-    )
-    if ($OnlyLive) { $arguments += '-LiveOnly' }
-    if ($NoResume) { $arguments += '-NoResume' }
-    if ($NoLiveWait) { $arguments += '-NoLiveWait' }
-    if ($ClientStateFile) { $arguments += '-ClientStateFile'; $arguments += ('"' + $ClientStateFile + '"') }
-    if ($RunKey -ne $defaultRunKey) { $arguments += '-RunKey'; $arguments += ('"' + $RunKey + '"') }
-    # Through conhost --headless so no terminal window appears while the worker
-    # waits (under Windows Terminal as default host, Hidden alone shows one).
-    # The stdout/stderr redirects are gone with it: a redirect would capture
-    # conhost's streams, not the child's. The durable generation records ARE the
-    # worker's evidence; stdout was best-effort duplication.
-    $headlessArguments = @('--headless', $powerShellExe) + $arguments
-    Start-Process -FilePath $conhostExe -ArgumentList $headlessArguments -WindowStyle Hidden | Out-Null
-}
-
 function Restore-RegistrationWrites([string]$ReportPath) {
     if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) { return $false }
     $report = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json
@@ -350,6 +232,86 @@ function Restore-RegistrationWrites([string]$ReportPath) {
     return $ok
 }
 
+function Complete-Installation {
+    if (-not (Test-Path -LiteralPath $ServerPath -PathType Leaf)) { throw "Installed MCP server is missing: $ServerPath" }
+    $resolved = Resolve-Client $Client
+    if ($resolved -eq 'None' -and -not $LiveOnly) {
+        Write-State 'failed_no_client' 'Neither Claude nor Codex could be identified. Start the intended client once, close it, and run this helper again.' $resolved $null
+        return 2
+    }
+    try {
+        if (-not $LiveOnly) {
+            # Never write underneath a running client: it may rewrite its own
+            # configuration when it exits. Say which one to close and stop.
+            $running = @(Running-Clients $resolved)
+            if ($running.Count -gt 0) {
+                Write-State 'waiting_for_client_exit' ("Close " + ($running -join ' and ') + ', then run "Horizun - complete installation" from the Start menu (or this helper again). No configuration has been edited.') $resolved `
+                    ([pscustomobject]@{ running_clients = $running })
+                return 3
+            }
+
+            $registerJson = "$generationStatusPath.registration.json"
+            $arguments = @{ Client = $resolved; ServerPath = $ServerPath; Json = $registerJson }
+            if ($resolved -eq 'Both') { $arguments.SkipMissingClients = $true }
+            if ($ClientStateFile) { $arguments.Force = $true }
+            $registerExit = Invoke-HorizunHelper $register $arguments
+            if ($resolved -eq 'Both' -and $registerExit -eq 2) {
+                # register-client -SkipMissingClients: NEITHER command-line client has a
+                # configuration on this machine (Claude Desktop only, or a CLI never started).
+                # That is the same answer the Auto path gives - not a failed registration.
+                Write-State 'failed_no_client' 'Neither Claude Code nor Codex is configured on this machine. For Claude Desktop use install-claude-desktop-extension.ps1; for a command-line client, start it once, close it, and run this helper again.' $resolved $null
+                return 2
+            }
+            if ($registerExit -ne 0) {
+                Write-State 'registration_failed' "register-client.ps1 exited $registerExit; existing client configuration was restored. Run this helper again once the cause is fixed." $resolved $null
+                return 1
+            }
+            if (-not (Test-CurrentGeneration)) {
+                [void](Restore-RegistrationWrites $registerJson)
+                return 0
+            }
+
+            $verifyExit = Invoke-HorizunHelper $verify @{ Client = $resolved; ServerPath = $ServerPath; SkipLive = $true; Json = $verificationPath }
+            if ($verifyExit -ne 0) {
+                $restored = Restore-RegistrationWrites $registerJson
+                Write-State 'verification_failed' "on-disk or client verification exited $verifyExit. Run this helper again once the cause is fixed." $resolved $null
+                if (-not $restored) { Write-Warning 'Verification failed and at least one client config could not be safely restored because it changed after registration.' }
+                return 1
+            }
+            if (-not (Test-CurrentGeneration)) {
+                [void](Restore-RegistrationWrites $registerJson)
+                return 0
+            }
+            Write-State 'installed_and_registered' 'Binaries and client configuration are verified. Restart the client; live health is the remaining check.' $resolved $null
+        }
+
+        if ($NoLiveWait) {
+            Write-State 'installed_and_registered' 'Live verification was explicitly disabled.' $resolved $null
+            return 0
+        }
+
+        # One attempt, now. There is no background wait for Revit: horizun_health
+        # from the client is the live check, and running this helper again records it.
+        $liveExit = Invoke-HorizunHelper $verify @{ Client = $resolved; ServerPath = $ServerPath; RequireLive = $true; Json = $verificationPath }
+        if ($liveExit -eq 0) {
+            $evidence = Get-Content -LiteralPath $verificationPath -Raw | ConvertFrom-Json
+            Write-State 'live_verified' 'horizun_health answered healthy through the installed server.' $resolved `
+                ([pscustomobject]@{ health = $evidence.health })
+            return 0
+        }
+        if ($liveExit -eq 3) {
+            Write-State 'awaiting_revit' 'Registered and verified on disk. Start Revit, restart the client and call horizun_health; run this helper again to record the live check.' $resolved $null
+            return 0
+        }
+        Write-State 'verification_failed' "live verification exited $liveExit." $resolved $null
+        return 1
+    }
+    catch {
+        Write-State 'completion_failed' $_.Exception.Message $resolved $null
+        return 1
+    }
+}
+
 if ($StatusOnly) {
     $current = Get-CurrentGeneration
     $authoritative = if ($current) { "$StatusPath.generation-$current.json" } else { $StatusPath }
@@ -358,12 +320,11 @@ if ($StatusOnly) {
     exit 0
 }
 
+# Every run, including -CancelPending and the legacy -Detached command line an
+# older Run entry still carries: an entry under Run is never ours to keep.
+Remove-LegacyResumeEntries
+
 if ($CancelPending) {
-    if (Test-Path -LiteralPath $runKey) {
-        foreach ($name in @(Get-RunValueNames | Where-Object { $_ -eq 'HorizunMCPCompleteInstall' -or $_ -like "$runNamePrefix*" })) {
-            Remove-ItemProperty -LiteralPath $runKey -Name $name -ErrorAction SilentlyContinue
-        }
-    }
     Remove-Item -LiteralPath $StatusPath, $verificationPath, $currentGenerationPath -Force -ErrorAction SilentlyContinue
     Get-ChildItem -LiteralPath (Split-Path -Parent $StatusPath) -Filter ((Split-Path -Leaf $StatusPath) + '.generation-*.json') -File -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
@@ -374,179 +335,26 @@ if ($CancelPending) {
 foreach ($needed in $register, $verify) {
     if (-not (Test-Path -LiteralPath $needed -PathType Leaf)) { throw "Installed completion helper is missing: $needed" }
 }
-if (-not (Test-Path -LiteralPath $ServerPath -PathType Leaf)) { throw "Installed MCP server is missing: $ServerPath" }
 
-if (-not $Detached) { Claim-Generation }
-$resolved = Resolve-Client $Client
-if ($resolved -eq 'None' -and -not $LiveOnly) {
-    Write-State 'failed_no_client' 'Neither Claude nor Codex could be identified. Start the intended client once, close it, and run this helper again.' $resolved $null
-    exit 2
-}
-
-# One generation at a time may touch client configuration. Interactive setup
-# invocations participate too: otherwise a new install could register concurrently
-# with the older detached finisher it just superseded.
-$mutex = $null
-$mutexHeld = $false
+# One run at a time may touch client configuration.
 $statusBytes = [Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($StatusPath).ToLowerInvariant())
 $statusHash = [BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash($statusBytes)).Replace('-', '').Substring(0, 20)
 $mutex = New-Object Threading.Mutex($false, "Local\HorizunMCPCompleteInstallV2-$statusHash")
+$mutexHeld = $false
 try { $mutexHeld = $mutex.WaitOne([TimeSpan]::FromSeconds(30)) } catch { $mutexHeld = $false }
-if (-not $mutexHeld) {
-    Set-Resume $resolved
-    if (-not $Detached) { Start-DetachedWorker $resolved }
-    Write-Host '[Horizun] another completion generation still owns this status path; this generation remains scheduled.' -ForegroundColor DarkGray
-    exit 3
-}
-
+$code = 3
 try {
-    if ($Detached -and -not (Get-CurrentGeneration)) { Claim-Generation }
-    # The sweep runs on EVERY startup, including the early exits below: a stale
-    # entry never belongs in Run whatever this generation decides about itself.
-    Remove-StaleResumeEntries
-    if (-not (Test-CurrentGeneration)) { Clear-Resume; exit 0 }
-    Set-Resume $resolved
-    $deadline = (Get-Date).AddMinutes($WaitTimeoutMinutes)
-
-    if (-not $LiveOnly) {
-        $running = @(Running-Clients $resolved)
-        if ($running.Count -gt 0 -and -not $Detached) {
-            Write-State 'waiting_for_client_exit' ("Close " + ($running -join ' and ') + '; registration will finish automatically afterward.') $resolved `
-                ([pscustomobject]@{ running_clients = $running })
-            Start-DetachedWorker $resolved
-            exit 0
-        }
-
-        while ($running.Count -gt 0 -and (Get-Date) -lt $deadline) {
-            if (-not (Test-CurrentGeneration)) { Clear-Resume; exit 0 }
-            Write-State 'waiting_for_client_exit' ("Waiting for " + ($running -join ' and ') + ' to close; no configuration has been edited.') $resolved `
-                ([pscustomobject]@{ running_clients = $running })
-            Start-Sleep -Seconds 2
-            $running = @(Running-Clients $resolved)
-        }
-        if ($running.Count -gt 0) {
-            Write-State 'registration_pending' 'The client stayed open through the wait window. The user-level resume entry remains active.' $resolved `
-                ([pscustomobject]@{ running_clients = $running })
-            exit 3
-        }
-
-        # Require a short quiet window. This closes the close/reopen race: if the
-        # client comes back immediately, registration waits instead of writing
-        # underneath the new process.
-        Start-Sleep -Seconds 2
-        $running = @(Running-Clients $resolved)
-        if ($running.Count -gt 0) {
-            if (-not $Detached) { Start-DetachedWorker $resolved; exit 0 }
-            while ($running.Count -gt 0 -and (Get-Date) -lt $deadline) {
-                if (-not (Test-CurrentGeneration)) { Clear-Resume; exit 0 }
-                Start-Sleep -Seconds 2
-                $running = @(Running-Clients $resolved)
-            }
-            # Still open at the deadline: the same answer as a client that never
-            # closed. Registering now would write underneath it (or be refused and
-            # counted as a failed attempt), so nothing is tried (backlog #60).
-            if ($running.Count -gt 0) {
-                Write-State 'registration_pending' 'The client reopened during the quiet window and stayed open through the wait window. The user-level resume entry remains active.' $resolved `
-                    ([pscustomobject]@{ running_clients = $running })
-                exit 3
-            }
-        }
-
-        Remove-LegacyServerBackups
-
-        $registerJson = "$generationStatusPath.registration.json"
-        $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $register,
-            '-Client', $resolved, '-ServerPath', $ServerPath, '-Json', $registerJson)
-        if ($resolved -eq 'Both') { $arguments += '-SkipMissingClients' }
-        if ($ClientStateFile) { $arguments += '-Force' }
-        & $powerShellExe @arguments
-        if ($resolved -eq 'Both' -and $LASTEXITCODE -eq 2) {
-            # register-client -SkipMissingClients: NEITHER command-line client has a
-            # configuration on this machine (Claude Desktop only, or a CLI never started).
-            # That is the same answer the Auto path gives - not a failed registration -
-            # and retrying at every logon cannot change it, so the resume entry goes.
-            Clear-Resume
-            Write-State 'failed_no_client' 'Neither Claude Code nor Codex is configured on this machine. For Claude Desktop use install-claude-desktop-extension.ps1; for a command-line client, start it once, close it, and run this helper again.' $resolved $null
-            exit 2
-        }
-        if ($LASTEXITCODE -ne 0) {
-            $registerExit = $LASTEXITCODE
-            $attempt = Register-FailedAttempt
-            Write-State 'registration_failed' ("register-client.ps1 exited $registerExit; existing client configuration was restored." + (Attempt-Note $attempt)) $resolved $attempt
-            exit 1
-        }
-        if (-not (Test-CurrentGeneration)) {
-            [void](Restore-RegistrationWrites $registerJson)
-            Clear-Resume
-            exit 0
-        }
-
-        & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $verify -Client $resolved `
-            -ServerPath $ServerPath -SkipLive -Json $verificationPath
-        if ($LASTEXITCODE -ne 0) {
-            $verifyExit = $LASTEXITCODE
-            $restored = Restore-RegistrationWrites $registerJson
-            $attempt = Register-FailedAttempt
-            Write-State 'verification_failed' ("on-disk or client verification exited $verifyExit." + (Attempt-Note $attempt)) $resolved $attempt
-            if (-not $restored) { Write-Warning 'Verification failed and at least one client config could not be safely restored because it changed after registration.' }
-            exit 1
-        }
-        if (-not (Test-CurrentGeneration)) {
-            [void](Restore-RegistrationWrites $registerJson)
-            Clear-Resume
-            exit 0
-        }
-        Write-State 'installed_and_registered' 'Binaries and client configuration are verified. Restart the client; live health is the remaining automatic check.' $resolved $null
+    if (-not $mutexHeld) {
+        Write-Host '[Horizun] another completion run still owns this status path; nothing was changed. Run this helper again when it finishes.' -ForegroundColor Yellow
     }
-
-    if ($NoLiveWait) {
-        Clear-Resume
-        Write-State 'installed_and_registered' 'Live verification was explicitly disabled.' $resolved $null
-        exit 0
+    else {
+        Claim-Generation
+        $code = Complete-Installation
     }
-
-    & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $verify -Client $resolved `
-        -ServerPath $ServerPath -RequireLive -Json $verificationPath
-    if ($LASTEXITCODE -eq 0) {
-        $evidence = Get-Content -LiteralPath $verificationPath -Raw | ConvertFrom-Json
-        Clear-Resume
-        Write-State 'live_verified' 'horizun_health answered healthy through the installed server.' $resolved `
-            ([pscustomobject]@{ health = $evidence.health })
-        exit 0
-    }
-
-    if (-not $Detached) {
-        Write-State 'awaiting_revit' 'Start Revit once. Live verification will finish automatically in the background.' $resolved $null
-        Start-DetachedWorker $resolved -OnlyLive
-        exit 0
-    }
-
-    Write-State 'awaiting_revit' 'Waiting for the first Revit start so horizun_health can be verified.' $resolved $null
-    while ((Get-Date) -lt $deadline) {
-        if (-not (Test-CurrentGeneration)) { Clear-Resume; exit 0 }
-        Start-Sleep -Seconds 5
-        & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $verify -Client $resolved `
-            -ServerPath $ServerPath -RequireLive -Json $verificationPath *> $null
-        if ($LASTEXITCODE -eq 0) {
-            $evidence = Get-Content -LiteralPath $verificationPath -Raw | ConvertFrom-Json
-            Clear-Resume
-            Write-State 'live_verified' 'horizun_health answered healthy through the installed server.' $resolved `
-                ([pscustomobject]@{ health = $evidence.health })
-            exit 0
-        }
-    }
-
-    Write-State 'awaiting_revit' 'Revit was not available during this wait window. The user-level resume entry remains active.' $resolved $null
-    exit 3
-}
-catch {
-    $message = $_.Exception.Message
-    $attempt = $null
-    try { $attempt = Register-FailedAttempt } catch { }
-    Write-State 'completion_failed' ($message + $(if ($attempt) { Attempt-Note $attempt } else { '' })) $resolved $attempt
-    exit 1
 }
 finally {
     if ($mutexHeld) { try { $mutex.ReleaseMutex() } catch { } }
-    if ($mutex) { $mutex.Dispose() }
+    $mutex.Dispose()
 }
+if ($Pause) { [void](Read-Host 'Press Enter to close / Pulsa Enter para cerrar') }
+exit $code

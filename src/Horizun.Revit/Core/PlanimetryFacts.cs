@@ -261,6 +261,9 @@ namespace Horizun.Revit.Core
         public bool? CanBePrinted;
         public bool? IsGraphical;
 
+        public bool IsUnplacedGraphical() => Readable && IsTemplate == false && IsGraphical == true &&
+            CanBePrinted == true && ViewportIds.Count == 0;
+
         /// <summary>The view plane, so a caller can turn view coordinates into model ones.
         /// Absent for views that have no plane (schedules).</summary>
         public double[] Origin;
@@ -350,7 +353,11 @@ namespace Horizun.Revit.Core
     public sealed class UntaggedElement
     {
         public long Id;
+        public string UniqueId;
         public string Category;
+        /// <summary>The category the rule asked for (the sweep's filter, e.g. OST_PipeCurves).
+        /// Rules match on this; <see cref="Category"/> is the element's own display name.</summary>
+        public string RequestedCategory;
         public string TypeName;
         public string FamilyName;
 
@@ -363,6 +370,7 @@ namespace Horizun.Revit.Core
             return new JObject
             {
                 ["element_id"] = Id,
+                ["unique_id"] = UniqueId,
                 ["category"] = Category,
                 ["type"] = TypeName,
                 ["family"] = FamilyName
@@ -418,6 +426,16 @@ namespace Horizun.Revit.Core
     // -------------------------------------------------------------------------
     // PLACEMENTS - viewports and schedule instances, in SHEET coordinates
     // -------------------------------------------------------------------------
+    /// <summary>A schedule field that shows Calculate Totals: its heading, spec and whether it reads the instance or its type.</summary>
+    public sealed class ScheduleTotalField
+    {
+        public string Name;
+        /// <summary>The ForgeTypeId of the field's spec (autodesk.spec.aec:length-2.0.0 ...); null when unread.</summary>
+        public string SpecTypeId;
+        /// <summary>"instance", "element_type" or another ScheduleFieldType in lower snake case.</summary>
+        public string FieldType;
+    }
+
     public sealed class PlacementFact : PlanimetryRow
     {
         /// <summary>"viewport" or "schedule_placement". Never inferred from a shape.</summary>
@@ -432,6 +450,7 @@ namespace Horizun.Revit.Core
         /// <summary>Did the placement's target resolve to an element in this document?</summary>
         public bool? TargetExists;
         public string TargetName;
+        public int? ViewScale;
 
         public PlanBox Box = PlanBox.Unreadable;
         public PlanBox LabelBox = PlanBox.Unreadable;
@@ -445,6 +464,16 @@ namespace Horizun.Revit.Core
         public string DetailNumber;
 
         public bool BoundsReadable = true;
+
+        /// <summary>schedule_placement only: the schedule's Itemize Every Instance; null when unread.</summary>
+        public bool? ScheduleItemized;
+
+        /// <summary>schedule_placement only: the visible fields whose display is Calculate Totals; null when not
+        /// examined (a title block's revision schedule) or unreadable (then ScheduleTotalsUnreadable).</summary>
+        public List<ScheduleTotalField> ScheduleTotalFields;
+
+        /// <summary>The schedule's definition was examined and could not be read: its totals are unknown, not clean.</summary>
+        public bool ScheduleTotalsUnreadable;
 
         /// <summary>What a neighbour actually collides with: the box, plus the label when the
         /// label has its own outline. A schedule has no label and keeps its own box.</summary>
@@ -467,6 +496,7 @@ namespace Horizun.Revit.Core
                 ["schedule_id"] = ScheduleId.HasValue ? (JToken)ScheduleId.Value : JValue.CreateNull(),
                 ["target_exists"] = TargetExists.HasValue ? (JToken)TargetExists.Value : JValue.CreateNull(),
                 ["target_name"] = TargetName,
+                ["view_scale"] = ViewScale.HasValue ? (JToken)ViewScale.Value : JValue.CreateNull(),
                 ["coordinate_system"] = "sheet",
                 ["box_outline"] = ViewFact.Box(Box, scale),
                 ["label_outline"] = ViewFact.Box(LabelBox, scale),
@@ -510,6 +540,26 @@ namespace Horizun.Revit.Core
 
         public PlanBox Box = PlanBox.Unreadable;
         public bool BoundsReadable = true;
+
+        /// <summary>
+        /// For collision checks only: the parts of the annotation that print as a
+        /// solid band - for a dimension, its dimension line and text, WITHOUT the
+        /// witness lines, which run to their references across the drawing by design.
+        /// Null means the whole Box. Measured live (2026-10-17): with whole boxes every
+        /// dimensioned plan reported dozens of "overlaps" between witness lines.
+        /// </summary>
+        public PlanBox? CollisionBox;
+        public PlanBox CollisionShape => CollisionBox ?? Box;
+
+        /// <summary>
+        /// A straight dimension's printed parts, when they could be read: the thin band of
+        /// its dimension line (null otherwise), its orientation, and one box per value
+        /// text. With these, two dimension LINES crossing at right angles - which every
+        /// plan with interior spans has - is not a collision; text on anything is.
+        /// </summary>
+        public PlanBox? LineBand;
+        public bool LineHorizontal;
+        public List<PlanBox> TextBoxes;
 
         public bool? Pinned;
         public long? GroupId;
@@ -739,6 +789,15 @@ namespace Horizun.Revit.Core
         public List<PlanimetryCheckFailure> ChecksFailed = new List<PlanimetryCheckFailure>();
         public List<PlanimetryUnreadable> Unreadable = new List<PlanimetryUnreadable>();
 
+        // COOPERATIVE RUN ONLY (empty otherwise). Items read per pass, the passes the budget
+        // stopped in the middle of (pass -> reason) and the passes it stopped before they began.
+        public Dictionary<string, int> PassItems = new Dictionary<string, int>(StringComparer.Ordinal);
+        public Dictionary<string, string> PassStopped = new Dictionary<string, string>(StringComparer.Ordinal);
+        public List<string> PassNotStarted = new List<string>();
+
+        /// <summary>True when a budget cut the collection short anywhere.</summary>
+        public bool BudgetStopped { get { return PassStopped.Count > 0 || PassNotStarted.Count > 0; } }
+
         /// <summary>Totals for the whole document, independent of any scope narrowing.</summary>
         public Dictionary<string, int> Totals = new Dictionary<string, int>(StringComparer.Ordinal);
 
@@ -776,7 +835,7 @@ namespace Horizun.Revit.Core
         {
             get
             {
-                return ChecksFailed.Count == 0 && UnreadableTotal == 0 &&
+                return ChecksFailed.Count == 0 && UnreadableTotal == 0 && !BudgetStopped &&
                        VisibilityCoverageComplete && LinkCoverageComplete;
             }
         }
@@ -789,6 +848,9 @@ namespace Horizun.Revit.Core
                 bits.Add(ChecksFailed.Count + " collection pass(es) did not run at all");
             if (UnreadableTotal > 0)
                 bits.Add(UnreadableTotal + " element(s) or field(s) could not be read");
+            if (BudgetStopped)
+                bits.Add("the cooperative budget stopped the collection: " + PassStopped.Count +
+                         " pass(es) were cut mid-way and " + PassNotStarted.Count + " never began");
             if (!VisibilityCoverageComplete)
                 bits.Add("part of the model is not loaded in this document (closed worksets)");
             if (!LinkCoverageComplete)
@@ -840,5 +902,149 @@ namespace Horizun.Revit.Core
         {
             return v.ToString("0.######", CultureInfo.InvariantCulture);
         }
+    }
+
+    /// <summary>Read-only sheet grouping of annotation box collisions.</summary>
+    public static class SheetAnnotationOverlapRules
+    {
+        private const int MaxItemsPerView = 2000;
+        private const int MaxFindings = 500;
+
+        /// <summary>
+        /// The printed band of a straight dimension: its full box along the dimension
+        /// line, and only halfWidth either side of the line across it.
+        /// </summary>
+        public static PlanBox DimensionBand(PlanBox box, bool horizontalLine, double lineCoordinate, double halfWidth)
+        {
+            if (!box.Valid || halfWidth <= 0 || double.IsNaN(lineCoordinate)) return box;
+            PlanBox band = horizontalLine
+                ? PlanBox.FromCorners(box.MinX, Math.Max(box.MinY, lineCoordinate - halfWidth), box.MaxX, Math.Min(box.MaxY, lineCoordinate + halfWidth))
+                : PlanBox.FromCorners(Math.Max(box.MinX, lineCoordinate - halfWidth), box.MinY, Math.Min(box.MaxX, lineCoordinate + halfWidth), box.MaxY);
+            return band.Valid && band.MaxX >= band.MinX && band.MaxY >= band.MinY ? band : box;
+        }
+
+        /// <summary>
+        /// Whether two annotations collide on paper. For straight dimensions with read
+        /// parts: text against the other's text or line is a collision, two PARALLEL lines
+        /// whose bands overlap are, and two perpendicular lines crossing are not.
+        /// Anything without parts falls back to its collision box.
+        /// </summary>
+        public static bool Collide(AnnotationFact a, AnnotationFact b)
+        {
+            bool aParts = a.LineBand.HasValue && a.TextBoxes != null;
+            bool bParts = b.LineBand.HasValue && b.TextBoxes != null;
+            if (!aParts && !bParts) return PlanimetryGeometry.Overlaps(a.CollisionShape, b.CollisionShape, 0);
+            IEnumerable<PlanBox> Solid(AnnotationFact x, bool parts) => parts ? x.TextBoxes : new[] { x.CollisionShape };
+            IEnumerable<PlanBox> Anything(AnnotationFact x, bool parts) => parts ? x.TextBoxes.Concat(new[] { x.LineBand.Value }) : new[] { x.CollisionShape };
+            foreach (PlanBox t in Solid(a, aParts))
+                foreach (PlanBox o in Anything(b, bParts)) if (PlanimetryGeometry.Overlaps(t, o, 0)) return true;
+            foreach (PlanBox t in Solid(b, bParts))
+                foreach (PlanBox o in Anything(a, aParts)) if (PlanimetryGeometry.Overlaps(t, o, 0)) return true;
+            if (aParts && bParts && a.LineHorizontal == b.LineHorizontal &&
+                PlanimetryGeometry.Overlaps(a.LineBand.Value, b.LineBand.Value, 0)) return true;
+            return false;
+        }
+
+        public static JObject Build(PlanimetrySnapshot snapshot, IEnumerable<long> selectedSheets, double scale, Action checkpoint = null)
+        {
+            var requested = selectedSheets == null ? null : new HashSet<long>(selectedSheets);
+            var findings = new JArray();
+            var skipped = new JArray();
+            int total = 0, unmeasured = 0;
+            var kinds = new HashSet<string>(StringComparer.Ordinal) {
+                "dimension", "tag", "text_note", "generic_annotation", "detail_component", "revision_tag" };
+            var sheets = snapshot.Sheets.Where(s => requested == null || requested.Contains(s.Id))
+                .OrderBy(s => s.SheetNumber, StringComparer.Ordinal).ToList();
+            var relevant = new List<AnnotationFact>();
+            var relevantPlacements = new List<PlacementFact>();
+            foreach (SheetFact sheet in sheets)
+            {
+                checkpoint?.Invoke();
+                var placements = snapshot.Placements.Where(p => p.SheetId == sheet.Id).ToList();
+                var viewIds = placements.Where(p => p.ViewId.HasValue)
+                    .Select(p => p.ViewId.Value).Distinct().ToList();
+                var groups = new List<KeyValuePair<long, List<AnnotationFact>>>();
+                groups.Add(new KeyValuePair<long, List<AnnotationFact>>(sheet.Id,
+                    snapshot.Annotations.Where(a => a.OwnerViewId == sheet.Id && kinds.Contains(a.Kind)).ToList()));
+                foreach (long viewId in viewIds)
+                    groups.Add(new KeyValuePair<long, List<AnnotationFact>>(viewId,
+                        snapshot.Annotations.Where(a => a.OwnerViewId == viewId && kinds.Contains(a.Kind)).ToList()));
+                relevantPlacements.AddRange(placements);
+                foreach (var group in groups)
+                {
+                    checkpoint?.Invoke();
+                    relevant.AddRange(group.Value);
+                    unmeasured += group.Value.Count(a => !a.Box.Valid);
+                    if (group.Value.Count > MaxItemsPerView)
+                    {
+                        skipped.Add(new JObject { ["sheet_id"] = sheet.Id, ["view_id"] = group.Key,
+                            ["reason"] = "annotation count exceeds the pairwise limit" });
+                        continue;
+                    }
+                    var measured = group.Value.Where(a => a.Box.Valid).OrderBy(a => a.Id).ToList();
+                    for (int i = 0; i < measured.Count; i++)
+                    {
+                        checkpoint?.Invoke();
+                        for (int j = i + 1; j < measured.Count; j++)
+                            if (Collide(measured[i], measured[j]))
+                            {
+                                total++;
+                                if (findings.Count < MaxFindings)
+                                    findings.Add(new JObject { ["sheet_id"] = sheet.Id,
+                                        ["sheet_number"] = sheet.SheetNumber, ["view_id"] = group.Key,
+                                        ["coordinate_system"] = group.Key == sheet.Id ? "sheet" : "view_plane",
+                                        ["a"] = Annotation(measured[i], scale),
+                                        ["b"] = Annotation(measured[j], scale),
+                                        ["reason"] = "annotation boxes overlap" });
+                            }
+                    }
+                }
+                var sheetAnnotations = groups[0].Value.Where(a => a.Box.Valid).ToList();
+                foreach (AnnotationFact annotation in sheetAnnotations)
+                {
+                    checkpoint?.Invoke();
+                    foreach (PlacementFact placement in placements.Where(p => p.Extent.Valid))
+                        if (PlanimetryGeometry.Overlaps(annotation.Box, placement.Extent, 0))
+                        {
+                            total++;
+                            if (findings.Count < MaxFindings)
+                                findings.Add(new JObject { ["sheet_id"] = sheet.Id,
+                                    ["sheet_number"] = sheet.SheetNumber, ["view_id"] = JValue.CreateNull(),
+                                    ["coordinate_system"] = "sheet", ["a"] = Annotation(annotation, scale),
+                                    ["b"] = new JObject { ["element_id"] = placement.Id, ["unique_id"] = placement.UniqueId,
+                                        ["kind"] = placement.Class,
+                                        ["box"] = ViewFact.Box(placement.Extent, scale) },
+                                    ["reason"] = "sheet annotation crosses a placement extent" });
+                        }
+                }
+            }
+            // Coverage of THIS report: what the checked sheets, their placements and the
+            // annotations of their views needed. Owner-less annotations (sketch and
+            // constraint dimensions of floors, roofs and profiled walls: no owner view,
+            // never printed) are counted apart instead of making every model "unknown"
+            // - measured live: 29 of them blocked a clean verdict on a dimensioned sheet.
+            bool complete = snapshot.ChecksFailed.Count == 0 && snapshot.Unreadable.Count == 0 &&
+                snapshot.VisibilityCoverageComplete && snapshot.LinkCoverageComplete &&
+                skipped.Count == 0 && unmeasured == 0 &&
+                !sheets.Any(s => s.HasUnreadableField) && !relevantPlacements.Any(p => p.HasUnreadableField) &&
+                !relevant.Any(a => a.HasUnreadableField);
+            int ownerless = snapshot.Annotations.Count(a => !a.OwnerViewId.HasValue || a.OwnerViewId.Value == -1);
+            return new JObject { ["status"] = total > 0 ? "overlaps" : !complete ? "unknown" :
+                    sheets.Count == 0 ? "nothing_to_check" : "clean",
+                ["coverage_complete"] = complete, ["sheets_checked"] = sheets.Count,
+                ["ownerless_annotations_excluded"] = ownerless,
+                ["unmeasured"] = unmeasured, ["skipped"] = skipped,
+                ["finding_total"] = total, ["truncated"] = total > findings.Count,
+                ["findings"] = findings,
+                ["method"] = "Straight dimensions are compared by their value texts and dimension-line band (text on " +
+                    "text or on a line collides; parallel lines that overlap collide; perpendicular lines may cross); " +
+                    "other boxes of text, tags and symbols are compared in their owning " +
+                    "view's plane, grouped by sheet placement. Sheet-owned annotations are also compared " +
+                    "with placement extents in paper coordinates. An unreadable box prevents a clean verdict." };
+        }
+
+        private static JObject Annotation(AnnotationFact a, double scale)
+            => new JObject { ["element_id"] = a.Id, ["unique_id"] = a.UniqueId, ["kind"] = a.Kind,
+                ["box"] = ViewFact.Box(a.Box, scale) };
     }
 }

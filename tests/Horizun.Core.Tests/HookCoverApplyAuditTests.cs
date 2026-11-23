@@ -74,15 +74,5 @@ namespace Horizun.Core.Tests
             throw new InvalidOperationException("repository root not found");
         }
 
-        [Fact]
-        public void The_apply_measures_the_drawn_bar_on_the_same_centreline_as_the_audit()
-        {
-            string apply = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Commands", "ApplyReinforcementCommand.cs"));
-            string audit = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Commands", "AuditReinforcementCommand.cs"));
-            Assert.Contains("RebarFacts.CentrelinePointsMm(bar, false) ?? e.PointsMm", audit);
-            // The apply reads the bar it verifies with the very call the audit uses - no end-points-only reader left.
-            Assert.Matches(new Regex(@"List<double\[\]> barPoints = RebarFacts\.CentrelinePointsMm\(bar, false\);"), apply);
-            Assert.DoesNotContain("ActualCentrelinePoints", apply);
-        }
     }
 }

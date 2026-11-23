@@ -27,6 +27,66 @@ namespace Horizun.Revit.Commands
 {
     public sealed class UndoCommand : ICommand
     {
+        private static readonly HashSet<string> GeometricOps = new HashSet<string>(StringComparer.Ordinal) { "move", "move_preserve_pin", "rotate", "mirror", "curve" };
+
+        /// <summary>
+        /// Reported 2026-10-18: undoing a MOVE put the moved elements back, but not what Revit
+        /// dragged along with them (walls joined at their ends, joined geometry, hosted
+        /// instances that were re-hosted or stretched). The journal records only what the
+        /// batch moved, so this undo cannot restore the rest. It says so, in the rehearsal
+        /// and in the reply, and names the neighbours that MAY have been dragged - read from
+        /// the model now, NOT proven to have moved. Inspect them before relying on the undo.
+        /// </summary>
+        private static void AddDraggedWarning(Document doc, UndoBatch batch, JObject reply)
+        {
+            try
+            {
+                var moved = new HashSet<long>(batch.Entries.Where(e => GeometricOps.Contains(e.Op)).SelectMany(e => e.ElementIds));
+                if (moved.Count == 0) return;
+                var candidates = new SortedSet<long>();
+                foreach (long id in moved.Take(500))
+                {
+                    Element el = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+                    if (el == null) continue;
+                    try { foreach (ElementId j in JoinGeometryUtils.GetJoinedElements(doc, el)) candidates.Add(Rid.Value(j)); } catch { }
+                    if (el.Location is LocationCurve lc)
+                        for (int end = 0; end <= 1; end++)
+                            try { foreach (Element j in lc.get_ElementsAtJoin(end)) if (j != null) candidates.Add(Rid.Value(j.Id)); } catch { }
+                    // MEP neighbours joined through connectors are dragged too (measured live
+                    // 2026-10-18: a pipe connected end-to-end moved with the one that was moved).
+                    try
+                    {
+                        ConnectorManager cm = MepFacts.ManagerOf(el);
+                        if (cm != null)
+                            foreach (Connector c in cm.Connectors)
+                                if (c.IsConnected)
+                                    foreach (Connector other in c.AllRefs)
+                                        if (other?.Owner != null && other.Owner.Id != el.Id) candidates.Add(Rid.Value(other.Owner.Id));
+                    }
+                    catch { }
+                    try
+                    {
+                        foreach (ElementId d in el.GetDependentElements(new ElementClassFilter(typeof(FamilyInstance))))
+                            candidates.Add(Rid.Value(d));
+                    }
+                    catch { }
+                }
+                candidates.ExceptWith(moved);
+                reply["dragged_elements_warning"] = new JObject
+                {
+                    ["applies"] = true,
+                    ["restores_only"] = "the elements this batch recorded (" + moved.Count + ")",
+                    ["may_have_been_dragged"] = new JArray(candidates.Take(200)),
+                    ["may_have_been_dragged_count"] = candidates.Count,
+                    ["means"] = "Revit moves joined walls, joined geometry and hosted instances along with a moved element. " +
+                                "This undo does NOT put those back. The ids listed are neighbours read from the model now - " +
+                                "candidates, not measured moves. Check them (horizun_query_model / horizun_model_diff) after the undo. " +
+                                "(Deshacer un movimiento no repone lo que Revit arrastró.)"
+                };
+            }
+            catch { /* a warning that cannot be computed is omitted, never turned into a failure */ }
+        }
+
         public string Name => "horizun_undo";
         public string Description => "List and undo recorded Horizun write batches, verified against the state each batch left.";
 
@@ -66,15 +126,15 @@ namespace Horizun.Revit.Commands
             string path = UndoJournalStore.PathFor(doc.Title, UndoCapture.SafePath(doc));
             List<UndoBatch> batches = UndoJournalStore.Load(path);
             UndoBatch batch = UndoRules.Last(batches, out string refusal);
-            if (batch == null) return CommandResult.FailWithDetail("Nothing was undone: " + refusal, new JObject { ["state"] = "refused" });
+            if (batch == null) return CommandResult.FailWithDetail("Nothing was undone: " + refusal, new JObject { ["state"] = "refused", ["error_code"] = ErrorCodes.PrecondicionNoCumplida, ["write_started"] = false });
 
             if (UndoRules.SavedSince(batch.SaveStamp, UndoCapture.SaveStamp(doc), out string savedWhy))
-                return CommandResult.FailWithDetail("Nothing was undone: " + savedWhy, new JObject { ["state"] = "refused", ["batch_id"] = batch.Id, ["reason"] = "saved_since" });
+                return CommandResult.FailWithDetail("Nothing was undone: " + savedWhy, new JObject { ["state"] = "refused", ["error_code"] = ErrorCodes.PrecondicionNoCumplida, ["write_started"] = false, ["batch_id"] = batch.Id, ["reason"] = "saved_since" });
             List<string> drift = UndoRules.Drifted(batch, UndoCapture.Current(doc, batch));
             if (drift.Count > 0)
                 return CommandResult.FailWithDetail("Nothing was undone: " + drift.Count + " element state(s) changed since batch " + batch.Id +
                     " (" + string.Join(", ", drift.Take(20)) + "). Undo refuses to overwrite work it did not do.",
-                    new JObject { ["state"] = "refused", ["batch_id"] = batch.Id, ["reason"] = "model_changed", ["drifted"] = new JArray(drift) });
+                    new JObject { ["state"] = "refused", ["error_code"] = ErrorCodes.PrecondicionNoCumplida, ["write_started"] = false, ["batch_id"] = batch.Id, ["reason"] = "model_changed", ["drifted"] = new JArray(drift) });
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             var scope = new JObject { ["batch_id"] = batch.Id };
@@ -86,6 +146,7 @@ namespace Horizun.Revit.Commands
                     ["dry_run"] = true, ["transaction_status"] = "not_started", ["batch"] = batch.Summary(),
                     ["verdict"] = "undoable", ["note"] = "Nothing was changed. Every element still carries the state this batch left."
                 };
+                AddDraggedWarning(doc, batch, result);
                 ApplicationOutcome.StampRehearsal(result, batch.Entries.Count, 0, 0, 0);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, true, "the token binds this batch id; drift is re-checked at apply");
                 return CommandResult.Ok(result);
@@ -136,6 +197,7 @@ namespace Horizun.Revit.Commands
                 ["batch"] = batch.Summary(), ["elements_deleted"] = deleted.Count, ["postconditions"] = evidence,
                 ["journal_note"] = journalNote
             };
+            AddDraggedWarning(doc, batch, applied);
             ApplicationOutcome.StampApplied(applied, ApplicationOutcome.Committed, batch.Entries.Count,
                                             batch.Entries.Count, batch.Entries.Count, 0, 0, 0);
             return CommandResult.Ok(applied);

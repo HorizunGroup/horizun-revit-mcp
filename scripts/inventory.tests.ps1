@@ -76,7 +76,10 @@ Check 'the recorded counts still match what the server serves' {
     try {
         $env:HORIZUN_DATA_ROOT = $probeRoot
         # -Check re-asks the built binary and exits 1 on drift, 2 when absent.
-        & pwsh -NoProfile -File (Join-Path $repo 'scripts\generate-inventory.ps1') -Check *> $null
+        # Use the running host: this suite and its generator support Windows
+        # PowerShell 5.1 as well as PowerShell 7, which need not be installed.
+        $testHost = (Get-Process -Id $PID).Path
+        & $testHost -NoProfile -File (Join-Path $repo 'scripts\generate-inventory.ps1') -Check *> $null
         $exit = $LASTEXITCODE
     } finally {
         $env:HORIZUN_DATA_ROOT = $priorRoot

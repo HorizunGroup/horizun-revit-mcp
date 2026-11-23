@@ -41,6 +41,8 @@ namespace Horizun.Revit.Commands
 
             Document host = app.ActiveUIDocument?.Document;
             if (host == null) return CommandResult.Fail("No active Revit document.");
+            CommandResult wrongDocument = DocumentGate.ReadGuard(host, request, Name);
+            if (wrongDocument != null) return wrongDocument;
 
             string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
             double scale;
@@ -91,6 +93,10 @@ namespace Horizun.Revit.Commands
                 if (shapeFilter.Count == 0) shapeFilter = null;
             }
 
+            if (request["references_to_import"] != null && request["references_to_import"].Type != JTokenType.Boolean)
+                return CommandResult.Fail("references_to_import must be a boolean.");
+            bool importsOnly = request.Value<bool?>("references_to_import") == true;
+
             int maxRows = Math.Max(1, Math.Min(500, request.Value<int?>("max_rows") ?? 100));
             int offset = Math.Max(0, request.Value<int?>("offset") ?? 0);
 
@@ -115,7 +121,19 @@ namespace Horizun.Revit.Commands
                     string shape = Shape(d, warnings);
                     if (shapeFilter != null && (shape == null || !shapeFilter.Contains(shape))) continue;
 
-                    matched.Add(new KeyValuePair<long, JObject>(id, Row(host, d, id, shape, scale, warnings)));
+                    JArray references = References(host, d, warnings, out int broken, out LinkedReferenceTally links);
+                    bool? refsAvailable = GuardedBool(() => d.AreReferencesAvailable, warnings, "references_available_unreadable");
+                    bool referenceArrayUnreadable = warnings.Any(w => (string)w["code"] == "references_unreadable");
+                    if (!DimensionImportReferences.IncludesDimension(importsOnly, references,
+                            referenceArrayUnreadable ? null : refsAvailable, out JArray importIndices, out string unreadableReason))
+                    {
+                        if (unreadableReason != null) throw new InvalidOperationException(unreadableReason);
+                        continue;
+                    }
+
+                    JObject row = Row(host, d, id, shape, scale, warnings, references, refsAvailable, broken, links);
+                    row["import_reference_indices"] = importIndices;
+                    matched.Add(new KeyValuePair<long, JObject>(id, row));
                 }
                 catch (Exception ex)
                 {
@@ -134,6 +152,7 @@ namespace Horizun.Revit.Commands
                 ["units"] = new JObject { ["internal"] = "feet", ["display"] = units },
                 ["filters"] = new JObject
                 {
+                    ["references_to_import"] = importsOnly,
                     ["view_id"] = viewId == null ? JValue.CreateNull() : new JValue(Rid.Value(viewId)),
                     ["element_ids"] = wantedIds == null ? JValue.CreateNull()
                                                         : new JArray(wantedIds.OrderBy(x => x).Select(x => (JToken)x)),
@@ -175,7 +194,8 @@ namespace Horizun.Revit.Commands
         // a silent absence.
         // ---------------------------------------------------------------------
 
-        private static JObject Row(Document host, Dimension d, long id, string shape, double scale, JArray warnings)
+        private static JObject Row(Document host, Dimension d, long id, string shape, double scale, JArray warnings,
+                                   JArray references, bool? refsAvailable, int broken, LinkedReferenceTally links)
         {
             var row = new JObject
             {
@@ -197,12 +217,9 @@ namespace Horizun.Revit.Commands
             row["type"] = TypeBlock(host, d, warnings);
             row["curve"] = CurveJson(d, scale, warnings);
 
-            bool? refsAvailable = GuardedBool(() => d.AreReferencesAvailable, warnings, "references_available_unreadable");
             row["references_available"] = refsAvailable == null ? JValue.CreateNull() : new JValue(refsAvailable.Value);
 
-            int broken;
-            LinkedReferenceTally links;
-            row["references"] = References(host, d, warnings, out broken, out links);
+            row["references"] = references;
             row["broken_references"] = broken;
             row["linked_references"] = links.Total;
             row["linked_references_resolved"] = links.Resolved;
@@ -236,6 +253,29 @@ namespace Horizun.Revit.Commands
 
             bool? locked = GuardedBool(() => d.IsLocked, warnings, "lock_unreadable");
             row["lock"] = locked == null ? JValue.CreateNull() : new JValue(locked.Value);
+
+            // What the SHEET shows (P4): the text in the dimension TYPE's unit format -
+            // value_presented above is Revit's ValueString, formatted with the PROJECT's -
+            // and whether a referenced link/element/category is hidden in the owner view.
+            // The box is not read here (a never-shown view has none to give), so this
+            // answers false or null, never a promised true.
+            try { row["printed"] = DimensionPaper.PrintedText(host, d); }
+            catch (Exception ex) { warnings.Add(Warn("printed_text_unreadable", ex.Message)); row["printed"] = JValue.CreateNull(); }
+            try
+            {
+                var ownerView = host.GetElement(d.OwnerViewId) as View;
+                if (ownerView == null) row["will_print"] = JValue.CreateNull();
+                else
+                {
+                    var hidden = new List<string>(); var unknown = new List<string>();
+                    var refs = new List<Reference>();
+                    foreach (Reference r in d.References) refs.Add(r);
+                    DimensionPaper.ReferenceVisibility(host, ownerView, refs, hidden, unknown);
+                    DimensionPaper.DimensionVisibility(host, ownerView, d, null, hidden, unknown);
+                    row["will_print"] = DimensionPaper.VerdictJson(DimensionPrintRules.Evaluate(null, hidden, unknown));
+                }
+            }
+            catch (Exception ex) { warnings.Add(Warn("will_print_unreadable", ex.Message)); row["will_print"] = JValue.CreateNull(); }
 
             if (d is SpotDimension)
             {
@@ -398,7 +438,18 @@ namespace Horizun.Revit.Commands
             int index = 0;
             foreach (Reference r in refs)
             {
-                var entry = new JObject { ["index"] = index };
+                bool? linked = null;
+                ElementId linkedId = null;
+                try
+                {
+                    linkedId = r.LinkedElementId;
+                    linked = linkedId != null && linkedId != ElementId.InvalidElementId;
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add(Warn("reference_link_state_unreadable", "reference " + index + ": " + ex.Message));
+                }
+                var entry = DimensionImportReferences.ReferenceRow(index, linked);
                 try
                 {
                     string stable = null;
@@ -410,28 +461,23 @@ namespace Horizun.Revit.Commands
                     }
                     entry["stable_representation"] = stable;
 
-                    bool linked = false;
-                    try { linked = r.LinkedElementId != null && r.LinkedElementId != ElementId.InvalidElementId; }
-                    catch (Exception ex)
-                    {
-                        warnings.Add(Warn("reference_link_state_unreadable", "reference " + index + ": " + ex.Message));
-                    }
-                    entry["linked"] = linked;
                     entry["element_id"] = Rid.Value(r.ElementId);
 
-                    if (linked)
+                    if (linked == true)
                     {
                         // The host-side id above is the RevitLinkInstance; the linked id
                         // belongs to ANOTHER document and is never conflated with it.
                         links.Total++;
-                        entry["linked_element_id"] = Rid.Value(r.LinkedElementId);
-                        ResolveThroughLink(host, r, entry, warnings, links);
+                        entry["linked_element_id"] = Rid.Value(linkedId);
+                        ResolveThroughLink(host, r, linkedId, entry, warnings, links);
                     }
                     else
                     {
                         Element e = r.ElementId == ElementId.InvalidElementId ? null : host.GetElement(r.ElementId);
                         entry["element_exists"] = e != null;
                         if (e == null) broken++;
+                        // Preserve the host fallback fields while keeping CAD classification unknown.
+                        if (linked == false) entry["is_import"] = ImportFlag(e);
                         entry["unique_id"] = e == null ? null : Guarded(() => e.UniqueId, warnings, "reference_element_unreadable");
                         entry["category"] = e == null ? null : Guarded(() => e.Category?.Name, warnings, "reference_element_unreadable");
                         if (stable == null) entry["reference_resolvable"] = JValue.CreateNull();
@@ -470,7 +516,7 @@ namespace Horizun.Revit.Commands
         /// none of them is element_exists=false, because that field means "this document
         /// no longer holds it" and none of these do.
         /// </summary>
-        private static void ResolveThroughLink(Document host, Reference r, JObject entry, JArray warnings,
+        private static void ResolveThroughLink(Document host, Reference r, ElementId linkedId, JObject entry, JArray warnings,
                                                 LinkedReferenceTally tally)
         {
             entry["element_exists"] = JValue.CreateNull();
@@ -535,7 +581,7 @@ namespace Horizun.Revit.Commands
             block["linked_document_identity"] = LinkedReferenceRules.DocumentIdentity(linked.Title, path);
 
             Element inside = null;
-            try { inside = linked.GetElement(r.LinkedElementId); } catch { inside = null; }
+            try { inside = linked.GetElement(linkedId); } catch { inside = null; }
             if (inside == null)
             {
                 // The link IS readable and the element is not in it. That is a real
@@ -554,10 +600,14 @@ namespace Horizun.Revit.Commands
                 block["linked_element_category"] = Guarded(() => inside.Category == null ? null : inside.Category.Name,
                                                             warnings, "linked_element_unreadable");
                 block["linked_element_class"] = inside.GetType().Name;
+                entry["is_import"] = ImportFlag(inside);
             }
             AddPlacement(block, link);
             entry["link"] = block;
         }
+
+        private static JToken ImportFlag(Element element) =>
+            element == null ? JValue.CreateNull() : new JValue(element is ImportInstance);
 
         /// <summary>
         /// Where the instance stands NOW, with its fingerprint. Deliberately the current

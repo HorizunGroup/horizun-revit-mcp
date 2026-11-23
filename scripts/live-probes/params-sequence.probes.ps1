@@ -3,8 +3,8 @@
 # restart_per_level). Stages its OWN elements far from the model at X = 1,120,000 mm
 # (this branch's slot): two own levels, a box of four walls on the first and two
 # walls on the second, one room inside the box, and one door in the box's bottom
-# wall. Types are taken BY NAME ('Generic - 200mm', 'M_Single-Flush: 0915 x 2134mm',
-# copied from this Revit's Autodesk metric template when the document lacks them).
+# wall. Types are taken BY NAME from the document ('Generic - 200mm', 'M_Single-Flush:
+# 0915 x 2134mm'); a document without them leaves those cases not_covered.
 # The walls and the room write Comments (ALL_MODEL_INSTANCE_COMMENTS), because
 # restart_per_level repeats values by design and a repeated Mark would add Revit's
 # duplicate-mark warning to what is being measured; the door writes its MARK with a
@@ -71,18 +71,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $levelA = Create @{ kind = 'level'; name = "HZ_SQA_$run"; elevation = $Ea } 'level-a'
         $levelB = Create @{ kind = 'level'; name = "HZ_SQB_$run"; elevation = $Eb } 'level-b'
         $wallName = 'Generic - 200mm'
-        # TemplateRoot exists only for the offline tests; a live run always uses Revit's own.
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-        $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte') | ForEach-Object { Join-Path $tplRoot $_ } |
-            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
         $wallType = @(Types 'OST_Walls' | Where-Object { $_.type -eq $wallName }) | Select-Object -First 1
-        if (-not $wallType) {
-            if ($tpl) {
-                $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Walls'; type_names = @($wallName); duplicate_types = 'use_destination' } ($run + '-sq-walltype')
-                $wallType = @(Types 'OST_Walls' | Where-Object { $_.type -eq $wallName }) | Select-Object -First 1
-                if ($wallType) { $created.Add([long]$wallType.element_id) }
-            }
-        }
         $wallsA = @(); $wallsB = @()
         if ($levelA -and $levelB -and $wallType) {
             $corners = @(@($X, $Y), @(($X + $Wd), $Y), @(($X + $Wd), ($Y + $Dp)), @($X, ($Y + $Dp)))
@@ -166,13 +155,8 @@ $script:HzProbeModules += [pscustomobject]@{
         else {
             function DoorType { @(Types 'OST_Doors' | Where-Object { $_.family -eq 'M_Single-Flush' -and $_.type -eq '0915 x 2134mm' }) | Select-Object -First 1 }
             $doorType = DoorType
-            if (-not $doorType -and $tpl) {
-                $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @('M_Single-Flush: 0915 x 2134mm'); duplicate_types = 'use_destination' } ($run + '-sq-doortype')
-                $doorType = DoorType
-                if ($doorType) { $created.Add([long]$doorType.element_id) }
-            }
             $doorId = if ($doorType) { Create @{ kind = 'family_instance'; type_id = [long]$doorType.element_id; host_id = [long]$wallsA[0]; point = @(($X + 1500), $Y, $Ea); coordinate_mode = 'absolute'; level_id = $levelA } 'door' } else { $null }
-            if (-not $doorId) { Case $names[4] $WP 'not_covered' ('no own door could be placed (door type=' + [string]$doorType.element_id + ', template=' + [string]$tpl + ')') }
+            if (-not $doorId) { Case $names[4] $WP 'not_covered' ('no own door could be placed (door type=' + [string]$doorType.element_id + ')') }
             else {
                 $ds = @{ parameter = 'ALL_MODEL_MARK'; element_ids = @($doorId); order_by = @('level', 'room', 'x'); phase_id = [long]$held.phase.id; prefix = "${tag}D" }
                 $dd = & $Ctx.Call $WP @{ target_document = $doc; dry_run = $true; sequence = $ds }

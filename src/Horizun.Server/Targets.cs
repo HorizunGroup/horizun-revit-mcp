@@ -32,6 +32,23 @@ namespace Horizun.Server
             string asked = args?["year"] != null ? ((string)args["year"] ?? "").Trim() : null;
             bool wantsPid = args?["pid"] != null && args["pid"].Type == JTokenType.Integer;
             bool wantsYear = !string.IsNullOrEmpty(asked);
+            string askedDocument = args?["document"] != null && args["document"].Type == JTokenType.String ? ((string)args["document"]).Trim() : null;
+            bool wantsDocument = !string.IsNullOrEmpty(askedDocument);
+            if (wantsDocument && (wantsPid || wantsYear))
+                throw new ToolRefusal("document names the MODEL to follow and pid/year name a Revit; they are different ways of choosing one " +
+                                      "target. The target is unchanged. Pass document alone, or pid/year alone.");
+
+            // focus_window: bring THAT pid's Revit window to the front (WindowFocus.cs). It
+            // changes what the person sees, never which Revit the tools talk to.
+            string operation = args?["operation"]?.Type == JTokenType.String ? ((string)args["operation"]).Trim().ToLowerInvariant() : null;
+            if (operation != null && operation != "focus_window" && operation != "report")
+                throw new ToolRefusal("operation must be report (the default) or focus_window. Nothing changed.");
+            if (operation == "focus_window")
+            {
+                if (!wantsPid || wantsYear)
+                    throw new ToolRefusal("focus_window needs pid (and no year): a year can name two running Revit, a process id names one window. Nothing was focused.");
+                return WindowFocus.Bring((int)args["pid"]);
+            }
 
             // BOTH, IN ONE CALL, IS REFUSED. It used to be accepted and then silently
             // resolved in favour of whichever branch ran last, which was the year - so a
@@ -52,7 +69,23 @@ namespace Horizun.Server
 
             // A pid names ONE instance. A year no longer does: two Revit 2026 can be
             // running at once, and opening a file is enough to start the second.
-            if (wantsPid)
+            if (wantsDocument)
+            {
+                // The pid is resolved NOW, from what each live Revit shows, and re-resolved by
+                // DocumentTarget.Refresh whenever that instance goes or stops showing the model.
+                DocumentTarget.Outcome match = DocumentTarget.Match(askedDocument, DocumentTarget.ReadLive());
+                if (match.Chosen == null) throw new ToolRefusal(match.Refusal + " The target is unchanged.");
+                // A fragment pins the document the instance REALLY shows, so that following it is by an exact name (INT-6 m-10).
+                chosen = TargetSelection.ByDocument(match.Chosen.Pid, match.ByFragment ? DocumentTarget.Normalize(match.Chosen.ActiveDocument) : askedDocument);
+                chosenNote = "Target set to the Revit showing '" + askedDocument + "' (Revit " + match.Chosen.Year + ", process " +
+                             match.Chosen.Pid + "). It follows the document: if that instance closes or shows another model, calls go to " +
+                             "the one instance showing this one, or are refused if there is none or two.";
+                if (match.ByFragment)
+                    chosenNote += " It was chosen by a FRAGMENT of the name (the instance shows '" + match.Chosen.ActiveDocument + "'); a pinned document " +
+                                  "is followed by its exact name only, so pin the exact name to keep the choice stable.";
+                Log.Info("target set to document " + askedDocument + " (pid " + match.Chosen.Pid + ")");
+            }
+            else if (wantsPid)
             {
                 int wantPid = (int)args["pid"];
                 Discovered byPid = null;
@@ -104,6 +137,12 @@ namespace Horizun.Server
             // refused leaves the previous target exactly as it found it, which is what
             // every one of those refusal messages promises.
             if (chosen != null) PipeClient.Target = chosen;
+            string remembered = null;
+            if (chosen != null)
+            {
+                try { remembered = TargetMemory.Remember(chosen, Horizun.Revit.Core.HorizunPaths.DataRoot()); }
+                catch (Exception ex) { remembered = "NOT remembered (" + ex.Message + "); this process keeps it."; }
+            }
 
             // ONE snapshot for the whole reply. Reading PipeClient.Target repeatedly would
             // reintroduce, inside a single response, the same straddling of a concurrent
@@ -137,6 +176,11 @@ namespace Horizun.Server
                     // count is unknown, and unknown is not "it has no commands".
                     ["command_count"] = d.Commands == null ? JValue.CreateNull() : new JValue(d.Commands.Count),
                     ["selected"] = current != null && d.SourceFile == current.SourceFile,
+                    // E10 (field report, 2026-10-18): with two Revit open the call is refused, but
+                    // nothing said which model each one holds. Read from the process's main
+                    // window title - what the user sees - and labelled as such: it is the
+                    // ACTIVE document and view of that window, not a census of open documents.
+                    ["active_document"] = WindowTitleText.Describe(d.ProcessAlive ? WindowTitleText.Of(d.Pid) : null),
                     ["discovery_file"] = d.SourceFile
                 });
             }
@@ -158,6 +202,9 @@ namespace Horizun.Server
             };
 
             if (chosenNote != null) result["change"] = chosenNote;
+            result["session_key"] = TargetMemory.SessionKey();
+            if (remembered != null) result["remembered"] = remembered;
+            if (TargetMemory.StartupNote != null) result["startup_target"] = TargetMemory.StartupNote;
 
             // The state that matters most: more than one instance is running and nothing
             // says which. Every model call is being refused until that is settled, and

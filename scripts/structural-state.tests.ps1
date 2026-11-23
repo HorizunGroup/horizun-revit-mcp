@@ -83,7 +83,7 @@ function New-RollUp([hashtable]$Override) {
         other_candidates_seen = @()
         totals = [ordered]@{ passed = 60; failed = 0; unverified = 0; not_covered = 0; fixture_missing = 0 }
         steps = @([ordered]@{
-            step = 2; name = 'rebar'; harness = 'scripts/live/verify-rebar.ps1'
+            step = 2; name = 'rebar'; harness = 'scripts/live/structure-rebar-step.ps1'
             exit_code = 0; state = 'passed'; duration_ms = 1000
             artifact = 'structure-rebar-TEST.json'; passed = 34; failed = 0
             unverified = 0; not_covered = 0; fixture_missing = 0; candidate = $CAND

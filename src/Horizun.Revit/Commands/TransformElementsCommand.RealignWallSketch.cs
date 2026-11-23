@@ -97,6 +97,12 @@ namespace Horizun.Revit.Commands
                 rows.Add(new RealignRow { Id = id, Wall = wall, SketchId = sketchId, Drift = drift });
             }
 
+            foreach (JObject row in errors)
+            {
+                var diagnostic = TransformFailure.SketchFailure(row["id"]?.ToString() ?? "in operation " + row["index"], (string)row["error"]);
+                row["error"] = diagnostic["error"];
+                row["error_code"] = diagnostic["error_code"];
+            }
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             string planHash = DocumentGate.PlanHash(request, "tolerance_mm", "operations");
 
@@ -138,7 +144,8 @@ namespace Horizun.Revit.Commands
                         // moved, and Revit actually validated the sketch - then the whole scope was
                         // Cancelled. rehearsal_ok=false means Revit itself refused this move.
                         ["rehearsal_ok"] = ok,
-                        ["rehearsal_error"] = err,
+                        ["rehearsal_error"] = ok ? null : TransformFailure.SketchFailure(r.Id.ToString(), err)["error"],
+                        ["error_code"] = ok ? null : TransformFailure.SketchFailure(r.Id.ToString(), err)["error_code"],
                         ["rehearsal_detail"] = detail
                     });
                 }
@@ -161,7 +168,8 @@ namespace Horizun.Revit.Commands
             }
 
             if (errors.Count > 0)
-                return CommandResult.Fail("Invalid targets; nothing ran: " + errors.ToString(Formatting.None));
+                return CommandResult.FailWithDetail("Invalid targets; nothing ran: " + errors.ToString(Formatting.None),
+                    new JObject { ["error_code"] = ErrorCodes.PrecondicionNoCumplida, ["errors"] = errors, ["write_started"] = false });
 
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, resolvedPlan, null);
             if (refusal != null) return refusal;
@@ -174,6 +182,13 @@ namespace Horizun.Revit.Commands
                     return CommandResult.Fail("the transaction group would not start. Nothing was changed.");
                 try
                 {
+                    // The native sketch scopes commit individually, but the batch
+                    // group remains reversible until all resulting floor/wall pairs
+                    // have been measured against the original state.
+                    var floorBefore = FloorWallOverlapGuard.Capture(doc,
+                        new FilteredElementCollector(doc).OfClass(typeof(Floor)).Cast<Floor>()
+                            .Where(f => FloorWallOverlapGuard.IsFinishFloor(doc, f)).Select(f => f.Id)
+                            .Concat(rows.Select(r => Rid.Make(r.Id))));
                     foreach (RealignRow r in rows)
                     {
                         JObject detail; string err;
@@ -185,10 +200,12 @@ namespace Horizun.Revit.Commands
                             // than a confirmed RolledBack keeps its uncertainty in the message rather
                             // than claiming a clean model nobody re-read.
                             Guard.RollbackResult rb = Guard.RollBack(group);
-                            return CommandResult.Fail("Realigning wall " + r.Id + " failed: " + err + " " +
-                                PlanFailure.SingleTransactionOutcome(true, rb.StatusName, "the whole batch was rolled back; nothing was changed"));
+                            return CommandResult.FailWithDetail(TransformFailure.AtomicMessage(r.Id.ToString(), err,
+                                PlanFailure.SingleTransactionOutcome(true, rb.StatusName, "the whole batch was rolled back; nothing was changed")),
+                                TransformFailure.RevertedDetail(rb.StatusName, rb.Confirmed));
                         }
                     }
+                    FloorWallOverlapGuard.ThrowIfIncreased(doc, floorBefore, rows.Select(r => Rid.Make(r.Id)));
                     // Guard.Assimilate throws SilentRollbackException when the group did not actually
                     // commit - the "758 lie" this whole file exists to prevent (see Guard.cs).
                     Guard.Assimilate(group, RealignOp);
@@ -202,8 +219,9 @@ namespace Horizun.Revit.Commands
                 {
                     bool attempted = false; string rbStatus = PlanFailure.NotAttempted;
                     if (group.HasStarted()) { attempted = true; rbStatus = Guard.RollBack(group).StatusName; }
-                    return CommandResult.Fail("Realigning wall sketch failed: " + ex.Message + ". " +
-                        PlanFailure.SingleTransactionOutcome(attempted, rbStatus, "nothing was changed"));
+                    return CommandResult.FailWithDetail(TransformFailure.AtomicMessage(string.Join(", ", rows.Select(r => r.Id.ToString())), ex.Message,
+                        PlanFailure.SingleTransactionOutcome(attempted, rbStatus, "nothing was changed")),
+                        TransformFailure.AtomicDetail(ex, string.Equals(rbStatus, "RolledBack", StringComparison.OrdinalIgnoreCase)));
                 }
             }
 
@@ -216,15 +234,17 @@ namespace Horizun.Revit.Commands
                 verification.Add(new JObject
                 {
                     ["element_id"] = r.Id, ["verified"] = ok,
+                    ["floor_wall_overlap_increase_checked"] = true,
                     ["perpendicular_offset_mm_after"] = after == null ? (JToken)JValue.CreateNull() : Math.Round(after.PerpendicularOffsetMm, 1),
                     ["in_plane_offset_mm_after"] = after == null ? (JToken)JValue.CreateNull() : Math.Round(after.InPlaneOffsetMm, 1)
                 });
                 if (ok) verified++;
             }
             if (rows.Count == 0 || verified != rows.Count)
-                return CommandResult.Fail("The transaction group committed, but " + (rows.Count - verified) +
-                    " wall(s) failed post-commit verification (the sketch is still stranded by re-measurement). " +
-                    verification.ToString(Formatting.None));
+                return CommandResult.FailWithDetail("The transaction group committed, but " + (rows.Count - verified) +
+                    " wall(s) failed verification or could not be re-read. Inspect the listed walls; use Revit undo if needed. " +
+                    verification.ToString(Formatting.None), new JObject { ["error_code"] = ErrorCodes.VerificacionFallida,
+                        ["transaction_status"] = "Committed", ["rows"] = verification });
 
             var trResult = new JObject
             {

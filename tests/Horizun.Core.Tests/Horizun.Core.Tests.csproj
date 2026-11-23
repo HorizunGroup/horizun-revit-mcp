@@ -1,11 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <ItemGroup>
+    <None Update="Fixtures/casa-v6-estructura4.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!--
-    Horizun Core tests — original Horizun code.
+    Horizun Core tests ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â original Horizun code.
 
     Unit tests for the Revit-FREE honesty arithmetic in Reconcile.cs. That file
     carries no `using Autodesk.*`, so it is compiled straight INTO this project
-    (a <Compile Include=".."> link) rather than by referencing Horizun.Revit —
+    (a <Compile Include=".."> link) rather than by referencing Horizun.Revit ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
     which pins RevitAPI and targets net8-windows and would drag Revit in.
 
     Plain net8.0: no Revit, no Windows desktop, runs anywhere `dotnet test` runs.
@@ -20,23 +24,196 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\src\Horizun.Revit\Core\ArchitectureCreationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\CreateElementsCommand.Confirmation.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\SlabShapeCommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\WallFinishCommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\SlabShapeCommand.Endpoints.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\ManageGroupsCommand.Execution.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\ManageGroupsCommand.CopyLevels.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AssumptionNotes.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanLeaderRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MeshTriangleSet.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MeshSurface.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MeshExportRun.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DocumentBatchRun.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\TransformElementsCommand.Entry.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReliabilityDefaults.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PurgeResponse.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ArgumentTypeMismatch.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AppearanceInputRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AppearanceColourRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GraphicDisplayRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ColourByValueRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CloseProbe.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WarningDetailRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\FormattedRunEdit.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AnnotationMoveRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TransformFailure.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TransformRehearsalRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleAssociation.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LinkChainTransform.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PdfVerification.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonInternalTrace.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CurtainFloorOverlapRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallSlabRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TransformHostedRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallCurveElevationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MaterialPatternRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RevitAvailabilityRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\ModelEditRunner.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\ExecutePlanCommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\DocumentSessionBatch.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\DocumentSessionExit.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\CreateScheduleCommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\ViewVisibilityCommand.Entry.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\ViewVisibilityCommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CategoryKey.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\ViewVisibilityCopyGraphics.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\CreateRailingCommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\AnnotateCommand.Apply.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\AnnotateCommand.Execution.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\AnnotateCommand.TextVerification.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\AnnotateCommand.TextPlanBinding.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\LeaderHit.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\LeaderTargetReader.Resolve.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\LeaderTargetReader.PlanLinkGraphics.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\QueryModelCommand.CategoryCandidates.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\QueryPlanimetryCommand.LeaderReads.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SpatialAfterWrite.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\ExportCommand.Attempt.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\OpenRecoveryProcessor.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\OpenRecoveryPolicy.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\FieldCallRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LargeModelRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\HealthModelSize.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LargeModelEstimate.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LargeModelExecutionGate.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LargeModelToolGate.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LargeModelDispatch.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ICommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TemplateKitRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\KeynoteTableRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CloudOpenFailureRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CopyRepresentationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CopySampleMatching.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RevitInternalTouchRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PaintFacesRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ContextLookup.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LevelSpanRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GroupEditRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\FailureDigest.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CloudCacheLocator.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SaveLocalVerdict.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GroupAnnotationSession.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PythonCollectorHazard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LinkViewVisibilityRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewPropertyRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SelectionFilterRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SpatialTagRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DrawOrderRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PdfOverwriteRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LoopHealthRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\FailureAttributionRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CommandDeadlinePolicy.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonHandoff.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\QueryGroupKeys.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ErrorCodes.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ErrorSignature.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\HealthState.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModalDialogKinds.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CascadeCensusRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LengthWriteRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\StreamingDistinct.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CooperativeInterruption.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CooperativeRead.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScanResumeRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CooperativeReadOptions.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CooperativePartial.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\QueryPagingRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\QueryPageRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Detail2DOutcomeRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Detail2DQueryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\OverridePatternRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\View3DRequestRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GridExtentRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LinkedTagRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TagRules.cs" />
     <!-- The Revit-free sources under test, linked (not project-referenced) so
          nothing on the Revit runtime is pulled in. RequestGate is here for the
          same reason Reconcile is: it decides which caller gets which result, and
          that decision must be provable without a Revit in the room. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\HostNarrowing.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\OperationsPanePolicy.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadSourceCoherenceRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadApplyGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SheetRenumberRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\LinkPathRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IfcSetupRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReadResultCoverage.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ParameterSequenceRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PerspectiveRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SunStudyRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ParameterClassificationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CaptureFrameRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MepSetCurveRetryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallSweepRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\HostedEdgeRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\JoinGeometryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RoofFootprintRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ColumnAttachRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModellingGapRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallCornerRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SelectorWriteRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\FamilyVersionRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleTotalsRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RoomFinishPlanRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallFinishRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SupportAuditRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryOpsRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\NoteLeaderRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SectionMarkRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TextNoteLayoutRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CaptureFreshness.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewArgumentRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\HrzOwnershipRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DocumentationOnlyRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewCropGeometry.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ElementSelectorRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ElementIdentityGuard.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdentityPrepassCore.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdFreshnessRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SessionCreationLedger.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DeleteSelectorRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GeometryMeasureRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GeometryWhatIfRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RelationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SelectionContextRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewContentsRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RehearsalRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonUndoRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\HealthDetailRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ApiHelpRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ApiSignatureRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SyncLedgerRules.cs" Condition="'$(R2ESyncLedgerSource)' == ''" />
+    <Compile Include="$(R2ESyncLedgerSource)" Condition="'$(R2ESyncLedgerSource)' != ''" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SyncReminder.cs" Condition="'$(C3SyncReminderSource)' == ''" />
+    <Compile Include="$(C3SyncReminderSource)" Condition="'$(C3SyncReminderSource)' != ''" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SheetLayoutRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SheetGridRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PdfQa.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PdfQaPaper.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SheetPaperRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ExportDeliveryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PatternBlockerRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RoomIsometricRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WorksharingStatusRules.cs" />
+    <Compile Include="../../src/Horizun.Revit/Core/HeldElementsRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\OwnershipRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewVisibilityRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewDatumRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\OverridePrintRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LinkDatumFilterRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LinkDatumSeparators.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ApiFieldNotes.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LinkedDatumRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AnnotationNoteRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Reconcile.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GroupWorksetRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ArchitecturalEditRules.cs" />
@@ -45,9 +222,11 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\OperationDescription.cs" />
     <!-- horizun_model_diff: comparison, pairing heuristic, quality JSONL, narration. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ModelDiffRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModelDiffOrigin.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QualityHistory.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ModelExplainRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QueryResponseOptions.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReadDocumentRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QuerySummaryAccumulator.cs" />
     <!-- Dry-run defects 9, 10, 11, 16: level sources, one parameter resolver, units on sums, view-count scopes. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\LevelResolutionRules.cs" />
@@ -56,8 +235,8 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\ViewCountScopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BoundedReadCache.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ProgressiveResponse.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\FamilyRecipe.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryLayoutRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AnnotationBudget.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\AnnotationVisibility.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PdfPrintPolicy.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GraphicsPrecedence.cs" />
@@ -79,15 +258,19 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\PixelCalibration.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RuntimeWarmup.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PythonRuntimeHealth.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonAccessRequests.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DocumentationDefaults.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\ManageViewsCommand.Execution.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\SheetLayoutCommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\SheetLayoutCommand.Grid.cs" />
+    <!-- E1 (2026-10-18): a report stage that throws after a command returned stays inside its success. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PostCommitReport.cs" />
     <!-- The IFC reconstruction arithmetic. Revit-free on purpose: these numbers
          decide where somebody's building lands, and they have to be provable
          without a building open. IfcProvenanceStore is NOT here - it is
          Extensible Storage, which only exists inside Revit. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\IfcStepReader.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\IfcPlacement.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\IfcProfile.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\IfcSubset.cs" />
     <!-- The IDS evaluation. Revit-free by construction: XML over a published grammar
          and STEP over another, so the cardinality rules and the anchored-pattern
          semantics are provable without a building open. IdsRevitPrecheck is NOT here -
@@ -105,24 +288,23 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\IdsRun.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LinkStatusTally.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ObliquePipeTeeRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\JunctionRuleClassifier.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PartialApplyNotice.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\QuantitiesModeInference.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleFieldRescue.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleFieldPlan.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleIdMessages.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PenetrationRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CoordinationRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\ClashResolveRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\SleeveRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SelectionReadBack.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarNotation.cs" />
     <!-- L10: schedule cards read from vector primitives (PDF on the server, DWG through the IR). -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleCards.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\RequirementSetChunks.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarBarComparison.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadTransitionWords.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RevisionIssueRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\NavisworksHandoff.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\NavisworksViewRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\IfcGuidCodec.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\BcfMarkupReader.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\UndoJournal.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\StructuralLayoutRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\PlanStructureCommand.cs" />
     <!-- The rebar layout arithmetic. Provable at a desk, and it HAS to be: the
          plan computes every bar position and the apply compares Revit's answer
          to that computation, so a wrong formula makes the plan and the
@@ -134,7 +316,6 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\StructuralRequirementSet.cs" />
     <!-- Area, path and fabric (acero 3.0, L4b): the polygon, the face it lies on, and the
          comparisons the apply and the audit run on the parameters they read back. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\SystemReinforcementRules.cs" />
     <!-- The coverage vocabulary. Zero and "could not look" are different answers. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\StructuralCoverage.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\StructuralLoadRules.cs" />
@@ -144,19 +325,13 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarPlanRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SolidContainment.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\JointedUnion.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\RebarArcs.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ColumnConstraintOrder.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CoupledEnd.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\MeshRepair.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\HoldEndsRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarConstraintRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\HookSide.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\GroupHostRule.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarContainment.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\RebarArrayGeometry.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\StirrupZoneRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SectionRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\WallBoundaryRules.cs" />
     <!-- L7: placed hoops and spirals - the definition judged by kind, the box, the re-read. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\PlacedShapes.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarReconcile.cs" />
@@ -168,6 +343,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarBendingSchedule.cs" />
     <!-- Area and path bars (RebarInSystem) in the takeoff, the schedule and reconcile: the row, the scope, the coverage. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarSystemBars.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReinforcementClassWalk.cs" />
     <!-- The audit comparison. Both sides arrive as JSON - the shapes the resolver
          and the reader actually emit - so it is provable at a desk and cannot
          drift from either of them. -->
@@ -175,9 +351,14 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarOverlap.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarSteelReview.cs" />
     <!-- crossing_order (etapa 1c): the declared order bars of different rules pass each other in. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\RebarCrossing.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\HookLengthRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\TabularRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\CreateElementsCommand.SourcePlan.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\CreateElementsCommand.Prepare.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\CreateElementsCommand.Execution.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\BindSharedParamCommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CategoryNameRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CreationBatch.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CreationFieldErrors.cs" />
     <!-- The audit check names, so a test can hold the gate's targets against the
          names the findings actually carry. They diverged once and the gate went
          permanently not_measurable on one requirement. -->
@@ -310,16 +491,19 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\HealthIndexRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PreDeliveryGateRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ToolTimings.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\TypeCatalogRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\MepRouteRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GroupMemberClosureRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MepGraphRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\NoCommitRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ExportPresetRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ExportFormatRules.cs" />
-    <!-- Comité de obra 2026-10-01: an export never writes (the NWC exporter committed 11
+    <Compile Include="..\..\src\Horizun.Revit\Core\DwgCompanionRules.cs" />
+    <!-- ComitÃƒÆ’Ã‚Â© de obra 2026-10-01: an export never writes (the NWC exporter committed 11
          rebar), a clash names every pair it could not intersect, datums carry a box,
          a query reads only the models it names, and compact values say their unit. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ExportIsolationRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\ClashNoSolidLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DatumGeometryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\QueryModelCommand.Federation.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\QueryModelCommand.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QuerySourceFilterRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CompactUnitRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\EnergyReadinessRules.cs" />
@@ -341,7 +525,6 @@
          converting one as a plan is the failure with no symptom: the elements are
          created, verified and audited clean, because the model and the drawing
          agree with each other and neither agrees with the building. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadSourceRole.cs" />
     <!-- THE INTERMEDIATE REPRESENTATION and its reader capability. The whole point
          of this file is a distinction that must survive refactoring: a zero on an
          axis the reader is BLIND to is not a finding about the drawing, and a
@@ -349,64 +532,25 @@
          list, so only a test keeps them apart. Revit-free by construction - it
          carries the contract both a Revit-backed reader and a file-parsing one
          would fill in. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadIr.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadDetailPlanRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GroupDuplicateRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\AnnotationDependencyRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GroupLevelRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GroupRebuildChecks.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GroupPatternRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GroupMemberEquivalence.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgExtract.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadOcs.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockPlacement.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockInventory.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadSolidHatch.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgScript.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgReader.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgCache.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockSymmetry.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadWallReadings.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadWallContinuity.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadWallPiers.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadDeviceSide.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadHostPlausibility.cs" />
     <!-- MEP networks and repeated units: the two readings that turn a drawing into
          something a model can be built from. Both are arithmetic over geometry
          plus declared tolerances, which is exactly the kind of reasoning that
          belongs at a desk rather than in front of an open Revit. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadNetworkRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadUnitRules.cs" />
     <!-- Symbols are the unit recogniser at a thousandth of the scale, and the
          grouping that feeds it is where the scale actually matters: connectivity
          over a drawing with no bound walks the whole circuit. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadSymbolRules.cs" />
     <!-- WHICH WAY IS DOWNHILL. A slope declared per layer says how steep and not
          which way; the direction is a fact about the NETWORK, and getting it from
          drawing order gives a drain that falls whichever way the draughtsman
          happened to click - identical in plan, backwards in the building. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadFallRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadRequirementSet.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadDuctSections.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadNetworkPaging.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadJunctionEvidence.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadRings.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadNetworkCache.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadInterpretationRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadConversionPlanRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadPlanResponse.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadPlanUnits.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadProvenanceRecord.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\ProvenanceLedger.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DryRunDirtyRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\TakeoffUnits.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadAuditRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadSplitRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadCatalogPreflight.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadCatalogCheck.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadPlacementRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateLedger.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateOperations.cs" />
     <!-- The RETIRED v1 provenance schema, written down as data. The store reads
          the v1 GUID and never writes it again, so on a machine without the
          previous release every element is v2 and the v1 -> v2 migration cannot
@@ -415,29 +559,24 @@
          names, types, the one unit spec, the GUID, the version - against the
          constants still in CadProvenanceStore.cs. Edit either side and a test
          fails rather than the word "v1" quietly meaning something else. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadProvenanceV1Shape.cs" />
     <!-- Which name belongs to which candidate. A DWG carries no text this bridge
          can read, so names arrive from the requirement set - and the decision of
          which one goes where is arithmetic over geometry and a declared table,
          provable here. The refusals are the point: there is no fallback to
          enumeration order, because that is whatever Revit returned first. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadNamingRules.cs" />
     <!-- What each geometry source would FIND on each layer, measured by running the
          same reader the conversion runs. It is here rather than beside the command
          because the property worth proving is a refusal: every `produces` it emits
          is null, and a profiler that guessed even once would be one organisation's
          layer convention compiled into a bridge that converts everybody's drawings. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadLayerProfileRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadLinkUnitRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\GeometryOptionsRules.cs" />
     <!-- Whether the values a rule declared actually LANDED. Two opposite mistakes
          shipped here - reading keys the writer does not emit, then demanding
          evidence a legitimate write cannot produce - and neither was reproducible
          without a Revit. The arithmetic is now provable at a desk. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadParameterOutcome.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DocumentIdentity.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\WorksetConfigurationEvidence.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptOutput.cs" />
+    <Compile Include="../../src/Horizun.Revit/Core/OutputPages.cs" />
     <!-- The classification of a script's own success claim. The one rule it enforces -
          a "verified" claim without evidence is downgraded, never believed - is pure
          arithmetic over a JToken, so it is proved here, without a Revit. -->
@@ -453,16 +592,13 @@
          exhaustively so the commands only have to call it. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\FallbackDecision.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanFailure.cs" />
-    <!-- What a command actually DID to the model, and the book a plan keeps while it
-         runs. ExecutePlanCommand cannot be constructed without a Revit, so until these
-         were split out every case that matters here was unreachable by any test: a
-         child answering success over a rollback, a partial write followed by a DELETE,
-         a failure in the middle of a graph that already wrote. The Revit stays in the
-         command; the decision is proved here. -->
+    <!-- The plan command with Revit doubles, and the pure rules for deciding whether
+         a child's result justifies confirmation or keeping an applied plan. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ApplicationOutcome.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CompositeVerdict.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CadConnectVerdict.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanLedger.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RevitExitPending.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Dispatcher.ExternalEvents.cs" />
     <!-- And how a command's OWN counters become that declaration. Both rules here
          are ones review caught being got wrong: a TransactionStatus thrown away and
          replaced with a literal, and one `failed` array fed from three places whose
@@ -475,6 +611,10 @@
          not say: an empty checklist is not a pass, and a property that could not be
          read is not agreement. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\PostconditionCheck.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CreatedRowMismatch.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ArcTolerance.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Ed25519.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GeometryRehearsalRules.cs" />
     <!-- How every writing tool verifies, declared in one table, and the recipe verdict
          that stopped 0 == 0 over failed elements reading as verified. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\WriteVerificationCatalog.cs" />
@@ -486,11 +626,24 @@
     <!-- Comment/string masking for the typed-overlap advisory. A live run advised a
          script whose only mention of the API was in a comment. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\PythonSourceMask.cs" />
+    <!-- execute_python before running: version/Python 3 rewrites, the automatic
+         transaction decision, the short error block, and the two notices the bridge
+         may close (field signals 2026-10). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonCompat.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonErrorAdvice.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonErrorHelpData.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonReplyCompaction.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonRunControl.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryInventoryArgs.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryReadBudget.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewportRotationChoice.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScriptErrorSummary.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModalAutoClose.cs" />
     <!-- horizun_execute_python read_only=true: the static Save/SaveAs/Close/open-
          document refusal scan and the pure before/after census comparison. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ReadOnlyPythonGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Measurement.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\ClashLedger.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ClashDocumentScope.cs" />
     <!-- The materialised plan: what a dry run RESOLVED, so an apply can tell that the
          model moved underneath it. Pure arithmetic over strings - the facts need Revit,
          the fingerprint does not - which is why the cases that matter (a collector
@@ -506,25 +659,24 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\RequirementSet.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\InvariantText.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\AccessRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CoordinationLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RepairMemory.cs" />
-    <!-- horizun_code_check, horizun_link_schedule and horizun_federation_check: the
-         Revit-free halves (measures and outcomes, schedule parsers and matching,
-         federation rules). -->
+    <!-- horizun_code_check and horizun_link_schedule: the Revit-free halves (measures and
+         outcomes, schedule parsers and matching). -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CodeCheckRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CodeCheckEvaluation.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CodeCheckGeometry.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\EgressTravelRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleImport.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleLinkRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\FederationCheckRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\FederationLevelRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleLinkWriteRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\LinkScheduleCommand.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\LinkScheduleWrite.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\LinkScheduleStatusView.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ToposolidRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LandXmlTinRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\EnclosedRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Confirmation.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\GeometrySignature.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LineReader.cs" />
     <!-- The async work queue and the job record it writes into. Neither touches
          Revit - the queue is a Queue<T> behind a lock, the record is a JSONL file -
@@ -532,6 +684,8 @@
          safe to point at a mutation. Both shipped with no test at all. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncQueue.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CheckpointThrottle.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CallProgress.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncResultPayload.cs" />
     <!-- Job.cs reports a record it could not write through Log, and the admission rule
          both async entry points share is decided in AsyncJobAdmission. Both are
@@ -547,6 +701,16 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\AtomicFile.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SyncWithCentralRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SyncOnlyGrantRules.cs" />
+    <!-- The per-call half of the permission profile: save operation, export format and the
+         documentation profile's element kinds (2026-10-18). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\OperationPermission.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\OwnershipPass.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReminderCapabilities.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\InternalDependentRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\BorrowRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SaveSuggestionRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PdfNamePattern.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ToolPacks.cs" />
     <!-- The job-record folding behind the ribbon Jobs dialog: half-written lines
          are states, "running" is never claimed from a file alone. -->
@@ -577,11 +741,13 @@
     <!-- The shared contract. It carries no Revit either, and ScriptOutput now takes its
          size limits from it rather than inventing a second copy of the same number. -->
     <Compile Include="..\..\src\Horizun.Contracts\Contract.cs" />
+    <Compile Include="..\..\src\Horizun.Contracts\Edition.cs" />
     <!-- Whether a model may be opened. The FACTS need Revit (a file header, a running
          host) and are gathered in OpenGuard.cs; the RULES are arithmetic over four
          strings and four booleans, and they lived in two large command files in two
          versions that had quietly diverged. Split out so the whole table is here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\OpenDecision.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\OpenPathRules.cs" />
     <!-- When write_params_verified calls SetAllowVaryBetweenGroups (defect #15). -->
     <Compile Include="..\..\src\Horizun.Revit\Core\VaryBetweenGroupsRules.cs" />
     <!-- document_session new_project: target, template and token rules (defect #18). -->
@@ -591,6 +757,7 @@
     <!-- How on_open_dialog parses (5.22). The enum and the parse rule are Revit-free;
          the watcher that acts on the answer needs a Revit and is not here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\OpenDialogPolicy.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ExportDialogPolicy.cs" />
     <!-- Which files horizun_file_info reads (5.20). The directory listing is IO and
          injected; the refusal, the union, the dedup and the cap are proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\FileInfoPaths.cs" />
@@ -614,10 +781,6 @@
          the declaration rule is arithmetic over strings, and the states that
          matter - a flapping title, a dialog replaced mid-count - are here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ModalSighting.cs" />
-    <!-- Revit's save reminder, answered between commands only while the bridge is in
-         use (v3.0.5 release gate, 2026-10-22). The decision is a dialog id and two
-         clocks; the Revit event that acts on it is IdleDialogWatcher. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\SaveReminderPolicy.cs" />
     <!-- Which discovery files are orphaned (5.24). The rule the add-in and the
          server share, so the states that matter - a legacy name that must never
          be touched, a recycled pid that must keep its file - are proved once. -->
@@ -625,6 +788,7 @@
     <!-- And how a close reaches a document Revit will let it close (5.13). The
          states that matter - every other document detached, no other document at
          all - are exactly the ones a live Revit will not produce on demand. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ActivationSessionIdentity.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ActivationChoice.cs" />
     <!-- How much of a model an answer is about. The READING needs Revit and lives in
          DocumentVisibility.cs; the arithmetic and every sentence it reports are here,
@@ -634,12 +798,10 @@
     <!-- The save evidence family_apply stands on (5.12). The failure it fixes only
          shows while another handle holds the file with write access - which a test
          can do and a code review cannot. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\FileFacts.cs" />
     <!-- Whether a planned write would move the parameter (5.14). The before-read
          needs Revit; the tri-state comparison is JToken arithmetic, and the two
          ways a boolean would lie - unknown collapsing into "it matches", and a
          unit string judged before Revit parses it - are pinned here. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\WouldChange.cs" />
     <!-- Who else is talking to this Revit (5.16). The pid comes from the pipe and
          needs Windows; the window arithmetic, the minus-one rule and the
          lower-bound warning for an unreadable pid are proved here. -->
@@ -654,6 +816,7 @@
          selector table, the ambiguity shaping, the deterministic ordering and the
          0.1 mm quantised fingerprint are pure arithmetic proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\DimensionReferenceRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DimensionReferenceExplainRules.cs" />
     <!-- What a reference INTO an RVT link is: the three-id separation, the transform
          fingerprint on the same 0.1 mm grid as every other geometric fact, the drift
          comparison a stale plan is decided by, and the closed set of refusal codes.
@@ -663,6 +826,7 @@
          resolution, positional ordering with the coincidence refusal, unordered
          duplicate identity and the coverage verdict. Pure, and proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\AutoDimensionRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryGeneralRules.cs" />
     <!-- Room-driven view production: eligibility with codes, the 90-degree-symmetry
          principal rotation, token naming with refusal on typos, exact box support
          functions and the shared coverage vocabulary. Pure, and proved here. -->
@@ -671,8 +835,10 @@
          name refusal, the closed operator table with value shapes, and the canonical
          definition snapshot a before/after diff hangs off. Pure, proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleEditRules.cs" />
+    <!-- Schedule appearance and split rules, and the colour fill scheme rules: Revit-free, proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleAppearanceRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ColorSchemeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\TransformCopyRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\CoordinationShowRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleGroupingRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ViewCropRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CaptureFramingRules.cs" />
@@ -686,6 +852,8 @@
          override/EQ/lock eligibility rules, the reference fingerprint and the
          final-state matrix are pure and proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\DimensionPlanRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DimensionPaperRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DimensionGeometryRules.cs" />
     <!-- What horizun_detail_2d may accept and promise before Revit is asked: canonical
          curve/loop/region signatures on the 0.1 mm grid with exact integer topology,
          loop validation (self-intersection, exterior/hole hierarchy) and the error
@@ -707,6 +875,10 @@
          except the Revit write is provable here; FixPlanimetryCommand.cs is the one
          half that needs a Document. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryFixRules.cs" />
+    <!-- Field frictions after Pro 3.5.0: angle re-reads by angular gap, text Revit trims. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\AngleRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TextValueRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RevitFailureHints.cs" />
     <!-- Deterministic autonomous sheet packing: pure rectangle arithmetic, fixed
          obstacles, all-or-nothing capacity and stable ordering. The Revit command
          only measures/creates the placements this rule decides. -->
@@ -735,10 +907,9 @@
          with arguments from typed fields and the registry's own typed constants.
          Linked so the list itself is tested rather than only the rules that read it. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CorrectionRegistry.cs" />
-    <!-- horizun_deliver_ifc, the Revit-free half: the exporter's property-set file and
-         its check against the exported IFC, the header/trailer proof, the gates, the
-         container name, and the BCF of IDS failures re-read from disk. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\BcfViewpoint.cs" />
+    <!-- IFC delivery rules used by the IDS run: the property-set file and its check against
+         the exported IFC, the header/trailer proof, the gates, the container name, and the
+         BCF of IDS failures re-read from disk. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\IfcDeliveryRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\InformationContainer.cs" />
     <!-- 3.0.0 interoperability: the horizun.exchange/0 manifest, model identity (D0) and the
@@ -746,8 +917,6 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\ModelIdentity.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ExchangeManifest.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ReviewCorrectionPlan.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\PsetMapping.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\IdsBcf.cs" />
     <!-- horizun_export format=cobie, the Revit-free half: the dependency-free .xlsx writer and
          its reader (the round trip the apply re-reads with), the mapping and project-context
          defaults, and the COBie 2.4 rows and findings built from plain facts. -->
@@ -755,9 +924,10 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\XlsxWorkbookReader.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CobieMapping.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CobieRules.cs" />
-    <!-- horizun_mep_routing: rule-list edits and velocity sizing, Revit-free. -->
+    <!-- MEP rule lists, offsets and velocity sizing used by horizun_create_elements, Revit-free. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRoutingRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\SlopeRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MepOffsetProfileRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Commands\CreateElementsConduitDiameter.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\HangerRules.cs" />
     <!-- horizun_framing: stud/track/opening layout of a wall and the clipped grid of a
          suspended ceiling, Revit-free (the ceiling reuses HangerRules for its hangers). -->
@@ -777,15 +947,19 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\SessionScopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\TagOverlapRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\FillGridRules.cs" />
-    <Compile Include="..\..\src\Horizun.Revit\Core\LinkSurveyRules.cs" />
     <!-- horizun_verify_changes operation=compare_to: pure ARGB pixel-diff math, Revit-free. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ImageDiff.cs" />
-    <!-- horizun_mep_routing's `route` op: 3-D A* on an orthogonal grid, boxes and
-         points only - no Autodesk.* here so the search itself is provable at a desk. -->
-    <Compile Include="..\..\src\Horizun.Revit\Core\RouteSearch.cs" />
     <!-- horizun_quantities room_finishes / carbon and room membership: grouping,
          deductions and factor arithmetic, Revit-free. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\RoomQuantityRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RoomTagRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetrySlopeRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallAttachmentRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RoomBoundaryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AuditCoherenceRules.cs" />
+    <!-- .las/.e57 without ReCap: the readers, the spatial index the engine reads and the placement arithmetic.
+         Revit-free so a LAS and an E57 generated in the test prove the decoding at a desk. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PointClouds\Recognition\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -800,3 +974,6 @@
   </ItemGroup>
 
 </Project>
+
+
+

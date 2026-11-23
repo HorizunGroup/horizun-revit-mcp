@@ -18,7 +18,7 @@ namespace Horizun.Revit.Commands
                         // re-read after the commit like everything else. A run
                         // that silently stayed at the default is a 15 mm main
                         // that looks perfectly correct in plan.
-                        if (plan.Diameter.HasValue)
+                        if (plan.Diameter.HasValue && !plan.KeepNativeConduitDiameter)
                         {
                             Parameter bore = DiameterParameterOf(element);
                             if (bore == null || bore.IsReadOnly)
@@ -50,6 +50,7 @@ namespace Horizun.Revit.Commands
                             ExpectedHostId = plan.OpeningHost?.Id ?? plan.SlabHost?.Id ?? plan.InstanceHost?.Id,
                             ExpectedArc = plan.ArcThird != null,
                             ExpectedArcCentre = plan.ArcCentre,
+                            ExpectedArcThird = plan.ArcThird,
                             ExpectedArcRadius = plan.ArcRadius,
                             ExpectedStructural = plan.Structural,
                             ExpectedName = plan.WantName,
@@ -150,7 +151,12 @@ namespace Horizun.Revit.Commands
                         ConnectorManager manager = MepFacts.ManagerOf(doc.GetElement(member.Owner.Id));
                         if (manager != null)
                             foreach (Connector candidate in MepFacts.Ordered(manager))
-                                if (candidate.Id == member.ConnectorId) { nowConnected = candidate.IsConnected; break; }
+                                if (candidate.Id == member.ConnectorId)
+                                {
+                                    nowConnected = candidate.IsConnected && candidate.AllRefs.Cast<Connector>().Any(c => c.Owner?.Id == made.Id);
+                                    if (made.Plan.FittingSubtype == "cap") nowConnected &= CapMatches(element, candidate);
+                                    break;
+                                }
                         if (!nowConnected) { connectorsMatch = false; break; }
                     }
                 // An inline accessory is not verified merely because its family
@@ -352,6 +358,8 @@ namespace Horizun.Revit.Commands
                 var verifyRow = new JObject
                 {
                     ["index"] = made.Index, ["kind"] = made.Kind, ["element_id"] = Rid.Value(made.Id),
+                    // The id can be renumbered by a later synchronize with central; the UniqueId cannot.
+                    ["unique_id"] = Safe(() => element?.UniqueId),
                     ["present_after_commit"] = element != null, ["kind_verified"] = kindMatches,
                     ["type_verified"] = typeMatches, ["structural_type_verified"] = structuralTypeMatches,
                     ["verified"] = rowVerified,
@@ -366,6 +374,8 @@ namespace Horizun.Revit.Commands
                     var everyId = new JArray { Rid.Value(made.Id) };
                     foreach (ElementId extra in made.AlsoCreated) everyId.Add(Rid.Value(extra));
                     verifyRow["element_ids"] = everyId;
+                    verifyRow["unique_ids"] = new JArray(everyId.Select(t =>
+                        (JToken)Safe(() => doc.GetElement(Rid.Make((long)t))?.UniqueId)));
                     verifyRow["elements_created"] = everyId.Count;
                     verifyRow["elements_created_means"] =
                         "this row asked for one thing and Revit made " + everyId.Count + " elements from it - " +

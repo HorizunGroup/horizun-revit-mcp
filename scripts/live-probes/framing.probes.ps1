@@ -1,7 +1,8 @@
 # Live probes for horizun_framing. Everything stands on the module's own level, far from
 # the real model: an own compound Basic wall with an own door and window, framed with a
-# line-based Generic Model the probe AUTHORS (horizun_create_family on the year's Metric
-# Generic Model line based template) - the fixtures carry no framing families. The
+# line-based Generic Model type 'HZ_STUD_92' and a 41.3 x 92.1 mm Structural Column type
+# 'HZ_STUDCOL_92' that the fixture must carry, found BY NAME (a fixture without them leaves
+# the cases not_covered, named; the probe never authors a family). The
 # ceiling cases stage an own floor over an own ceiling (the hangers must reach THAT
 # floor, by id) and a second ceiling 20 m away with nothing above it (every hanger
 # station no_support_above, none planned). Whether Revit keeps each committed axis on
@@ -64,62 +65,24 @@ $script:HzProbeModules += [pscustomobject]@{
 
         # ---- staging: own level, own compound wall with a door and a window, own member family ----
         $E = 98000.0; $X = 860000.0; $Y = 0.0
-        # A wall whose core is a stud layer, by name from the year's template when the fixture
-        # lacks it; else the fixture's first Basic wall.
+        # A wall whose core is a stud layer, by name from the document; else the document's
+        # first Basic wall. Doors and windows BY NAME, NEVER "THE FIRST ONE": an MEP fixture
+        # carries none (MEASURED 2026-09-26 on HZ_WRITE), and then the wall cases are not_covered.
         $wallType = $null
-        # STAGED BY NAME, NEVER "THE FIRST ONE": an MEP fixture carries no door or window
-        # (MEASURED 2026-09-26 on HZ_WRITE: door and window came back empty), so the year's own
-        # Autodesk template supplies them through the typed copy, as wallsplit-hosted does.
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-        function Bring($category, $typeName, $familyName, $key, $templates) {
-            $have = @(Types $category | Where-Object { [string]$_.type -eq $typeName -and [string]$_.family -eq $familyName }) | Select-Object -First 1
-            if ($have) { return $have }
-            $tpl = @($templates | ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
-            if (-not $tpl) { return $null }
-            $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = $category
-                    type_names = @($familyName + ': ' + $typeName); duplicate_types = 'use_destination' } ($run + '-fr-' + $key)
+        function Bring($category, $typeName, $familyName) {
             return @(Types $category | Where-Object { [string]$_.type -eq $typeName -and [string]$_.family -eq $familyName }) | Select-Object -First 1
         }
-        $archTemplates = @('English\DefaultMetric.rte', 'English\Default-Multi-Discipline_Metric.rte')
-        $wallType = Bring 'OST_Walls' 'Exterior - Brick on Mtl. Stud' 'Basic Wall' 'walltype' $archTemplates
+        $wallType = Bring 'OST_Walls' 'Exterior - Brick on Mtl. Stud' 'Basic Wall'
         if (-not $wallType) { $wallType = Types 'OST_Walls' | Where-Object { [string]$_.family -match '(?i)basic|b.sico' } | Select-Object -First 1 }
-        $doorType = Bring 'OST_Doors' '0915 x 2134mm' 'M_Single-Flush' 'doortype' $archTemplates
-        $windowType = Bring 'OST_Windows' '0915 x 1220mm' 'M_Fixed' 'wintype' $archTemplates
-        $member = $null
-        $rftRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates" -f $Ctx.Year)
-        $rft = $null
-        if (Test-Path -LiteralPath $rftRoot) { $rft = Get-ChildItem -LiteralPath $rftRoot -Recurse -Filter 'Metric Generic Model line based.rft' -File -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -First 1 }
-        if ($rft) {
-            New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
-            $rfa = Join-Path $Ctx.ScratchRoot ('HZ_STUD_' + (([string]$run) -replace '[^A-Za-z0-9]', '') + '.rfa')
-            $fam = & $Ctx.Apply 'horizun_create_family' @{ target_document = $doc; template_path = $rft.FullName; output_path = $rfa
-                    units = 'mm'; overwrite = $true; load_into_project = $true; types = @(@{ name = 'HZ_STUD_92'; values = @{} })
-                    forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'yz'; depth = 1000
-                                 profile = @(, @(@(0, -20, -20.65), @(0, 20, -20.65), @(0, 20, 20.65), @(0, -20, 20.65))) }) } ($run + '-fr-family')
-            if ($fam.stage -eq 'apply' -and -not $fam.answer.isError -and $fam.answer.data.loaded_family) {
-                $member = [long]@($fam.answer.data.loaded_family.symbol_ids)[0]
-                if ($fam.answer.data.loaded_family.family_id) { [void]$created.Add([long]$fam.answer.data.loaded_family.family_id) }   # the authored family goes at cleanup too
-            }
-        }
-        # VERTICAL MEMBERS ARE STRUCTURAL COLUMNS (MEASURED 2026-09-26: Revit refuses to stand a
-        # line-based family on a created plane, so the tool refuses a vertical line-based member).
-        # A 41.3 x 92.1 mm column is authored on the year's structural-column template: the
-        # Autodesk concrete column (300 x 450) does not fit inside a stud layer (inside_layer
-        # failed by 148.8 mm, measured the same day).
-        $studColumn = $null
-        $colRft = if (Test-Path -LiteralPath $rftRoot) { @(Get-ChildItem -LiteralPath $rftRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue) |
-                  Where-Object { $_.BaseName -match '(?i)^metric structural column$' } | Sort-Object FullName | Select-Object -First 1 } else { $null }
-        if ($colRft) {
-            $cfam = & $Ctx.Apply 'horizun_create_family' @{ target_document = $doc; template_path = $colRft.FullName
-                    output_path = (Join-Path $Ctx.ScratchRoot ('HZ_STUDCOL_' + (([string]$run) -replace '[^A-Za-z0-9]', '') + '.rfa'))
-                    units = 'mm'; overwrite = $true; load_into_project = $true; types = @(@{ name = 'HZ_STUDCOL_92'; values = @{} })
-                    forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'xy'; depth = 1000
-                                 profile = @(, @(@(-20.65, -46.05, 0), @(20.65, -46.05, 0), @(20.65, 46.05, 0), @(-20.65, 46.05, 0))) }) } ($run + '-fr-studcol')
-            if ($cfam.stage -eq 'apply' -and -not $cfam.answer.isError -and $cfam.answer.data.loaded_family) {
-                $studColumn = [long]@($cfam.answer.data.loaded_family.symbol_ids)[0]
-                if ($cfam.answer.data.loaded_family.family_id) { [void]$created.Add([long]$cfam.answer.data.loaded_family.family_id) }
-            }
-        }
+        $doorType = Bring 'OST_Doors' '0915 x 2134mm' 'M_Single-Flush'
+        $windowType = Bring 'OST_Windows' '0915 x 1220mm' 'M_Fixed'
+        # The line-based member (tracks, headers, sills, ceiling mains/cross/perimeter) and the
+        # vertical member: VERTICAL MEMBERS ARE STRUCTURAL COLUMNS (MEASURED 2026-09-26: Revit
+        # refuses to stand a line-based family on a created plane). The column must fit inside a
+        # stud layer: the Autodesk concrete column (300 x 450) does not (inside_layer failed by
+        # 148.8 mm, measured the same day), hence a 41.3 x 92.1 mm type of its own name.
+        $member = @(Types 'OST_GenericModel' | Where-Object { [string]$_.type -eq 'HZ_STUD_92' } | ForEach-Object { [long]$_.element_id }) | Select-Object -First 1
+        $studColumn = @(Types 'OST_StructuralColumns' | Where-Object { [string]$_.type -eq 'HZ_STUDCOL_92' } | ForEach-Object { [long]$_.element_id }) | Select-Object -First 1
         $level = Create @(@{ kind = 'level'; name = "HZ_FR_$run"; elevation = $E }) 'level'
         $wall = $null; $door = $null; $window = $null
         if ($level -and $wallType) { $wall = Create @(@{ kind = 'wall'; start = @($X, $Y, $E); end = @(($X + 6000), $Y, $E); level_id = $level; type_id = $wallType.element_id; height = 3000 }) 'wall' }
@@ -133,7 +96,7 @@ $script:HzProbeModules += [pscustomobject]@{
                           header_depth_mm = 40; sill_depth_mm = 40 } } }
         $wallArgs = @{ operation = 'wall'; target_document = $doc; element_ids = @($wall); spec = $spec }
         $ready = $wall -and $door -and $window -and $member -and $studColumn
-        $why = "staging incomplete: wall $wall, door $door, window $window, member type $member, stud column $studColumn (templates found: $([bool]$rft)/$([bool]$colRft))"
+        $why = "staging incomplete: wall $wall, door $door, window $window, member type $member, stud column $studColumn (the document must carry the line-based Generic Model type 'HZ_STUD_92' and the Structural Column type 'HZ_STUDCOL_92')"
 
         # ==== 1: rehearsal ===============================================================
         $planned = 0
@@ -286,28 +249,14 @@ $script:HzProbeModules += [pscustomobject]@{
         # top constraints and each beam from its curve; the 45-degree wall means an axis or a
         # section read in the wrong frame cannot pass by accident.
         # STAGED, NEVER ASSUMED (MEASURED 2026-09-26: HZ_WRITE carries neither category). The
-        # studs are the probe's own 41.3 x 92.1 column (placed on a vertical line, so its height
-        # is the line's); the beam family is authored from the year's own structural-framing
-        # template, as verify-live's write tier does.
+        # studs are the 41.3 x 92.1 'HZ_STUDCOL_92' column (placed on a vertical line, so its
+        # height is the line's); the beam is the document's own HSS or 'HZ_FRB' framing type.
         $columnType = if ($studColumn) { [pscustomobject]@{ element_id = $studColumn; family = 'HZ_STUDCOL' } } else { $null }
         $beamType = Types 'OST_StructuralFraming' | Where-Object { [string]$_.family -match '(?i)HSS|HZ_FRB' } | Select-Object -First 1
-        if (-not $beamType -and (Test-Path -LiteralPath $rftRoot)) {
-            $beamRft = @(Get-ChildItem -LiteralPath $rftRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue) |
-                       Where-Object { $_.BaseName -match '(?i)structural framing.*beam' } | Sort-Object FullName | Select-Object -First 1
-            if ($beamRft) {
-                $bfam = & $Ctx.Apply 'horizun_create_family' @{ target_document = $doc; template_path = $beamRft.FullName
-                        output_path = (Join-Path $Ctx.ScratchRoot ('HZ_FRB_' + (([string]$run) -replace '[^A-Za-z0-9]', '') + '.rfa'))
-                        units = 'mm'; overwrite = $true; load_into_project = $true; types = @(@{ name = 'HZ_FRB' }) } ($run + '-fr-beamfam')
-                if ($bfam.stage -eq 'apply' -and -not $bfam.answer.isError -and $bfam.answer.data.loaded_family) {
-                    $beamType = [pscustomobject]@{ element_id = [long]@($bfam.answer.data.loaded_family.symbol_ids)[0]; family = 'HZ_FRB' }
-                    if ($bfam.answer.data.loaded_family.family_id) { [void]$created.Add([long]$bfam.answer.data.loaded_family.family_id) }
-                }
-            }
-        }
         $diag = $null; $structFramed = $false
-        # A layer wide enough for the authored beam: its template section is 203.2 mm wide and the
+        # A layer wide enough for the beam: the HZ_FRB section is 203.2 mm wide and the
         # stud wall's layer 152.4 mm (inside_layer failed by 25.4 mm, MEASURED 2026-09-26).
-        $diagType = Bring 'OST_Walls' 'Generic - 300mm' 'Basic Wall' 'diagtype' $archTemplates
+        $diagType = Bring 'OST_Walls' 'Generic - 300mm' 'Basic Wall'
         if (-not $diagType) { $diagType = $wallType }
         if ($level -and $diagType -and $beamType -and $columnType) { $diag = Create @(@{ kind = 'wall'; start = @($X, ($Y - 60000), $E); end = @(($X + 4242.6), ($Y - 60000 + 4242.6), $E); level_id = $level; type_id = $diagType.element_id; height = 3000 }) 'diag-wall' }
         if (-not $diag) { Case $catalog[9] $T 'not_covered' "staging incomplete: structural framing type '$($beamType.element_id)', structural column type '$($columnType.element_id)', 45-degree wall '$diag' (the document must carry both categories' types)" }

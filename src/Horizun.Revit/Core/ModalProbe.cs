@@ -71,6 +71,8 @@ namespace Horizun.Revit.Core
         public string OwningModule;
         /// <summary>True when the dialog's own HWND was found at all (false: only "the main window is disabled" is known).</summary>
         public bool DialogWindowFound;
+        /// <summary>The dialog's HWND, for ModalProbe.TryCancel only. Zero when not found.</summary>
+        internal IntPtr Handle;
 
         /// <summary>The single-line rendering DescribeModal() has always returned, built from these same facts.</summary>
         public string ToSummaryLine()
@@ -170,6 +172,7 @@ namespace Horizun.Revit.Core
                 return new ModalDialogInfo
                 {
                     DialogWindowFound = true,
+                    Handle = dialog,
                     Title = WindowText(dialog),
                     ClassName = ClassNameOf(dialog),
                     OwningModule = ModuleOf(dialog),
@@ -219,6 +222,37 @@ namespace Horizun.Revit.Core
             buttons = buttonList;
             return texts;
         }
+
+        /// <summary>
+        /// THE ONE WRITE IN THIS CLASS, and only for the notices ModalAutoClose names
+        /// (owner decision 2026-10-27). Posts IDCANCEL to the dialog - what Esc or the
+        /// title-bar close does: "Cancel" on Revit's save reminder (nothing is saved,
+        /// the model is untouched) and "Close" on External Tool Failure. Returns
+        /// whether the message was posted; the caller re-probes to see it go.
+        /// </summary>
+        public static bool TryCancel(ModalDialogInfo info)
+        {
+            if (info == null || info.Handle == IntPtr.Zero) return false;
+            try
+            {
+                if (!IsWindow(info.Handle)) return false;
+                return PostMessage(info.Handle, WM_COMMAND, new IntPtr(IDCANCEL), IntPtr.Zero);
+            }
+            catch { return false; }
+        }
+
+        public static bool IsClosed(ModalDialogInfo info)
+        {
+            if (info == null || info.Handle == IntPtr.Zero) return false;
+            try { return !IsWindow(info.Handle); }
+            catch { return false; }
+        }
+
+        private const uint WM_COMMAND = 0x0111;
+        private const int IDCANCEL = 2;
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         private static string WindowText(IntPtr hwnd)
         {

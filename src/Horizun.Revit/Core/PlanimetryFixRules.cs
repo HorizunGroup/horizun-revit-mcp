@@ -67,6 +67,17 @@ namespace Horizun.Revit.Core
 
     public static class PlanimetryFixRules
     {
+        public static void RequireCropCleanupMatches(IEnumerable<long> generated, IEnumerable<long> deleted)
+        {
+            var expected = new HashSet<long>(generated);
+            var actual = new HashSet<long>(deleted);
+            if (expected.SetEquals(actual)) return;
+
+            throw new InvalidOperationException("Crop dimension cleanup did not delete exactly the generated dimensions. " +
+                "Unexpected deleted ids: [" + string.Join(", ", actual.Except(expected).OrderBy(id => id)) +
+                "]. Generated ids not deleted: [" + string.Join(", ", expected.Except(actual).OrderBy(id => id)) + "].");
+        }
+
         // ---------------------------------------------------------------------
         // The catalog. Closed on purpose: packing, tagging, dimensioning-by-
         // intent and revision generation are later phases and are refused BY
@@ -194,6 +205,21 @@ namespace Horizun.Revit.Core
         /// table; anything else (a requirement-set rule) by the operation's entity
         /// kinds against the finding's declared entity kind.
         /// </summary>
+        /// <summary>
+        /// A universal rule whose severity is `unknown` reports that something could NOT be measured. Citing it is refused
+        /// whatever the model shows now, so the command asks this BEFORE comparing the citation with the current findings:
+        /// otherwise the refusal would call it stale and hide the reason. Null for any other rule.
+        /// </summary>
+        public static string UnmeasuredRuleError(string ruleId, string requirementSetId)
+        {
+            if (!string.Equals(requirementSetId, PlanimetryRules.UniversalId, StringComparison.Ordinal)) return null;
+            PlanimetryCheck check = PlanimetryRules.Check(ruleId);
+            if (check == null || !string.Equals(check.Severity, "unknown", StringComparison.Ordinal)) return null;
+            return "finding rule '" + ruleId + "' reports that something could NOT be measured. An " +
+                   "unknown is the absence of a fact, not a defect, and correcting on top of it would " +
+                   "write over a state nobody read. Nothing to fix here until the fact can be read.";
+        }
+
         public static string RemedyError(string ruleId, string requirementSetId, string entityKind,
                                          PlanimetryFixOperation operation)
         {
@@ -206,10 +232,8 @@ namespace Horizun.Revit.Core
                 if (check == null)
                     return "finding rule '" + ruleId + "' is not a universal planimetry check. The catalog is " +
                            "published by horizun_audit_planimetry.";
-                if (string.Equals(check.Severity, "unknown", StringComparison.Ordinal))
-                    return "finding rule '" + ruleId + "' reports that something could NOT be measured. An " +
-                           "unknown is the absence of a fact, not a defect, and correcting on top of it would " +
-                           "write over a state nobody read. Nothing to fix here until the fact can be read.";
+                string unmeasured = UnmeasuredRuleError(ruleId, requirementSetId);
+                if (unmeasured != null) return unmeasured;
                 string[] remedies;
                 if (!UniversalRemedies.TryGetValue(ruleId, out remedies))
                     return "finding rule '" + ruleId + "' has no remedy in this phase. " + NoRemedySentence(ruleId);

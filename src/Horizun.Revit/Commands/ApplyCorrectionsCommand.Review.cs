@@ -44,12 +44,13 @@ namespace Horizun.Revit.Commands
                 JObject args = ChildArguments(source, gate, true);
                 CommandResult r = child.Execute(app, args.ToString(Formatting.None));
                 JObject data = ToToken(r.Data ?? r.Detail) as JObject ?? new JObject();
-                bool ok = r.Success && ApplicationOutcome.IsValidRehearsal(ApplicationOutcome.Read(data));
+                string partialRefusal = r.Success ? PartialApplyNotice.PlanRefusal(tool, data) : null;
+                bool ok = r.Success && ApplicationOutcome.IsValidRehearsal(ApplicationOutcome.Read(data)) && partialRefusal == null;
                 string fingerprint = (string)data["plan_resolved"]?["fingerprint"];
                 // Without a child's resolved model facts a token would bind only a request.
                 if (string.IsNullOrEmpty(fingerprint)) ok = false;
                 clean &= ok;
-                rehearsals.Add(new JObject { ["step_id"] = step["id"], ["ok"] = ok, ["reply"] = data, ["error"] = r.Error });
+                rehearsals.Add(new JObject { ["step_id"] = step["id"], ["ok"] = ok, ["reply"] = data, ["error"] = r.Error ?? partialRefusal });
                 resolved.Elements.Add(new PlannedElement { UniqueId = "review:" + (string)step["id"], Category = tool,
                     Action = PlannedAction.Modify, BeforeValues = new Dictionary<string, string> { ["child"] = fingerprint ?? "unresolved" } });
             }

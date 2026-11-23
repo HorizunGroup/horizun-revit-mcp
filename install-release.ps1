@@ -3,8 +3,7 @@
   Download the official Horizun setup from GitHub Releases, verify it against
   SHA256SUMS.txt from the SAME release, then launch it. No Git or .NET SDK.
 
-  Usage (releases whose Setup is signed by HORIZUN GROUP S.A.S. need no acknowledgement; an unsigned
-  release, such as one published before 3.0.2, needs -AllowUnsigned; read README.md first):
+  Usage (public releases are unsigned and need -AllowUnsigned; read README.md first):
     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1))) -AllowUnsigned
     powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned
     powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned -Version vX.Y.Z
@@ -31,9 +30,9 @@ param(
     [switch]$VerifyOnly,
     [switch]$NoClientCompletion,
     [switch]$NoLiveVerification,
-    # Releases whose Setup is NOT signed by HORIZUN GROUP S.A.S. (Certum) are
-    # unsigned and require this explicit acknowledgement. Hash verification
-    # detects byte changes, but it is not Windows publisher authentication.
+    # Public Horizun releases are unsigned by policy and require this explicit
+    # acknowledgement. Hash verification detects byte changes, but it is not
+    # Windows publisher authentication.
     [switch]$AllowUnsigned
 )
 $ErrorActionPreference = 'Stop'
@@ -116,36 +115,18 @@ function Get-HorizunCompletionOutcome([string]$State) {
     }
 }
 
-# The Setup of a stable release is signed AFTER CI builds it: scripts/firmar-release.ps1
-# signs only the Setup, with the Certum code-signing certificate of HORIZUN GROUP S.A.S.,
-# and publishes the draft. The payload inside stays unsigned and is covered by
-# manifest.json. A Setup is therefore either signed by that certificate (valid chain,
-# Certum issuer, Certum timestamp) or unsigned, and anything else is refused.
-function Test-HorizunCertumSetupSignature($Signature) {
-    if ($null -eq $Signature -or $Signature.Status -ne 'Valid') { return $false }
-    $signer = $Signature.SignerCertificate
-    if ($null -eq $signer) { return $false }
-    if ($signer.Subject -notmatch '(^|,\s*)O=HORIZUN GROUP S\.A\.S\.(,|$)') { return $false }
-    if ($signer.Issuer -notmatch 'Certum') { return $false }
-    $stamp = $Signature.TimeStamperCertificate
-    if ($null -eq $stamp -or $stamp.Subject -notmatch 'Certum') { return $false }
-    return $true
-}
-
 function Assert-HorizunSetupUnsigned([string]$Path, [bool]$UnsignedAllowed) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
-    $certumSigned = Test-HorizunCertumSetupSignature $signature
-    if (-not $certumSigned -and $signature.Status -ne 'NotSigned') {
-        throw "Public Horizun releases must be unsigned by policy or signed by HORIZUN GROUP S.A.S. (Certum); refused Authenticode state '$($signature.Status)'."
+    if ($signature.Status -ne 'NotSigned') {
+        throw "Public Horizun releases must be unsigned by policy; refused Authenticode state '$($signature.Status)'."
     }
-    if (-not $certumSigned -and -not $UnsignedAllowed) {
+    if (-not $UnsignedAllowed) {
         throw 'Setup is unsigned. Re-run with -AllowUnsigned only if you accept that Windows cannot authenticate the publisher.'
     }
     $version = (Get-Item -LiteralPath $Path).VersionInfo
     if (([string]$version.CompanyName).Trim() -ne 'Horizun Group' -or ([string]$version.ProductName).Trim() -ne 'Horizun Revit MCP') {
-        throw "Setup does not carry the expected Horizun product metadata. Company='$($version.CompanyName)' Product='$($version.ProductName)'"
+        throw "Unsigned Setup does not carry the expected Horizun product metadata. Company='$($version.CompanyName)' Product='$($version.ProductName)'"
     }
-    return $certumSigned
 }
 
 function Invoke-HorizunSetupProcess([string]$FilePath, [string[]]$Arguments) {
@@ -234,14 +215,9 @@ try {
         throw "SHA-256 mismatch. Expected $expected but downloaded $actual. The installer was NOT launched."
     }
 
-    $certumSigned = Assert-HorizunSetupUnsigned $setupPath ([bool]$AllowUnsigned)
-    if ($certumSigned) {
-        Write-Host "[Horizun] $($release.tag_name) Setup is signed by HORIZUN GROUP S.A.S. (Certum) and SHA-256 matched the release." -ForegroundColor Green
-    }
-    else {
-        Write-Host "[Horizun] WARNING: $($release.tag_name) is an official but UNSIGNED release." -ForegroundColor Yellow
-        Write-Host "          SHA-256 matched the release, but Windows cannot authenticate its publisher." -ForegroundColor Yellow
-    }
+    Assert-HorizunSetupUnsigned $setupPath ([bool]$AllowUnsigned)
+    Write-Host "[Horizun] WARNING: $($release.tag_name) is an official but UNSIGNED release." -ForegroundColor Yellow
+    Write-Host "          SHA-256 matched the release, but Windows cannot authenticate its publisher." -ForegroundColor Yellow
     if ($VerifyOnly) {
         Write-Host '[Horizun] verification-only requested; Setup was NOT launched.' -ForegroundColor Green
         return
@@ -297,13 +273,16 @@ try {
                     'failed' { $completionExit = 1 }
                     'no_client' { $completionExit = 2 }
                 }
+                if ($freshState -eq 'waiting_for_client_exit') { $completionExit = 3 }
                 Write-Host ("[Horizun] completion state: " + $(if ($freshState) { $freshState } else { '(none)' })) -ForegroundColor DarkGray
             }
             if (-not $freshCompletion) {
-                $completionArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $complete, '-Client', $Client,
-                    '-ServerPath', (Join-Path $serverRoot 'horizun-mcp.exe'))
-                if ($NoLiveVerification) { $completionArgs += '-NoLiveWait' }
-                & powershell @completionArgs
+                # In this process: a second powershell.exe started with a bypassed
+                # policy is one of the behaviours an antivirus reads as malware.
+                $completionArgs = @{ Client = $Client; ServerPath = (Join-Path $serverRoot 'horizun-mcp.exe') }
+                if ($NoLiveVerification) { $completionArgs.NoLiveWait = $true }
+                $global:LASTEXITCODE = 0
+                & $complete @completionArgs
                 $completionExit = $LASTEXITCODE
             }
             if ($completionExit -eq 1) {
@@ -312,10 +291,15 @@ try {
             elseif ($completionExit -eq 2) {
                 Write-Host '[Horizun] binaries are installed, but no Claude/Codex configuration exists yet.' -ForegroundColor Yellow
                 Write-Host '          Start the intended client once, close it, then run:' -ForegroundColor Yellow
-                Write-Host ('          powershell -ExecutionPolicy Bypass -File "' + $complete + '"') -ForegroundColor Yellow
+                Write-Host ('          powershell -ExecutionPolicy RemoteSigned -File "' + $complete + '"') -ForegroundColor Yellow
+            }
+            elseif ($completionExit -eq 3) {
+                Write-Host '[Horizun] binaries are installed; registration waits for Claude Code / Codex to be closed.' -ForegroundColor Yellow
+                Write-Host '          Close them, then run "Horizun - complete installation" from the Start menu, or:' -ForegroundColor Yellow
+                Write-Host ('          powershell -ExecutionPolicy RemoteSigned -File "' + $complete + '"') -ForegroundColor Yellow
             }
             else {
-                Write-Host '[Horizun] client registration and first-start health verification are complete or safely scheduled.' -ForegroundColor Green
+                Write-Host '[Horizun] client registration is complete; horizun_health from the client is the live check.' -ForegroundColor Green
                 Write-Host ("          status: " + $statusPath) -ForegroundColor DarkGray
             }
         }

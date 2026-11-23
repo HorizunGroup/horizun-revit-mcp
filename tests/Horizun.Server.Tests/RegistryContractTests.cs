@@ -110,12 +110,12 @@ namespace Horizun.Server.Tests
         public void Removing_a_registration_is_reported_as_missing()
         {
             List<string> names = RegisteredNames();
-            string victim = names.First(n => n == "horizun_clash");
+            string victim = names.First(n => n == "horizun_audit_model");
             names.Remove(victim);
             RegistryContract.Report r = RegistryContract.Compare(names, Contract.PluginCommands);
             Assert.False(r.Clean);
-            Assert.Equal(new[] { "horizun_clash" }, r.Missing);
-            Assert.Contains("advertised but NOT registered: horizun_clash", r.Describe());
+            Assert.Equal(new[] { "horizun_audit_model" }, r.Missing);
+            Assert.Contains("advertised but NOT registered: horizun_audit_model", r.Describe());
         }
 
         [Fact]
@@ -133,11 +133,11 @@ namespace Horizun.Server.Tests
         public void Duplicating_a_register_line_in_the_source_is_seen_as_a_duplicate()
         {
             string src = AppSource();
-            string line = "d.Register(new ClashCommand());";
+            string line = "d.Register(new AuditModelCommand());";
             Assert.Contains(line, src);
             string doubled = src.Replace(line, line + "\n            " + line);
             List<string> classes = RegistryContract.RegistrationsInSource(doubled);
-            Assert.Equal(2, classes.Count(c => c == "ClashCommand"));
+            Assert.Equal(2, classes.Count(c => c == "AuditModelCommand"));
         }
 
         [Fact]
@@ -151,9 +151,9 @@ namespace Horizun.Server.Tests
         public void A_name_that_differs_only_by_case_is_a_mismatch_not_a_match()
         {
             RegistryContract.Report r = RegistryContract.Compare(
-                new[] { "horizun_Clash", "horizun_health" }, new[] { "horizun_clash", "horizun_health" });
+                new[] { "horizun_Audit_model", "horizun_health" }, new[] { "horizun_audit_model", "horizun_health" });
             Assert.False(r.Clean);
-            Assert.Equal(new[] { "horizun_clash" }, r.CaseMismatches);
+            Assert.Equal(new[] { "horizun_audit_model" }, r.CaseMismatches);
             Assert.Empty(r.Missing);
             Assert.Empty(r.Unadvertised);
         }
@@ -171,11 +171,11 @@ namespace Horizun.Server.Tests
         public void Admit_refuses_a_second_registration_of_one_name_with_both_in_the_message()
         {
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            RegistryContract.Admit(set, "horizun_clash");
-            var ex = Assert.Throws<InvalidOperationException>(() => RegistryContract.Admit(set, "horizun_clash"));
-            Assert.Contains("horizun_clash", ex.Message);
+            RegistryContract.Admit(set, "horizun_audit_model");
+            var ex = Assert.Throws<InvalidOperationException>(() => RegistryContract.Admit(set, "horizun_audit_model"));
             Assert.Contains("registered twice", ex.Message);
-            Assert.Throws<InvalidOperationException>(() => RegistryContract.Admit(set, "HORIZUN_CLASH"));
+            Assert.Contains("horizun_audit_model", ex.Message);
+            Assert.Throws<InvalidOperationException>(() => RegistryContract.Admit(set, "HORIZUN_AUDIT_MODEL"));
             Assert.Throws<InvalidOperationException>(() => RegistryContract.Admit(set, " "));
         }
 
@@ -255,24 +255,6 @@ namespace Horizun.Server.Tests
             Assert.Contains("startup-failure-*.json", pipe);
             // A complaint from a Revit that is gone is not a diagnosis.
             Assert.Contains("BarePidExists(pid)", pipe);
-        }
-
-        [Fact]
-        public void The_addin_hashes_the_assembly_Revit_actually_loaded()
-        {
-            // A live run used to hash a deployment path it built by hand - and the path
-            // was wrong, so every campaign recorded addin_sha256: null.
-            string build = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Core", "Build.cs"));
-            Assert.Contains("public static Newtonsoft.Json.Linq.JObject Assembly_", build);
-            Assert.Contains("asm.Location", build);
-            string health = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Commands", "HealthCommand.cs"));
-            Assert.Contains("addin_assembly = Build.Assembly_", health);
-
-            string lib = File.ReadAllText(Path.Combine(RepoRoot(), "scripts", "live", "horizun-live.lib.ps1"));
-            Assert.Contains("Get-HzProp $health 'addin_assembly'", lib);
-            Assert.Contains("addin_sha256_source", lib);
-            // and the fallback path is the REAL installed one, with Addins in it
-            Assert.Contains(@"Autodesk\Revit\Addins\$year\Horizun\Horizun.Revit.dll", lib);
         }
 
         [Fact]

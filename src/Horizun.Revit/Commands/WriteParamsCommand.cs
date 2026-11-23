@@ -72,8 +72,9 @@ namespace Horizun.Revit.Commands
             "an error). Parameter.Set() returning false is reported as a refused write, never counted. Writing " +
             "to a type re-codes every instance of it: the blast radius is measured and reported. on_failure=" +
             "'atomic' (default) rolls the whole batch back; 'best_effort' commits what worked. The terminal " +
-            "transaction state is a first-class field. A unit STRING on Double/Integer storage is applied with " +
-            "SetValueString, which parses the units inside Revit and never returns the parsed number, so those rows " +
+            "transaction state is a first-class field. A unit STRING on Double storage is parsed with the document's " +
+            "units BEFORE Set(double), so its converted value is independently verified after commit. Integer strings use " +
+            "SetValueString, which never returns the parsed number, so those rows " +
             "can only be verified against a re-read of themselves: they are counted separately under " +
             "writes_confirmed_by_parse_read_back_only and never claimed as verified against your value. Use " +
             "dry_run=true to resolve every target and see what would be written without opening a transaction.";
@@ -115,6 +116,13 @@ namespace Horizun.Revit.Commands
             // otherwise swallow a sequence that was never generated nor refused.
             bool hasSequence = request["sequence"] != null && request["sequence"].Type != JTokenType.Null;
             bool hasTabular = request["tabular_source"] != null && request["tabular_source"].Type != JTokenType.Null;
+            bool hasSelector = request["selector"] != null && request["selector"].Type != JTokenType.Null;
+            if (!hasSelector && (request["set"] != null || request["only_if_empty"] != null))
+                return CommandResult.FailCoded(ErrorCodes.EsquemaInvalido, "set and only_if_empty go with selector; without one " +
+                    "there is nothing to apply them to. Nothing was written.");
+            if (hasSelector && (hasSequence || hasTabular || (writesToken != null && writesToken.Count > 0)))
+                return CommandResult.Fail("Give writes, tabular_source, sequence OR selector - one source per batch, " +
+                    "because two sources of the same batch cannot be reconciled honestly. Nothing was written.");
             if (hasSequence && (hasTabular || (writesToken != null && writesToken.Count > 0)))
                 return CommandResult.Fail("Give writes, tabular_source OR sequence - one source per batch, " +
                     "because two sources of the same batch cannot be reconciled honestly. Nothing was written.");
@@ -159,8 +167,55 @@ namespace Horizun.Revit.Commands
                 CommandResult sequenceRefusal = ExpandSequence(doc, sequenceSource, out writesToken, out sequenceReport);
                 if (sequenceRefusal != null) return sequenceRefusal;
             }
+            // ---- selector + set: the same value(s) on every element the selector matches
+            // (WriteParamsSelector.cs). Bound like sequence: the request hash binds selector,
+            // set and only_if_empty, and the resolved plan binds every generated row.
+            JObject selectorReport = null;
+            if (hasSelector)
+            {
+                CommandResult selectorRefusal = ExpandSelector(doc, request, out writesToken, out selectorReport);
+                if (selectorRefusal != null) return selectorRefusal;
+                if (writesToken.Count == 0)
+                {
+                    var noOp = new JObject
+                    {
+                        ["mode"] = "selector_no_op",
+                        ["document"] = SafeTitle(doc),
+                        ["selector"] = selectorReport,
+                        ["note"] = selectorReport.Value<int>("matched") == 0
+                            ? "The selector matches nothing: there is nothing to write. No transaction was opened."
+                            : "Every matched cell already holds a value and only_if_empty was asked. No transaction was opened."
+                    };
+                    ApplicationOutcome.StampApplied(noOp, ApplicationOutcome.NotStarted, 0, 0, 0, 0, 0, 0);
+                    return CommandResult.Ok(noOp);
+                }
+            }
             if (writesToken == null || writesToken.Count == 0)
-                return CommandResult.Fail("writes is required and must be a non-empty array (or give tabular_source or sequence).");
+                return CommandResult.Fail("writes is required and must be a non-empty array (or give tabular_source, sequence or selector + set).");
+
+            // permission_profile=documentation: parameters of views, sheets, view-owned and
+            // annotation elements only - never Project Information, a type, or a modelled
+            // element, and never a definition change. The whole batch is refused by id
+            // before anything is resolved for writing (DocumentationScope).
+            if (DocumentationScope.Active)
+            {
+                if (request.Value<bool?>("allow_vary_between_groups") == true)
+                    return CommandResult.Fail("allow_vary_between_groups changes a parameter definition project-wide and " +
+                        "is refused by permission_profile=documentation. Nothing was written.");
+                var documentationTargets = new List<DocumentationTarget>();
+                foreach (JToken token in writesToken)
+                {
+                    var w = token as JObject;
+                    if (w == null) { documentationTargets.Add(null); continue; }
+                    Element target = ResolveTarget(doc, w, out string targetKind, out long? targetId, out string ignored);
+                    documentationTargets.Add(targetKind == "project_info"
+                        ? new DocumentationTarget { Id = targetId, Kind = DocumentationTarget.ModelKind, Category = "Project Information" }
+                        : DocumentationScope.Classify(target, targetId));
+                }
+                string documentationRefusal = OperationPermission.DocumentationTargetRefusal(
+                    OperationPermission.DocumentationProfile, documentationTargets, Name);
+                if (documentationRefusal != null) return CommandResult.Fail(documentationRefusal);
+            }
 
             var mode = (request.Value<string>("on_failure") ?? "atomic").ToLowerInvariant();
             if (mode != "atomic" && mode != "best_effort")
@@ -179,7 +234,11 @@ namespace Horizun.Revit.Commands
             // and bind_shared_param this one was never exploitable. Named correctly so it
             // stays that way.
             string planHash = DocumentGate.PlanHash(request, "writes", "on_failure",
-                                                    "allow_vary_between_groups", "tabular_source", "sequence");
+                                                    "allow_vary_between_groups", "tabular_source", "sequence",
+                                                    "selector", "set", "only_if_empty", "accept_raw_feet");
+            // A bare number on a length parameter is feet; the magnitude guard refuses the implausible ones unless the
+            // caller says the numbers ARE feet (review R3: a real 32 m length had no intent-verified route).
+            bool acceptRawFeet = request.Value<bool?>("accept_raw_feet") ?? false;
 
             // The confirmation is validated AFTER the resolve loop below, not here: the
             // stale-plan check needs the plan recomputed NOW, and a plan cannot be compared
@@ -200,11 +259,24 @@ namespace Horizun.Revit.Commands
             var rows = new List<Row>();
             for (int i = 0; i < writesToken.Count; i++)
             {
-                var row = new Row { Index = i };
+                var row = new Row { Index = i, UnitsConverted = tabularReport != null, RawFeetAccepted = acceptRawFeet };
                 rows.Add(row);
 
                 var w = writesToken[i] as JObject;
                 if (w == null) { row.Error = "Entry is not an object."; continue; }
+                // MEASURED LIVE 2026-10-18 (Revit 2024): {"element_id": 607509, ...} - a key this
+                // entry does not take - was ignored, the target fell back to Project Information
+                // and the row aimed at the wrong element. An unknown key is refused, named.
+                string unknownKey = w.Properties().Select(pr => pr.Name)
+                    .FirstOrDefault(n => n != "target_id" && n != "target" && n != "parameter" && n != "value" &&
+                                         n != "unique_id" && n != "expected_category" && n != "expected_type");
+                if (unknownKey != null)
+                {
+                    row.Error = "writes[" + i + "] has '" + unknownKey + "', which a write entry does not take (target_id, target, " +
+                                "parameter, value)" + (unknownKey == "element_id" || unknownKey == "id" ? " - use target_id" : "") +
+                                ". Without target_id the entry would have aimed at Project Information. Nothing was written.";
+                    continue;
+                }
 
                 row.ParamSpec = w.Value<string>("parameter");
                 row.Requested = w["value"];
@@ -232,6 +304,27 @@ namespace Horizun.Revit.Commands
                     continue;
                 }
 
+                // A group's level (or its offset) written straight onto a group that carries connected MEP elements
+                // has closed Revit in the field (2026-11). Refused typed, before any transaction, with the route that works.
+                if (target is Group levelTarget && IsGroupLevelParameter(row.Parameter))
+                {
+                    int mepMembers = ManageGroupsCommand.CountMepMembers(doc, levelTarget, out List<long> mepExamples);
+                    string mepRefusal = GroupLevelRules.MepLevelChangeRefusal(mepMembers, mepExamples);
+                    if (mepRefusal != null) { row.Error = mepRefusal; continue; }
+                }
+
+                // E4 (field report, 2026-10-18): a view's scale read as plain "read-only" when the
+                // view template applied to it controls the scale. The fix is elsewhere (the
+                // template, or detaching it), so the sentence names the template.
+                string controllingTemplate = TemplateControlling(doc, target, row.Parameter);
+                if (controllingTemplate != null)
+                {
+                    row.Error = "Parameter '" + SafeDefName(row.Parameter) + "' is controlled by the view template '" +
+                                controllingTemplate + "' applied to view " + SafeId(target) + " (controlado por la plantilla '" +
+                                controllingTemplate + "'). Change it in the template, or remove the template from the view " +
+                                "(horizun_manage_views) before writing it. Nothing was written.";
+                    continue;
+                }
                 if (row.ReadOnly == true)
                 {
                     row.Error = "Parameter '" + SafeDefName(row.Parameter) + "' is read-only on this target" +
@@ -243,6 +336,22 @@ namespace Horizun.Revit.Commands
                 {
                     row.Error = "Parameter '" + SafeDefName(row.Parameter) + "' has storage type None; there is no value to write.";
                     continue;
+                }
+                if (row.Parameter.StorageType == StorageType.String && row.Requested.Type == JTokenType.String)
+                {
+                    string edge = TextValueRules.EdgeWhitespaceError(SafeDefName(row.Parameter), row.Requested.Value<string>());
+                    if (edge != null) { row.Error = edge; continue; }
+                }
+                // The rehearsal refuses what the apply would refuse: a bare number on a Length
+                // parameter is internal feet (review 2026-11-20, I1), and 3000 there is 914 m.
+                if (row.Parameter.StorageType == StorageType.Double &&
+                    (row.Requested.Type == JTokenType.Integer || row.Requested.Type == JTokenType.Float))
+                    row.NumberReadAs = NumberReading(row.Parameter, row.Requested.Value<double>());
+                if (!row.UnitsConverted && !row.RawFeetAccepted && row.Parameter.StorageType == StorageType.Double &&
+                    (row.Requested.Type == JTokenType.Integer || row.Requested.Type == JTokenType.Float))
+                {
+                    string rawLength = TypeParameterWrites.RawLengthRefusal(row.Parameter, SafeDefName(row.Parameter), row.Requested);
+                    if (rawLength != null) { row.Error = rawLength; continue; }
                 }
             }
 
@@ -318,9 +427,20 @@ namespace Horizun.Revit.Commands
                 var wouldReach = ReachedBy(doc, planned);
                 var dryResult = new JObject
                 {
+                    // Field 2026-11 (5.0.2): a rehearsal with unresolved rows (a key the entry does
+                    // not take, a parameter the element lacks) carried no dry_run flag, so the write
+                    // boundary read it as an APPLY with 0 of N confirmed and answered "Write failed"
+                    // with api_revit_excepcion - nothing had reached Revit. Declared as a rehearsal
+                    // with its invalid rows, it is refused as entrada_invalida naming each row.
+                    ["dry_run"] = true,
+                    ["valid"] = planned.Count,
+                    ["invalid"] = unresolved,
+                    ["errors"] = new JArray(rows.Where(r => r.Error != null).Take(maxRows)
+                        .Select(r => (JToken)new JObject { ["index"] = r.Index, ["error"] = r.Error })),
                     ["mode"] = "dry_run",
                     ["tabular"] = tabularReport,
                     ["sequence"] = sequenceReport,
+                    ["selector"] = selectorReport,
                     ["on_failure_if_run"] = mode,
                     ["transaction_status"] = "not_started",
                     ["transaction_name"] = txName,
@@ -429,7 +549,7 @@ namespace Horizun.Revit.Commands
                         }
 
                         bool ok;
-                        try { ok = TryApply(r.Parameter, r.Requested, out r.Accepted, out r.How, out r.Expected, out r.ExpectationFromModel, out string whyC); r.Error = whyC; }
+                        try { ok = TryApply(r.Parameter, r.Requested, out r.Accepted, out r.How, out r.Expected, out r.ExpectationFromModel, out string whyC, r.UnitsConverted || r.RawFeetAccepted); r.Error = whyC; }
                         catch (Exception ex) { ok = false; r.Accepted = false; r.SetThrew = true; r.Error = "Set threw: " + ex.Message; }
 
                         if (!ok) continue;
@@ -600,6 +720,7 @@ namespace Horizun.Revit.Commands
                 ["mode"] = mode,
                 ["tabular"] = tabularReport,
                 ["sequence"] = sequenceReport,
+                ["selector"] = selectorReport,
                 ["transaction_status"] = txStatus,
                 ["transaction_name"] = txName,
                 ["document"] = SafeTitle(doc),
@@ -635,6 +756,12 @@ namespace Horizun.Revit.Commands
                 ["verification"] = Verification(rows.Count, confirmedAgainstCallerValue,
                                                 confirmedByParseOnly, failed, unknown),
                 ["rows_total"] = rows.Count,
+                // The three numbers a caller wants without reading `verification`: how many writes were asked,
+                // how many were re-read after the commit and match the value it passed, how many failed.
+                // 3,258 Top Offset writes had to be confirmed by re-reading the model because this was missing.
+                ["writes_requested"] = rows.Count,
+                ["writes_verified"] = confirmedAgainstCallerValue,
+                ["writes_failed"] = failed,
                 ["rows_shown"] = Math.Min(rows.Count, maxRows),
                 ["rows_truncated"] = rows.Count > maxRows,
                 ["rows"] = new JArray(rows.Take(maxRows).Select(r => (JToken)r.ToJson(true))),
@@ -655,6 +782,16 @@ namespace Horizun.Revit.Commands
             if (definitionChanges.Count > 0) result["definition_changes"] = definitionChanges;
             if (committed && (confirmed > 0 || definitionChanges.Count > 0)) result["undo"] = RecordUndo(doc, rows);
             return CommandResult.Ok(result);
+        }
+
+        private static bool IsGroupLevelParameter(Parameter p)
+        {
+            try
+            {
+                BuiltInParameter id = (p?.Definition as InternalDefinition)?.BuiltInParameter ?? BuiltInParameter.INVALID;
+                return id == BuiltInParameter.GROUP_LEVEL || id == BuiltInParameter.GROUP_OFFSET_FROM_LEVEL;
+            }
+            catch { return false; }
         }
 
         private static bool InGroup(Element e)
@@ -885,14 +1022,15 @@ namespace Horizun.Revit.Commands
         {
             if (parseOnly == 0) return null;
             return parseOnly + " of the confirmed row(s) were applied with SetValueString (a STRING value on " +
-                   "Double/Integer storage). Their expectation is a re-read of the parameter taken immediately " +
+                   "Integer storage). Their expectation is a re-read of the parameter taken immediately " +
                    "after the setter, NOT your literal value — Revit parsed the units internally and never returned " +
                    "the number it parsed. So for those rows 'confirmed' proves the value did not drift between the " +
                    "setter and the commit; it CANNOT prove Revit stored what your string meant, because if Revit " +
                    "accepted the setter and stored nothing, the expectation would be that nothing too and the row " +
                    "would still confirm. writes_confirmed_against_your_value is the count that carries your intent. " +
-                   "To get an intent-verified row, pass a NUMBER in Revit internal units (feet) instead of a unit " +
-                   "string, or read the row's value_read_back and judge it yourself.";
+                   "To get an intent-verified row, pass a NUMBER in Revit internal units (feet: 2700 mm is 8.858267716) " +
+                   "instead of a unit string, or read the row's value_read_back and judge it yourself. A bare number on a " +
+                   "length parameter is always feet, never millimetres; outside 0.1 mm-30 m it is refused unless accept_raw_feet=true.";
         }
 
         /// <summary>
@@ -975,6 +1113,12 @@ namespace Horizun.Revit.Commands
             public int Index;
             public string ParamSpec;
             public JToken Requested;
+            /// <summary>The number was converted from a declared unit (tabular_source with decimal_separator): it IS internal feet, not a guess.</summary>
+            public bool UnitsConverted;
+            /// <summary>accept_raw_feet: the caller declared bare numbers to be internal feet.</summary>
+            public bool RawFeetAccepted;
+            /// <summary>What a bare number means in Revit's internal units, shown before anything is written (review I1).</summary>
+            public string NumberReadAs;
             public Element Target;
             public string TargetKind;      // instance | type | project_info
             public long? TargetId;
@@ -1039,6 +1183,7 @@ namespace Horizun.Revit.Commands
                     ["varies_between_groups_before"] = VariesBefore.HasValue ? (JToken)VariesBefore.Value : null,
                     ["vary_between_groups_error"] = VaryError,
                     ["requested"] = Requested,
+                    ["number_read_as"] = NumberReadAs,
                     ["applied_via"] = How,
                     ["before"] = Before,
                     ["set_accepted"] = wrote ? (JToken)Accepted : null,
@@ -1298,8 +1443,25 @@ namespace Horizun.Revit.Commands
         // path `expected` is a READ, not the caller's value, so the verification degenerates
         // to the model agreeing with itself. That is still worth doing (it catches drift),
         // but it must never be counted as intent-verified, so the fact travels with the row.
+        /// <summary>
+        /// The reading of a bare number on a length, area or volume parameter: Revit stores feet, square feet and
+        /// cubic feet, so 30 meant as millimetres is 9.1 m and 2.7 meant as metres is 0.82 m. Null for other specs.
+        /// </summary>
+        internal static string NumberReading(Parameter p, double v)
+        {
+            ForgeTypeId spec;
+            try { spec = p.Definition.GetDataType(); } catch { return null; }
+            string n = v.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+            System.Func<ForgeTypeId, string> f = u => UnitUtils.ConvertFromInternalUnits(v, u).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+            if (spec == SpecTypeId.Length) return n + " ft = " + f(UnitTypeId.Millimeters) + " mm (a bare number on a length is feet)";
+            if (spec == SpecTypeId.Area) return n + " ft² = " + f(UnitTypeId.SquareMeters) + " m² (a bare number on an area is square feet)";
+            if (spec == SpecTypeId.Volume) return n + " ft³ = " + f(UnitTypeId.CubicMeters) + " m³ (a bare number on a volume is cubic feet)";
+            return null;
+        }
+
         private static bool TryApply(Parameter p, JToken v, out bool accepted, out string how,
-                                     out JObject expected, out bool expectationIsParse, out string why)
+                                     out JObject expected, out bool expectationIsParse, out string why,
+                                     bool unitsConverted = false)
         {
             accepted = false; how = null; why = null; expected = null; expectationIsParse = false;
             var st = p.StorageType;
@@ -1351,6 +1513,8 @@ namespace Horizun.Revit.Commands
                     if (isNull) { why = "Parameter storage is Double; null is not a value it can hold."; return false; }
                     if (v.Type == JTokenType.Integer || v.Type == JTokenType.Float)
                     {
+                        string rawLength = unitsConverted ? null : TypeParameterWrites.RawLengthRefusal(p, p.Definition?.Name ?? "value", v);
+                        if (rawLength != null) { why = rawLength; return false; }
                         how = "Set(double) [raw, Revit internal units]";
                         double dv = v.Value<double>();
                         accepted = p.Set(dv);
@@ -1359,11 +1523,18 @@ namespace Horizun.Revit.Commands
                     }
                     if (v.Type == JTokenType.String)
                     {
-                        how = "SetValueString(string) [unit-aware]";
                         string txt = TokenText(v);
-                        accepted = p.SetValueString(txt);
-                        expected = ParseExpectation(p, txt, accepted);
-                        expectationIsParse = true;
+                        // Parse BEFORE the setter. The expectation must come from the
+                        // request, never from the parameter the setter just changed.
+                        if (!UnitFormatUtils.TryParse(p.Element.Document.GetUnits(), p.Definition.GetDataType(), txt,
+                                                      out double converted))
+                        {
+                            why = "Cannot parse '" + txt + "' in the document's units for this parameter.";
+                            return false;
+                        }
+                        expected = LengthWriteRules.ConvertedExpectation(txt, converted);
+                        how = "Set(double) [unit-aware, parsed before write]";
+                        accepted = p.Set(converted);
                         return true;
                     }
                     why = "Parameter storage is Double; cannot coerce a " + v.Type + ".";
@@ -1715,10 +1886,13 @@ namespace Horizun.Revit.Commands
             using (var sha = System.Security.Cryptography.SHA256.Create())
                 fileSha = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
 
-            List<string[]> parsed = TabularRules.ParseCsv(text);
+            char delimiter = TabularRules.DetectDelimiter(text);
+            List<string[]> parsed = TabularRules.ParseCsv(text, delimiter);
             if (parsed.Count < 2)
                 return CommandResult.Fail("the file has " + parsed.Count + " row(s); an import needs a header and at " +
                     "least one data row.");
+            string ragged = TabularRules.RaggedRow(parsed, delimiter);
+            if (ragged != null) return CommandResult.Fail(ragged);
             TabularMapping mapping;
             var declared = new List<KeyValuePair<string, string>>();
             foreach (var property in valueColumns.Properties())
@@ -1950,6 +2124,30 @@ namespace Horizun.Revit.Commands
             // mistake for a measurement.
             try { return p.IsReadOnly && p.Definition != null && !(p.Definition is InternalDefinition); }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// The name of the view template that controls this parameter on this view, or null.
+        /// Template-controlled = the template's GetTemplateParameterIds lists it and
+        /// GetNonControlledTemplateParameterIds does not (Revit's own "Include" column).
+        /// Any read failure answers null: this only sharpens an error message.
+        /// </summary>
+        private static string TemplateControlling(Document doc, Element target, Parameter p)
+        {
+            try
+            {
+                var view = target as View;
+                if (view == null || view.IsTemplate) return null;
+                ElementId templateId = view.ViewTemplateId;
+                if (templateId == null || templateId == ElementId.InvalidElementId) return null;
+                var template = doc.GetElement(templateId) as View;
+                if (template == null) return null;
+                ElementId pid = p.Id;
+                bool listed = template.GetTemplateParameterIds().Contains(pid);
+                bool excluded = template.GetNonControlledTemplateParameterIds().Contains(pid);
+                return listed && !excluded ? (template.Name ?? ("#" + Rid.Value(templateId))) : null;
+            }
+            catch { return null; }
         }
 
         private static InternalDefinition SafeInternalDef(Parameter p)

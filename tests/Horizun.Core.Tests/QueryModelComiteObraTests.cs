@@ -10,6 +10,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+using Horizun.Revit.Commands;
 using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -18,7 +22,121 @@ namespace Horizun.Core.Tests
 {
     public sealed class QueryModelComiteObraTests
     {
+        [Theory]
+        [InlineData("host", false)]
+        [InlineData("Modelo", false)]
+        [InlineData("Otra", true)]
+        public void Host_title_does_not_require_links(string title, bool expectsLink)
+        {
+            var request = new JObject { ["source_models"] = new JArray(title) };
+            var filter = QuerySourceFilter.Parse(request, out string error);
+            Assert.Null(error);
+            Assert.Equal(expectsLink, filter.NamesLinkOtherThanHost("Modelo"));
+        }
         // ---- datums ----
+
+        [Theory]
+        [InlineData(false)] // VIN-12 asks for bounding boxes without a spatial filter.
+        [InlineData(true)]
+        public void Linked_grid_query_returns_projected_names_and_host_space_boxes(bool spatialFilter)
+        {
+            var host = new Document { Title = "Anfitrión" };
+            host.Elements.Add(9, GridAt(9));
+            var linked = new Document { Title = "Estructura" };
+            Grid first = GridAt(7);
+            first.TestCategory = BuiltInCategory.OST_Grids; // The category collector sees only this grid.
+            linked.Elements.Add(7, first);
+            linked.Elements.Add(8, GridAt(8));
+            host.TestLinkDocuments.Add(new RevitLinkInstance { Id = new ElementId(502), Linked = linked });
+            host.TestLinkDocuments.Add(new RevitLinkInstance { Id = new ElementId(501), Linked = linked,
+                TestTotalTransform = new Transform(p => new XYZ(20 - p.Y, 10 + p.X, 2 + p.Z)) });
+
+            var request = new JObject
+            {
+                ["response_mode"] = "full", ["max_rows"] = 500,
+                ["categories"] = new JArray("OST_Grids"), ["include_links"] = true,
+                ["link_instance_ids"] = new JArray(501), ["include_bounding_box"] = true,
+                ["coordinate_units"] = "mm", ["return_fields"] = new JArray("name")
+            };
+            if (spatialFilter)
+                request["bounding_box"] = new JObject
+                {
+                    ["min"] = new JArray(12 * 304.8, 11 * 304.8, 10 * 304.8),
+                    ["max"] = new JArray(14 * 304.8, 12 * 304.8, 11 * 304.8),
+                    ["units"] = "mm"
+                };
+            var app = new UIApplication { ActiveUIDocument = new UIDocument { Document = host } };
+            CommandResult result = new QueryModelCommand().Execute(app, request.ToString());
+            Assert.True(result.Success, result.Error);
+            var response = Assert.IsType<JObject>(result.Data);
+            Assert.Equal(2, (int)response["matched_total"]);
+            Assert.Equal(0, (int)response["unreadable_total"]);
+            Assert.True((bool)response["coverage_complete"]);
+            var rows = response["rows"].Children<JObject>();
+
+            Assert.Equal(new long[] { 7, 8 }, rows.Select(row => (long)row["element_id"]));
+            Assert.All(rows, row =>
+            {
+                double x = (20 - (long)row["element_id"]) * 304.8;
+                Assert.Equal(501, (long)row["link_instance_id"]);
+                Assert.Equal("link", (string)row["source_kind"]);
+                Assert.Equal("Eje " + (long)row["element_id"], (string)row["name"]);
+                Assert.Null(row["source_model"]);
+                Assert.Equal("grid_curve", (string)row["bounding_box_source"]);
+                Assert.Equal(new[] { x, 3048, 609.6 }, row["bounding_box"]["min"].Values<double>());
+                Assert.Equal(new[] { x, 6096, 609.6 }, row["bounding_box"]["max"].Values<double>());
+                Assert.Equal(90, (double)row["datum"]["plan_angle_degrees"]);
+            });
+        }
+
+        [Fact]
+        public void A_link_without_a_transform_is_reported_as_unreadable()
+        {
+            var host = new Document { Title = "Anfitrión" };
+            host.TestLinkDocuments.Add(new RevitLinkInstance { Id = new ElementId(501),
+                Linked = new Document { Title = "Estructura" }, TestTotalTransform = null });
+            var unreadable = new List<JObject>();
+            Assert.Empty(QueryModelCommand.ReadLinkedSources(host, Filter("{}"), unreadable.Add));
+            JObject row = Assert.Single(unreadable);
+            Assert.Equal(501, (long)row["link_instance_id"]);
+            Assert.Contains("link transform could not be read", (string)row["reason"]);
+        }
+
+        private static Grid GridAt(int id) => new Grid
+        {
+            Id = new ElementId(id), Name = "Eje " + id,
+            Curve = Line.CreateBound(new XYZ(0, id, 0), new XYZ(10, id, 0)),
+            TestModelBox = new BoundingBoxXYZ { Min = new XYZ(-5, 5, -2), Max = new XYZ(15, 9, 10) }
+        };
+
+        [Theory]
+        [InlineData(false, true, false)]
+        [InlineData(true, true, true)]
+        [InlineData(true, false, false)]
+        public void The_grid_class_collector_respects_scope_categories_and_explicit_ids(
+            bool documentScope, bool requestsGrids, bool explicitIds)
+        {
+            var ids = DatumGeometryRules.DocumentGridCandidates("model", new long[] { 7 }, documentScope,
+                requestsGrids, explicitIds, _ => throw new InvalidOperationException("class collector must not run"), id => id);
+            Assert.Equal(new long[] { 7 }, ids);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void A_grid_with_an_unreadable_curve_transforms_its_extents_and_reports_the_cause(bool spatialFilter)
+        {
+            var grid = DatumGeometryRules.ReadGrid(() => false, _ => throw new InvalidOperationException("curve unavailable"),
+                p => new[] { 10d - p[1], p[0], p[2] },
+                () => throw new InvalidOperationException("model box unavailable"),
+                () => new[] { new[] { 1d, 2d, 0d }, new[] { 3d, 4d, 9d } }, spatialFilter, 1, "feet");
+            var row = new JObject();
+            grid.WriteTo(row, 1);
+            Assert.Equal("curve unavailable; model bounds: model box unavailable", (string)row["datum"]["read_error"]);
+            Assert.Equal("element", (string)row["bounding_box_source"]);
+            Assert.Equal(new[] { 6d, 1d, 0d }, row["bounding_box"]["min"].Values<double>());
+            Assert.Equal(new[] { 8d, 3d, 9d }, row["bounding_box"]["max"].Values<double>());
+        }
 
         [Fact]
         public void A_grid_carries_its_line_in_the_callers_units_and_a_direction_that_ignores_drawing_order()
@@ -199,12 +317,9 @@ namespace Horizun.Core.Tests
             string s = Source();
             int unmatched = s.IndexOf("sourceFilter.Unmatched(availableSources)", StringComparison.Ordinal);
             int hostCollect = s.IndexOf("if (sourceFilter.Admits(availableSources[0]))", StringComparison.Ordinal);
-            int linkSkip = s.IndexOf("if (!sourceFilter.Admits(new QuerySourceFilter.Source { Kind = \"link\"", StringComparison.Ordinal);
-            int linkCollect = s.IndexOf("Collect(linked, \"link\"", StringComparison.Ordinal);
-            Assert.True(unmatched > 0 && hostCollect > unmatched && linkSkip > hostCollect && linkCollect > linkSkip,
-                "an unmatched name refuses before any read, and unnamed documents are never collected");
-            Assert.Contains("if (b == null && element is Grid grid) return GridBox(grid, transform);", s);
-            Assert.Contains("json[\"datum\"] = datum;", s);
+            int linkRead = s.IndexOf("ReadLinkedSources(host, sourceFilter,", StringComparison.Ordinal);
+            Assert.True(unmatched > 0 && hostCollect > unmatched && linkRead > hostCollect,
+                "an unmatched name refuses before collecting any element");
             Assert.Contains("units.Value(prop.Name, cell[\"raw\"], spec.Key, spec.Quantity", s);
             Assert.Contains("queryResult[\"parameter_units\"] = compactUnits.ToJson();", s);
         }

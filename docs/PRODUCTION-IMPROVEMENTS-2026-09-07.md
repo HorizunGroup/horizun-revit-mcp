@@ -32,7 +32,7 @@ unexpected tool-specific execution decisions and event subscriptions.
 | Progressive responses | Inventory-only scan samples, explicit omissions and full expansion request; prompt guidance | Geometry and coverage are never shortened. Summary reduces payload, not scan computation. |
 | Cache | Opt-in bounded JSON DTO cache: 32 entries, 8 MiB, 5 seconds; event invalidation | Host-only, non-workshared, model scope. Federation and view scope bypass. Hits still execute through the dispatcher. Fresh verification uses bypass. |
 | Room documentation | Existing room planner integrated into atomic execute_plan; explicit templates, scales and sheet placements | Rejects partial room coverage. Multiple kinds need compatible template IDs per kind. No implicit sheet layout decisions. |
-| Content | rectangular_prism / rectangular_tube recipes into existing RFA compiler, flex and PNG required | XY footprint is fixed; only height is parametric. Not an arbitrary family generator or an automated visual approval. |
+| Content | rectangular_prism / rectangular_tube family recipes: in the Pro edition | - |
 | Diagnostic correction | Existing audit/correction/re-audit flow exposed in operating guidance | No new score or duplicate correction engine. Unsupported corrections remain findings. |
 | Maintenance | Public-file checks ignore generated build/runtime trees; receipt mapping and bounded acknowledgement | Telemetry still requires administrator opt-in. Delivery is at-least-once, deduplicated by receipt_hash. |
 
@@ -66,22 +66,7 @@ Use `horizun_execute_plan` with the normal target, dry-run and confirmation cycl
 
 ## Family recipe example
 
-Add this recipe to `horizun_create_family` with explicit target, existing RFT path,
-new RFA destination and units. Existing overwrite/load/confirmation policy remains:
-
-```json
-{
-  "recipe": {
-    "name": "rectangular_tube",
-    "width": 200, "depth": 300, "wall": 20,
-    "height_parameter": "Height",
-    "types": [{"name": "Short", "height": 500}, {"name": "Tall", "height": 1000}]
-  }
-}
-```
-
-Both recipes reject raw geometry/parameter additions, invalid wall thickness,
-duplicate names, equal heights, and disabling flex or thumbnail export.
+The family recipes (`horizun_create_family`) are in the Pro edition.
 
 ## Acceptance gate
 
@@ -99,7 +84,7 @@ Implementation is not production acceptance. At the end of implementation:
 5. In a disposable fixture: compare summaries to full queries (including text
    note types and linked/closed-workset coverage), test cache reuse/expiry and
    invalidation after mutation/undo/document switch, create room views/sheets,
-   independently reread scale/template/placement and inspect saved recipe RFAs.
+   independently reread scale/template/placement.
 6. Inspect flex measurements and PNGs. Test invalid/partial batches, conflicting
    templates and stale confirmation tokens; verify rollback and no duplicates.
 

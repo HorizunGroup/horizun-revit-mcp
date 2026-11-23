@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - text, tags and dimensions with explicit references.
 //
 // THE DIMENSION OPERATIONS ARE PRODUCTION WRITES, and this file holds them to
@@ -31,16 +31,20 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Architecture;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
+using VerifyStage = Horizun.Revit.Core.DimensionPlanRules.VerifyStage;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class AnnotateCommand : ICommand
+    public sealed partial class AnnotateCommand : ICommand
     {
         public string Name => "horizun_annotate";
         public string Description => "Create text, tags and dimensions atomically and verify the committed annotations.";
@@ -59,339 +63,13 @@ namespace Horizun.Revit.Commands
         private const string HostRevitYear = "unknown";
 #endif
 
-        public CommandResult Execute(UIApplication app, string paramsJson)
-        {
-            JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
-            catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
-            GateResult gate = DocumentGate.ForMutation(app, request, Name); if (!gate.Ok) return gate.Refusal;
-            Document doc = gate.Document; JArray actions = request["actions"] as JArray;
-            // The rehearsal itself opens a transaction, so a read-only document must be
-            // refused in prose HERE - otherwise the very first dry run answers with a raw
-            // Revit exception out of tx.Start() instead of a sentence about the document.
-            bool docReadOnly; try { docReadOnly = doc.IsReadOnly; } catch { docReadOnly = false; }
-            if (docReadOnly)
-                return CommandResult.Fail("The active document is READ-ONLY, so nothing can be annotated in it - " +
-                    "not even the dry run's provisional rehearsal, which creates and rolls back inside a " +
-                    "transaction. Open the document writable and call again. Nothing was changed.");
-            if (actions == null || actions.Count == 0 || actions.Count > 1000) return CommandResult.Fail("actions must contain 1..1000 entries.");
-            double scale; if (!DimensionPlanRules.UnitScale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out scale)) return CommandResult.Fail("units must be mm, m or feet.");
-
-            // MEASURED (2025, 2026-08-24, three runs): Revit materialises a dimension's
-            // references and values only for a view that is DISPLAYED - in a view that
-            // has never been shown, a correct committed dimension reads
-            // AreReferencesAvailable=false and Value 0 whatever is regenerated, and this
-            // command's verification would honestly roll it back. So a dimension's view
-            // must be the ACTIVE graphical view, checked at plan time with the fix in
-            // the message, instead of a rollback nobody can act on at the end.
-            long? activeGraphicalViewId = null;
-            try
-            {
-                View agv = app?.ActiveUIDocument?.ActiveGraphicalView;
-                if (agv != null) activeGraphicalViewId = Rid.Value(agv.Id);
-            }
-            catch { activeGraphicalViewId = null; }
-
-            var plans = new List<Plan>(); var errors = new JArray();
-            // Every action's outcome, so the fallback is decided once over the whole
-            // batch: one uncovered operation must not grant permission for a request that
-            // also contains input the caller should fix. See FallbackDecision.
-            var outcomes = new List<ActionOutcome>();
-            for (int i = 0; i < actions.Count; i++)
-            {
-                string error = null, reason = null;
-                Plan p = PlanAction(doc, i, actions[i] as JObject, scale, activeGraphicalViewId, out error, out reason);
-                if (p == null)
-                {
-                    string message = error ?? "entry is not an object";
-                    errors.Add(new JObject { ["index"] = i, ["error"] = message });
-                    outcomes.Add(new ActionOutcome { Index = i, Error = message, UnsupportedReason = reason });
-                }
-                else plans.Add(p);
-            }
-            bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
-            string hash = DocumentGate.PlanHash(request, "units", "actions");
-
-            // ---- THE REHEARSAL: provisional creation, measurement, mandatory rollback. --
-            // Run on BOTH paths whenever every action planned cleanly. On the dry run it
-            // is the evidence a person approves; on the apply it recomputes the measured
-            // values the materialised plan is fingerprinted over, so a model that moved
-            // since the approved rehearsal refuses as stale instead of being written to.
-            // Never run over a batch with invalid entries: rehearsing half a request
-            // would publish constructibility about a batch that cannot be applied as-is,
-            // and it would open a transaction on a call whose refusal claims none was.
-            Rehearsal rehearsal = null;
-            if (errors.Count == 0)
-            {
-                rehearsal = Rehearse(doc, plans);
-                if (!rehearsal.RollbackConfirmed)
-                {
-                    // The one outcome that may not be smoothed: provisional annotations
-                    // were created and Revit did not confirm their removal. No token, no
-                    // claim of a clean model, and the state says so.
-                    return CommandResult.FailWithDetail(
-                        "The rehearsal transaction could not be rolled back: Revit reported '" +
-                        rehearsal.RollbackStatus + "', not RolledBack. The model may still carry the provisional " +
-                        "annotations, so the state of this call is UNCERTAIN - no confirmation token is issued and " +
-                        "nothing is claimed clean. Re-read the model before anything else.",
-                        new JObject
-                        {
-                            ["state"] = DimensionPlanRules.StateUncertain,
-                            ["rehearsal_rollback_status"] = rehearsal.RollbackStatus,
-                            ["write_started"] = true,
-                            ["rehearsal"] = rehearsal.ToJson()
-                        });
-                }
-            }
-
-            // ---- The MATERIALISED plan: the VIEW and TARGET each annotation lands on. ---
-            // hash binds the actions as written. An annotation is ABOUT something: a tag
-            // points at a target element, a dimension hangs off references measured from
-            // one, and everything lands on a view. A tag approved against "Bomba 5" that
-            // gets applied after somebody swaps that element is a label telling a reader
-            // the wrong thing in print - the quietest wrong answer a model can produce.
-            // So each row records the view and the target as resolved now, by identity
-            // and by name; a dimension row additionally binds the EFFECTIVE type, every
-            // reference (reserialized, with its owner, kind and geometry fingerprint at
-            // 0.1 mm), the requested geometry, and the value the rehearsal measured.
-            var resolvedPlan = new ResolvedPlan
-            {
-                Command = Name,
-                DocumentKey = gate.Fingerprint,
-                RevitVersion = app?.Application?.VersionNumber,
-                DocumentFingerprint = gate.Identity?.FingerprintDigest()
-            };
-            foreach (Plan planned in plans) resolvedPlan.Elements.Add(PlannedRow(planned));
-
-            if (dry)
-            {
-                bool constructible = rehearsal != null && rehearsal.AllConstructible;
-                var result = new JObject { ["dry_run"] = true, ["valid"] = plans.Count, ["invalid"] = errors.Count,
-                    ["errors"] = errors, ["plan"] = new JArray(plans.Select(p => PlanRow(p))) };
-                result["rehearsal"] = rehearsal == null
-                    ? (JToken)JValue.CreateNull()
-                    : rehearsal.ToJson();
-                if (rehearsal == null)
-                    result["rehearsal_note"] = "The batch was NOT rehearsed: " + errors.Count + " action(s) are " +
-                        "invalid, so no transaction was opened and nothing was provisionally created.";
-                if (errors.Count == 0 && constructible) DocumentGate.RecordResolvedPlan(resolvedPlan);
-                // Invalid or non-constructible entries make this a partial rehearsal, not
-                // a clean one: the token below is already withheld for them, and the plan
-                // must read the same fact.
-                ApplicationOutcome.StampRehearsal(result, plans.Count + errors.Count, errors.Count,
-                                                  rehearsal == null ? 0 : rehearsal.NotConstructibleCount, 0);
-                DocumentGate.StampConfirmation(result, gate, Name, hash, errors.Count == 0 && constructible,
-                    errors.Count == 0 && constructible
-                        ? "the token binds views, geometry, text, the identity of every view and target, and - for " +
-                          "dimensions - the EFFECTIVE dimension type, every reference's reserialized identity, owner " +
-                          "and 0.1 mm geometry fingerprint, and the measured value of this rehearsal. A model that " +
-                          "moves before you spend it refuses as a stale plan rather than dimensioning something else."
-                        : errors.Count > 0
-                            ? "no usable token while invalid"
-                            : "no usable token: the rehearsal could not construct every annotation - see rehearsal " +
-                              "rows for Revit's own reason per action");
-                // StampConfirmation only writes a note when it ISSUES a token, so the two
-                // withheld cases must say so themselves - an absent token with no sentence
-                // reads like a bug in the caller's parsing, not like a decision.
-                if (!(errors.Count == 0 && constructible))
-                    result["confirmation_note"] = errors.Count > 0
-                        ? "NO token was issued: " + errors.Count + " action(s) are invalid. Fix them and re-run " +
-                          "the dry run; a partial batch is never approvable."
-                        : "NO token was issued: the rehearsal could not construct every annotation against the " +
-                          "current model - see the rehearsal rows for Revit's own reason per action.";
-                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so this
-                // is the first call a caller makes; without the block here they got
-                // success=true with invalid rows and no way to tell a capability gap
-                // from a typo except by sending an apply they had no reason to send.
-                // writeStarted stays false: the provisional-creation transaction only ever
-                // runs when EVERY action planned cleanly, so on any path where a fallback
-                // could be granted (some action failed) no transaction was opened.
-                return FallbackDecision.Attach(
-                    CommandResult.Ok(result),
-                    FallbackDecision.Decide(outcomes, writeStarted: false));
-            }
-            if (errors.Count > 0)
-            {
-                // NOTHING RAN - no transaction was opened - so the decision is only about
-                // what failed, and it is made centrally.
-                return FallbackDecision.Refuse(
-                    "Invalid annotations; nothing ran: " + errors.ToString(Formatting.None),
-                    FallbackDecision.Decide(outcomes, writeStarted: false));
-            }
-            if (!rehearsal.AllConstructible)
-            {
-                // The apply's own rehearsal could not build the batch against the model as
-                // it stands NOW. Refusing here is what keeps the real transaction from
-                // discovering the same failure half-way through a write.
-                return CommandResult.FailWithDetail(
-                    "Refused: " + rehearsal.NotConstructibleCount + " of " + plans.Count + " annotation(s) are not " +
-                    "constructible against the current model - see the rehearsal rows for Revit's reason per action. " +
-                    "Nothing was committed: the rehearsal transaction rolled back (Revit reported '" +
-                    rehearsal.RollbackStatus + "').",
-                    new JObject
-                    {
-                        ["state"] = DimensionPlanRules.StateRefused,
-                        ["rehearsal"] = rehearsal.ToJson()
-                    });
-            }
-            // Recomputed by THIS call's own PlanAction resolution AND its own rehearsal:
-            // the fingerprint carries the measured values, so the stale check compares
-            // what the model would build now against what was approved.
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, hash,
-                                                                     resolvedPlan, null);
-            if (refusal != null) return refusal;
-            refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name); if (refusal != null) return refusal;
-
-            string txName = request.Value<string>("transaction_name"); if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: annotate";
-            using (var group = new TransactionGroup(doc, txName))
-            {
-                group.Start();
-                var inTxRows = new JArray(); int inTxVerified = 0;
-                using (var tx = new Transaction(doc, txName))
-                {
-                    tx.Start();
-                    var opts = tx.GetFailureHandlingOptions();
-                    opts.SetFailuresPreprocessor(new SilenceWarnings());
-                    opts.SetClearAfterRollback(true);
-                    tx.SetFailureHandlingOptions(opts);
-                    try
-                    {
-                        foreach (Plan p in plans)
-                        {
-                            Element e = Create(doc, p); p.Created = e?.Id;
-                            Dimension d = e as Dimension; if (d != null) Decorate(d, p);
-                        }
-                        doc.Regenerate();
-                        // Verify while the transaction is still reversible: a postcondition
-                        // that fails here rolls back a write nobody has been told about yet.
-                        foreach (Plan p in plans)
-                        {
-                            bool ok; JObject row = VerifyRow(doc, p, VerifyStage.InTransaction, out ok);
-                            inTxRows.Add(row); if (ok) inTxVerified++;
-                        }
-                        if (inTxVerified != plans.Count)
-                        {
-                            Guard.RollbackResult rbTx = Guard.RollBack(tx);
-                            Guard.RollbackResult rbGroup = Guard.RollBack(group);
-                            string state = DimensionPlanRules.FinalState(false,
-                                new[] { rbTx.StatusName, rbGroup.StatusName });
-                            return CommandResult.FailWithDetail(
-                                (plans.Count - inTxVerified) + " of " + plans.Count + " annotation(s) failed " +
-                                "verification BEFORE the commit, so the whole batch was rolled back. " +
-                                PlanFailure.SingleTransactionOutcome(true, rbTx.StatusName, "nothing was annotated") +
-                                " The TransactionGroup reported '" + rbGroup.StatusName + "'. Each row lists every " +
-                                "requested/read comparison.",
-                                ApplyDetail(state, rbTx.StatusName, rbGroup.StatusName, inTxRows));
-                        }
-                        Guard.Commit(tx, txName);
-                    }
-                    catch (Exception ex)
-                    {
-                        // Report what the rollback ACTUALLY did, not the hoped-for prose. A
-                        // status other than RolledBack keeps its uncertainty rather than
-                        // claiming a clean model. When the transaction is NOT open any more
-                        // - Guard.Commit threw after Revit silently rolled it back, say -
-                        // its REAL status still goes into the state decision: a RolledBack
-                        // read from Revit is a confirmation, and anything else must keep
-                        // the whole answer uncertain rather than lean on the group alone.
-                        bool attempted = false; string rbTxStatus = PlanFailure.NotAttempted;
-                        TransactionStatus txNow; try { txNow = tx.GetStatus(); } catch { txNow = TransactionStatus.Uninitialized; }
-                        if (txNow == TransactionStatus.Started) { attempted = true; rbTxStatus = Guard.RollBack(tx).StatusName; }
-                        else if (txNow != TransactionStatus.Uninitialized) rbTxStatus = txNow.ToString();
-                        Guard.RollbackResult rbGrp = Guard.RollBack(group);
-                        var statuses = new List<string>();
-                        if (attempted || (txNow != TransactionStatus.Uninitialized && txNow != TransactionStatus.Started))
-                            statuses.Add(rbTxStatus);
-                        statuses.Add(rbGrp.StatusName);
-                        string state = DimensionPlanRules.FinalState(false, statuses);
-                        return CommandResult.FailWithDetail(
-                            "Atomic annotation failed: " + ex.Message + ". " +
-                            PlanFailure.SingleTransactionOutcome(attempted, rbTxStatus, "nothing was annotated") +
-                            " The TransactionGroup reported '" + rbGrp.StatusName + "'.",
-                            ApplyDetail(state, rbTxStatus, rbGrp.StatusName, inTxRows));
-                    }
-                }
-                // Committed inside the group. MEASURED (2025, 2026-08-24, twice): Revit
-                // does not materialise AreReferencesAvailable or dimension values on the
-                // inner commit alone - a correct dimension still read false/0 here. A
-                // regeneration AFTER the commit, in its own committed transaction still
-                // inside the group, is what asks Revit to compute them; the group remains
-                // open, so a verification that fails after this still rolls EVERYTHING
-                // back. The regeneration writes nothing of its own.
-                using (var regen = new Transaction(doc, txName + " (materialise for verification)"))
-                {
-                    regen.Start();
-                    try { doc.Regenerate(); Guard.Commit(regen, txName); }
-                    catch
-                    {
-                        if (regen.GetStatus() == TransactionStatus.Started) Guard.RollBack(regen);
-                        // A failed regeneration is not a failed batch: the reads below
-                        // decide, and unmaterialised facts fail closed there.
-                    }
-                }
-                // The only evidence that counts now is a FRESH read of every annotation;
-                // a re-read that fails rolls the group back and takes the committed
-                // transaction with it.
-                var rows = new JArray(); int verified = 0;
-                foreach (Plan p in plans)
-                {
-                    bool ok; JObject row = VerifyRow(doc, p, VerifyStage.PostCommit, out ok);
-                    rows.Add(row); if (ok) verified++;
-                }
-                if (verified != plans.Count)
-                {
-                    Guard.RollbackResult rbGroup = Guard.RollBack(group);
-                    string state = DimensionPlanRules.FinalState(false, new[] { rbGroup.StatusName });
-                    return CommandResult.FailWithDetail(
-                        "The transaction committed, but " + (plans.Count - verified) + " of " + plans.Count +
-                        " annotation(s) failed the post-commit re-read, so the TransactionGroup was rolled back " +
-                        "(Revit reported '" + rbGroup.StatusName + "'). " +
-                        (PlanFailure.IsConfirmedRollback(rbGroup.StatusName)
-                            ? "Nothing from this call remains in the model."
-                            : "DO NOT assume the model is clean - re-read its real state before any retry.") +
-                        " Each row lists every requested/read comparison.",
-                        ApplyDetail(state, "Committed", rbGroup.StatusName, rows));
-                }
-                try { Guard.Assimilate(group, txName); }
-                catch (SilentRollbackException ex)
-                {
-                    string rbStatus;
-                    try { rbStatus = Guard.RollBack(group).StatusName; }
-                    catch (Exception rex) { rbStatus = "RollBack threw: " + rex.Message; }
-                    string state = DimensionPlanRules.FinalState(false, new[] { rbStatus });
-                    return CommandResult.FailWithDetail(
-                        "Every annotation verified, but the TransactionGroup would not assimilate: " + ex.Message +
-                        " A rollback was attempted and Revit reported '" + rbStatus + "'. " +
-                        (PlanFailure.IsConfirmedRollback(rbStatus)
-                            ? "Nothing from this call remains in the model."
-                            : "The state of the model is UNCERTAIN - re-read it before any retry."),
-                        ApplyDetail(state, "Committed", rbStatus, rows));
-                }
-                var anResult = new JObject
-                {
-                    ["transaction_status"] = "Committed",
-                    ["transaction_group_status"] = "Committed",
-                    ["state"] = DimensionPlanRules.StateCommittedVerified,
-                    ["annotations_verified"] = verified,
-                    ["comparison_tolerance_feet"] = DimensionPlanRules.CurveToleranceFeet,
-                    ["units_note"] = "Measured values are Revit internal units (decimal feet); 'presented' is the " +
-                                     "document's own display formatting.",
-                    ["rows"] = rows
-                };
-                // Reached only when verified == plans.Count; a shortfall rolled back above.
-                ApplicationOutcome.StampApplied(anResult, ApplicationOutcome.Committed,
-                                                plans.Count, verified, verified, 0, 0, 0);
-                return CommandResult.Ok(anResult);
-            }
-        }
-
         // ---------------------------------------------------------------------
         // Planning.
         // ---------------------------------------------------------------------
         private static Plan PlanAction(Document doc, int index, JObject a, double scale, long? activeGraphicalViewId, out string error,
-                                       out string unsupportedReason)
+                                       out string unsupportedReason, out string errorCode)
         {
-            error = null; unsupportedReason = null;
+            error = null; unsupportedReason = null; errorCode = null;
             if (a == null) { error = "entry is not an object"; return null; }
             try
             {
@@ -409,8 +87,6 @@ namespace Horizun.Revit.Commands
                 // class either - so these are ORDINARY planning errors on purpose, never
                 // UnsupportedCapability: that type is the grant of the Python fallback,
                 // and granting it would send a client to script against nothing.
-                if (op == DimensionPlanRules.OpSpotSlope)
-                    throw new ArgumentException(DimensionPlanRules.NoApiAnyYear(op));   // not supported: the API is absent everywhere
 #if REVIT2023 || REVIT2024
                 if (op == DimensionPlanRules.OpRadial || op == DimensionPlanRules.OpDiameter)
                     throw new ArgumentException(DimensionPlanRules.NoApiThisYear(op, "RadialDimension.Create", 2025, HostRevitYear));   // not supported before 2025
@@ -421,6 +97,8 @@ namespace Horizun.Revit.Commands
                 View view = Need<View>(doc, a, "view_id");
                 if (view.IsTemplate) throw new ArgumentException("view_id is a template");
                 var p = new Plan { Index = index, Operation = op, View = view, Input = a, Scale = scale };
+                string textOnly = TextNoteLayoutRules.ForeignFields(op, f => a[f] != null);
+                if (textOnly != null) throw new ArgumentException(textOnly);
                 foreach (string key in new[] { "layout_clearance", "layout_max_displacement" })
                     if (a[key] != null && (op != "tag" || (a[key].Type != JTokenType.Integer && a[key].Type != JTokenType.Float) ||
                         !DeliveryLayoutRules.Finite(a.Value<double>(key)) || a.Value<double>(key) < 0))
@@ -444,7 +122,7 @@ namespace Horizun.Revit.Commands
                     // dimension-shape fields these operations cannot mean.
                     var foreign = new List<string>();
                     foreach (string f in DimensionPlanRules.OptionFields)
-                        if (a[f] != null) foreign.Add(f);
+                        if (a[f] != null && !(op == "text" && f == "allow_outside_crop")) foreign.Add(f);   // a text note may be placed outside the crop on purpose
                     foreach (string f in new[] { "line_start", "line_end", "references",
                                                  "arc_center", "arc_radius", "arc_reference", "reference" })
                         if (a[f] != null) foreign.Add(f);
@@ -483,18 +161,87 @@ namespace Horizun.Revit.Commands
                         if (double.IsNaN(angle) || double.IsInfinity(angle))
                             throw new ArgumentException("rotation_degrees must be finite.");
                     }
+                    p.TextPlan = PlanText(doc, p, a, scale);
                 }
                 else if (op == "tag")
                 {
                     if (a["text"] != null || a["text_type_id"] != null || HasTextOptions(a))
                         throw new ArgumentException("tag does not accept text or text-note options; accepting them would silently drop text-note intent.");
-                    p.Point = Point(a["point"], scale, false); p.Target = Need<Element>(doc, a, "element_id");
+                    p.Point = Point(a["point"], scale, false);
+                    string linkProblem = LinkedTagRules.Check(a["element_id"] != null, a[LinkedTagRules.LinkInstanceField] != null,
+                        a[LinkedTagRules.LinkedElementField] != null, out bool linkedTarget);
+                    if (linkProblem != null) throw new ArgumentException(linkProblem);
+                    if (linkedTarget)
+                    {
+                        // An element of a Revit link: the pair (link instance in THIS document,
+                        // element id inside the linked model). The tag Revit creates is bound to
+                        // the pair, so a reload of the link keeps it attached.
+                        p.LinkInstance = Need<RevitLinkInstance>(doc, a, LinkedTagRules.LinkInstanceField);
+                        Document linkDoc = p.LinkInstance.GetLinkDocument();
+                        if (linkDoc == null)
+                            throw new ArgumentException("link_instance_id " + Rid.Value(p.LinkInstance.Id) + " is not loaded, so its elements cannot be tagged. Reload the link first.");
+                        long linkedId = a.Value<long?>(LinkedTagRules.LinkedElementField) ?? -1;
+                        p.LinkedElement = Rid.CanRepresent(linkedId) ? linkDoc.GetElement(Rid.Make(linkedId)) : null;
+                        if (p.LinkedElement == null)
+                            throw new ArgumentException("linked_element_id " + linkedId + " does not exist in the linked document '" + linkDoc.Title + "'.");
+                        // A Room of a link IS taggable: NewRoomTag takes LinkElementId(link instance, room)
+                        // in 2023-2027. An Area, a Space or a nested link instance is not (TagRules).
+                        string linkedRefusal = TagRules.LinkedTargetRefusal(LinkedKind(p.LinkedElement));
+                        if (linkedRefusal != null) throw new ArgumentException(linkedRefusal);
+                        p.Target = p.LinkInstance;
+                    }
+                    else p.Target = Need<Element>(doc, a, "element_id");
                     if (a["tag_type_id"] != null)
                         p.Type = Need<ElementType>(doc, a, "tag_type_id");
-                    p.ExistingTagCount = ExistingTagCount(doc, p.View.Id, p.Target.Id);
+                    PlanTagOptions(doc, p, a, scale);
+                    if (TaggedRoom(p) != null)
+                    {
+                        if (a.Value<bool?>("avoid_collisions") == true)
+                            throw new ArgumentException("RoomTag collision placement is not measured by this operation; omit avoid_collisions.");
+                        if (a["tag_mode"] != null && TagRules.NormalizeMode(a.Value<string>("tag_mode")) != "by_category")
+                            throw new ArgumentException("RoomTag only accepts tag_mode=by_category.");
+                        if (p.Type != null && p.Type.Category?.Id != Category.GetCategory(doc, BuiltInCategory.OST_RoomTags)?.Id)
+                            throw new ArgumentException("tag_type_id must be a RoomTag type for a Room target.");
+                        if (a["tag_type_name"] != null && a["tag_family_path"] == null)
+                            throw new ArgumentException("tag_type_name requires tag_family_path; otherwise use tag_type_id.");
+                        bool? roomContainsPoint = RoomContainsHostPoint(TaggedRoom(p), p.LinkInstance, p.Point);
+                        string outsideRoom = RoomTagRules.OutsideRoomRefusal(roomContainsPoint, a.Value<bool?>("add_leader") == true, Rid.Value(TaggedRoom(p).Id));
+                        if (outsideRoom != null) throw new ArgumentException(outsideRoom);
+                        p.RoomTagFamilyPath = ResolveRoomTagFamily(doc, a.Value<string>("tag_family_path"));
+                        if (p.RoomTagFamilyPath != null)
+                        {
+                            string newer = FamilyVersionGate.NewerError(doc.Application, p.RoomTagFamilyPath, out JObject newerDetail);
+                            if (newer != null) throw new ArgumentException(newer);
+                        }
+                        if (p.RoomTagFamilyPath != null)
+                        {
+                            string familyName = Path.GetFileNameWithoutExtension(p.RoomTagFamilyPath);
+                            if (new FilteredElementCollector(doc).OfClass(typeof(Family)).Cast<Family>()
+                                .Any(f => string.Equals(f.Name, familyName, StringComparison.OrdinalIgnoreCase)))
+                                throw new ArgumentException("RoomTag family '" + familyName + "' is already loaded; use its tag_type_id rather than tag_family_path, since the loaded content cannot be proven equal to the file.");
+                            p.RoomTagFamilyHash = FileHash(p.RoomTagFamilyPath);
+                        }
+                    }
+                    else if (SpatialKind(p.Target) != null) PlanSpatialTag(doc, p, a);
+                    else if (a["tag_family_path"] != null || a["tag_type_name"] != null)
+                        throw new ArgumentException("tag_family_path and tag_type_name are only valid when element_id identifies a Room.");
+                    else PlanIndependentTag(doc, p, a);
+                    p.ExistingTagCount = p.LinkedElement != null
+                        ? ExistingLinkedTagCount(doc, p.View.Id, p.LinkInstance.Id, p.LinkedElement.Id)
+                        : ExistingTagCount(doc, p.View.Id, p.Target.Id);
                 }
-                else PlanDimension(doc, p, a, scale, activeGraphicalViewId);
+                else
+                {
+                    p.TargetViewIsActive = activeGraphicalViewId == Rid.Value(view.Id);
+                    PlanDimension(doc, p, a, scale);
+                }
                 return p;
+            }
+            catch (LinkedDatumDimensionException ex)
+            {
+                error = ex.Message;
+                errorCode = DimensionReferenceRules.CodeLinkedDatumRejected;
+                return null;
             }
             catch (Exception ex)
             {
@@ -510,7 +257,7 @@ namespace Horizun.Revit.Commands
         /// AND reserialized AND fingerprinted, the effective type materialised. Throws
         /// with a message the caller can act on; writes nothing.
         /// </summary>
-        private static void PlanDimension(Document doc, Plan p, JObject a, double scale, long? activeGraphicalViewId)
+        private static void PlanDimension(Document doc, Plan p, JObject a, double scale)
         {
             string op = p.Operation;
 
@@ -521,6 +268,7 @@ namespace Horizun.Revit.Commands
             var offered = DimensionPlanRules.OptionFields.Where(f => a[f] != null).ToList();
             List<string> unavailable = DimensionPlanRules.UnavailableOptions(op, offered);
             if (unavailable.Count > 0) throw new ArgumentException(string.Join(" ", unavailable));
+            p.RequirePrintable = a.Value<bool?>("require_printable") ?? false;
 
             // Where a dimension may live. Schedules and sheets have no model space to
             // measure in; a 3D view is only stable once it is locked - Revit itself
@@ -532,29 +280,6 @@ namespace Horizun.Revit.Commands
                 throw new ArgumentException("view_id is an UNLOCKED 3D view. Revit only accepts dimensions in a " +
                                             "locked 3D view (View3D.IsLocked); lock it or pick a 2D view.");
 
-            // The measured precondition, refused where the caller can act on it - and
-            // AFTER the structural view checks above, so a schedule aimed at stays
-            // refused as a schedule, not as merely inactive. Revit materialises a
-            // dimension's references and values only for a DISPLAYED view (measured
-            // live, three runs: in a never-shown view a correct committed dimension
-            // reads AreReferencesAvailable=false and Value 0 whatever is regenerated,
-            // and the post-commit verification would honestly roll the whole batch
-            // back). Text and tags are exempt: their verification reads text and tagged
-            // ids, which materialise regardless.
-            long requestedViewId = Rid.Value(p.View.Id);
-            if (activeGraphicalViewId == null)
-                throw new ArgumentException("the ACTIVE graphical view could not be read, so the measured " +
-                    "precondition for dimensions - Revit materialises their references and values only in a " +
-                    "displayed view - cannot be checked. Activate the target view (horizun_navigate " +
-                    "operation=open_view) and call again. Nothing was written.");
-            if (activeGraphicalViewId.Value != requestedViewId)
-                throw new ArgumentException("view_id " + requestedViewId + " is not the ACTIVE view (the active " +
-                    "graphical view is " + activeGraphicalViewId.Value + "). Revit materialises a dimension's " +
-                    "references and values only for a DISPLAYED view - in a never-shown view a correct committed " +
-                    "dimension reads AreReferencesAvailable=false and Value 0, and the post-commit verification " +
-                    "would roll the whole batch back. Open the target view first (horizun_navigate " +
-                    "operation=open_view, view_id=" + requestedViewId + ") and call again. Nothing was written.");
-
             // ---- references ----
             if (op == DimensionPlanRules.OpDimension || op == DimensionPlanRules.OpAngular ||
                 op == DimensionPlanRules.OpArcLength)
@@ -565,6 +290,8 @@ namespace Horizun.Revit.Commands
                     : refsToken.Select(t => t != null && t.Type == JTokenType.String ? t.Value<string>() : null).ToList();
                 string listError = DimensionPlanRules.ReferenceListError(op, stable);
                 if (listError != null) throw new ArgumentException(listError);
+                for (int i = 0; i < stable.Count; i++) stable[i] = ResolveLevelToken(doc, stable[i], "references[" + i + "]");
+                ResolvePatternRequests(doc, p, a, stable, scale);
                 for (int i = 0; i < stable.Count; i++) AddReference(doc, p, stable[i], "references[" + i + "]");
             }
             else
@@ -572,7 +299,9 @@ namespace Horizun.Revit.Commands
                 string single = a.Value<string>("reference");
                 if (string.IsNullOrWhiteSpace(single))
                     throw new ArgumentException(op + " needs 'reference': one stable reference string.");
-                AddReference(doc, p, single, "reference");
+                if (a["pattern_points"] != null)
+                    throw new ArgumentException("pattern_points is only for operation=dimension.");
+                AddReference(doc, p, ResolveLevelToken(doc, single, "reference"), "reference");
             }
             if (op == DimensionPlanRules.OpArcLength)
             {
@@ -600,6 +329,19 @@ namespace Horizun.Revit.Commands
                 if (a["above"] != null) { p.HasAbove = true; p.Above = a.Value<string>("above") ?? ""; }
                 if (a["below"] != null) { p.HasBelow = true; p.Below = a.Value<string>("below") ?? ""; }
                 if (a["value_override"] != null) { p.HasValueOverride = true; p.ValueOverride = a.Value<string>("value_override") ?? ""; }
+                // Item 2.3: a dimension whose text is not its measurement is refused unless
+                // the caller says so explicitly, and one drawn outside the active crop would
+                // be clipped - both refused HERE, before anything is rehearsed.
+                p.AllowTextOverride = a.Value<bool?>("allow_text_override") ?? false;
+                p.AllowOutsideCrop = a.Value<bool?>("allow_outside_crop") ?? false;
+                string overrideError = DimensionGeometryRules.ValueOverrideError(p.HasValueOverride, p.AllowTextOverride);
+                if (overrideError != null) throw new ArgumentException(overrideError);
+                if (!p.AllowOutsideCrop)
+                {
+                    JObject cropDetail;
+                    if (DimensionGeometryProbe.InsideCrop(p.View, new[] { x, y }, out cropDetail) == false)
+                        throw new ArgumentException(DimensionGeometryRules.OutsideCropError(p.Index));
+                }
                 if (a["eq"] != null) p.Eq = a.Value<bool>("eq");
                 if (a["lock"] != null) p.Lock = a.Value<bool>("lock");
             }
@@ -644,6 +386,7 @@ namespace Horizun.Revit.Commands
                     ? Point(a["end"], scale, true)
                     : p.SpotBend.Add(right.Multiply(2.0));
                 p.SpotLeader = a.Value<bool?>("leader") ?? false;
+                if (op == DimensionPlanRules.OpSpotElevation) SpotElevationPrecheck(doc, p);
             }
 
             // ---- expected_value: the caller's postcondition on the measured value ----
@@ -707,9 +450,17 @@ namespace Horizun.Revit.Commands
             try { linkedId = r.LinkedElementId; } catch { linkedId = null; }
             bool isLinked = linkedId != null && linkedId != ElementId.InvalidElementId;
 
+            RevitLinkInstance linkOwner = null;
+            try { linkOwner = doc.GetElement(r.ElementId) as RevitLinkInstance; } catch { }
+            string linkRefusal = LinkedDatumRules.ReferenceRefusal(field, linkOwner != null, isLinked, isLinked);
+            if (linkRefusal != null) throw new ArgumentException(linkRefusal);
             if (isLinked)
             {
                 binding = ResolveLinkBinding(doc, r, linkedId, field, out owner, out toHost);
+                if (owner is DatumPlane || owner is ReferencePlane)
+                {
+                    throw new LinkedDatumDimensionException(field, binding);
+                }
 #if REVIT2023
                 IncompatibilityReason revit2023Limit = DimensionReferenceRules.LinkedGeometryRejectedByRevit2023();
                 throw new ArgumentException(field + ": " + revit2023Limit.Code + ": " + revit2023Limit.Message);
@@ -730,7 +481,9 @@ namespace Horizun.Revit.Commands
                                             "cannot bind it. Nothing was written.");
             }
             string refType;
-            try { refType = r.ElementReferenceType.ToString(); } catch { refType = "unknown"; }
+            try { refType = r.ElementReferenceType.ToString(); } catch { refType = null; }
+            if (string.IsNullOrEmpty(refType))
+                throw new ArgumentException(field + ": reference type could not be read. Nothing was written.");
 
             int order = p.RefList.Count;
             string fingerprint = ReferenceGeometryFingerprint(doc, p.View, r, owner, toHost, order, refType, field);
@@ -743,6 +496,13 @@ namespace Horizun.Revit.Commands
             p.RefFingerprints.Add(fingerprint);
             p.RefLinks.Add(binding);
             return r;
+        }
+
+        private sealed class LinkedDatumDimensionException : ArgumentException
+        {
+            public LinkedDatumDimensionException(string field, LinkBinding binding)
+                : base(field + " (link instance " + binding.LinkInstanceId + ", linked element " +
+                       binding.LinkedElementId + "): " + DimensionReferenceRules.LinkedDatumRejected().Message) { }
         }
 
         /// <summary>
@@ -798,15 +558,6 @@ namespace Horizun.Revit.Commands
                                             LinkedReferenceRules.LinkedElementMissing(instanceId, linkedElementId,
                                                                                       linkedDoc.Title) +
                                             " Nothing was written.");
-            if (linkedElement is DatumPlane)
-                // Measured live 2026-08-26: the rehearsal would refuse this with Revit's
-                // 'Invalid number of references'. Refusing HERE, before any transaction,
-                // names the actual cause instead of Revit's least helpful sentence.
-                throw new ArgumentException(field + ": element " + linkedElementId + " inside link instance " +
-                                            instanceId + " is a DATUM (" + linkedElement.GetType().Name + "). " +
-                                            DimensionReferenceRules.LinkedDatumRejected().Message +
-                                            " Nothing was written.");
-
             LinkTransformFacts facts;
             string fingerprint;
             try
@@ -1234,6 +985,7 @@ namespace Horizun.Revit.Commands
         {
             if (p.Operation == "text")
             {
+                if (p.TextPlan != null && p.TextPlan.Any) return CreateText(doc, p);
                 if (!HasTextOptions(p.Input)) return TextNote.Create(doc, p.View.Id, p.Point, p.Text, p.Type.Id);
                 var options = new TextNoteOptions(p.Type.Id);
                 if (p.Input["horizontal_alignment"] != null)
@@ -1246,27 +998,164 @@ namespace Horizun.Revit.Commands
             }
             if (p.Operation == "tag")
             {
-                TagMode mode = TagMode.TM_ADDBY_CATEGORY; string m = (p.Input.Value<string>("tag_mode") ?? "by_category").ToLowerInvariant();
-                if (m == "multi_category") mode = TagMode.TM_ADDBY_MULTICATEGORY; else if (m == "material") mode = TagMode.TM_ADDBY_MATERIAL;
+                Room room = TaggedRoom(p);
+                if (room != null)
+                {
+                    FamilySymbol roomType = p.Type as FamilySymbol;
+                    if (p.RoomTagFamilyPath != null)
+                    {
+                        string familyName = Path.GetFileNameWithoutExtension(p.RoomTagFamilyPath);
+                        Family loaded;
+                        if (!doc.LoadFamily(p.RoomTagFamilyPath, out loaded) || loaded == null)
+                            loaded = new FilteredElementCollector(doc).OfClass(typeof(Family)).Cast<Family>()
+                                .FirstOrDefault(f => string.Equals(f.Name, familyName, StringComparison.Ordinal));
+                        if (loaded == null || loaded.FamilyCategory?.Id != Category.GetCategory(doc, BuiltInCategory.OST_RoomTags)?.Id)
+                            throw new InvalidOperationException("tag_family_path did not load a RoomTag family: " + p.RoomTagFamilyPath);
+                        if (roomType != null && roomType.Family.Id != loaded.Id)
+                            throw new InvalidOperationException("tag_type_id does not belong to the RoomTag family at tag_family_path.");
+                        var symbols = loaded.GetFamilySymbolIds().Select(id => doc.GetElement(id) as FamilySymbol)
+                            .Where(s => s != null).ToList();
+                        if (roomType == null)
+                        {
+                            string wanted = p.Input.Value<string>("tag_type_name");
+                            var matches = string.IsNullOrWhiteSpace(wanted) ? symbols : symbols.Where(s => s.Name == wanted).ToList();
+                            if (matches.Count != 1)
+                                throw new InvalidOperationException("RoomTag RFA must have exactly one selectable type, or provide tag_type_name. Found " +
+                                    matches.Count + " matching types in " + familyName + ".");
+                            roomType = matches[0];
+                        }
+                    }
+                    if (roomType == null)
+                    {
+                        // Field (2025): several room tag types loaded refused every room. The document's own
+                        // default for OST_RoomTags is the type Revit itself would use, so it is taken; only
+                        // when there is none among the loaded types is the call refused, listing them.
+                        string ambiguous;
+                        roomType = DefaultTagType(doc, BuiltInCategory.OST_RoomTags, "RoomTag", out ambiguous) as FamilySymbol;
+                        if (roomType == null)
+                            throw new InvalidOperationException(ambiguous ??
+                                "No RoomTag type is loaded; load one (annotate load_tag_family) or pass tag_type_id.");
+                        p.TypeDefaulted = true;
+                    }
+                    // A room tag is born INSIDE its room; its head may sit outside only when it has a leader
+                    // (measured: asking for an outside head without one is Revit's "Head position outside" failure).
+                    // So with add_leader the tag is created at a point inside the room, the leader is switched on,
+                    // and only then is the head moved to the requested point.
+                    bool roomLeader = p.Input.Value<bool?>("add_leader") == true;
+                    UV birth = new UV(p.Point.X, p.Point.Y);
+                    // A room of a LINK lives in the link's coordinates: the inside test runs on the
+                    // requested point carried into the link, and the fallback birth point (the room's
+                    // location) is carried back to the host.
+                    Transform toHost = p.LinkInstance != null ? p.LinkInstance.GetTotalTransform() : Transform.Identity;
+                    if (roomLeader)
+                    {
+                        bool inside = RoomContainsHostPoint(room, p.LinkInstance, p.Point) == true;
+                        if (!inside && room.Location is LocationPoint roomAt)
+                        {
+                            XYZ hostAt = toHost.OfPoint(roomAt.Point);
+                            birth = new UV(hostAt.X, hostAt.Y);
+                        }
+                    }
+                    LinkElementId roomRef = p.LinkInstance != null ? new LinkElementId(p.LinkInstance.Id, room.Id) : new LinkElementId(room.Id);
+                    RoomTag created = doc.Create.NewRoomTag(roomRef, birth, p.View.Id);
+                    if (created == null) throw new InvalidOperationException("Revit returned no RoomTag.");
+                    if (created.GetTypeId() != roomType.Id) created.ChangeTypeId(roomType.Id);
+                    if (roomLeader) created.HasLeader = true;
+                    p.TagPoint = new XYZ(p.Point.X, p.Point.Y, created.TagHeadPosition.Z);
+                    created.TagHeadPosition = p.TagPoint;
+                    ApplySpatialLeader(created, p);
+                    p.RoomTagTypeName = roomType.Name;
+                    p.RoomTagFamilyName = roomType.Family.Name;
+                    return created;
+                }
+                if (SpatialKind(p.Target) != null) return CreateSpatialTag(doc, p);
+                string m = p.Mode ?? TagRules.ByCategory;
+                TagMode mode = TagMode.TM_ADDBY_CATEGORY;
+                if (m == TagRules.MultiCategory) mode = TagMode.TM_ADDBY_MULTICATEGORY;
+                else if (TagRules.IsMaterialMode(m)) mode = TagMode.TM_ADDBY_MATERIAL;
+                // Every keynote mode is created straight with its keynote type (the tag-type overload) on the
+                // element's reference. A material keynote is NOT a material tag (measured, 2025.4: a keynote type
+                // is "not valid for the tag Revit created" by TM_ADDBY_MATERIAL): it is a keynote tag placed on a
+                // FACE of the material (Key Source is read-only on the instance), verified against that material's keynote.
+                bool keynoteByType = TagRules.IsKeynote(m);
                 TagOrientation orientation = (p.Input.Value<string>("orientation") ?? "horizontal").ToLowerInvariant() == "vertical" ? TagOrientation.Vertical : TagOrientation.Horizontal;
-                IndependentTag tag = IndependentTag.Create(doc, p.View.Id, new Reference(p.Target), p.Input.Value<bool?>("add_leader") == true, mode, orientation, p.Point);
-                if (p.Type != null)
+                Reference tagReference = p.LinkedElement != null
+                    ? new Reference(p.LinkedElement).CreateLinkReference(p.LinkInstance)
+                    : (m == TagRules.KeynoteMaterial && p.MaterialFaceRef != null ? p.MaterialFaceRef : new Reference(p.Target));
+                IndependentTag tag = null;
+                if (p.LinkedElement != null)
+                {
+                    // A tag on a LINKED element: Revit rejects the legacy TagMode overload with a bare
+                    // InternalException (measured live, Revit 2023). The tag type goes in the call, the
+                    // reference is the link reference, and the head is a point of the HOST view
+                    // (p.Point is host coordinates; the link's own placement is already in the reference).
+                    ElementId linkedTypeId = p.Type != null ? p.Type.Id : DefaultLinkedTagTypeId(doc, p.LinkedElement);
+                    if (linkedTypeId == null || linkedTypeId == ElementId.InvalidElementId)
+                        throw new InvalidOperationException("No tag type is loaded in the host for the category '" +
+                            (p.LinkedElement.Category?.Name ?? "?") + "' of linked element " + Rid.Value(p.LinkedElement.Id) +
+                            ". Load a tag family for it in the host (load_tag_family) or pass tag_type_id.");
+                    tag = IndependentTag.Create(doc, linkedTypeId, p.View.Id, tagReference,
+                        p.Input.Value<bool?>("add_leader") == true, orientation, p.Point);
+                }
+                else if (m == TagRules.KeynoteMaterial && p.MaterialFaces != null && p.MaterialFaces.Count > 0)
+                {
+                    // Revit tags only some faces of an element in a given view ("The reference can not be tagged" for the
+                    // rest), and which ones is not exposed: the candidates are tried in order and the first accepted wins.
+                    // A refused Create changes nothing, so trying the next face is safe; the face actually used names the
+                    // material and keynote the verification then demands.
+                    string lastRefusal = null;
+                    foreach (var c in p.MaterialFaces)
+                    {
+                        p.Budget?.Check();
+                        try
+                        {
+                            tag = IndependentTag.Create(doc, p.Type.Id, p.View.Id, c.Item1,
+                                p.Input.Value<bool?>("add_leader") == true, orientation, p.Point);
+                        }
+                        catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ArgumentException || ex is System.ArgumentException) { lastRefusal = ex.Message; tag = null; }
+                        if (tag != null)
+                        {
+                            // The face Revit accepted names the material: its keynote AND that key's table text are what the
+                            // verification then demands (not the first candidate's).
+                            p.MaterialFaceRef = c.Item1; p.MaterialId = c.Item2; p.MaterialKeynote = c.Item3;
+                            string tableText = null;
+                            p.KeynoteText = p.MaterialKeynoteTable != null && p.MaterialKeynoteTable.TryGetValue(c.Item3, out tableText) ? tableText : null;
+                            break;
+                        }
+                    }
+                    if (tag == null)
+                        throw new InvalidOperationException("tag_mode=keynote_material: Revit accepted none of the " + p.MaterialFaces.Count +
+                            " faces of element " + Rid.Value(p.Target.Id) + " whose material carries a keynote as a tag reference in view " +
+                            Rid.Value(p.View.Id) + " (last: " + (lastRefusal ?? "?").Split('\r', '\n')[0] + "). Tag it in a view where that face is seen, or use keynote_element / keynote_user.");
+                }
+                else if (keynoteByType)
+                    tag = IndependentTag.Create(doc, p.Type.Id, p.View.Id, tagReference,
+                        p.Input.Value<bool?>("add_leader") == true, orientation, p.Point);
+                else
+                    tag = IndependentTag.Create(doc, p.View.Id, tagReference, p.Input.Value<bool?>("add_leader") == true, mode, orientation, p.Point);
+                if (p.Type != null && tag.GetTypeId() != p.Type.Id)
                 {
                     ICollection<ElementId> valid = tag.GetValidTypes();
                     if (valid == null || !valid.Contains(p.Type.Id))
                         throw new InvalidOperationException("tag_type_id " + Rid.Value(p.Type.Id) +
-                            " is not valid for the tag Revit created for element " + Rid.Value(p.Target.Id) + ".");
+                            " is not valid for the tag Revit created for element " +
+                            (p.LinkedElement != null ? Rid.Value(p.LinkedElement.Id) + " of link instance " + Rid.Value(p.LinkInstance.Id) : Rid.Value(p.Target.Id).ToString(CultureInfo.InvariantCulture)) + "." +
+                            " Types valid for it: " + TagRules.CandidatesText(valid == null ? null : valid.Take(12).Select(id =>
+                                Rid.Value(id) + " " + ((doc.GetElement(id) as FamilySymbol)?.FamilyName ?? "?") + ": " + (doc.GetElement(id)?.Name ?? "?")).ToList()) + ".");
                     tag.ChangeTypeId(p.Type.Id);
                 }
+                ApplyTagExtras(doc, p, tag);
                 tag.TagHeadPosition = p.Point;
                 p.TagPoint = p.Point;
+                ApplyTagLeader(p, tag);
                 if (p.Input.Value<bool?>("avoid_collisions") == true)
                 {
                     p.TagCoverage = new JObject();
                     p.TagPoint = AnnotationLayout.Place(doc,p.View,tag,p.Point,
                         (p.Input.Value<double?>("layout_clearance") ?? 10)*p.Scale,
                         (p.Input.Value<double?>("layout_max_displacement") ?? 1200)*p.Scale,
-                        p.LayoutAccepted, p.TagCoverage);
+                        p.LayoutAccepted, p.TagCoverage, p.Budget);
+                    p.TagLayoutFallback = p.TagCoverage.Value<bool>("layout_fallback");
                 }
                 return tag;
             }
@@ -1315,144 +1204,6 @@ namespace Horizun.Revit.Commands
         }
 
         // ---------------------------------------------------------------------
-        // The rehearsal: provisional creation, measurement, MANDATORY rollback.
-        // ---------------------------------------------------------------------
-        private Rehearsal Rehearse(Document doc, List<Plan> plans)
-        {
-            var re = new Rehearsal();
-            int failedIndex = -1; string failedWhy = null, regenWhy = null;
-            var attempted = new HashSet<int>();
-            using (var tx = new Transaction(doc, "Horizun: rehearse annotate"))
-            {
-                tx.Start();
-                var opts = tx.GetFailureHandlingOptions();
-                opts.SetFailuresPreprocessor(new SilenceWarnings());
-                opts.SetClearAfterRollback(true);
-                tx.SetFailureHandlingOptions(opts);
-
-                foreach (Plan p in plans)
-                {
-                    attempted.Add(p.Index);
-                    try
-                    {
-                        Element e = Create(doc, p);
-                        if (e == null) { failedIndex = p.Index; failedWhy = "Revit returned no element"; break; }
-                        p.Created = e.Id;
-                        if (p.Operation == "tag") p.EffectiveTagType = doc.GetElement(e.GetTypeId()) as ElementType;
-                        Dimension d = e as Dimension; if (d != null) Decorate(d, p);
-                    }
-                    catch (Exception ex) { failedIndex = p.Index; failedWhy = ex.Message; break; }
-                }
-                if (failedIndex < 0)
-                {
-                    try { doc.Regenerate(); } catch (Exception ex) { regenWhy = ex.Message; }
-                }
-                // Measure INSIDE the transaction - the mandatory rollback below erases
-                // the evidence a moment later.
-                foreach (Plan p in plans)
-                {
-                    JObject row;
-                    bool constructible = false;
-                    if (failedIndex >= 0 || regenWhy != null)
-                    {
-                        string reason = p.Index == failedIndex
-                            ? failedWhy
-                            : regenWhy != null && attempted.Contains(p.Index)
-                                ? "the rehearsal could not regenerate after creating the batch: " + regenWhy
-                                : attempted.Contains(p.Index)
-                                    ? "created, then action " + failedIndex + " failed before the batch could be " +
-                                      "measured; the shared rehearsal transaction was rolled back"
-                                    : "not attempted: action " + failedIndex + " failed first and the shared " +
-                                      "rehearsal transaction was rolled back";
-                        row = new JObject
-                        {
-                            ["index"] = p.Index, ["operation"] = p.Operation,
-                            ["constructible"] = p.Index == failedIndex || regenWhy != null
-                                ? (JToken)false
-                                : JValue.CreateNull(),
-                            ["reason"] = reason
-                        };
-                    }
-                    else if (DimensionPlanRules.IsDimensionOperation(p.Operation))
-                    {
-                        Element e = p.Created == null ? null : doc.GetElement(p.Created);
-                        Measured m = Measure(doc, p, e);
-                        p.Rehearsed = m;
-                        bool ok; JObject verification = BuildChecks(p, m, m, VerifyStage.Rehearsal, out ok);
-                        constructible = ok;
-                        row = new JObject
-                        {
-                            ["index"] = p.Index, ["operation"] = p.Operation,
-                            ["constructible"] = constructible,
-                            ["reason"] = constructible
-                                ? null
-                                : (m.Unreadable ?? "one or more rehearsal checks did not match - see verification"),
-                            ["evidence"] = Evidence(m),
-                            ["verification"] = verification
-                        };
-                        // The expected_value postcondition is deliberately NOT part of
-                        // constructibility: it belongs to the APPLY, where its failure
-                        // rolls the real batch back. Here it is previewed as evidence.
-                        if (p.ExpectedValueFeet.HasValue)
-                        {
-                            double? total = m.Total;
-                            bool materialised = m.ReferencesAvailable == true && total.HasValue;
-                            row["expected_value_preview"] = new JObject
-                            {
-                                // The *_internal_feet names hold RADIANS for an angular
-                                // dimension - Revit's internal angle unit - so the unit is
-                                // said out loud instead of letting the field name lie.
-                                ["unit"] = p.Operation == DimensionPlanRules.OpAngular ? "radians" : "feet",
-                                ["expected_internal_feet"] = p.ExpectedValueFeet.Value,
-                                ["tolerance_internal_feet"] = p.ExpectedToleranceFeet,
-                                ["measured_internal_feet"] = materialised ? (JToken)total.Value : JValue.CreateNull(),
-                                // Null, not false, when Revit has not materialised the
-                                // value yet: pre-commit a correct dimension measures 0,
-                                // and previewing that as "would fail" reads like a
-                                // verdict. The postcondition itself runs post-commit.
-                                ["would_pass"] = materialised
-                                    ? (JToken)(Math.Abs(total.Value - p.ExpectedValueFeet.Value) <= p.ExpectedToleranceFeet)
-                                    : JValue.CreateNull(),
-                                ["note"] = materialised
-                                    ? null
-                                    : "Revit materialises dimension values at commit; the postcondition is " +
-                                      "checked post-commit inside the still-open TransactionGroup."
-                            };
-                        }
-                    }
-                    else
-                    {
-                        Element e = p.Created == null ? null : doc.GetElement(p.Created);
-                        string why;
-                        constructible = Verify(p, e, out why);
-                        if (constructible && e is IndependentTag measuredTag)
-                            p.TagRehearsal = AnnotationLayout.Evidence(measuredTag,p.View);
-                        row = new JObject
-                        {
-                            ["index"] = p.Index, ["operation"] = p.Operation,
-                            ["constructible"] = constructible,
-                            ["reason"] = constructible ? null : (why ?? "created, but the annotation would not verify " +
-                                                                "(see this command's text/tag verification)")
-                        };
-                        if (p.TagCoverage != null && p.TagCoverage.HasValues)
-                            row["annotation_coverage"] = p.TagCoverage.DeepClone();
-                    }
-                    if (!(row["constructible"] is JValue jc && jc.Type == JTokenType.Boolean && (bool)jc.Value))
-                        re.NotConstructibleCount++;
-                    re.Rows.Add(row);
-                }
-
-                Guard.RollbackResult rb = Guard.RollBack(tx);
-                re.RollbackStatus = rb.StatusName;
-                re.RollbackConfirmed = rb.Confirmed;
-            }
-            // Ids from a rolled-back transaction must never leak into a later phase.
-            foreach (Plan p in plans) p.Created = null;
-            re.AllConstructible = re.NotConstructibleCount == 0;
-            return re;
-        }
-
-        // ---------------------------------------------------------------------
         // Measurement and verification.
         // ---------------------------------------------------------------------
 
@@ -1479,10 +1230,14 @@ namespace Horizun.Revit.Commands
             try
             {
                 m.RefReps = new List<string>();
+                m.RefTypes = new List<string>();
                 ReferenceArray refs = dim.References;
                 if (refs == null) Note(m, "References returned null");
                 else foreach (Reference r in refs)
+                {
                     m.RefReps.Add(r == null ? "<null>" : r.ConvertToStableRepresentation(doc));
+                    m.RefTypes.Add(r == null ? "<null>" : r.ElementReferenceType.ToString());
+                }
             }
             catch (Exception ex) { Note(m, "References: " + ex.Message); }
             try { m.SegmentCount = dim.NumberOfSegments; } catch (Exception ex) { Note(m, "NumberOfSegments: " + ex.Message); }
@@ -1520,9 +1275,12 @@ namespace Horizun.Revit.Commands
                         m.CurveRead = true; m.CurveBound = line.IsBound;
                         if (line.IsBound) { m.CurveStart = Arr(line.GetEndPoint(0)); m.CurveEnd = Arr(line.GetEndPoint(1)); }
                         else { m.CurveOrigin = Arr(line.Origin); m.CurveDirection = Arr(line.Direction); }
+                        m.LineDirection = Arr(line.Direction);
                     }
                 }
                 catch (Exception ex) { Note(m, "Curve: " + ex.Message); }
+                ReadGeometryFacts(doc, p, dim, m);
+                ReadPatternExtent(doc, dim, m);
             }
             else if (p.Operation == DimensionPlanRules.OpAngular)
             {
@@ -1547,10 +1305,52 @@ namespace Horizun.Revit.Commands
             if (p.HasValueOverride) try { m.ValueOverride = dim.ValueOverride; } catch (Exception ex) { Note(m, "ValueOverride: " + ex.Message); }
             if (p.Eq.HasValue) try { m.Eq = dim.AreSegmentsEqual; } catch (Exception ex) { Note(m, "AreSegmentsEqual: " + ex.Message); }
             if (p.Lock.HasValue) try { m.Locked = dim.IsLocked; } catch (Exception ex) { Note(m, "IsLocked: " + ex.Message); }
+            ReadPaperFacts(doc, p, dim, m);
             return m;
         }
 
         private static void Note(Measured m, string what) { if (m.Unreadable == null) m.Unreadable = what; }
+
+        /// <summary>
+        /// Item 2.3 facts, read without poisoning the row: the geometry of every
+        /// reference (unmeasurable ones say why), every value override actually on the
+        /// dimension and its segments, and whether the dimension sits inside the crop.
+        /// A read that fails here becomes "unavailable" in the check, never a pass.
+        /// </summary>
+        private static void ReadGeometryFacts(Document doc, Plan p, Dimension dim, Measured m)
+        {
+            try
+            {
+                var refs = new List<Reference>();
+                foreach (Reference r in dim.References) refs.Add(r);
+                m.RefGeometries = DimensionGeometryProbe.ReadAll(doc, refs);
+            }
+            catch (Exception ex) { m.GeometryUnreadable = ex.Message; }
+            try
+            {
+                var found = new List<string>();
+                string own = dim.NumberOfSegments > 1 ? null : dim.ValueOverride;
+                if (!string.IsNullOrEmpty(own)) found.Add(own);
+                foreach (DimensionSegment s in dim.Segments)
+                {
+                    string so = s.ValueOverride;
+                    if (!string.IsNullOrEmpty(so)) found.Add(so);
+                }
+                m.OverridesFound = found;
+            }
+            catch (Exception ex) { m.OverridesUnreadable = ex.Message; }
+            var points = new List<XYZ>();
+            if (p.Line != null) { points.Add(p.Line.GetEndPoint(0)); points.Add(p.Line.GetEndPoint(1)); }
+            try
+            {
+                if (dim.NumberOfSegments > 1) { foreach (DimensionSegment s in dim.Segments) points.Add(s.Origin); }
+                else points.Add(dim.Origin);
+            }
+            catch { /* the requested line endpoints still stand */ }
+            JObject detail;
+            m.InsideCrop = DimensionGeometryProbe.InsideCrop(p.View, points, out detail);
+            m.CropDetail = detail;
+        }
 
         /// <summary>
         /// Every comparison the contract demands, as requested / read / match rows.
@@ -1572,13 +1372,10 @@ namespace Horizun.Revit.Commands
         /// only post-commit - where the TransactionGroup is still open, so a failure
         /// still rolls the WHOLE batch back.
         /// </summary>
-        private enum VerifyStage { Rehearsal, InTransaction, PostCommit }
-
         private static JObject BuildChecks(Plan p, Measured m, Measured baseline, VerifyStage stage, out bool allOk)
         {
             var checks = new JArray();
             bool ok = true;
-            bool deferAvailability = false;
             Action<string, JToken, JToken, bool> add = null;
             add = (field, requested, read, match) =>
             {
@@ -1607,21 +1404,7 @@ namespace Horizun.Revit.Commands
             add("dimension_type_id", typeId, m.TypeId.HasValue ? (JToken)m.TypeId.Value : null,
                 m.TypeId.HasValue && m.TypeId.Value == typeId);
 
-            if (stage == VerifyStage.PostCommit)
-            {
-                // Deferred to the END of the checks: measured three times now (the
-                // reopened RFA, and radial/diameter and spot dimensions whose
-                // references live in FAMILY-INSTANCE geometry), Revit computes this
-                // flag lazily - it can read false post-commit on a dimension whose
-                // MEASURED VALUE is exactly right. So the flag alone may not fail a
-                // row whose every substantive check - class, view, type, references
-                // by owner and order, segments, curve, values, the caller's
-                // expected_value - passed; the row then says the verification stood
-                // on substance, not on the flag. A false flag WITH failing substance
-                // still fails.
-                deferAvailability = true;
-            }
-            else
+            if (stage != VerifyStage.PostCommit)
                 // Observed, not demanded: Revit materialises reference availability at
                 // commit, so inside an open transaction false is the normal reading of
                 // a correct dimension. The value travels so nobody has to trust this
@@ -1652,8 +1435,8 @@ namespace Horizun.Revit.Commands
             bool setMatch;
             if (vsRequested)
                 setMatch = wanted != null && m.RefReps != null &&
-                           DimensionPlanRules.ReferenceOwnerKeys(wanted)
-                               .SequenceEqual(DimensionPlanRules.ReferenceOwnerKeys(m.RefReps), StringComparer.Ordinal);
+                           DimensionPlanRules.ReferenceKeysWithTypes(wanted, p.RefTypes)
+                               .SequenceEqual(DimensionPlanRules.ReferenceKeysWithTypes(m.RefReps, m.RefTypes), StringComparer.Ordinal);
             else
                 setMatch = wanted != null && m.RefReps != null &&
                            wanted.OrderBy(s => s, StringComparer.Ordinal)
@@ -1665,6 +1448,15 @@ namespace Horizun.Revit.Commands
             add("references_order_vs_rehearsed",
                 baseline?.RefReps == null ? null : new JArray(baseline.RefReps),
                 m.RefReps == null ? null : new JArray(m.RefReps), orderMatch);
+            // NewDimension ignores some references IN SILENCE (a linked grid, field report
+            // on Revit 2024): the dimension exists with fewer references than asked. Named
+            // here, by index, so the refusal says which one Revit dropped.
+            if (vsRequested && m.RefReps != null)
+            {
+                List<int> dropped = DimensionLinkRules.Dropped(p.RefReserialized, p.RefTypes, m.RefReps, m.RefTypes);
+                m.DroppedMessage = DimensionLinkRules.DroppedMessage(dropped, p.RefRequested);
+                if (dropped.Count > 0) add("references_dropped_by_revit", new JArray(), new JArray(dropped), false);
+            }
 
             // Segments: the caller-shaped operations have an arithmetic expectation;
             // the rest are held to the rehearsed count.
@@ -1790,6 +1582,92 @@ namespace Horizun.Revit.Commands
             if (p.Eq.HasValue) add("eq", p.Eq.Value, m.Eq.HasValue ? (JToken)m.Eq.Value : null, m.Eq == p.Eq);
             if (p.Lock.HasValue) add("lock", p.Lock.Value, m.Locked.HasValue ? (JToken)m.Locked.Value : null, m.Locked == p.Lock);
 
+            // Item 2.3, post-commit: the values against the GEOMETRY of the references
+            // (1 mm), no value override that was not asked for, and inside the crop.
+            if (stage == VerifyStage.PostCommit && op == DimensionPlanRules.OpDimension)
+            {
+                JObject geometry;
+                bool? geometryMatch;
+                if (m.RefGeometries == null || m.LineDirection == null)
+                {
+                    geometry = new JObject { ["status"] = DimensionGeometryRules.StatusUnavailable,
+                                             ["reason"] = m.GeometryUnreadable ?? "dimension line or references unreadable" };
+                    geometryMatch = null;
+                }
+                else
+                {
+                    DimensionGeometryVerdict v = DimensionGeometryRules.VerifyAnyOrder(m.RefGeometries, m.LineDirection,
+                        m.SingleValue, m.SegmentValues, DimensionGeometryRules.DefaultToleranceFeet);
+                    geometry = DimensionGeometryProbe.ToJson(v, 1.0);
+                    geometry["unit"] = "feet";
+                    geometryMatch = v.Failed ? false : v.Status == DimensionGeometryRules.StatusVerified ? (bool?)true : null;
+                }
+                checks.Add(new JObject
+                {
+                    ["field"] = "geometry",
+                    ["requested"] = "every measurable segment within 1 mm of its references' geometry",
+                    ["read"] = geometry,
+                    ["match"] = geometryMatch.HasValue ? (JToken)geometryMatch.Value : JValue.CreateNull()
+                });
+                if (geometryMatch == false) ok = false;
+
+                if (!p.HasValueOverride)
+                {
+                    if (m.OverridesFound != null)
+                        add("value_override_empty", "", new JArray(m.OverridesFound), m.OverridesFound.Count == 0);
+                    else add("value_override_empty", "", m.OverridesUnreadable, false);
+                }
+                if (!p.AllowOutsideCrop && m.InsideCrop.HasValue)
+                    add("inside_crop", true, m.CropDetail, m.InsideCrop.Value);
+            }
+
+            // A pattern joint is an infinite line: a segment end on one must fall inside its face.
+            if (stage == VerifyStage.PostCommit && op == DimensionPlanRules.OpDimension && m.PatternExtent != null)
+            {
+                bool? inside = m.PatternExtent.Status == "verified" ? true
+                             : m.PatternExtent.Status == "failed" ? (bool?)false : null;
+                checks.Add(new JObject
+                {
+                    ["field"] = "pattern_lines_inside_element",
+                    ["requested"] = "every segment end on a pattern line inside the patterned face",
+                    ["read"] = new JObject { ["status"] = m.PatternExtent.Status, ["reason"] = m.PatternExtent.Reason,
+                                             ["outside_internal_feet"] = new JArray(m.PatternExtent.Outside) },
+                    ["match"] = inside.HasValue ? (JToken)inside.Value : JValue.CreateNull()
+                });
+                if (inside == false) ok = false;
+
+                bool? jointMatch;
+                JObject jointRead = JointPositionCheck(p, m, out jointMatch);
+                if (jointRead != null)
+                {
+                    checks.Add(new JObject
+                    {
+                        ["field"] = "pattern_joint_is_segment_end",
+                        ["requested"] = "every joint chosen for '<face>/?' is where a segment of the dimension ends",
+                        ["read"] = jointRead,
+                        ["match"] = jointMatch.HasValue ? (JToken)jointMatch.Value : JValue.CreateNull()
+                    });
+                    if (jointMatch == false) ok = false;
+                }
+            }
+
+            // Will it reach the sheet? Reported on every row; it decides only when the
+            // caller asked with require_printable. The box counts only once committed.
+            {
+                bool committedStage = stage == VerifyStage.PostCommit;
+                DimensionPrintRules.Verdict print = PrintVerdict(m, committedStage);
+                bool printOk = !p.RequirePrintable ||
+                               DimensionPrintRules.RequirePrintableError(p.Index, print, committedStage) == null;
+                checks.Add(new JObject
+                {
+                    ["field"] = "will_print",
+                    ["requested"] = p.RequirePrintable ? (JToken)true : "reported only (require_printable=false)",
+                    ["read"] = DimensionPaper.VerdictJson(print),
+                    ["match"] = printOk
+                });
+                if (!printOk) ok = false;
+            }
+
             // The caller's own postcondition. Only POST-COMMIT: that is where Revit has
             // materialised the value, and the TransactionGroup is still open there, so
             // a miss rolls the whole batch back exactly as designed.
@@ -1810,68 +1688,51 @@ namespace Horizun.Revit.Commands
             if (m.Unreadable != null)
                 add("readable", "every field this operation verifies", m.Unreadable, false);
 
-            if (deferAvailability)
-            {
-                bool flagTrue = m.ReferencesAvailable == true;
-                bool substanceOk = ok; // every check so far, availability excluded
-                var availability = new JObject
-                {
-                    ["field"] = "references_available",
-                    ["requested"] = true,
-                    ["read"] = m.ReferencesAvailable.HasValue ? (JToken)m.ReferencesAvailable.Value : JValue.CreateNull(),
-                    ["match"] = flagTrue ? (JToken)true : (substanceOk ? JValue.CreateNull() : (JToken)false),
-                    ["verified_by"] = flagTrue ? "flag" : (substanceOk ? "substance" : "flag")
-                };
-                if (!flagTrue && substanceOk)
-                    availability["note"] =
-                        "Revit computes this flag lazily and can read it false post-commit on a dimension whose " +
-                        "measured value is exactly right (measured live on instance-geometry references and on " +
-                        "reopened RFAs). Every substantive check in this row passed, and the verification stands " +
-                        "on that substance; the flag is reported as observed, not used as the verdict.";
-                checks.Add(availability);
-                if (!flagTrue && !substanceOk) ok = false;
-            }
-
-            allOk = ok;
-            return new JObject
-            {
-                ["comparison_tolerance_feet"] = tol,
-                ["all_match"] = ok,
-                ["checks"] = checks
-            };
+            JObject verification = DimensionPlanRules.FinishDimensionChecks(checks, ok, stage, viewId,
+                p.TargetViewIsActive, m.ReferencesAvailable, isSpot, m.Total);
+            allOk = verification.Value<bool>("all_match");
+            return verification;
         }
 
-        /// <summary>One response row for an apply phase - legacy fields kept, new ones added.</summary>
-        private JObject VerifyRow(Document doc, Plan p, VerifyStage stage, out bool ok)
+        private static void AddTagEvidence(JObject legacy, Plan p, Element e, ref bool ok)
         {
-            Element e = p.Created == null ? null : doc.GetElement(p.Created);
-            if (!DimensionPlanRules.IsDimensionOperation(p.Operation))
+            if (e is IndependentTag tag)
             {
-                string why;
-                ok = Verify(p, e, out why);
-                var legacy = new JObject
+                try
                 {
-                    ["index"] = p.Index, ["operation"] = p.Operation,
-                    ["element_id"] = p.Created == null ? JValue.CreateNull() : new JValue(Rid.Value(p.Created)),
-                    ["verified"] = ok
-                };
-                if (!ok && why != null) legacy["reason"] = why;
-                if (p.TagCoverage != null && p.TagCoverage.HasValues)
-                    legacy["annotation_coverage"] = p.TagCoverage.DeepClone();
-                if (e != null) { try { legacy["unique_id"] = e.UniqueId; } catch { legacy["unique_id"] = null; } }
-                if (e is IndependentTag tag)
-                {
-                    try
-                    {
-                        legacy["tag_evidence"] = AnnotationLayout.Evidence(tag,p.View);
-                        bool held = p.TagRehearsal != null && JToken.DeepEquals(p.TagRehearsal,legacy["tag_evidence"]);
-                        legacy["matches_rehearsal"] = held; ok = ok && held; legacy["verified"] = ok;
-                        legacy["layout_method"] = "conservative annotation bounding boxes; visual approval remains separate";
-                    }
-                    catch(Exception ex) { ok=false; legacy["verified"]=false; legacy["unreadable"]=ex.Message; }
+                    legacy["tag_evidence"] = AnnotationLayout.Evidence(tag,p.View);
+                    bool held = p.TagRehearsal != null && JToken.DeepEquals(p.TagRehearsal,legacy["tag_evidence"]);
+                    legacy["matches_rehearsal"] = held; ok = ok && held; legacy["verified"] = ok;
+                    legacy["layout_method"] = "conservative annotation bounding boxes; visual approval remains separate";
                 }
-                return legacy;
+                catch(Exception ex) { ok=false; legacy["verified"]=false; legacy["unreadable"]=ex.Message; }
+                JObject kind = TagKindEvidence(p, tag);
+                if (kind != null) legacy["tag_kind"] = kind;
+                string read = AnnotationLayout.SafeTagText(tag);
+                MarkEmptyTagText(legacy, p, read, read != null);
             }
+            else if (e is SpatialElementTag spatialTag)
+            {
+                try { legacy["tag_text"] = spatialTag.TagText; } catch { legacy["tag_text"] = null; }
+                MarkEmptyTagText(legacy, p, legacy.Value<string>("tag_text"), legacy["tag_text"].Type != JTokenType.Null);
+            }
+            if (e is RoomTag roomTag && TaggedRoom(p) is Room taggedRoom)
+            {
+                legacy["room_tag"] = new JObject
+                {
+                    ["number"] = taggedRoom.Number,
+                    ["name"] = taggedRoom.Name,
+                    ["area_display"] = taggedRoom.get_Parameter(BuiltInParameter.ROOM_AREA)?.AsValueString(),
+                    ["tag_text"] = roomTag.TagText,
+                    ["type_name"] = p.RoomTagTypeName,
+                    ["family_name"] = p.RoomTagFamilyName,
+                    ["all_fields_visible"] = ok
+                };
+            }
+        }
+
+        private static JObject VerifyDimensionRow(Document doc, Plan p, Element e, VerifyStage stage, out bool ok)
+        {
             Measured m = Measure(doc, p, e);
             Measured baseline = p.Rehearsed;
             bool allOk;
@@ -1894,8 +1755,11 @@ namespace Horizun.Revit.Commands
                 ["class"] = m.ClassName,
                 ["shape"] = m.Shape,
                 ["values"] = Values(m),
+                ["will_print"] = DimensionPaper.VerdictJson(PrintVerdict(m, stage == VerifyStage.PostCommit)),
                 ["verification"] = verification
             };
+            if (m.DroppedMessage != null) row["reason"] = m.DroppedMessage;
+            if (p.PatternResolutions != null) row["pattern_resolutions"] = p.PatternResolutions.DeepClone();
             return row;
         }
 
@@ -1907,6 +1771,7 @@ namespace Horizun.Revit.Commands
                 ["internal_feet"] = total.HasValue ? (JToken)total.Value : JValue.CreateNull(),
                 ["per_segment_feet"] = m.SegmentValues == null ? (JToken)JValue.CreateNull() : new JArray(m.SegmentValues),
                 ["presented"] = m.Presented,
+                ["printed"] = m.Printed == null ? JValue.CreateNull() : (JToken)m.Printed.DeepClone(),
                 ["internal_unit"] = "feet"
             };
         }
@@ -1978,58 +1843,55 @@ namespace Horizun.Revit.Commands
             }
         }
 
-        private static bool Verify(Plan p, Element e)
-        {
-            string ignored;
-            return Verify(p, e, out ignored);
-        }
-
-        /// <summary>
-        /// The same verification, with the reason it failed. "Could not measure the
-        /// annotations" and "the tag is in the wrong place" are different findings and
-        /// a caller cannot act on the first if both arrive as a bare false.
-        /// </summary>
-        private static bool Verify(Plan p, Element e, out string reason)
+        private static bool VerifyOtherAnnotation(Plan p, Element e, out string reason)
         {
             reason = null;
-            // Revit re-encodes a note's line endings and appends a terminating '\r'
-            // (measured on 2023: 'D7_PROBE' reads back 'D7_PROBE\r'), so the comparison
-            // is on the normalised text - the rule and its evidence live in
-            // DimensionPlanRules.StoredTextMatches, where they are unit-tested.
-            if (p.Operation == "text")
-            {
-                TextNote note = e as TextNote;
-                bool okText = note != null && DimensionPlanRules.StoredTextMatches(p.Text, note.Text);
-                if (okText && note.GetTypeId() != p.Type.Id) okText = false;
-                if (okText && p.Input["horizontal_alignment"] != null &&
-                    note.HorizontalAlignment != ParseHorizontal(p.Input.Value<string>("horizontal_alignment"))) okText = false;
-                if (okText && p.Input["vertical_alignment"] != null &&
-                    note.VerticalAlignment != ParseVertical(p.Input.Value<string>("vertical_alignment"))) okText = false;
-                if (okText && p.Input["expected_height_mm"] != null)
-                {
-                    Parameter size = note.TextNoteType?.get_Parameter(BuiltInParameter.TEXT_SIZE);
-                    okText = size != null && size.HasValue &&
-                        Math.Abs(size.AsDouble() * 304.8 - p.Input.Value<double>("expected_height_mm")) <= 0.1;
-                }
-                if (okText && p.Input["rotation_degrees"] != null)
-                {
-                    XYZ basis = note.BaseDirection;
-                    double angle = Math.Atan2(basis.DotProduct(p.View.UpDirection),
-                                              basis.DotProduct(p.View.RightDirection)) * 180.0 / Math.PI;
-                    double expected = p.Input.Value<double>("rotation_degrees");
-                    double delta = ((angle - expected + 540.0) % 360.0) - 180.0;
-                    okText = Math.Abs(delta) <= 0.1;
-                }
-                if (!okText) reason = "the created text note does not read back with the requested text";
-                return okText;
-            }
             if (p.Operation == "tag")
             {
                 try
                 {
+                if (SpatialKind(p.Target) != null) return VerifySpatialTag(p, e, out reason);
+                Room room = TaggedRoom(p);
+                if (room != null)
+                {
+                    RoomTag native = e as RoomTag;
+                    if (native == null || !RoomTagPointsAt(native, p, room) || native.OwnerViewId != p.View.Id || native.IsOrphaned)
+                    { reason = "the committed RoomTag is missing, orphaned, or bound to another Room/view"; return false; }
+                    if (!VerifySpatialLeader(native, p, out reason)) return false;
+                    if (native.TagHeadPosition.DistanceTo(p.TagPoint ?? p.Point) > 1e-6)
+                    { reason = "the committed RoomTag head moved from the requested point"; return false; }
+                    if (native.HasLeader != (p.Input.Value<bool?>("add_leader") == true))
+                    { reason = "the committed RoomTag leader state (" + native.HasLeader + ") differs from add_leader"; return false; }
+                    FamilySymbol symbol = native.Document.GetElement(native.GetTypeId()) as FamilySymbol;
+                    if (symbol == null || (p.Type != null && symbol.Id != p.Type.Id) ||
+                        symbol.Name != p.RoomTagTypeName || symbol.Family.Name != p.RoomTagFamilyName)
+                    { reason = "the committed RoomTag type/family differs from the rehearsed choice"; return false; }
+                    string area = room.get_Parameter(BuiltInParameter.ROOM_AREA)?.AsValueString();
+                    string roomName = room.get_Parameter(BuiltInParameter.ROOM_NAME)?.AsString() ?? room.Name;
+                    string textProblem = RoomTagRules.TextProblem(native.TagText, room.Number, roomName, area, room.Area * 0.09290304);
+                    if (textProblem != null)
+                    {
+                        string shown = native.TagText ?? "";
+                        if (shown.Length > 300) shown = shown.Substring(0, 300) + "...";
+                        reason = textProblem + "; " +
+                            "observed_tag_text=" + JsonConvert.ToString(shown) +
+                            ", expected_number=" + JsonConvert.ToString(room.Number) +
+                            ", expected_name=" + JsonConvert.ToString(roomName) +
+                            ", expected_area=" + JsonConvert.ToString(area);
+                        return false;
+                    }
+                    return true;
+                }
                 IndependentTag tag = e as IndependentTag;
-                if (tag == null || !tag.GetTaggedLocalElementIds().Any(id => id == p.Target.Id))
+                if (tag != null && p.LinkedElement != null)
+                {
+                    var taggedPairs = tag.GetTaggedElementIds().Select(l => new KeyValuePair<long, long>(Rid.Value(l.LinkInstanceId), Rid.Value(l.LinkedElementId)));
+                    if (!LinkedTagRules.PointsOnlyAt(taggedPairs, Rid.Value(p.LinkInstance.Id), Rid.Value(p.LinkedElement.Id)))
+                    { reason = "the created tag does not point only at element " + Rid.Value(p.LinkedElement.Id) + " of link instance " + Rid.Value(p.LinkInstance.Id); return false; }
+                }
+                else if (tag == null || !tag.GetTaggedLocalElementIds().Any(id => id == p.Target.Id))
                 { reason = "the created element is not a tag on element " + Rid.Value(p.Target.Id); return false; }
+                if (!VerifyTagKind(p, tag, out reason)) return false;
                 Element expected = p.Type ?? p.EffectiveTagType;
                 if (expected != null && tag.GetTypeId() != expected.Id)
                 { reason = "the committed tag type is not the bound type " + Rid.Value(expected.Id); return false; }
@@ -2037,14 +1899,15 @@ namespace Horizun.Revit.Commands
                     tag.HasLeader != (p.Input.Value<bool?>("add_leader")==true) ||
                     tag.TagOrientation != ((p.Input.Value<string>("orientation") ?? "horizontal") == "vertical" ? TagOrientation.Vertical : TagOrientation.Horizontal))
                 { reason = "the committed tag differs from the plan in view, orphan state, head position, leader or orientation"; return false; }
-                if (p.Input.Value<bool?>("require_tag_text")==true && (string.IsNullOrWhiteSpace(tag.TagText) || tag.TagText.Trim()=="?"))
-                { reason = "require_tag_text is on and the tag reads '" + (tag.TagText ?? "") + "': the tag family " +
+                if (!VerifyTagLeader(p, tag, out reason)) return false;
+                if (p.Input.Value<bool?>("require_tag_text")==true && (string.IsNullOrWhiteSpace(AnnotationLayout.SafeTagText(tag)) || AnnotationLayout.SafeTagText(tag).Trim()=="?"))
+                { reason = "require_tag_text is on and the tag reads '" + (AnnotationLayout.SafeTagText(tag) ?? "") + "': the tag family " +
                            "produces no readable text for this element"; return false; }
                 if (p.Input.Value<bool?>("avoid_collisions")==true)
                 {
                     // A coverage refusal is NOT the same finding as an overlap, and it
                     // travels with its ids instead of collapsing into a bare false.
-                    AnnotationSurvey survey = AnnotationLayout.Survey(tag.Document, p.View, tag.Id, p.LayoutAccepted);
+                    AnnotationSurvey survey = AnnotationLayout.Survey(tag.Document, p.View, tag.Id, p.LayoutAccepted, p.Budget);
                     p.TagCoverage = survey.Coverage;
                     if (!survey.Complete) { reason = AnnotationVisibility.RefusalMessage(survey.Coverage); return false; }
                     // A LABEL-ONLY tag family publishes no extent - every stock Autodesk
@@ -2064,11 +1927,26 @@ namespace Horizun.Revit.Commands
                     if (extentMeasured)
                     {
                         p.TagCoverage["tag_extent_measured"] = true;
-                        if (!DeliveryLayoutRules.Clear(own, survey.Obstacles,
-                                (p.Input.Value<double?>("layout_clearance")??10)*p.Scale, survey.Bounds))
-                        { reason = "the committed tag overlaps a measured annotation or leaves the view limit (" +
-                                   survey.Coverage["bounds"].Value<string>("source") + "); " +
-                                   survey.Obstacles.Count + " obstacle(s) were measured"; return false; }
+                        double gap = (p.Input.Value<double?>("layout_clearance") ?? 10) * p.Scale;
+                        bool clear = DeliveryLayoutRules.Clear(own, survey.Obstacles, gap, survey.Bounds, p.Budget);
+                        p.TagCoverage["clearance_verified"] = clear;
+                        if (!clear)
+                        {
+                            var fallbackIds = new HashSet<long>(p.LayoutBatch
+                                .Where(row => row.Created != null && row.TagLayoutFallback)
+                                .Select(row => Rid.Value(row.Created)));
+                            var required = p.TagLayoutFallback ? Enumerable.Empty<PlanBox>() :
+                                survey.Obstacles.Where((box, i) => !fallbackIds.Contains(survey.ObstacleIds[i]));
+                            if (!DeliveryLayoutRules.Clear(own, required, gap, survey.Bounds, p.Budget))
+                            {
+                                reason = "the committed tag overlaps a required measured annotation or leaves the view limit";
+                                return false;
+                            }
+                            p.TagCoverage["layout_fallback"] = p.TagLayoutFallback;
+                            p.TagCoverage["layout_claim"] = p.TagLayoutFallback
+                                ? "This tag used the least conflicting measured position within the search budget."
+                                : "Clearance against a tag placed under the layout assumption was not verified.";
+                        }
                     }
                 }
                 return true;
@@ -2077,7 +1955,7 @@ namespace Horizun.Revit.Commands
                 {
                     p.TagCoverage = ex.Coverage; reason = ex.Message; return false;
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!(ex is AnnotationBudgetExceeded))
                 {
                     // Rehearsal remains responsible for a confirmed rollback; the reason
                     // still names what threw instead of disappearing.
@@ -2088,91 +1966,6 @@ namespace Horizun.Revit.Commands
             bool okDim = e is Dimension dimension && dimension.References != null && dimension.References.Size == p.References.Size;
             if (!okDim) reason = "the created dimension does not read back with the requested reference count";
             return okDim;
-        }
-
-        // ---------------------------------------------------------------------
-        // The materialised plan rows and the dry-run plan rows.
-        // ---------------------------------------------------------------------
-        private PlannedElement PlannedRow(Plan planned)
-        {
-            if (!DimensionPlanRules.IsDimensionOperation(planned.Operation))
-            {
-                return new PlannedElement
-                {
-                    UniqueId = "action:" + planned.Index,
-                    Category = planned.Operation,
-                    Action = PlannedAction.Create,
-                    BeforeValues = new Dictionary<string, string>
-                    {
-                        { "view", SafePlanIdName(planned.View) },
-                        { "target", SafePlanIdName(planned.Target) },
-                        { "type", SafePlanIdName(planned.Operation == "tag" ? (planned.Type ?? planned.EffectiveTagType) : planned.Type) },
-                        { "existing_tags_for_target_in_view", planned.ExistingTagCount.ToString(CultureInfo.InvariantCulture) },
-                        { "tag_rehearsal", planned.TagRehearsal?.ToString(Formatting.None) ?? "" },
-                        { "references", planned.References == null ? "" :
-                              planned.References.Size.ToString(CultureInfo.InvariantCulture) }
-                    }
-                };
-            }
-            var before = new Dictionary<string, string>
-            {
-                { "view", SafePlanIdName(planned.View) },
-                { "type", SafePlanIdName(planned.EffectiveType) },
-                { "type_source", planned.TypeFromDefault ? "default" : "explicit" },
-                { "references", planned.RefList.Count.ToString(CultureInfo.InvariantCulture) }
-            };
-            for (int i = 0; i < planned.RefList.Count; i++)
-            {
-                before["ref." + i.ToString(CultureInfo.InvariantCulture)] =
-                    planned.RefReserialized[i] + "|" + planned.RefOwnerUids[i] + "|" +
-                    planned.RefTypes[i] + "|" + planned.RefFingerprints[i];
-                // The link facts are a SEPARATE key rather than more text on the line
-                // above, so a host reference's binding is byte-identical to what it was
-                // before links were supported and no existing plan changes shape.
-                LinkBinding link = planned.RefLinks[i];
-                if (link != null)
-                    before["ref." + i.ToString(CultureInfo.InvariantCulture) + ".link"] =
-                        link.InstanceUniqueId + "|" + link.DocumentIdentity + "|" +
-                        link.LinkedElementUniqueId + "|" + link.TransformFingerprint;
-            }
-            if (planned.Line != null)
-                before["line"] = Canon(planned.Line.GetEndPoint(0)) + ";" + Canon(planned.Line.GetEndPoint(1));
-            if (planned.ArcCenter != null)
-                before["arc"] = Canon(planned.ArcCenter) + ";" + DimensionPlanRules.CanonicalFeet(planned.ArcRadius);
-            if (planned.SpotOrigin != null)
-            {
-                before["point"] = Canon(planned.SpotOrigin);
-                before["bend"] = Canon(planned.SpotBend);
-                before["end"] = Canon(planned.SpotEnd);
-                before["leader"] = planned.SpotLeader ? "true" : "false";
-            }
-            before["measured"] = MeasuredCanonical(planned.Rehearsed);
-            return new PlannedElement
-            {
-                UniqueId = "action:" + planned.Index,
-                Category = planned.Operation,
-                Action = PlannedAction.Create,
-                GeometryFingerprint = DimensionPlanRules.CombineFingerprints(planned.RefFingerprints),
-                BeforeValues = before
-            };
-        }
-
-        /// <summary>
-        /// What the rehearsal measured, canonically. It goes INTO the plan fingerprint,
-        /// so the apply's own rehearsal must reproduce it or the token refuses stale -
-        /// which is exactly the property "the model moved" needs.
-        /// </summary>
-        private static string MeasuredCanonical(Measured m)
-        {
-            if (m == null) return "";
-            var parts = new List<string>();
-            double? total = m.Total;
-            parts.Add(total.HasValue ? DimensionPlanRules.CanonicalFeet(total.Value) : "");
-            if (m.SegmentValues != null)
-                foreach (double v in m.SegmentValues) parts.Add(DimensionPlanRules.CanonicalFeet(v));
-            if (m.SpotOrigin != null)
-                parts.Add(DimensionPlanRules.CanonicalPoint(m.SpotOrigin[0], m.SpotOrigin[1], m.SpotOrigin[2]));
-            return string.Join("|", parts);
         }
 
         /// <summary>One dry-run plan row: the legacy keys plus everything the plan resolved.</summary>
@@ -2192,11 +1985,25 @@ namespace Horizun.Revit.Commands
                 {
                     row["view"] = IdNameJson(p.View);
                     row["target"] = IdNameJson(p.Target);
+                    if (p.LinkedElement != null)
+                        row["linked_target"] = LinkedTagRules.Describe(Rid.Value(p.LinkInstance.Id), p.LinkInstance.Name,
+                            Rid.Value(p.LinkedElement.Id), p.LinkInstance.GetLinkDocument()?.Title, p.LinkedElement.Category?.Name);
                     Element effective = p.Type ?? p.EffectiveTagType;
                     row["tag_type"] = effective == null ? (JToken)JValue.CreateNull() : IdNameJson(effective);
-                    if (effective != null) ((JObject)row["tag_type"])["source"] = p.Type == null ? "default" : "explicit";
+                    if (effective != null) ((JObject)row["tag_type"])["source"] = p.Type == null || p.TypeDefaulted ? "default" : "explicit";
                     row["existing_tags_for_target_in_view"] = p.ExistingTagCount;
+                    if (p.Mode != null) row["tag_mode"] = p.Mode;
+                    if (p.ExtraTargets != null) row["also_tags"] = new JArray(p.ExtraTargets.Select(IdNameJson));
+                    if (p.KeynoteKey != null) row["keynote_key"] = p.KeynoteKey;
+                    if (TaggedRoom(p) != null)
+                    {
+                        row["room_tag_family_path"] = p.RoomTagFamilyPath;
+                        row["room_tag_family_sha256"] = p.RoomTagFamilyHash;
+                        row["room_tag_family_name"] = p.RoomTagFamilyName;
+                        row["room_tag_type_name"] = p.RoomTagTypeName;
+                    }
                 }
+                if (p.TextPlan != null) row["text_plan"] = TextPlanJson(p);
                 return row;
             }
 
@@ -2249,23 +2056,40 @@ namespace Horizun.Revit.Commands
             return o;
         }
 
-        private static JObject ApplyDetail(string state, string txStatus, string groupStatus, JArray rows)
-        {
-            return new JObject
-            {
-                ["state"] = state,
-                ["transaction_status"] = txStatus,
-                ["transaction_group_status"] = groupStatus,
-                ["rollback_confirmed"] = state == DimensionPlanRules.StateRolledBack,
-                ["comparison_tolerance_feet"] = DimensionPlanRules.CurveToleranceFeet,
-                ["rows"] = rows ?? new JArray()
-            };
-        }
-
         // ---------------------------------------------------------------------
         // Small helpers.
         // ---------------------------------------------------------------------
-        private static T Need<T>(Document d, JObject a, string f) where T : Element { long id = a.Value<long?>(f) ?? -1; if (!Rid.CanRepresent(id) || !(d.GetElement(Rid.Make(id)) is T e)) throw new ArgumentException(f + " must identify " + typeof(T).Name); return e; }
+        private static T Need<T>(Document d, JObject a, string f) where T : Element { long id = a.Value<long?>(f) ?? -1; if (!Rid.CanRepresent(id) || !(d.GetElement(Rid.Make(id)) is T e)) throw new ArgumentException(f + " must identify " + typeof(T).Name + DocumentContext.Hint<T>(d, id.ToString())); return e; }
+        private static string FileHash(string path)
+        {
+            using (var stream = File.OpenRead(path))
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static string ResolveRoomTagFamily(Document doc, string supplied)
+        {
+            if (!string.IsNullOrWhiteSpace(supplied))
+            {
+                if (!Path.IsPathRooted(supplied) || !string.Equals(Path.GetExtension(supplied), ".rfa", StringComparison.OrdinalIgnoreCase) || !File.Exists(supplied))
+                    throw new ArgumentException("tag_family_path must be an absolute, existing .rfa file.");
+                return Path.GetFullPath(supplied);
+            }
+            if (new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_RoomTags)
+                .WhereElementIsElementType().Any()) return null;
+            string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "Autodesk", "RVT " + HostRevitYear, "Libraries");
+            if (!Directory.Exists(root))
+                throw new ArgumentException("No RoomTag type is loaded and the Revit family library is absent; pass tag_family_path to an existing RoomTag RFA.");
+            string[] matches;
+            try { matches = Directory.EnumerateFiles(root, "*.rfa", SearchOption.AllDirectories)
+                .Where(RoomTagRules.IsDefaultFamilyName).Take(2).ToArray(); }
+            catch (Exception ex) { throw new ArgumentException("The Revit family library could not be searched: " + ex.Message + "; pass tag_family_path."); }
+            if (matches.Length != 1)
+                throw new ArgumentException("No unique default RoomTag RFA was found in " + root +
+                    " (found " + matches.Length + "); pass tag_family_path to the approved RoomTag family.");
+            return matches[0];
+        }
         private static int ExistingTagCount(Document doc, ElementId viewId, ElementId targetId)
         {
             int count = 0;
@@ -2277,6 +2101,65 @@ namespace Horizun.Revit.Commands
             foreach (IndependentTag tag in new FilteredElementCollector(doc).OfClass(typeof(IndependentTag)).Cast<IndependentTag>())
             {
                 try { if (tag.OwnerViewId == viewId && tag.GetTaggedLocalElementIds().Any(id => id == targetId)) count++; }
+                catch { }
+            }
+            // RoomTag is an API subclass, but Revit's native collector rejects
+            // OfClass(RoomTag). Filter its native category and narrow in managed code.
+            foreach (RoomTag tag in new FilteredElementCollector(doc)
+                .OfCategory(BuiltInCategory.OST_RoomTags).WhereElementIsNotElementType().OfType<RoomTag>())
+            {
+                try { if (tag.OwnerViewId == viewId && tag.TaggedLocalRoomId == targetId) count++; }
+                catch { }
+            }
+            foreach (SpatialElementTag tag in new FilteredElementCollector(doc).WherePasses(new LogicalOrFilter(
+                new ElementCategoryFilter(BuiltInCategory.OST_AreaTags), new ElementCategoryFilter(BuiltInCategory.OST_MEPSpaceTags)))
+                .WhereElementIsNotElementType().OfType<SpatialElementTag>())
+            {
+                try { if (tag.OwnerViewId == viewId && SpatialTargetId(tag) == targetId) count++; }
+                catch { }
+            }
+            return count;
+        }
+        /// <summary>The host's default (or first loaded) tag type for the category of a linked element, or Invalid.</summary>
+        private static ElementId DefaultLinkedTagTypeId(Document doc, Element linkedElement)
+        {
+            if (linkedElement.Category == null) return ElementId.InvalidElementId;
+            string catName = linkedElement.Category.BuiltInCategory.ToString();
+            string tagName = LinkedTagRules.TagCategoryName(catName);
+            if (tagName == null || !Enum.IsDefined(typeof(BuiltInCategory), tagName)) return ElementId.InvalidElementId;
+            BuiltInCategory tagCat = (BuiltInCategory)Enum.Parse(typeof(BuiltInCategory), tagName);
+            ElementId catId = new ElementId(tagCat);
+            try
+            {
+                ElementId def = doc.GetDefaultFamilyTypeId(catId);
+                if (def != null && def != ElementId.InvalidElementId) return def;
+            }
+            catch { }
+            FamilySymbol first = new FilteredElementCollector(doc).OfCategory(tagCat).WhereElementIsElementType()
+                .OfType<FamilySymbol>().OrderBy(x => x.Name, StringComparer.Ordinal).FirstOrDefault();
+            return first == null ? ElementId.InvalidElementId : first.Id;
+        }
+        /// <summary>Tags in a view that already point at one element of a link (the pair, not the host id).</summary>
+        private static int ExistingLinkedTagCount(Document doc, ElementId viewId, ElementId linkInstanceId, ElementId linkedElementId)
+        {
+            int count = 0;
+            foreach (IndependentTag tag in new FilteredElementCollector(doc).OfClass(typeof(IndependentTag)).Cast<IndependentTag>())
+            {
+                try
+                {
+                    if (tag.OwnerViewId == viewId && tag.GetTaggedElementIds().Any(l => l.LinkInstanceId == linkInstanceId && l.LinkedElementId == linkedElementId)) count++;
+                }
+                catch { }
+            }
+            // A room of the link carries a RoomTag bound to the (instance, room) pair.
+            foreach (RoomTag tag in new FilteredElementCollector(doc)
+                .OfCategory(BuiltInCategory.OST_RoomTags).WhereElementIsNotElementType().OfType<RoomTag>())
+            {
+                try
+                {
+                    LinkElementId bound = tag.TaggedRoomId;
+                    if (tag.OwnerViewId == viewId && bound != null && bound.LinkInstanceId == linkInstanceId && bound.LinkedElementId == linkedElementId) count++;
+                }
                 catch { }
             }
             return count;
@@ -2317,27 +2200,6 @@ namespace Horizun.Revit.Commands
             }
         }
 
-        private sealed class Rehearsal
-        {
-            public bool RollbackConfirmed;
-            public string RollbackStatus = PlanFailure.NotAttempted;
-            public bool AllConstructible;
-            public int NotConstructibleCount;
-            public JArray Rows = new JArray();
-
-            public JObject ToJson() => new JObject
-            {
-                ["transaction_status"] = RollbackStatus,
-                ["rolled_back_confirmed"] = RollbackConfirmed,
-                ["all_constructible"] = AllConstructible,
-                ["not_constructible"] = NotConstructibleCount,
-                ["note"] = "Every annotation was created PROVISIONALLY inside one transaction, measured, and the " +
-                           "transaction was rolled back; transaction_status is what Revit's RollBack() returned. " +
-                           "Nothing from the rehearsal remains in the model when rolled_back_confirmed is true.",
-                ["actions"] = Rows
-            };
-        }
-
         /// <summary>Everything the verification reads off one created dimension, guarded.</summary>
         private sealed class Measured
         {
@@ -2350,6 +2212,7 @@ namespace Horizun.Revit.Commands
             public bool? ReferencesAvailable;
             public int? SegmentCount;
             public List<string> RefReps;
+            public List<string> RefTypes;
             public double? SingleValue;
             public List<double> SegmentValues;
             public string Presented;
@@ -2361,6 +2224,16 @@ namespace Horizun.Revit.Commands
             public string Prefix, Suffix, Above, Below, ValueOverride;
             public bool? Eq, Locked;
             public string Unreadable;
+            public double[] LineDirection;
+            public List<RefGeometry> RefGeometries; public string GeometryUnreadable;
+            public List<string> OverridesFound; public string OverridesUnreadable;
+            public bool? InsideCrop; public JObject CropDetail;
+            /// <summary>Paper facts: box in the view, hidden references, the printed text.</summary>
+            public List<double> PatternBoundaries;
+            public bool? HasBox; public List<string> HiddenRefs = new List<string>(), PrintUnknown = new List<string>();
+            public JObject Printed;
+            public string DroppedMessage;
+            public DimensionPatternRules.ExtentVerdict PatternExtent;
             public double? Total => DimensionPlanRules.TotalOf(SingleValue, SegmentValues);
         }
 
@@ -2368,15 +2241,44 @@ namespace Horizun.Revit.Commands
         {
             public int Index; public string Operation, Text; public View View; public JObject Input; public double Scale;
             public XYZ Point; public Element Target, Type; public Line Line; public ReferenceArray References;
+            /// <summary>Tag of an element in a Revit link: the link instance (also Target) and the element inside the linked model.</summary>
+            public RevitLinkInstance LinkInstance; public Element LinkedElement;
             public ElementId Created;
             public int ExistingTagCount;
+            public bool Constructible;
             public ElementType EffectiveTagType;
+            public string RoomTagFamilyPath, RoomTagFamilyHash, RoomTagFamilyName, RoomTagTypeName;
+            /// <summary>Area or MEP space tag: the tag type chosen at planning (SpatialTagRules).</summary>
+            public ElementType SpatialType;
             public XYZ TagPoint;
             public JObject TagRehearsal;
+            public AnnotationBudget Budget;
             /// <summary>Ids the caller explicitly accepted as unmeasurable; never a blanket switch.</summary>
             public HashSet<long> LayoutAccepted = new HashSet<long>();
             /// <summary>The annotation coverage this tag was judged against.</summary>
             public JObject TagCoverage;
+            /// <summary>Resolved tag_mode of an IndependentTag (TagRules.Modes); null for room/area/space tags.</summary>
+            public string Mode;
+            /// <summary>tag_type_id was not given and the plan chose the single loaded type (keynote, link multi-category).</summary>
+            public bool TypeDefaulted;
+            /// <summary>Further elements of this document the same tag labels (IndependentTag.AddReferences).</summary>
+            public List<Element> ExtraTargets;
+            /// <summary>Free leader end and leader elbow, model coordinates in feet; null when not asked.</summary>
+            public XYZ LeaderEnd, LeaderElbow;
+            public bool TagLayoutFallback;
+            public List<Plan> LayoutBatch;
+            /// <summary>keynote_user: the keynote-table key written into the tag.</summary>
+            public string KeynoteKey;
+            /// <summary>keynote_user: the keynote table's text for KeynoteKey, read when planning (null when the entry has none).</summary>
+            public string KeynoteText;
+            /// <summary>keynote_material: the face the tag is placed on, its material and that material's keynote (the expected key).</summary>
+            public Reference MaterialFaceRef;
+            public ElementId MaterialId;
+            public string MaterialKeynote;
+            /// <summary>keynote_material: candidate faces (reference, material, keynote) in the order creation tries them.</summary>
+            public List<Tuple<Reference, ElementId, string>> MaterialFaces;
+            /// <summary>keynote_material: the keynote table (key to text) read when planning; null when unreadable.</summary>
+            public Dictionary<string, string> MaterialKeynoteTable;
 
             // Dimension production.
             public readonly List<Reference> RefList = new List<Reference>();
@@ -2391,14 +2293,21 @@ namespace Horizun.Revit.Commands
             {
                 get { foreach (LinkBinding b in RefLinks) if (b != null) return true; return false; }
             }
-            public DimensionType EffectiveType; public bool TypeFromDefault;
+            public DimensionType EffectiveType; public bool TypeFromDefault, TargetViewIsActive;
             public Reference ArcReference; public Arc Arc; public XYZ ArcCenter; public double ArcRadius;
             public XYZ SpotOrigin, SpotBend, SpotEnd; public bool SpotLeader;
             public bool HasPrefix, HasSuffix, HasAbove, HasBelow, HasValueOverride;
             public string Prefix, Suffix, Above, Below, ValueOverride;
+            public bool AllowTextOverride, AllowOutsideCrop;
             public bool? Eq, Lock;
             public double? ExpectedValueFeet; public double ExpectedToleranceFeet;
             public Measured Rehearsed;
+            /// <summary>operation=text: the paper facts (width, lines, leader, visibility) - AnnotateCommand.TextNotes.cs.</summary>
+            public TextLayout TextPlan;
+            /// <summary>require_printable: a dimension that would not print is refused.</summary>
+            public bool RequirePrintable;
+            /// <summary>'&lt;face&gt;/?' entries resolved to the nearest joint, with the search evidence.</summary>
+            public JArray PatternResolutions;
         }
     }
 }

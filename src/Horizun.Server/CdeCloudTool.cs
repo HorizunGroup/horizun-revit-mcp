@@ -475,7 +475,17 @@ namespace Horizun.Server
                         current = null;
                         break;
                     }
-                    Folder match = children.FirstOrDefault(c => string.Equals(c.Name, t.Segments[i], StringComparison.Ordinal));
+                    List<Folder> matches = children.Where(c => string.Equals(c.Name, t.Segments[i], StringComparison.Ordinal))
+                        .GroupBy(c => c.Id, StringComparer.Ordinal).Select(g => g.First()).ToList();
+                    if (matches.Count > 1)
+                    {
+                        t.Reason = "ambiguous folder path: " + matches.Count + " distinct folders named exactly '" + t.Segments[i] +
+                            "' under '" + (parentPath == "" ? "(top folders)" : parentPath) + "'; no folder was chosen";
+                        current = null;
+                        complete = false;
+                        break;
+                    }
+                    Folder match = matches.FirstOrDefault();
                     if (match == null)
                     {
                         Folder near = children.FirstOrDefault(c => string.Equals(c.Name, t.Segments[i], StringComparison.OrdinalIgnoreCase));
@@ -503,7 +513,9 @@ namespace Horizun.Server
                     ? new JObject { ["declared"] = null, ["resolved"] = false, ["reason"] = "no folder declared for this state" }
                     : new JObject
                     {
-                        ["declared"] = t.Declared, ["resolved"] = t.Resolved, ["folder_id"] = t.Folder?.Id, ["path"] = t.Folder?.Path,
+                        ["declared"] = t.Declared, ["resolved"] = t.Resolved,
+                        ["folder_id"] = t.Folder == null ? (JToken)JValue.CreateNull() : t.Folder.Id,
+                        ["path"] = t.Folder == null ? (JToken)JValue.CreateNull() : t.Folder.Path,
                         ["reason"] = t.Resolved ? null : t.Reason
                     };
             }

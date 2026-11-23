@@ -35,8 +35,12 @@ namespace Horizun.Core.Tests
         private const string SafeWrite = "safe_write";
         private const string FullWrite = "full_write";
         private const string UnsafeCode = "unsafe_code";
+        private const string Documentation = "documentation";
 
-        private static readonly string[] AllProfiles = { ReadOnly, SafeWrite, FullWrite, UnsafeCode };
+        // documentation is a SIDE rung (not in The_ladder_is_cumulative's order): by effect
+        // it admits what read_only admits, and its writes come only from toolset membership
+        // (DocumentationProfileTests), which a synthetic contract with no toolset row lacks.
+        private static readonly string[] AllProfiles = { ReadOnly, SafeWrite, FullWrite, UnsafeCode, Documentation };
 
         /// <summary>
         /// THE LADDER, as data. Each rung lists exactly the effects it admits; everything
@@ -59,6 +63,12 @@ namespace Horizun.Core.Tests
                 // pins that second half, and ExternalDestinationGateTests pins that every
                 // contract carrying the effect actually performs it.
                 [ReadOnly] = new[]
+                {
+                    ToolEffect.ReadOnly, ToolEffect.HostState,
+                    ToolEffect.ExternalSideEffectOnRequest
+                },
+
+                [Documentation] = new[]
                 {
                     ToolEffect.ReadOnly, ToolEffect.HostState,
                     ToolEffect.ExternalSideEffectOnRequest
@@ -104,6 +114,7 @@ namespace Horizun.Core.Tests
         /// </summary>
         [Theory]
         [InlineData(ReadOnly, false)]
+        [InlineData(Documentation, false)]
         [InlineData(SafeWrite, false)]
         [InlineData(FullWrite, true)]
         [InlineData(UnsafeCode, true)]

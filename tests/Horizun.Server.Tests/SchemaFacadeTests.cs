@@ -35,8 +35,6 @@ namespace Horizun.Server.Tests
         /// THE FACADE'S CEILING, declared here and nowhere else. tools/list in facade mode is
         /// horizun_health plus three meta-tools; 8 KiB is ~1.6 % of the 2.x worst case and
         /// leaves room for the descriptions to be read by a model, not compressed for one.
-        /// MEASURED (safe_write, task support advertised): 4035 B -> 4342 B when horizun_list_tools gained
-        /// its optional query argument (facade_hash 695dc0af... -> 92559b1e...). Ceiling unchanged (53 % used).
         /// </summary>
         internal const int FacadeCeilingBytes = 8 * 1024;
 
@@ -117,13 +115,28 @@ namespace Horizun.Server.Tests
                 Assert.Null(Horizun.Contracts.Contract.Find(meta));
                 Assert.Null(Tools.Find(meta));
                 Assert.True(SchemaFacade.IsMetaTool(meta, SchemaSurface.Facade));
-                Assert.False(SchemaFacade.IsMetaTool(meta, SchemaSurface.Full)); // full = today: they do not exist
+                // 4.0: callable in every mode (a hidden tool is always reachable through call_tool);
+                // the full list still does not SHOW them while every group is on.
+                Assert.True(SchemaFacade.IsMetaTool(meta, SchemaSurface.Full));
             }
             Assert.Matches("^[0-9a-f]{24}$", SchemaFacade.Hash);
             Assert.NotEqual(Horizun.Contracts.Contract.Hash, SchemaFacade.Hash);
         }
 
         // ---- 2. nothing is unreachable ------------------------------------------------------
+
+        [Fact]
+        public void Describe_listed_matches_the_actual_list_in_each_schema_mode()
+        {
+            foreach (string mode in new[] { "full", "facade", "local" })
+                WithDataRoot("{\"permission_profile\":\"safe_write\"}", null, () =>
+                {
+                    var surface = SchemaMode.Current;
+                    var listed = SchemaFacade.List(surface, false).Select(t => (string)t["name"]).ToHashSet();
+                    foreach (string name in new[] { "horizun_health", "horizun_query_model", "horizun_manage_views" })
+                        Assert.Equal(listed.Contains(name), (bool)SchemaFacade.Describe(new JObject { ["name"] = name })["listed"]);
+                }, mode: mode);
+        }
 
         [Fact]
         public void Every_tool_the_full_list_advertises_is_listed_described_and_callable_through_the_facade()
@@ -194,8 +207,8 @@ namespace Horizun.Server.Tests
             Assert.Equal("p1", (string)inner["_meta"]["progressToken"]);
             Assert.Equal(1000, (int)inner["task"]["ttl"]);
 
-            // In full mode the facade does not exist: nothing is unwrapped.
-            Assert.Same(prms, SchemaFacade.UnwrapCall(prms, SchemaSurface.Full));
+            // 4.0: unwrapped in full mode too - the same direct call, with the same metadata.
+            Assert.True(JToken.DeepEquals(inner, SchemaFacade.UnwrapCall(prms, SchemaSurface.Full)));
         }
 
         // ---- 3. full is today ------------------------------------------------------------------
@@ -216,15 +229,7 @@ namespace Horizun.Server.Tests
             {
                 foreach (string pack in ToolPacks.KnownPacks)
                     WithDataRoot("{\"permission_profile\":\"unsafe_code\",\"enable_execute_python\":true}", pack, () =>
-                    {
-                        // A restricted selection also advertises the server-only horizun_activate_toolset
-                        // (ToolsetActivation); the ledger pins the CONTRACT rows, so measure without it.
-                        JArray listed = SchemaFacade.List(SchemaSurface.Full, true);
-                        if ((string)listed.Last["name"] == ToolsetActivation.Name) listed.RemoveAt(listed.Count - 1);
-                        // local alone hides submit_job, so tasks are not offered ("forbidden" for "optional"); the ledger measured "optional".
-                        foreach (JToken t in listed) if (t["execution"] != null && (string)t["execution"]["taskSupport"] == "forbidden" && McpTasks.Supports(Tools.Find((string)t["name"]))) t["execution"]["taskSupport"] = "optional";
-                        Assert.Equal((int)ledger["profiles"]["pack:" + pack]["bytes"], Bytes(listed));
-                    });
+                        Assert.Equal((int)ledger["profiles"]["pack:" + pack]["bytes"], Bytes(SchemaFacade.List(SchemaSurface.Full, true))));
             });
         }
 
@@ -341,7 +346,7 @@ namespace Horizun.Server.Tests
             {
                 SchemaFacade.ListToolsName, SchemaFacade.DescribeToolName, SchemaFacade.CallToolName,
                 "horizun://contract/tools/{tool}", "horizun://contract/tools/{tool}/{variant}", "structuredContent.schema_help",
-                "Call horizun_health FIRST", "disabled toolset"
+                "Call horizun_health FIRST", "inactive group"
             })
                 Assert.True(h.Contains(marker), "facade head lost: " + marker);
         }

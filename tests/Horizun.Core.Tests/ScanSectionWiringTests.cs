@@ -298,6 +298,13 @@ namespace Horizun.Core.Tests
             return keys;
         }
 
+        private static List<string> KnownKeysForTool(string tool, string arrayName)
+        {
+            List<string> keys = KnownKeys(arrayName);
+            if (tool == "horizun_audit_model") keys.AddRange(KnownKeys("WallSlabKnownKeys"));
+            return keys;
+        }
+
         [Theory]
         [InlineData("horizun_model_scan", "KnownKeys")]
         [InlineData("horizun_audit_model", "AuditKnownKeys")]
@@ -312,7 +319,7 @@ namespace Horizun.Core.Tests
             Assert.False(schema.Value<bool>("additionalProperties"),
                 tool + " does not close its schema, so this check would not matter");
 
-            var missing = KnownKeys(array).Where(k => !props.Contains(k)).ToList();
+            var missing = KnownKeysForTool(tool, array).Where(k => !props.Contains(k)).ToList();
             Assert.True(missing.Count == 0,
                 tool + " accepts these but its schema has no such property, so the server refuses them: " +
                 string.Join(", ", missing));
@@ -326,7 +333,7 @@ namespace Horizun.Core.Tests
             // The mirror image: documented, accepted by the schema, then refused by
             // the command's own unknown-key check with a list that does not mention it.
             JObject schema = SchemaOf(tool);
-            List<string> known = KnownKeys(array);
+            List<string> known = KnownKeysForTool(tool, array);
             var extra = ((JObject)schema["properties"]).Properties().Select(p => p.Name)
                         .Where(p => !known.Contains(p)).ToList();
             Assert.True(extra.Count == 0,

@@ -5,7 +5,7 @@
 //
 // Course dry run 2026-09-30 (defect #17): horizun_create_elements of 75 walls answered
 // 262-276 kB - ten re-read postconditions per wall, each with requested / found /
-// tolerance - and horizun_clash with 165 interferences 58 kB. Both went over the
+// tolerance - and horizun_clash (Pro edition) with 165 interferences 58 kB. Both went over the
 // client's limit and were truncated to a file, which in Claude Desktop breaks the flow.
 //
 // This is the repository's existing convention, not a new one: response_mode with
@@ -22,7 +22,7 @@
 //     full row shows. Re-read any of them with horizun_query_model element_ids.
 //   clash: totals by category pair (and source models), the top N interferences by
 //     intersection volume IN FULL with their original clash_index, and where the rest
-//     live: the coordination ledger (record_findings=true -> horizun_coordination list
+//     live: the coordination ledger (record_findings=true -> horizun_coordination (Pro edition) list
 //     or export) or a re-run with response_mode=full (clash is read-only).
 //
 // No `using Autodesk.*`: it shapes JSON the commands already built.
@@ -38,9 +38,6 @@ namespace Horizun.Revit.Core
     {
         public const string Full = "full";
         public const string Summary = "summary";
-
-        /// <summary>How many interferences a summarized clash reply keeps in full.</summary>
-        public const int ClashTop = 10;
 
         /// <summary>The requested mode, or null with <paramref name="error"/> set. Absent is full.</summary>
         public static string ParseMode(JObject request, out string error)
@@ -166,114 +163,6 @@ namespace Horizun.Revit.Core
             return ids;
         }
 
-        // ------------------------------------------------------------------ clash
-
-        /// <summary>
-        /// Why summary cannot shape this clash request, or null. Penetrations and their
-        /// next_arguments cite clashes by index; dropping rows under them would leave the
-        /// plan pointing at rows the caller never received.
-        /// </summary>
-        public static string ClashRequestProblem(JObject request, string mode)
-        {
-            if (mode == Summary && request?.Value<bool?>("plan_penetrations") == true)
-                return "response_mode=summary cannot be combined with plan_penetrations: every planned penetration cites " +
-                       "its clash by index, and the summary leaves most clashes out. Use response_mode=full. Nothing ran.";
-            return null;
-        }
-
-        /// <summary>Shape a clash reply in place.</summary>
-        public static JObject Clash(JObject data, JObject request = null, int top = ClashTop)
-        {
-            if (data == null) return null;
-            var clashes = data["clashes"] as JArray ?? new JArray();
-            int total = clashes.Count;
-
-            var pairs = new Dictionary<string, JObject>(StringComparer.Ordinal);
-            int crossModel = 0;
-            double volume = 0;
-            var indexed = new List<KeyValuePair<int, JObject>>();
-            for (int i = 0; i < clashes.Count; i++)
-            {
-                var c = clashes[i] as JObject;
-                if (c == null) continue;
-                indexed.Add(new KeyValuePair<int, JObject>(i, c));
-                var a = c["a"] as JObject; var b = c["b"] as JObject;
-                string catA = a?.Value<string>("category") ?? "(unknown)", catB = b?.Value<string>("category") ?? "(unknown)";
-                string srcA = a?.Value<string>("source_model") ?? "(unknown)", srcB = b?.Value<string>("source_model") ?? "(unknown)";
-                double v = c.Value<double?>("intersection_volume_m3") ?? 0;
-                volume += v;
-                if (c.Value<bool?>("cross_model") == true) crossModel++;
-                string key = catA + "\u001f" + srcA + "\u001f" + catB + "\u001f" + srcB;
-                if (!pairs.TryGetValue(key, out JObject p))
-                {
-                    p = new JObject
-                    {
-                        ["category_a"] = catA, ["source_a"] = srcA,
-                        ["category_b"] = catB, ["source_b"] = srcB,
-                        ["count"] = 0, ["intersection_volume_m3"] = 0.0
-                    };
-                    pairs[key] = p;
-                }
-                p["count"] = p.Value<int>("count") + 1;
-                p["intersection_volume_m3"] = Math.Round(p.Value<double>("intersection_volume_m3") + v, 6);
-            }
-
-            int n = Math.Max(0, top);
-            var kept = new JArray(indexed
-                .OrderByDescending(kv => kv.Value.Value<double?>("intersection_volume_m3") ?? 0)
-                .ThenBy(kv => kv.Key)
-                .Take(n)
-                .Select(kv =>
-                {
-                    var row = (JObject)kv.Value.DeepClone();
-                    row["clash_index"] = kv.Key;
-                    return row;
-                }));
-            data["clashes"] = kept;
-
-            var omissions = new JArray();
-            if (total > kept.Count)
-                omissions.Add(new JObject
-                {
-                    ["json_pointer"] = "/clashes",
-                    ["returned_items_before_summary"] = total,
-                    ["shown"] = kept.Count,
-                    ["omitted"] = total - kept.Count
-                });
-            Stamp(data, omissions);
-            data["clash_summary"] = new JObject
-            {
-                ["clashes_detected"] = total,
-                ["intersection_volume_m3"] = Math.Round(volume, 6),
-                ["cross_model"] = crossModel,
-                ["by_pair"] = new JArray(pairs.Values
-                    .OrderByDescending(p => p.Value<int>("count"))
-                    .ThenBy(p => p.Value<string>("category_a"), StringComparer.Ordinal)
-                    .ThenBy(p => p.Value<string>("category_b"), StringComparer.Ordinal)),
-                ["top_shown"] = kept.Count,
-                ["top_means"] = "The " + n + " largest interferences by intersection volume, each with its clash_index in " +
-                                "the full list. clash_count, result, coverage and the headline describe ALL detected clashes."
-            };
-            bool recorded = data["findings"] is JObject;
-            data["expand"] = recorded
-                ? new JObject
-                {
-                    ["tool"] = "horizun_coordination",
-                    ["arguments"] = new JObject { ["operation"] = "list" },
-                    ["note"] = "Every clash of this run is in the coordination ledger (findings.ledger_path); list or " +
-                               "export it there. Re-running horizun_clash with response_mode=full also returns every row."
-                }
-                : new JObject
-                {
-                    ["tool"] = "horizun_clash",
-                    ["arguments"] = FullAgain(request),
-                    ["note"] = "This run did not record findings, so the omitted rows exist only in a full reply: re-run " +
-                               "with the same arguments and response_mode=full (clash is read-only), or with " +
-                               "record_findings=true to keep them in the ledger horizun_coordination reads."
-                };
-            return data;
-        }
-
         // ------------------------------------------------------------------ the hook
 
         /// <summary>
@@ -285,14 +174,14 @@ namespace Horizun.Revit.Core
         public static void ApplyToResult(string tool, string paramsJson, CommandResult result)
         {
             if (result == null || !result.Success) return;
-            if (tool != "horizun_create_elements" && tool != "horizun_clash") return;
+            if (tool != "horizun_create_elements") return;
             if (paramsJson == null || paramsJson.IndexOf("response_mode", StringComparison.Ordinal) < 0) return;
             JObject request;
             try { request = JObject.Parse(paramsJson); } catch { return; }
             if (ParseMode(request, out _) != Summary) return;
             JObject data = result.Data as JObject ?? (result.Data == null ? null : JObject.FromObject(result.Data));
             if (data == null) return;
-            if (tool == "horizun_clash") Clash(data, request); else CreateElements(data);
+            CreateElements(data);
             result.ReplaceData(data);
         }
 
@@ -303,13 +192,6 @@ namespace Horizun.Revit.Core
             data["response_mode"] = Summary;
             data["response_omissions"] = omissions;
             data["response_detail_complete"] = omissions.Count == 0;
-        }
-
-        private static JObject FullAgain(JObject request)
-        {
-            var again = request == null ? new JObject() : (JObject)request.DeepClone();
-            again["response_mode"] = Full;
-            return again;
         }
 
         private static long? ReadId(JToken t)

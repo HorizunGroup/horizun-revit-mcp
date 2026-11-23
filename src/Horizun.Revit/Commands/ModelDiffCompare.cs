@@ -9,6 +9,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.IO;
+using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Horizun.Revit.Core;
@@ -37,6 +38,7 @@ namespace Horizun.Revit.Commands
             DiffResult result = ModelDiffRules.Compare(before, after, options);
             JObject identity = IdentityOf(before, after);
             JObject summary = ModelDiffRules.Summary(result);
+            JObject origin = OriginOf(app, before, after, result);
 
             string compareId = ModelDiffRules.NewId(DateTime.UtcNow, before.Id + "|" + after.Id);
             Directory.CreateDirectory(ExportDir());
@@ -49,6 +51,7 @@ namespace Horizun.Revit.Commands
                 ["before"] = Side(before), ["after"] = Side(after), ["summary"] = summary,
                 ["project_identity_kind"] = identity["project_identity_kind"], ["identity_proven"] = identity["identity_proven"],
                 ["warnings"] = identity["warnings"],
+                ["origin"] = origin,
                 ["rows"] = ModelDiffRules.Page(result.Rows, 0, Math.Max(1, result.Rows.Count))["rows"],
                 ["type_rows"] = ModelDiffRules.Page(result.TypeRows, 0, Math.Max(1, result.TypeRows.Count))["rows"]
             };
@@ -75,12 +78,40 @@ namespace Horizun.Revit.Commands
                     ["match_mm"] = Math.Round(options.MatchToleranceFeet * 304.8, 3)
                 },
                 ["summary"] = summary,
+                ["origin"] = origin,
                 ["discipline_note"] = "discipline is inferred from the Revit category; Revit declares none per element.",
                 ["detail"] = ModelDiffRules.Page(result.Rows, offset, limit),
                 ["type_changes"] = ModelDiffRules.Page(result.TypeRows, 0, Math.Min(limit, 200)),
                 ["exports"] = new JObject { ["csv"] = csvPath, ["json"] = jsonPath },
                 ["coverage"] = Coverage(before, after)
             });
+        }
+
+        /// <summary>Splits the changes into this session's own writes and the rest (Core/ModelDiffOrigin.cs).</summary>
+        private static JObject OriginOf(UIApplication app, DiffSnapshot before, DiffSnapshot after, DiffResult result)
+        {
+            try
+            {
+                if (!IsActive(after.Id ?? "") || IsActive(before.Id ?? ""))
+                    return ModelDiffOrigin.NotAssessed("the later side is not the live document");
+                Document doc = app.ActiveUIDocument?.Document;
+                if (doc == null) return ModelDiffOrigin.NotAssessed("no active document");
+                if (!DateTime.TryParse(before.TakenUtc, System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out DateTime baseline))
+                    return ModelDiffOrigin.NotAssessed("the baseline snapshot has no readable time");
+                string key = ChangeWatch.Key(doc);
+                var writes = new System.Collections.Generic.List<ModelDiffOrigin.SessionWrite>();
+                var changeHistory = ChangeLedger.HistoryFor(doc);
+                foreach (ChangeLedger.Entry e in changeHistory)
+                    writes.Add(new ModelDiffOrigin.SessionWrite { AtUtc = e.AtUtc,
+                        Ids = (e.Added ?? new long[0]).Concat(e.Modified ?? new long[0]).ToArray() });
+                var syncWrites = SyncLedgerRules.Writes(key); // also holds deleted ids (workshared documents)
+                foreach (SyncLedgerEntry e in syncWrites) writes.Add(new ModelDiffOrigin.SessionWrite { AtUtc = e.AtUtc, Ids = e.Ids });
+                bool mayBeTruncated = changeHistory.Count >= ChangeLedger.HistoryCap || syncWrites.Count >= SyncLedgerRules.HistoryCap
+                                      || System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime() > baseline; // the record starts with this Revit process
+                return ModelDiffOrigin.Classify(result, writes, baseline, mayBeTruncated);
+            }
+            catch (Exception ex) { return ModelDiffOrigin.NotAssessed("the session record could not be read: " + ex.Message); }
         }
 
         internal CommandResult ResolvePair(UIApplication app, JObject request, string beforeId, string afterId,

@@ -39,6 +39,12 @@ namespace Horizun.Revit.Commands
         /// "nothing is inside" - when Revit would not give up its geometry.
         /// </summary>
         public static HostMesh For(Element host, out string why)
+            => Read(host, out why, false);
+
+        public static HostMesh ForExport(Element host, out string why)
+            => Read(host, out why, true);
+
+        private static HostMesh Read(Element host, out string why, bool includeMeshes)
         {
             why = null;
             if (host == null) { why = "there was no host element to measure."; return null; }
@@ -73,7 +79,7 @@ namespace Horizun.Revit.Commands
             };
 
             int solids = 0, skipped = 0;
-            try { Harvest(geometry, Transform.Identity, mesh, ref solids, ref skipped); }
+            try { Harvest(geometry, Transform.Identity, mesh, ref solids, ref skipped, includeMeshes); }
             catch (Exception ex)
             {
                 why = "the geometry of element " + Rid.Value(host.Id) + " could not be walked: " + ex.Message;
@@ -105,7 +111,7 @@ namespace Horizun.Revit.Commands
         }
 
         private static void Harvest(GeometryElement geometry, Transform t, HostMesh mesh,
-                                    ref int solids, ref int skipped)
+                                    ref int solids, ref int skipped, bool includeMeshes = false)
         {
             foreach (GeometryObject go in geometry)
             {
@@ -114,16 +120,32 @@ namespace Horizun.Revit.Commands
                 {
                     GeometryElement inner = null;
                     try { inner = instance.GetInstanceGeometry(); } catch { }
-                    if (inner != null) { Harvest(inner, t, mesh, ref solids, ref skipped); continue; }
+                    if (inner != null) { Harvest(inner, t, mesh, ref solids, ref skipped, includeMeshes); continue; }
 
                     // GetInstanceGeometry already applies the transform; the symbol
                     // geometry does not, so it is applied here instead.
                     try { inner = instance.GetSymbolGeometry(); } catch { }
-                    if (inner != null) Harvest(inner, t.Multiply(instance.Transform), mesh, ref solids, ref skipped);
+                    if (inner != null) Harvest(inner, t.Multiply(instance.Transform), mesh, ref solids, ref skipped, includeMeshes);
                     else skipped++;
                     continue;
                 }
 
+                if (includeMeshes && go is Mesh directMesh)
+                {
+                    solids++;
+                    int first = mesh.Vertices.Count;
+                    foreach (XYZ vertex in directMesh.Vertices)
+                    {
+                        XYZ p = t.OfPoint(vertex);
+                        mesh.AddVertex(p.X * FtToMm, p.Y * FtToMm, p.Z * FtToMm);
+                    }
+                    for (int i = 0; i < directMesh.NumTriangles; i++)
+                    {
+                        var triangle = directMesh.get_Triangle(i);
+                        mesh.AddTriangle(first + (int)triangle.get_Index(0), first + (int)triangle.get_Index(1), first + (int)triangle.get_Index(2));
+                    }
+                    continue;
+                }
                 var solid = go as Solid;
                 if (solid == null) continue;
 
@@ -142,8 +164,8 @@ namespace Horizun.Revit.Commands
                     if (curved) mesh.AnyCurvedFace = true;
 
                     Mesh tri;
-                    try { tri = face.Triangulate(); } catch { continue; }
-                    if (tri == null) continue;
+                    try { tri = face.Triangulate(); } catch { if (includeMeshes) skipped++; continue; }
+                    if (tri == null) { if (includeMeshes) skipped++; continue; }
 
                     int baseIndex = mesh.Vertices.Count;
                     for (int i = 0; i < tri.Vertices.Count; i++)

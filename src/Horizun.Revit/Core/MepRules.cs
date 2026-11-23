@@ -29,6 +29,35 @@ namespace Horizun.Revit.Core
 
     public static class MepRules
     {
+        /// <summary>
+        /// How a cap's connector is resized to the run's end. A connector associated with a family
+        /// parameter refuses a direct Connector.Radius/Width/Height set (ArgumentOutOfRangeException,
+        /// measured live on Revit 2025 with the default template's pipe cap and rectangular endcap):
+        /// it is resized through that instance parameter, and refused when the parameter is a type,
+        /// formula or read-only one. Only an unassociated connector is set directly.
+        /// </summary>
+        public static string CapSizeRoute(bool associated, bool instanceParameterFound, bool writable, bool isLength)
+        {
+            if (!associated) return "connector";
+            if (!instanceParameterFound || !writable || !isLength) return null;
+            return "parameter";
+        }
+
+        /// <summary>A cap closes one named end. Two free ends require an explicit connector id.</summary>
+        public static ConnectorFact SelectCapEnd(IEnumerable<ConnectorFact> ends, int? named)
+        {
+            ConnectorFact chosen = null;
+            foreach (ConnectorFact end in ends)
+            {
+                if (named.HasValue && end.Id != named.Value) continue;
+                if (end.IsConnected || (end.Domain != "piping" && end.Domain != "hvac")) continue;
+                if (chosen != null) throw new ArgumentException("ambiguous_cap_end: name connector from connect_mep open_ends.");
+                chosen = end;
+            }
+            if (chosen == null) throw new ArgumentException("no_open_cap_end: the selected pipe/duct end is absent, connected or not physical.");
+            return chosen;
+        }
+
         /// <summary>Two connectors count as meeting when their origins agree within this. 1 mm.</summary>
         public const double CoincidenceToleranceFeet = 1.0 / 304.8;
 

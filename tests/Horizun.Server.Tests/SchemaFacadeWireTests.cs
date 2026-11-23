@@ -30,6 +30,40 @@ namespace Horizun.Server.Tests
         private const string ReadOnly = "{\"permission_profile\":\"read_only\"}";
 
         [Fact]
+        public void Local_context_arguments_reach_the_bridge_and_unknown_arguments_get_schema_help()
+        {
+            var r = Run("local", ReadOnly,
+                ToolCall(2, "get_document_info", new JObject { ["operation"] = "context", ["offset"] = 0, ["max_rows"] = 5 }),
+                ToolCall(3, "get_document_info", new JObject { ["operation"] = "context", ["max_row"] = 5 }));
+            Assert.Contains("no Revit is reachable", Text(r["2"]));
+            Assert.Contains("Arguments violate the contract", Text(r["3"]));
+            Assert.Contains("max_row", Text(r["3"]));
+        }
+
+        [Fact]
+        public void Local_wire_surface_search_describe_dispatch_and_compact_reply()
+        {
+            var r = Run("local", SafeWrite,
+                Req(2, "tools/list", new JObject()),
+                ToolCall(3, SchemaFacade.ListToolsName, new JObject { ["query"] = "contar muros" }),
+                ToolCall(4, SchemaFacade.DescribeToolName, new JObject { ["name"] = "horizun_list_elements" }),
+                ToolCall(5, SchemaFacade.CallToolName, new JObject { ["name"] = "horizun_list_elements", ["arguments"] = new JObject { ["category"] = "OST_Walls" } }),
+                ToolCall(6, "horizun_list_elements", new JObject { ["category"] = "OST_Walls" }));
+            Assert.True(ToolsetReport.ApproxTokens(r["2"]["result"].ToString(Formatting.None).Length) <= 4000);
+            Assert.NotNull(r["3"]["result"]["structuredContent"]["tools"]["horizun_list_elements"]);
+            Assert.StartsWith("Herramientas:", Text(r["3"]));
+            Assert.True(Text(r["3"]).Length < 100);
+            Assert.True(JToken.DeepEquals(Horizun.Contracts.Contract.Find("horizun_list_elements").InputSchema,
+                r["4"]["result"]["structuredContent"]["input_schema"]));
+            Assert.Contains("no Revit is reachable", Text(r["5"]));
+            Assert.Equal(Text(r["6"]), Text(r["5"]));
+
+            var refused = Run("local", ReadOnly,
+                ToolCall(2, SchemaFacade.CallToolName, new JObject { ["name"] = "horizun_delete_verified", ["arguments"] = new JObject() }));
+            Assert.Contains("read_only", Text(refused["2"]));
+        }
+
+        [Fact]
         public void Full_mode_tools_list_over_stdio_is_the_committed_ledger()
         {
             JObject ledger = JObject.Parse(File.ReadAllText(LedgerPath()));
@@ -141,12 +175,20 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
-        public void In_full_mode_the_facade_tools_do_not_exist()
+        public void In_full_mode_the_meta_tools_are_callable_but_not_listed()
         {
+            // 4.0: horizun_call_tool / describe_tool / toolsets answer in every mode, so a tool of an
+            // inactive group is always reachable; with every group on, the full list does not show them.
             Dictionary<string, JObject> r = Run("full", SafeWrite,
-                ToolCall(2, SchemaFacade.CallToolName, new JObject { ["name"] = "horizun_target", ["arguments"] = new JObject() }));
-            Assert.Equal(-32602, (int)r["2"]["error"]["code"]);
-            Assert.Contains("Unknown tool", (string)r["2"]["error"]["message"]);
+                Req(2, "tools/list", new JObject()),
+                ToolCall(3, SchemaFacade.CallToolName, new JObject { ["name"] = "horizun_target", ["arguments"] = new JObject() }),
+                ToolCall(4, "horizun_target", new JObject()));
+            string[] names = ((JArray)r["2"]["result"]["tools"]).Select(t => (string)t["name"]).ToArray();
+            Assert.DoesNotContain(SchemaFacade.CallToolName, names);
+            Assert.DoesNotContain("horizun_toolsets", names);
+            Assert.Null(r["3"]["error"]);
+            Assert.NotEqual(true, (bool?)r["3"]["result"]["isError"]);
+            Assert.Equal(Text(r["4"]), Text(r["3"]));
         }
 
         [Fact]
@@ -199,6 +241,8 @@ namespace Horizun.Server.Tests
                 psi.Environment.Remove(Horizun.Revit.Core.ToolPacks.ToolsetsEnvironmentVariable);
                 psi.Environment.Remove(Horizun.Revit.Core.ToolPacks.EnvironmentOverride);
                 psi.Environment.Remove("HORIZUN_REVIT_YEAR");
+                psi.Environment.Remove("HORIZUN_PROFILE");
+                psi.Environment.Remove("HORIZUN_RESPONSE");
                 if (mode == null) psi.Environment.Remove(SchemaMode.EnvironmentVariable);
                 else psi.Environment[SchemaMode.EnvironmentVariable] = mode;
 

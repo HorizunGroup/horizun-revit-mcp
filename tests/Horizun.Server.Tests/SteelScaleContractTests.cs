@@ -26,62 +26,6 @@ namespace Horizun.Server.Tests
 
         // ------------------------------------------------------------------ chunk
 
-        [Theory]
-        [InlineData("horizun_plan_reinforcement")]
-        [InlineData("horizun_audit_reinforcement")]
-        public void A_read_takes_a_chunk_with_or_without_the_digest(string tool)
-        {
-            var args = new JObject
-            {
-                ["requirement_set"] = Set(),
-                ["chunk"] = JObject.Parse("{ 'by': 'level', 'hosts_per_piece': 50, 'piece_index': 0 }")
-            };
-            Assert.Empty(ContractSchemaCheck.Validate(args, Schema(tool)));
-            args["chunk"]["partition_sha256"] = Sha;
-            Assert.Empty(ContractSchemaCheck.Validate(args, Schema(tool)));
-        }
-
-        [Fact]
-        public void A_write_of_one_piece_must_quote_the_digest_of_its_cut()
-        {
-            var args = new JObject
-            {
-                ["requirement_set"] = Set(),
-                ["target_document"] = "HZ",
-                ["chunk"] = JObject.Parse("{ 'by': 'host_type', 'hosts_per_piece': 50, 'piece_index': 3 }")
-            };
-            Assert.NotEmpty(ContractSchemaCheck.Validate(args, Schema("horizun_apply_reinforcement")));
-            args["chunk"]["partition_sha256"] = Sha;
-            Assert.Empty(ContractSchemaCheck.Validate(args, Schema("horizun_apply_reinforcement")));
-        }
-
-        [Theory]
-        [InlineData("{ 'by': 'storey', 'hosts_per_piece': 50, 'piece_index': 0 }")]
-        [InlineData("{ 'by': 'level', 'hosts_per_piece': 0, 'piece_index': 0 }")]
-        [InlineData("{ 'by': 'level', 'hosts_per_piece': 2001, 'piece_index': 0 }")]
-        [InlineData("{ 'by': 'level', 'hosts_per_piece': 50, 'piece_index': -1 }")]
-        [InlineData("{ 'by': 'level', 'hosts_per_piece': 50 }")]
-        [InlineData("{ 'by': 'level', 'hosts_per_piece': 50, 'piece_index': 0, 'partition_sha256': 'ABC' }")]
-        [InlineData("{ 'by': 'level', 'hosts_per_piece': 50, 'piece_index': 0, 'time_budget_s': 60 }")]
-        public void A_chunk_that_is_not_exactly_right_breaks_the_contract(string chunk)
-        {
-            var args = new JObject { ["requirement_set"] = Set(), ["chunk"] = JObject.Parse(chunk) };
-            Assert.NotEmpty(ContractSchemaCheck.Validate(args, Schema("horizun_plan_reinforcement")));
-        }
-
-        [Theory]
-        [InlineData("horizun_plan_reinforcement")]
-        [InlineData("horizun_audit_reinforcement")]
-        [InlineData("horizun_apply_reinforcement")]
-        public void A_call_without_the_new_key_reads_as_before(string tool)
-        {
-            var args = new JObject { ["requirement_set"] = Set(), ["host_ids"] = new JArray(1, 2) };
-            if (tool == "horizun_apply_reinforcement") args["target_document"] = "HZ";
-            Assert.Empty(ContractSchemaCheck.Validate(args, Schema(tool)));
-            Assert.Contains("requirement_set", ((JArray)Schema(tool)["required"]).Select(x => (string)x));
-            Assert.DoesNotContain("chunk", ((JArray)Schema(tool)["required"]).Select(x => (string)x));
-        }
-
         // ---------------------------------------------------------- parse_notation
 
         [Fact]

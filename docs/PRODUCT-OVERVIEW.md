@@ -10,9 +10,9 @@ Horizun conecta asistentes MCP con Revit para convertir solicitudes BIM en opera
 
 - Medir salud de modelo, advertencias, vínculos, CAD, familias, habitaciones, áreas, documentación y cantidades.
 - Revisar láminas directamente desde Revit, incluyendo capturas de las vistas reales y hallazgos con evidencia.
-- Coordinar Arquitectura/Estructura, MEP y concreto/refuerzo a partir de un alcance y requisitos declarados.
+- Coordinar Arquitectura y Estructura a partir de un alcance y requisitos declarados (MEP, refuerzo y coordinación de interferencias están en la edición Pro).
 - Preparar cuantificaciones para Excel o Power BI, sin convertir unidades ni inventar precios.
-- Planear conversiones DWG a BIM y cambios repetitivos; antes de escribir, resuelve objetivos, ejecuta un ensayo y exige confirmación.
+- Planear cambios repetitivos (las conversiones DWG a BIM están en la edición Pro); antes de escribir, resuelve objetivos, ejecuta un ensayo y exige confirmación.
 - Generar reportes QA/QC locales desde hallazgos medidos, con respaldo y relectura de las celdas escritas.
 
 ## Cómo protege el trabajo BIM

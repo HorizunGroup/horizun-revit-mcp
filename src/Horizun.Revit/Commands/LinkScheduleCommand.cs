@@ -61,7 +61,8 @@ namespace Horizun.Revit.Commands
                     ["activities"] = schedule.Activities.Count, ["summaries_skipped"] = schedule.SummariesSkipped,
                     ["rejected_rows"] = schedule.Rejected.Count,
                     ["rejected"] = new JArray(schedule.Rejected.Take(maxRows)),
-                    ["with_progress"] = schedule.Activities.Count(a => a.HasProgress)
+                    ["with_progress"] = schedule.Activities.Count(a => a.HasProgress),
+                    ["zero_percent_without_actuals"] = schedule.Activities.Count(a => a.ZeroWithoutActuals)
                 }
             };
 
@@ -74,7 +75,7 @@ namespace Horizun.Revit.Commands
             }
 
             JObject spec = request["match"] as JObject;
-            string specError = ScheduleLinkRules.ValidateSpec(spec, schedule.Activities);
+            string specError = ScheduleLinkRules.ValidateSpec(spec, schedule);
             if (specError != null) return CommandResult.Fail(specError);
 
             if (operation == "match")
@@ -83,7 +84,7 @@ namespace Horizun.Revit.Commands
                 if (doc == null) return CommandResult.Fail("No active Revit document.");
                 CommandResult wrong = DocumentGate.ReadGuard(doc, request, Name);
                 if (wrong != null) return wrong;
-                ScheduleMatch m = ScheduleLinkRules.Match(spec, schedule.Activities, Facts(doc, spec, null));
+                ScheduleMatch m = ScheduleLinkRules.Match(spec, schedule, Facts(doc, spec, null));
                 head["document"] = doc.Title;
                 MatchJson(head, m, maxRows);
                 return CommandResult.Ok(head);
@@ -110,7 +111,7 @@ namespace Horizun.Revit.Commands
             o["elements_without_activity_ids"] = new JArray(m.WithoutActivity.Take(maxRows));
             o["activities_without_elements"] = m.ActivitiesWithoutElements.Count;
             o["activities_without_elements_ids"] = new JArray(m.ActivitiesWithoutElements.Take(maxRows).Select(a => a.Id));
-            o["ambiguous_means"] = "an element whose key names two activities, or that two rules assign differently, is linked to NEITHER.";
+            o["ambiguous_means"] = "an element with an ambiguous or unreadable match parameter, a key naming two activities, or conflicting rules is left unlinked.";
         }
 
         /// <summary>
@@ -143,29 +144,37 @@ namespace Horizun.Revit.Commands
                 var f = new ScheduleElementFact
                 {
                     Id = id,
+                    UniqueId = e.UniqueId,
                     CategoryToken = CodeCheckCommand.CategoryToken(e.Category),
                     CategoryName = CodeCheckCommand.SafeCatName(e.Category),
                     Level = CodeCheckCommand.LevelName(doc, e)
                 };
                 foreach (string n in names)
                 {
-                    ParamFact p = CodeCheckCommand.ReadParam(doc, e, n, null);
-                    if (p.Exists) f.Params[n] = p.Text ?? "";
+                    f.ReadParameter(n, () => NamedParameters(e, n),
+                        () =>
+                        {
+                            ElementId typeId = e.GetTypeId();
+                            return typeId == ElementId.InvalidElementId ? Array.Empty<Parameter>() : NamedParameters(doc.GetElement(typeId), n);
+                        },
+                        p => CodeCheckCommand.ReadParam(p, null), ParameterIdentity);
                 }
                 facts.Add(f);
             }
             return facts;
         }
 
-        private static string PlanHash(JObject request, string fileSha, string op)
+        private static IList<Parameter> NamedParameters(Element element, string name)
         {
-            var scope = new JObject
+            if (element == null) return Array.Empty<Parameter>();
+            if (name.IndexOf('_') > 0 && name == name.ToUpperInvariant() &&
+                Enum.TryParse(name, false, out BuiltInParameter builtIn))
             {
-                ["op"] = op, ["file"] = fileSha, ["match"] = request["match"], ["write"] = request["write"],
-                ["view_id"] = request["view_id"], ["as_of"] = request["as_of"]
-            };
-            using (SHA256 sha = SHA256.Create())
-                return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(scope.ToString(Formatting.None)))).Replace("-", "");
+                Parameter parameter = element.get_Parameter(builtIn);
+                return parameter == null ? Array.Empty<Parameter>() : new[] { parameter };
+            }
+            return element.GetParameters(name);
         }
+
     }
 }

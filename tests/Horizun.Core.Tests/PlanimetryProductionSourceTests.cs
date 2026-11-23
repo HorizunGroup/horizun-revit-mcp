@@ -14,6 +14,14 @@ namespace Horizun.Core.Tests
             return File.ReadAllText(Path.Combine(dir.FullName, "src", "Horizun.Revit", "Commands", file));
         }
 
+        private static string CoreSource(string file)
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src", "Horizun.Revit", "Core"))) dir = dir.Parent;
+            Assert.NotNull(dir);
+            return File.ReadAllText(Path.Combine(dir.FullName, "src", "Horizun.Revit", "Core", file));
+        }
+
         [Fact]
         public void Sheet_packing_is_deterministic_rehearsed_and_atomic()
         {
@@ -39,10 +47,10 @@ namespace Horizun.Core.Tests
             // c7 (2026-09-08): the export failed with "contradicts the print policy: " and
             // nothing after the colon, because only verified_mismatch rows were listed
             // while an applied_mismatch had closed the gate.
-            string export = Source("ExportCommand.cs");
+            string export = CoreSource("PdfVerification.cs");
             int msg = export.IndexOf("The produced PDF contradicts the print policy", StringComparison.Ordinal);
             Assert.True(msg >= 0);
-            string after = export.Substring(msg, 900);
+            string after = export.Substring(export.IndexOf("PolicyFailureMessage(", StringComparison.Ordinal), 2400);
             Assert.Contains("PdfPrintPolicy.StatusAppliedMismatch", after, StringComparison.Ordinal);
             Assert.Contains("PdfPrintPolicy.StatusVerifiedMismatch", after, StringComparison.Ordinal);
             string dims = Source("EditDimensionsCommand.cs");
@@ -166,12 +174,13 @@ namespace Horizun.Core.Tests
             // Post-commit clearance is re-surveyed from the document in the tag's own
             // view, excluding the tag itself, and a coverage refusal keeps its ids
             // instead of collapsing into a bare false.
-            Assert.Contains("AnnotationLayout.Survey(tag.Document, p.View, tag.Id, p.LayoutAccepted)", s, StringComparison.Ordinal);
+            Assert.Contains("AnnotationLayout.Survey(tag.Document, p.View, tag.Id, p.LayoutAccepted, p.Budget)", s, StringComparison.Ordinal);
             Assert.Contains("if (!survey.Complete) { reason = AnnotationVisibility.RefusalMessage(survey.Coverage); return false; }", s, StringComparison.Ordinal);
             Assert.Contains("catch (AnnotationCoverageException ex)", s, StringComparison.Ordinal);
-            int verifyStart = s.IndexOf("private static bool Verify(Plan p, Element e, out string reason)", StringComparison.Ordinal);
+            int verifyStart = s.IndexOf("private static bool VerifyOtherAnnotation(Plan p, Element e, out string reason)", StringComparison.Ordinal);
+            Assert.True(verifyStart >= 0, "the reasoned tag verification must exist");
             int verifyEnd = s.IndexOf("bool okDim = e is Dimension dimension", verifyStart, StringComparison.Ordinal);
-            Assert.True(verifyStart >= 0 && verifyEnd > verifyStart, "the reasoned tag verification must exist");
+            Assert.True(verifyEnd > verifyStart, "the tag verification must precede the dimension verification");
             Assert.DoesNotContain("catch { return false; }", s.Substring(verifyStart, verifyEnd - verifyStart), StringComparison.Ordinal);
         }
 
@@ -215,8 +224,11 @@ namespace Horizun.Core.Tests
             Assert.Contains("TitleblockPoints(doc, source)", s, StringComparison.Ordinal);
             Assert.DoesNotContain("blocks[0].get_BoundingBox(sheet)", s, StringComparison.Ordinal);
             // A composition defect fails the export by name, beside the option mismatches.
-            Assert.Contains("pages_exceeding_titleblock", s, StringComparison.Ordinal);
-            Assert.Contains("The produced PDF contradicts the print policy", s, StringComparison.Ordinal);
+            // (the message itself is built by PdfVerification.PolicyFailureMessage, which ExportCommand calls)
+            Assert.Contains("PdfVerification.PolicyFailureMessage(printReport", s, StringComparison.Ordinal);
+            string text = CoreSource("PdfVerification.cs");
+            Assert.Contains("pages_exceeding_titleblock", text, StringComparison.Ordinal);
+            Assert.Contains("The produced PDF contradicts the print policy", text, StringComparison.Ordinal);
         }
 
         [Fact]

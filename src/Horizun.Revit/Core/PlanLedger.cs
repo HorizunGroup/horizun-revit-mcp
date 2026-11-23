@@ -30,6 +30,68 @@ namespace Horizun.Revit.Core
 {
     public sealed class PlanLedger
     {
+        internal const string ExpectedChildPlanField = "__expected_plan_fingerprint";
+
+        internal static JObject ChildArguments(JObject source, string path, string title, bool dryRun,
+            string expectedChildPlan = null)
+        {
+            var child = (JObject)source?.DeepClone() ?? new JObject();
+            child["target_document"] = path ?? title;
+            child["target_document_title"] = title;
+            child["dry_run"] = dryRun;
+            child.Remove("confirmation_token");
+            child.Remove("idempotency_key");
+            child.Remove(ExpectedChildPlanField);
+            if (!dryRun && expectedChildPlan != null) child[ExpectedChildPlanField] = expectedChildPlan;
+            return child;
+        }
+
+        /// <summary>
+        /// The graph's materialised plan, built identically from the rehearsal rows and
+        /// from the pre-apply recheck rows. One element per action; the fact that binds is
+        /// the CHILD's own plan fingerprint where the child materialises one - the same
+        /// mechanism, composed. A child that does not (or a row deferred behind a
+        /// reference) contributes its status instead, so wired and unwired children are
+        /// distinguishable in what the token covers.
+        /// </summary>
+        internal static ResolvedPlan ResolveGraph(JArray rows, string documentKey, string revitVersion, string documentFingerprint)
+        {
+            var plan = new ResolvedPlan
+            {
+                Command = "horizun_execute_plan",
+                DocumentKey = documentKey,
+                RevitVersion = revitVersion,
+                DocumentFingerprint = documentFingerprint
+            };
+            for (int i = 0; i < rows.Count; i++)
+            {
+                JObject row = rows[i] as JObject;
+                if (row == null) continue;
+                string childFp = ReadChildFingerprint(row);
+                plan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = "action:" + (row.Value<int?>("index") ?? i),
+                    Category = row.Value<string>("tool"),
+                    Action = PlannedAction.Modify,
+                    BeforeValues = new Dictionary<string, string>
+                    {
+                        { "key", row.Value<string>("key") ?? "" },
+                        { "child", childFp ?? (row.Value<string>("status") == "deferred_until_execution"
+                                                  ? "deferred" : "no_child_plan") },
+                        { "reference_original", row["reference_binding"]?.Value<string>("original_hash") ?? "" },
+                        { "reference_resolved", row["reference_binding"]?.Value<string>("resolved_hash") ?? "" }
+                    }
+                });
+            }
+            return plan;
+        }
+
+        internal static string ReadChildFingerprint(JObject row)
+        {
+            try { return (string)row["data"]?["plan_resolved"]?["fingerprint"]; }
+            catch { return null; }
+        }
+
         /// <summary>Rows for actions that RAN, in order, each carrying its declared state.</summary>
         public JArray Executed { get; } = new JArray();
 
@@ -45,6 +107,47 @@ namespace Horizun.Revit.Core
         /// never returns to true: a graph is previewed as a whole or it is not previewed.
         /// </summary>
         public bool RehearsedCleanly { get; private set; } = true;
+
+        /// <summary>The status a plan stopped by a cancel reports (INT-7 m-e). Stable, like the code that goes with it.</summary>
+        public const string CancelledStatus = PlanFailure.CancelledStatus;
+
+        /// <summary>True once the plan stopped because a cancel was asked for its job. The stop is a cancel, not a failure of an action.</summary>
+        public bool Cancelled { get; private set; }
+
+        /// <summary>
+        /// The check before an action starts (INT-7 m-e). When a cancel was asked for the job, the plan stops HERE: the action that
+        /// had not started is named in FailedAction as cancelled and never enters the trace of executed actions (it did not run),
+        /// and a rehearsal in progress is no longer clean. Returns true when the plan must stop.
+        /// </summary>
+        public bool StopBeforeAction(bool cancelRequested, int index, string key, string tool)
+        {
+            if (!cancelRequested) return false;
+            Cancelled = true;
+            RehearsedCleanly = false;
+            JObject row = Row(index, key, tool, CancelledStatus, false, null,
+                "cancelled: cancellation of the job was requested before this action started; it did not run");
+            row["started"] = false;
+            row["error_code"] = ErrorCodes.Cancelado;
+            FailedAction = row;
+            return true;
+        }
+
+        /// <summary>
+        /// The check after the last action and before the group is kept (INT-7 m-e): a cancel that arrived while the last action ran
+        /// must roll the group back instead of committing it. Every action ran (they are in the trace); the COMMIT did not happen.
+        /// </summary>
+        public bool StopBeforeCommit(bool cancelRequested)
+        {
+            if (!cancelRequested) return false;
+            Cancelled = true;
+            JObject row = Row(Executed.Count, null, null, CancelledStatus, false, null,
+                "cancelled: cancellation of the job was requested before the group was kept; nothing was committed");
+            row["started"] = false;
+            row["stage"] = "before_commit";
+            row["error_code"] = ErrorCodes.Cancelado;
+            FailedAction = row;
+            return true;
+        }
 
         /// <summary>
         /// Actions whose own reply declared a verified application or a legitimate no-op.
@@ -129,6 +232,13 @@ namespace Horizun.Revit.Core
                 RehearsedCleanly = false;
                 if (FailedAction == null) FailedAction = row;
             }
+            else if (PartialApplyNotice.Announced(data))
+            {
+                // The direct call can offer a partial result. The plan requires a full apply from every step.
+                row["not_clean_in_plan"] = PartialApplyNotice.PlanRefusal(tool, data);
+                RehearsedCleanly = false;
+                if (FailedAction == null) FailedAction = row;
+            }
             return row;
         }
 
@@ -170,7 +280,7 @@ namespace Horizun.Revit.Core
         /// THE WHOLE POINT: false here must stop the graph, because the next action may be
         /// a delete and it would be deleting on top of a model that does not contain what
         /// the previous action reported. On false, FailedAction names this row and
-        /// `stopped_because` says which of the seven states was read.
+        /// `stopped_because` says which of the eight states was read.
         /// </summary>
         public bool RecordExecuted(int index, string key, string tool, bool success, object data, string error,
                                    out ApplicationState state)
@@ -276,6 +386,49 @@ namespace Horizun.Revit.Core
             // with VerifiedActions/NoOpActions above - it exists so the SHAPE is the
             // standard one, not so the arithmetic can differ.
             ApplicationOutcome.Stamp(payload, CompositeVerdict.Aggregate(ApplicationOutcome.Committed, ExecutedChildren()));
+            return payload;
+        }
+
+        /// <summary>
+        /// THE GROUP COMMITTED AND THE REPLY COULD NOT BE BUILT (FIELD FEEDBACK E1).
+        ///
+        /// Measured in the field on v0.6.0: horizun_execute_plan answered an
+        /// ArgumentException (KeyValuePair) while the model carried every change - a
+        /// committed group reported as an error. A caller that believes the error retries,
+        /// and the retry writes the same changes a second time. The rule since: once the
+        /// group has committed, the answer is success, never an error. When the full reply
+        /// cannot be assembled this is what is returned instead - status ok,
+        /// transaction_status committed, outcome committed_with_report_error, the failure
+        /// that broke the report by type and message, and every part of the re-read that
+        /// COULD be carried (each executed action's own verified reply, the results), each
+        /// guarded so one bad part cannot take the rest with it.
+        /// </summary>
+        public JObject CommittedWithReportError(string groupName, JObject results, Exception reportError)
+        {
+            var payload = new JObject
+            {
+                ["status"] = "ok",
+                ["outcome"] = "committed_with_report_error",
+                ["transaction_status"] = ApplicationOutcome.Committed,
+                ["transaction_name"] = groupName,
+                ["actions_verified"] = VerifiedActions,
+                ["actions_no_op"] = NoOpActions,
+                ["actions_executed"] = Executed.Count,
+                ["report_error"] = new JObject
+                {
+                    ["type"] = reportError?.GetType().FullName,
+                    ["message"] = reportError?.Message,
+                    ["means"] = "The atomic group COMMITTED: every action declared a verified application before it " +
+                                "was kept. Only assembling this reply failed. Do NOT retry the plan - its changes are " +
+                                "in the model. Re-read with the query tools if a field below is missing."
+                }
+            };
+            try { payload["actions"] = Executed.DeepClone(); }
+            catch (Exception ex) { payload["actions"] = JValue.CreateNull(); payload["actions_error"] = ex.Message; }
+            try { payload["results"] = results == null ? new JObject() : results.DeepClone(); }
+            catch (Exception ex) { payload["results"] = JValue.CreateNull(); payload["results_error"] = ex.Message; }
+            try { ApplicationOutcome.Stamp(payload, CompositeVerdict.Aggregate(ApplicationOutcome.Committed, ExecutedChildren())); }
+            catch (Exception ex) { payload["application_error"] = ex.Message; }
             return payload;
         }
 

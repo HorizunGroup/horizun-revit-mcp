@@ -126,6 +126,12 @@ namespace Horizun.Revit.Core
         /// </summary>
         public const int MaxBarPositions = 20000;
 
+        /// <summary>
+        /// An array length within this of an exact multiple of the spacing counts as that multiple when bars are counted:
+        /// 0.01 mm, far above the noise of a round trip through feet and far below anything a bar position could show.
+        /// </summary>
+        public const double CountNoiseMm = 0.01;
+
         /// <summary>Two lengths are the same length if they agree to a tenth of a millimetre.</summary>
         public const double LengthToleranceMm = 0.1;
 
@@ -293,7 +299,11 @@ namespace Horizun.Revit.Core
                         // the two runtimes this repository targets it wrapped to a
                         // NEGATIVE gap count, was clamped to 1, and returned Ok with
                         // two bars 4 m apart under a declared maximum of a nanometre.
-                        double exactGaps = Math.Ceiling(array / r.SpacingMm.Value - 1e-9);
+                        // ROUNDING NOISE IS NOT A BAR. An array that is an exact multiple of the spacing comes
+                        // back from feet a few millionths of a millimetre long, and 1e-9 on the RATIO let that
+                        // add a gap: four identical beams, 3300 mm at 150, were laid with 24, 23, 24 and 23
+                        // stirrups. Lengths within CountNoiseMm of a multiple count as that multiple.
+                        double exactGaps = Math.Ceiling((array - CountNoiseMm) / r.SpacingMm.Value);
                         if (exactGaps < 1) exactGaps = 1;
                         if (exactGaps > MaxBarPositions - 1) return Fail(p, CodeTooManyBars, TooMany(exactGaps + 1));
                         int gaps = (int)exactGaps;
@@ -331,7 +341,7 @@ namespace Horizun.Revit.Core
                         // A MINIMUM may not be violated, so the count rounds DOWN -
                         // the opposite of maximum_spacing, and the reason the two are
                         // separate arms rather than one with a sign.
-                        double exactGaps = Math.Floor(array / centre + 1e-9);
+                        double exactGaps = Math.Floor((array + CountNoiseMm) / centre);
                         if (exactGaps > MaxBarPositions - 1) return Fail(p, CodeTooManyBars, TooMany(exactGaps + 1));
                         int gaps = (int)exactGaps;
                         if (gaps < 1)

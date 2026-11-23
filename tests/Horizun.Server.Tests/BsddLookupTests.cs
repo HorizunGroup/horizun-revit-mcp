@@ -331,7 +331,7 @@ namespace Horizun.Server.Tests
             // "search" (2026-09-25) joined "leaf" as a host-answered, non-bSDD operation of
             // this same tool - description matching by normalized token overlap, so a real
             // field session stopped having to open the catalog CSV by hand.
-            Assert.Equal(new[] { "leaf", "search", "bsdd_search", "bsdd_search_dictionary", "bsdd_class", "bsdd_property", "bsdd_dictionaries" }, operations);
+            Assert.Equal(new[] { "leaf", "search", "match", "products", "bsdd_search", "bsdd_search_dictionary", "bsdd_class", "bsdd_property", "bsdd_dictionaries" }, operations);
             // Adding operations did not make the leaf check's arguments optional in the handler.
             Assert.Throws<ArgumentException>(() => CatalogLookup.Handle(new JObject { ["code"] = "A" }));
             Assert.Null(Contract.Find("horizun_bsdd_lookup"));

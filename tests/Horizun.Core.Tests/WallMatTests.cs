@@ -87,48 +87,13 @@ namespace Horizun.Core.Tests
         private const string Horizontal = @"'name': 'h', 'bar_type': 'N16', 'direction': [ 1, 0, 0 ], 'offset_from_face_mm': 48,
       'end_cover_mm': 40, 'side_cover_mm': 40, 'layout': { 'rule': 'maximum_spacing', 'spacing_mm': 200 }, 'allow_new_shape': true";
 
-        [Fact]
-        public void A_mat_component_declares_hooks_at_its_bars_ends()
-        {
-            StructuralRequirementSet s = StructuralRequirementSet.Load(Doc("{ " + Horizontal +
-                @", 'start_hook': { 'hook_type': 'H180', 'orientation': 'left' }, 'end_hook': { 'hook_type': 'H180', 'orientation': 'right' } }"));
-            Assert.True(s.Ok, s.Error);
-            MatComponentRequest c = s.MatRules.Single().Components.Single();
-            Assert.Equal("H180", c.Start.HookTypeId); Assert.Equal("left", c.Start.Orientation);
-            Assert.Equal("H180", c.End.HookTypeId); Assert.Equal("right", c.End.Orientation);
+        
 
-            MatResult r = MatRules.Expand(s.MatRules.Single(), Wall(), Dia, out List<StructuralRebarRule> made);
-            Assert.True(r.Ok, r.Why);
-            StructuralRebarRule bar = made.Single();
-            Assert.Equal("H180", bar.Start.HookTypeId); Assert.Equal("left", bar.Start.Orientation);
-            Assert.Equal("H180", bar.End.HookTypeId); Assert.Equal("right", bar.End.Orientation);
-        }
+        
 
-        [Fact]
-        public void Without_hooks_a_mat_bar_ends_straight_as_before()
-        {
-            StructuralRequirementSet s = StructuralRequirementSet.Load(Doc("{ " + Horizontal + " }"));
-            Assert.True(s.Ok, s.Error);
-            MatRules.Expand(s.MatRules.Single(), Wall(), Dia, out List<StructuralRebarRule> made);
-            Assert.Null(made.Single().Start.HookTypeId);
-            Assert.Null(made.Single().End.HookTypeId);
-        }
+        
 
-        [Fact]
-        public void A_hook_type_nobody_declared_is_refused_by_path()
-        {
-            StructuralRequirementSet s = StructuralRequirementSet.Load(Doc("{ " + Horizontal + ", 'end_hook': { 'hook_type': 'H90' } }"));
-            Assert.Equal(StructuralRequirementSet.CodeUnresolvedReference, s.Code);
-            Assert.Equal("mat_rules['W1'].components[0].end_hook.hook_type", s.Path);
-        }
-
-        [Fact]
-        public void A_misspelt_key_in_a_component_hook_is_refused()
-        {
-            StructuralRequirementSet s = StructuralRequirementSet.Load(Doc("{ " + Horizontal + ", 'end_hook': { 'hook': 'H180' } }"));
-            Assert.Equal(StructuralRequirementSet.CodeUnknownKey, s.Code);
-            Assert.Equal("mat_rules['W1'].components[0].end_hook.hook", s.Path);
-        }
+        
 
         [Fact]
         public void A_trimmed_bar_keeps_its_hooks_only_at_the_hosts_edges()

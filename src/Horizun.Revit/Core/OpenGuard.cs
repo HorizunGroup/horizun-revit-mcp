@@ -55,6 +55,7 @@ using System.Collections.Generic;
 using System.IO;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -62,6 +63,14 @@ namespace Horizun.Revit.Core
     public sealed class OpenRequest
     {
         public string Path;
+
+        /// <summary>
+        /// True for a background read of a library (copy_between_documents source_path,
+        /// audit template comparison, model_diff): a .rte opens there as a source to read
+        /// and closes unsaved. False for open_document / document_session, where a .rte is
+        /// routed to new_project instead.
+        /// </summary>
+        public bool AllowProjectTemplate;
 
         public string CloudProjectGuid;
         public string CloudModelGuid;
@@ -183,6 +192,16 @@ namespace Horizun.Revit.Core
         {
             var plan = new OpenPlan { Request = r, HostVersion = Safe(() => app?.Application?.VersionNumber) };
 
+            if (r.OnOpenDialog == DialogAnswer.ResolveInMemory)
+            {
+                string refusal = OpenRecoveryPolicy.OpenRefusal(true, r.Detach);
+                if (refusal != null)
+                {
+                    plan.Refusal = CommandResult.FailCoded(ErrorCodes.EsquemaInvalido, refusal, extra: new JObject
+                    { ["retry_with"] = new JObject { ["detach"] = true }, ["write_started"] = false });
+                    return plan;
+                }
+            }
             bool wantsCloud = !string.IsNullOrWhiteSpace(r.CloudProjectGuid) ||
                               !string.IsNullOrWhiteSpace(r.CloudModelGuid);
             bool wantsPath = !string.IsNullOrWhiteSpace(r.Path);
@@ -199,10 +218,26 @@ namespace Horizun.Revit.Core
                     "Nothing to open: pass 'path' for a local .rvt/.rfa, or cloud_project_guid + " +
                     "cloud_model_guid for a model in ACC / BIM 360.");
 
+            string pathRefusal = OpenPathRules.TemplateRefusal(r.Path, r.AllowProjectTemplate);
+            if (pathRefusal != null)
+            {
+                plan.Refusal = CommandResult.FailCoded(ErrorCodes.EsquemaInvalido, pathRefusal,
+                    extra: new JObject
+                    {
+                        ["write_started"] = false,
+                        ["retry_with"] = new JObject
+                        {
+                            ["tool"] = "horizun_document_session",
+                            ["arguments"] = new JObject { ["operation"] = "new_project", ["template_path"] = r.Path }
+                        }
+                    });
+                return plan;
+            }
+
             OpenFacts facts = wantsCloud ? GatherCloud(plan, r) : GatherLocal(app, plan, r);
             if (facts == null) return plan;           // gathering already refused, with a reason
 
-            OpenVerdict verdict = OpenDecision.Decide(facts, new OpenIntent
+            var intent = new OpenIntent
             {
                 ExpectedVersion = r.ExpectedVersion,
                 ExpectedVersionRequired = r.ExpectedVersionRequired,
@@ -210,13 +245,28 @@ namespace Horizun.Revit.Core
                 Detach = r.Detach,
                 OpenCentral = r.OpenCentral,
                 Audit = r.Audit
-            });
+            };
+            OpenVerdict verdict = OpenDecision.Decide(facts, intent);
 
             plan.VersionGuard = verdict.VersionGuard;
             if (verdict.ActivationOnly) plan.AlreadyOpen = FindOpen(app, r.Path);
             plan.WillUpgrade = verdict.WillUpgrade;
             plan.CentralGuard = verdict.CentralGuard;
-            if (!verdict.Ok) return Refuse(plan, verdict.Refusal);
+            if (!verdict.Ok)
+            {
+                JObject retry = FieldCallRules.CloudOpenRetry(facts, intent, verdict);
+                if (retry != null)
+                {
+                    plan.Refusal = CommandResult.FailCoded(ErrorCodes.PrecondicionNoCumplida, verdict.Refusal, extra: new JObject
+                    { ["retry_with"] = retry, ["write_started"] = false });
+                    return plan;
+                }
+                // Live 5.0.4: a version refusal came back as esquema_invalido ("Arguments violate the
+                // contract at /"). The arguments were valid; the file and the host forbade the open.
+                plan.Refusal = CommandResult.FailCoded(verdict.RefusalCode ?? ErrorCodes.PrecondicionNoCumplida, verdict.Refusal,
+                    extra: new JObject { ["write_started"] = false });
+                return plan;
+            }
 
             // Only now, with the decision made, is it worth asking Revit for a path.
             try
@@ -435,3 +485,4 @@ namespace Horizun.Revit.Core
         private static bool? SafeBool(Func<bool> f) { try { return f(); } catch { return null; } }
     }
 }
+

@@ -98,6 +98,11 @@ namespace Horizun.Revit.Commands
             {
                 try { Element t = doc.GetElement(e.GetTypeId()); p = t == null ? null : Lookup(t, name); } catch { }
             }
+            return ReadParam(p, unit);
+        }
+
+        internal static ParamFact ReadParam(Parameter p, string unit)
+        {
             if (p == null) return new ParamFact { Exists = false };
             var f = new ParamFact { Exists = true };
             try

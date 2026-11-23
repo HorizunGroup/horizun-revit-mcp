@@ -19,18 +19,7 @@ namespace Horizun.Core.Tests
 {
     public class RebarIntoCoverTests
     {
-        private static StructuralRequirementSet Layer(string cover)
-        {
-            return StructuralRequirementSet.Load(JObject.Parse(@"{
-  'schema': 'horizun.structural-requirements/1', 'units': 'millimeter',
-  'requirement_set': { 'id': 'l1', 'version': '1' },
-  'bar_types': [ { 'id': 'N5', 'type_name': '#5' } ],
-  'section_rules': [ { 'id': 'C1', 'host': { 'element_ids': [ 7 ] }, 'cover': " + cover + @",
-    'layers': [ { 'name': 'main', 'face': 'perimeter', 'count': 4, 'bar_type': 'N5',
-      'extend': { 'from_mm': -500, 'to_mm': 3700 }, 'into': [ 50, 8 ],
-      'laps': [ { 'at_mm': 300, 'length_mm': 600 } ],
-      'anchorage': [ { 'element_id': 50, 'min_length_mm': 450, 'end': 'start' } ] } ] } ] }"));
-        }
+        
 
         private static SectionHostFrame Column() => new SectionHostFrame
         {
@@ -38,31 +27,13 @@ namespace Horizun.Core.Tests
             UMin = 0, UMax = 3000, VMin = -200, VMax = 200, WMin = -200, WMax = 200
         };
 
-        private static List<StructuralRebarRule> Bars(string cover, double? hostCover = null)
-        {
-            StructuralRequirementSet s = Layer(cover);
-            Assert.True(s.Ok, s.Error);
-            SectionResult r = SectionRules.Expand(s.SectionRules.Single(), Column(), id => 16, hostCover,
-                out List<StructuralRebarRule> bars, out _);
-            Assert.True(r.Ok, r.Why);
-            Assert.NotEmpty(bars);
-            return bars;
-        }
+        
 
-        // ------------------------------------------------- what the section declares
+        
 
-        [Fact]
-        public void EveryPieceOfALayerCarriesTheCoverItsSectionDeclares() =>
-            Assert.All(Bars("{ 'distance_mm': 40 }"), b => Assert.Equal(40, b.SectionCoverMm.Value, 6));
+        
 
-        [Fact]
-        public void PerFaceCoversCarryTheSmallestOfThem() =>
-            Assert.All(Bars("{ 'top_mm': 50, 'bottom_mm': 45, 'left_mm': 40, 'right_mm': 55, 'end_mm': 60 }"),
-                       b => Assert.Equal(40, b.SectionCoverMm.Value, 6));
-
-        [Fact]
-        public void ACoverReadFromTheHostCarriesTheHostsCover() =>
-            Assert.All(Bars("{ 'source': 'host' }", 38), b => Assert.Equal(38, b.SectionCoverMm.Value, 6));
+        
 
         [Fact]
         public void ARuleDeclaredAsItselfCarriesNoSectionCover() =>

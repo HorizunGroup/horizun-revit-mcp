@@ -35,6 +35,12 @@ namespace Horizun.Revit.Core
         public const string Operation = "new_project";
         public const string ConfirmationScope = "horizun_document_session:new_project";
 
+        public static string FailureStage(bool saving, Exception error)
+        {
+            if (error == null) throw new ArgumentNullException(nameof(error));
+            return saving ? "save" : "create";
+        }
+
         /// <summary>Where the template came from, reported verbatim.</summary>
         public const string FromArgument = "template_path";
         public const string FromRevitDefault = "revit_default_project_template";

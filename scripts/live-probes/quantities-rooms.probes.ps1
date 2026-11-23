@@ -1,8 +1,8 @@
 # Live probes for horizun_quantities modes room_finishes and carbon, and for room membership
 # (horizun_query_model include_room, takeoff group_by='room'). Everything stands on the
 # module's own level at X = 1,110,000 mm (branch A's slot), far from the real model: four
-# own walls of a Basic wall type taken BY NAME from the year's DefaultMetric.rte (copied with
-# horizun_copy_between_documents, never "the first type") closing a 6 x 4 m rectangle, an own
+# own walls of a Basic wall type taken BY NAME from the document (never "the first type";
+# a document without it leaves the cases not staged) closing a 6 x 4 m rectangle, an own
 # door in the south wall and an own window in the north wall, an own room and an own space
 # inside, an own floor inside, and one more own wall 2 m outside the rectangle. What the probe
 # cannot know in advance (wall thickness, room height, the wall type's materials, the phase
@@ -61,24 +61,16 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             return $null
         }
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-        $archTemplates = @('English\DefaultMetric.rte', 'English\Default-Multi-Discipline_Metric.rte')
-        function Bring($category, $typeName, $familyName, $key) {
-            $have = @(Types $category | Where-Object { [string]$_.type -eq $typeName -and [string]$_.family -eq $familyName }) | Select-Object -First 1
-            if ($have) { return $have }
-            $tpl = @($archTemplates | ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
-            if (-not $tpl) { return $null }
-            $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = $category
-                    type_names = @($familyName + ': ' + $typeName); duplicate_types = 'use_destination' } ($run + '-rm-' + $key)
+        function Bring($category, $typeName, $familyName) {
             return @(Types $category | Where-Object { [string]$_.type -eq $typeName -and [string]$_.family -eq $familyName }) | Select-Object -First 1
         }
 
         # ---- staging: own level, a closed rectangle of own walls, door, window, room, space, floor ----
         $E = 95000.0; $X = 1110000.0; $Y = 0.0; $W = 6000.0; $D = 4000.0
-        $wallType = Bring 'OST_Walls' 'Exterior - Brick on Mtl. Stud' 'Basic Wall' 'walltype'
-        $doorType = Bring 'OST_Doors' '0915 x 2134mm' 'M_Single-Flush' 'doortype'
-        $windowType = Bring 'OST_Windows' '0915 x 1220mm' 'M_Fixed' 'wintype'
-        $floorType = Bring 'OST_Floors' 'Generic 150mm' 'Floor' 'floortype'
+        $wallType = Bring 'OST_Walls' 'Exterior - Brick on Mtl. Stud' 'Basic Wall'
+        $doorType = Bring 'OST_Doors' '0915 x 2134mm' 'M_Single-Flush'
+        $windowType = Bring 'OST_Windows' '0915 x 1220mm' 'M_Fixed'
+        $floorType = Bring 'OST_Floors' 'Generic 150mm' 'Floor'
         $level = Create @(@{ kind = 'level'; name = "HZ_RM_$run"; elevation = $E }) 'level'
         $walls = @{}
         if ($level -and $wallType) {

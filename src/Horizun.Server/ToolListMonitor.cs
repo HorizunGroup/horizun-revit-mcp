@@ -15,15 +15,21 @@ namespace Horizun.Server
     {
         private readonly Action<string, JObject> _notify;
         private readonly object _gate = new object();
+        private readonly object _checkGate = new object();
+        private readonly Func<string> _capture;
         private readonly Timer _timer;
         private readonly FileSystemWatcher _watcher;
         private string _snapshot;
         private bool _disposed;
 
-        public ToolListMonitor(Action<string, JObject> notify, bool watch = true)
+        public ToolListMonitor(Action<string, JObject> notify, bool watch = true, Func<string> capture = null)
         {
             _notify = notify ?? throw new ArgumentNullException(nameof(notify));
-            _snapshot = Capture();
+            _capture = capture ?? Capture;
+            _snapshot = _capture();
+            // 4.0: a session change of tool groups (horizun_toolsets) is checked at once, so the
+            // client hears ONE list_changed per change that actually altered the listed set.
+            ToolVisibility.Changed += CheckNow;
             if (!watch) return;
 
             string settings = Horizun.Revit.Core.Settings.Path();
@@ -57,31 +63,40 @@ namespace Horizun.Server
 
         internal void CheckNow()
         {
-            string next;
-            try { next = Capture(); }
-            catch (Exception ex) { Log.Warn("tool-list monitor could not read settings: " + ex.Message); return; }
-
-            bool changed;
-            lock (_gate)
+            // Keep captures, snapshot updates and notifications in the same order.
+            // ToolVisibility raises Changed outside its own gate, so Capture can safely
+            // acquire that gate while a session change waits here.
+            lock (_checkGate)
             {
-                if (_disposed) return;
-                changed = !string.Equals(_snapshot, next, StringComparison.Ordinal);
-                if (changed) _snapshot = next;
+                lock (_gate) { if (_disposed) return; }
+                string next;
+                try { next = _capture(); }
+                catch (Exception ex) { Log.Warn("tool-list monitor could not read settings: " + ex.Message); return; }
+
+                bool changed;
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    changed = !string.Equals(_snapshot, next, StringComparison.Ordinal);
+                    if (changed) _snapshot = next;
+                }
+                if (changed)
+                {
+                    // Counted where it is delivered (Program.NotifyChange), not here: a client
+                    // that neither subscribed nor handshook as legacy receives nothing.
+                    _notify("notifications/tools/list_changed", null);
+                }
             }
-            if (changed)
-                _notify("notifications/tools/list_changed", null);
         }
 
-        // The REACHABLE set (what horizun_list_tools answers in facade mode) and what tools/list
-        // shows now, so a session change of a role profile's listing (ToolProfiles.cs) is
-        // announced like a settings change.
-        internal static string Capture() => Names(Tools.List(false)) + "\n--\n" +
-                                            Names(SchemaFacade.List(SchemaMode.Current, false));
-
-        private static string Names(JArray list) => string.Join("\n", list
+        // What can be reached AND what is listed: a facade or grouped list can stay the same
+        // while the reachable set moves (or the other way round), and either is a change.
+        internal static string Capture() => string.Join("\n", Tools.List(false)
             .OfType<JObject>()
             .Select(t => (string)t["name"])
-            .OrderBy(n => n, StringComparer.Ordinal));
+            .OrderBy(n => n, StringComparer.Ordinal)) + "\n--listed--\n" +
+            string.Join("\n", SchemaFacade.List(SchemaMode.Current, false)
+                .OfType<JObject>().Select(t => (string)t["name"]));
 
         public void Dispose()
         {
@@ -90,6 +105,7 @@ namespace Horizun.Server
                 if (_disposed) return;
                 _disposed = true;
             }
+            ToolVisibility.Changed -= CheckNow;
             try { _watcher?.Dispose(); } catch { }
             try { _timer?.Dispose(); } catch { }
         }

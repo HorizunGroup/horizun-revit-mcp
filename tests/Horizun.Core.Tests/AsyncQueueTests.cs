@@ -19,6 +19,7 @@ namespace Horizun.Core.Tests
     /// recovery, and nothing downstream could tell the difference. The queue shipped
     /// with no test at all; these pin the property the design rests on.
     /// </summary>
+    [Collection("AsyncQueue")]
     public class AsyncQueueTests
     {
         private static AsyncWork Work(string id) => new AsyncWork
@@ -203,6 +204,7 @@ namespace Horizun.Core.Tests
         }
     }
 
+    [Collection("AsyncQueue")]
     public class AsyncQueueRemoveTests
     {
         private static AsyncWork Work(string id) => new AsyncWork { JobId = id, Command = "horizun_model_scan", ParamsJson = "{}", QueuedUtc = DateTime.UtcNow };

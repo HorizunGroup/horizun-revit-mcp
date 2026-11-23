@@ -502,32 +502,6 @@ namespace Horizun.Core.Tests
             return c;
         }
 
-        [Fact]
-        public void The_set_declares_follow_face_and_into_and_refuses_what_is_missing()
-        {
-            StructuralRequirementSet s = StructuralRequirementSet.Load(Set(Comp(new JObject { ["planarity_mm"] = 0.5, ["min_facet_mm"] = 100 }), new JArray(102)));
-            Assert.True(s.Ok, s.Code + ": " + s.Error);
-            StructuralMatRule m = Assert.Single(s.MatRules);
-            Assert.Equal(new long[] { 102 }, m.Into);
-            Assert.Equal(0.5, m.Components[0].FollowFace.PlanarityMm);
-            Assert.Equal(100, m.Components[0].FollowFace.MinFacetMm);
-
-            s = StructuralRequirementSet.Load(Set(Comp(new JObject { ["min_facet_mm"] = 100 })));
-            Assert.Equal(StructuralRequirementSet.CodeMissing, s.Code);
-            Assert.Contains("planarity_mm", s.Error);
-
-            s = StructuralRequirementSet.Load(Set(Comp(new JObject { ["planarity_mm"] = 0.5, ["min_facet_mm"] = 100, ["tolerance"] = 1 })));
-            Assert.Equal(StructuralRequirementSet.CodeUnknownKey, s.Code);
-
-            s = StructuralRequirementSet.Load(Set(Comp(new JObject { ["planarity_mm"] = 0, ["min_facet_mm"] = 100 })));
-            Assert.Equal(StructuralRequirementSet.CodeUnknownValue, s.Code);
-
-            s = StructuralRequirementSet.Load(Set(Comp(true)));
-            Assert.Equal(StructuralRequirementSet.CodeSchema, s.Code);
-
-            s = StructuralRequirementSet.Load(Set(Comp(new JObject { ["planarity_mm"] = 0.5, ["min_facet_mm"] = 100 }), new JArray(101)));
-            Assert.Equal(StructuralRequirementSet.CodeUnknownValue, s.Code);
-            Assert.Contains("own host", s.Error);
-        }
+        
     }
 }

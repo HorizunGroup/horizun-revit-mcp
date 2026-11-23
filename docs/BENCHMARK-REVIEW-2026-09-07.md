@@ -68,7 +68,7 @@ En el commit base, `WorkflowPlan` ofrecía tres intenciones: fijar elementos, ap
 
 No se encontró en la superficie publicada de Cortex un equivalente tipado al compilador RFT→RFA de Horizun. Cargar, duplicar tipos o reconstruir instancias IFC no demuestra crear una familia paramétrica desde cero. Esto no prueba imposibilidad mediante código arbitrario o extensiones.
 
-Horizun tiene creación de parámetros/fórmulas, geometría, conectores y verificación de familia reabierta, además de una opción de flexión por tipos. Su ventaja es de cobertura de código inspeccionada; la calidad geométrica, comportamiento paramétrico y coste de producir contenido comparable deben probarse. [CreateFamilyCommand](../src/Horizun.Revit/Commands/CreateFamilyCommand.cs).
+Horizun tiene creación de parámetros/fórmulas, geometría, conectores y verificación de familia reabierta, además de una opción de flexión por tipos. Su ventaja es de cobertura de código inspeccionada; la calidad geométrica, comportamiento paramétrico y coste de producir contenido comparable deben probarse. CreateFamilyCommand (Pro edition).
 
 ### Diagnóstico: precisión además de un puntaje
 

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Deliberately separate: API metadata tests need installed Autodesk assemblies,
+       but do not load native Revit code, construct API objects or start Revit. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\Horizun.Revit\Core\ApiHelpRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ApiSignatureRules.cs" />
+    <!-- The pinned SDK supplies this metadata reader; no extra network package. -->
+    <Reference Include="System.Reflection.MetadataLoadContext">
+      <HintPath>$(MSBuildSDKsPath)\..\System.Reflection.MetadataLoadContext.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+</Project>

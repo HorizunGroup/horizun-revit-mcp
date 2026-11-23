@@ -39,7 +39,7 @@ namespace Horizun.Server.Tests
         public void Forwarding_tools_can_be_tasks()
         {
             foreach (string name in new[] { "horizun_model_scan", "horizun_create_elements",
-                                            "horizun_audit_model", "horizun_clash" })
+                                            "horizun_audit_model" })
             {
                 CommandContract c = Contract.Find(name);
                 Assert.NotNull(c);

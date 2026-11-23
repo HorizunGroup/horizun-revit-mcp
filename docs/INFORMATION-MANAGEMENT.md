@@ -401,153 +401,7 @@ Escribir exige `full_write`, igual que `stamp` y `transition`.
 
 ## Verified IFC delivery
 
-`horizun_deliver_ifc` turns "export an IFC and hope" into one call whose verdict
-is the **file's**, not the model's. It runs, in order:
-
-1. **precheck** *(optional, advisory)* — the `horizun_validate_ids` pre-check over
-   the live model. It catches expensive problems before exporting, but a Revit
-   parameter is not evidence of an IFC property set, so it **never** decides
-   readiness.
-2. **export** — the IFC is written with every option explicit: `ifc_version`
-   (required, closed list), `ifc_filter_view_id`, `export_base_quantities`,
-   `split_walls_and_columns`, `space_boundary_level`, the exporter's own
-   user-defined property-set file (`pset_mapping_path`), the coordinate basis
-   (`site_placement`: `shared`, `survey_point`, `project_base_point`,
-   `internal`) and, optionally, `export_ifc_common_property_sets` /
-   `export_internal_revit_property_sets`. The gate passes only when a new,
-   non-empty file is measured at the exact planned path; it is hashed (SHA-256)
-   from disk.
-3. **schema_header** — the head of the file must be ISO-10303-21 with a
-   `FILE_SCHEMA` of the family the requested version must produce (IFC2X3, IFC4
-   or IFC4X3 — an IFC4X3 file is *not* accepted as IFC4), and the file must end
-   with `END-ISO-10303-21` (a truncated write fails).
-4. **ids_validate** — the IDS evaluated on the **exported file** (the same
-   evaluator as `horizun_validate_ids operation=validate`). Any failing
-   specification fails the gate; anything undecided makes it `not_decidable`,
-   never `passed`.
-5. **pset_mapping** — every property the mapping declares is looked for in the
-   exported file on the IFC classes the mapping names (an occurrence is credited
-   with its type's sets; a `...Type` class is checked on its own sets). The
-   report gives coverage *n of m* per property and example GlobalIds of the
-   entities that lack it. `pset_min_coverage` (default `1`) sets the share that
-   must carry each property.
-6. **bcf** *(optional, needs `ids_path`)* — one BCF 2.1 topic per failed
-   specification, with the failing GlobalIds as the selection, written as
-   `<name>.ids-issues.bcf` and re-read structurally (every markup and viewpoint
-   re-parsed, topics and GlobalIds counted). No failure, no file: the gate is
-   then `skipped`.
-
-Every gate reports `passed`, `failed`, `skipped` or `not_decidable`.
-`deliverable_ready` is `true` only when `export` and `schema_header` passed and
-every other requested, non-advisory gate passed (or was skipped because there
-was nothing to do). A file that is not ready stays where it was written, and
-`blocking` names why.
-
-`dry_run` defaults to `true`: the rehearsal returns the plan (effective options
-and how each one reaches the exporter, the model's current georeference, the
-IDS and mapping to be used with their SHA-256, output paths, the advisory
-precheck) and writes nothing. The confirmation token binds the destination,
-every option, the filter view, the **content** of the mapping and the IDS, and
-which targets already exist.
-
-### Georeference
-
-The reply always carries `georeference_in_model` — survey point and project base
-point (internal and shared, mm), the active location's east/west, north/south,
-elevation and angle to true north, and the site location (latitude, longitude,
-place, time zone, coordinate system id). After export it adds
-`georeference_in_file`: the `IfcSite` placement and reference
-latitude/longitude/elevation, any `IfcMapConversion` with its target CRS, and the
-true-north direction the file declares. These are **observed, not judged** —
-compare them with the model before sending the file.
-
-### How each option reaches the exporter
-
-| Option | Channel | How the delivery knows it held |
-|---|---|---|
-| `FileVersion`, `FilterViewId`, `ExportBaseQuantities`, `WallAndColumnSplitting`, `SpaceBoundaryLevel` | typed `IFCExportOptions` properties, compiled against Revit 2023–2027 | version: `schema_header`; the rest: requested, not provable from the file |
-| `ExportUserDefinedPsets`, `ExportUserDefinedPsetsFileName` | `IFCExportOptions.AddOption`, read by name by the Revit IFC exporter | `pset_mapping` gate |
-| `SitePlacement` (`Shared`, `Site`, `Project`, `Internal`) | `AddOption` | observed in `georeference_in_file` |
-| `ExportIFCCommonPropertySets`, `ExportInternalRevitPropertySets` | `AddOption`, only when given | requested, not provable |
-
-The named options follow the documented behaviour of the open-source Revit IFC
-exporter; they are not readable back from the option object, which is why each
-one is either checked in the file or labelled `requested_unverifiable`.
-
-### The mapping file
-
-The mapping **is** the exporter's user-defined property-set file — the same file
-is handed to the exporter and then read back as the list of what the IFC must
-carry. Fields are separated by **TAB**; a line written with spaces would export
-no set at all, so it is refused by line number before anything is exported.
-
-```text
-# Generic delivery mapping - fields separated by TAB
-#PropertySet:<TAB><Pset name><TAB>I|T<TAB><IFC classes, comma separated>
-#<TAB><Property name><TAB><Data type><TAB>[Revit parameter, if different]
-PropertySet:	Org_Identity	I	IfcWall,IfcSlab,IfcColumn,IfcBeam
-	AssetCode	Text	Asset Code
-	Zone	Label	Zone
-PropertySet:	Org_TypeData	T	IfcWall,IfcSlab
-	Manufacturer	Label
-	FireRating	Label	Fire Rating
-```
-
-The exporter writes a property only when its Revit parameter has a value. A
-property missing from an element therefore means an empty parameter **or** a
-mapping the exporter did not apply; the file ALONE cannot tell those apart.
-
-**The model is read too, before the export, to tell them apart.** Before
-exporting, `horizun_deliver_ifc` reads the mapped Revit parameter on the
-elements in scope for every declared property (resolved from the mapping's IFC
-classes to a Revit category by a built-in table covering common architecture,
-structure and MEP classes) and counts `has_value` / `empty` / `parameter_missing`
-- a class this bridge has no category for is reported `category_unmapped`,
-never guessed. After the export, the `pset_mapping` gate's evidence carries a
-`model_comparison` array, one entry per mapping row, classifying it as
-`exported` (the file carries it - necessarily from an element that had a
-value), `empty_in_model` (the parameter had no value - **not** an exporter
-fault), `not_applied` (a value existed in the model but the file carries the
-property for fewer entities than the model had values for - the exporter did
-not apply the mapping) or `parameter_missing` (the named parameter does not
-exist on the element at all). `exported` and `not_applied` are **aggregate**
-counts: no IFC GlobalId correlates a model element to its file entity without
-recomputing the exporter's own GUID algorithm, which this bridge does not
-carry, so a `population_mismatch_note` is added per row whenever the model
-census and the file's own count of candidate entities disagree - naming the
-mismatch rather than trusting the aggregate silently. The GlobalIds in
-`missing_examples` (the file-only check) are still where to look for which
-elements to fix.
-
-### Naming
-
-Give `output_name`, or an `information_container` (`fields`, `field_order`,
-`separator`, `field_patterns`); the name is the fields joined in `field_order`.
-If both are given they must agree. Only the name is used here.
-
-### Resumen en español
-
-`horizun_deliver_ifc` es una **entrega IFC verificada** en una sola llamada. El
-veredicto es el del **archivo**: se exporta con opciones explícitas (versión,
-vista de filtro, cantidades base, división de muros/columnas, límites de
-espacio, archivo de property sets definido por el usuario y base de
-coordenadas), se relee la cabecera (`FILE_SCHEMA` y cierre `END-ISO-10303-21`),
-se valida el IDS **sobre el IFC exportado**, se busca en el archivo cada
-propiedad del mapeo con cobertura *n de m* y GlobalIds de los faltantes, y
-opcionalmente se escribe un BCF con un tema por especificación fallada, releído
-estructuralmente. Antes de exportar también se lee el MODELO: el parámetro de
-Revit de cada propiedad declarada, por categoría resuelta desde las clases IFC
-del mapeo, contando `has_value`/`empty`/`parameter_missing`. Cruzado con el
-archivo, cada fila del mapeo queda clasificada en `model_comparison` como
-`exported`, `empty_in_model` (parámetro vacío - no es culpa del exportador),
-`not_applied` (había valor en el modelo pero el exportador no lo aplicó) o
-`parameter_missing` (el parámetro no existe en el elemento) - algo que el
-archivo solo, sin el modelo, no puede distinguir. El pre-chequeo del modelo
-(el `precheck` con IDS) sigue siendo solo orientativo y nunca decide.
-`deliverable_ready` es `true` solo si pasan todos los gates solicitados. El
-ensayo (`dry_run`, por defecto) devuelve el plan, la georreferencia actual del
-modelo y no escribe nada. El archivo de mapeo es el mismo formato del
-exportador de Revit, separado por **tabuladores**.
+Verified IFC delivery (`horizun_deliver_ifc`: one call that exports an IFC and proves it against IDS, a Pset mapping and its georeference) is in the Pro edition. In Community, `horizun_export` exports IFC into an information container (see [In `horizun_export`](#in-horizun_export)), and `horizun_validate_ids` checks an IFC file against an IDS.
 
 ## COBie handover
 
@@ -1028,31 +882,16 @@ shapes and simulates each defect the probes exist to catch, plus the glue in
 
 | Case | Tool | What must hold |
 |---|---|---|
-| ISO-D1 | `horizun_deliver_ifc` | dry run: plan, `georeference_in_model`, token, mapping and IDS bound by SHA-256; the output folder is unchanged |
-| ISO-D2 | `horizun_deliver_ifc` | apply: `export`, `schema_header` (FILE_SCHEMA family IFC4) and `information_container` passed; `horizun_information_container verify` = `match` with the delivered SHA-256 |
-| ISO-D3 | `horizun_deliver_ifc` | `ids_validate` and `pset_mapping` are decided on the file (passed or failed, never undecided), `bcf` follows the IDS, and `deliverable_ready` equals what the gates imply |
-| ISO-D4 | `horizun_deliver_ifc` | a second apply onto the sealed name, even with `overwrite=true`, is refused before export; the IFC, its sidecar and the folder are unchanged |
-| ISO-D5 | `horizun_deliver_ifc` | IFC4x3 is planned on Revit 2024+ and refused by name on 2023 |
-| ISO-D6 *(opt-in)* | `horizun_deliver_ifc` | `-IsoReadyProbe`: after a verified write of the code to every element of the class, the same delivery is `deliverable_ready=true` |
 | ISO-E1 / E2 | `horizun_export` | IFC export with a container takes the container's name and is sealed (`match`); a repeat onto the sealed name is refused whatever `overwrite` says |
 | ISO-E3 | `horizun_export` | a real (non-placeholder) sheet prints as one sealed PDF; NOT COVERED when the model has none |
 | ISO-H1…H3 | `horizun_project_context` | `validate` keeps invalid / inconsistent / incomplete apart; `questions` is ordered and bilingual; a `draft` rehearsal writes no file |
 | ISO-H4…H7 | `horizun_information_container` | `inspect` of a temporary CDE finds the bad name, the missing sidecar, the missing and the overdue deliverable and writes nothing; shared→published without `approved_by` is refused; with it, the rehearsal passes on a sealed container; the apply lands a verified, logged copy that replays as `already_transitioned` under `full_write`, or is refused by the profile with nothing written |
 
-Nothing is assumed about the fixture. The delivery class is **discovered** by
-counting elements (ducts → IfcDuctSegment first, then pipes, cable trays,
-floors, columns, framing, walls, generic models; `-QuantityCategory` goes first
-when it is one of them), and the TAB mapping (`HZ_Delivery.Code` from
-`Comments`) and the IDS are generated for that class in a folder per run. The
-delivery uses IFC4 in every year; IFC4x3 is its own case. The section writes no
-parameter unless `-IsoReadyProbe` is passed; `-IsoMappedParameter` names the
-Revit parameter the mapping reads (display name, `Comments` under the ENU
-runner).
-
 The write cases need `-WriteProbes` and the disposable `WriteDocument`; without
 them they are NOT COVERED by name. The host-resident cases run in every run; H6
 and H7 need a sealed container, which comes from ISO-E1 or, under `full_write`,
-from a host-side `stamp`. Temporary files go into one folder per run under the
+from a host-side `stamp`. No case writes a model parameter: the export cases
+write files outside the model. Temporary files go into one folder per run under the
 harness scratch directory (never the repository) and are removed only when every
 ISO case passed. Besides the main report (`iso19650` block and one probe row per
 case), the run writes `iso19650-<year>-<run>.json` beside `-Json`, a
@@ -1063,16 +902,10 @@ consumes (case = probe × harness × year × document).
 
 `verify-live.ps1` mide las herramientas ISO 19650 contra un Revit real con las
 sondas de `scripts/live-iso19650.probes.ps1`, que `live-iso19650.tests.ps1`
-ejercita sin Revit. `deliver_ifc`: ensayo sin archivos con plan, georreferencia y
-token; aplicación con un mapeo TAB y un IDS generados por corrida para la clase
-que el modelo **tiene** (se descubre contando elementos), con `export`,
-`schema_header` e `information_container` aprobados y `verify = match`; IDS y
-mapeo decididos sobre el archivo y `deliverable_ready` coherente con los gates;
-rechazo de un segundo sellado; IFC4x3 planificado en 2024+ y rechazado por nombre
-en 2023. `export` con contenedor (IFC y PDF si hay lámina real) y rechazo de la
+ejercita sin Revit. `export` con contenedor (IFC y PDF si hay lámina real) y rechazo de la
 repetición. Sin Revit: `project_context` validate/questions/draft (ensayo) y
 `information_container` inspect/transition sobre un CDE temporal con la regla de
-`approved_by`. La sonda no escribe parámetros salvo con `-IsoReadyProbe`. Los
+`approved_by`. Ningún caso escribe parámetros del modelo. Los
 archivos temporales van a una carpeta por corrida fuera del repositorio, y cada
 corrida deja además un registro `horizun.live-evidence/2` para el consolidador.
 
@@ -1080,26 +913,21 @@ corrida deja además un registro `horizun.live-evidence/2` para el consolidador.
 
 [`examples/`](../examples/) holds copyable tool calls for everything on this page:
 the start-up (`iso19650-startup/`: `questions` → `draft` rehearsal → `draft` write →
-`validate`, plus a complete `project-context.example.json`), containers
-(`information-containers/`: `name` → `stamp` → `inspect` → `transition`), and a
-verified IFC delivery (`ifc-delivery/`) whose TAB-separated Pset mapping and IDS 1.0
-file agree: `HZ_Delivery.Code` on every `IfcDuctSegment`. Each file carries `tool`,
+`validate`, plus a complete `project-context.example.json`), and containers
+(`information-containers/`: `name` → `stamp` → `inspect` → `transition`). Each file carries `tool`,
 a bilingual `title`/`about` and the exact `arguments`.
 
 They cannot drift from the contract: `ExamplePayloadTests` validates every
 `examples/**/*.json` against the `InputSchema` of the tool it declares, rehearses the
-project-context drafts and composes every container name, and
-`ExampleDeliveryFilesTests` runs the example IDS and mapping against a hand-written
-IFC. Names, codes and paths are placeholders under `C:/proyectos/demo/`; element ids
+project-context drafts and composes every container name. Names, codes and paths are placeholders under `C:/proyectos/demo/`; element ids
 are placeholders to resolve in your own model.
 
 ### Resumen en español
 
 [`examples/`](../examples/) trae llamadas copiables para todo lo de esta página: el
 arranque (`questions` → ensayo de `draft` → escritura → `validate`, y un
-`project-context.example.json` completo), los contenedores (`name` → `stamp` →
-`inspect` → `transition`) y una entrega IFC verificada cuyo mapeo de Psets (separado
-por TAB) y cuyo IDS 1.0 coinciden: `HZ_Delivery.Code` en cada `IfcDuctSegment`. Un
+`project-context.example.json` completo), y los contenedores (`name` → `stamp` →
+`inspect` → `transition`). Un
 test valida cada archivo contra el `InputSchema` de la herramienta que declara, así
 que no se desactualizan; nombres, códigos, rutas e ids son marcadores.
 
@@ -1211,8 +1039,8 @@ entity or classification, or nothing alphanumerical with an optional occurrence)
 published **ids.xsd 1.0.0**, embedded verbatim (`schemas/ids/ids-1.0.xsd`); the
 two XML Schema definitions it imports (`xs:restriction`, `xs:occurs`) are supplied
 from `schemas/ids/xmlschema-subset.xsd`, so validation never touches the network.
-It is then parsed by `IdsReader`, the reader `horizun_validate_ids` and
-`horizun_deliver_ifc` use; any file problem, undecidable specification or
+It is then parsed by `IdsReader`, the reader `horizun_validate_ids`
+uses; any file problem, undecidable specification or
 unsupported facet makes the proof fail. A file that fails either proof is never
 written.
 

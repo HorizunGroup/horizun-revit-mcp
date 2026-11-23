@@ -21,7 +21,7 @@ namespace Horizun.Core.Tests
             new ScheduleFieldFacts { Index = 0, ParameterId = -1002500, Name = "Family", Heading = "Familia" },
             new ScheduleFieldFacts { Index = 1, ParameterId = -1002501, Name = "Type", Heading = "Tipo" },
             new ScheduleFieldFacts { Index = 2, ParameterId = -1010106, Name = "Comments", Heading = "Notas" },
-            new ScheduleFieldFacts { Index = 3, ParameterId = 991234, Name = "Comments", Heading = "Comentarios PRD" }
+            new ScheduleFieldFacts { Index = 3, ParameterId = 991234, Name = "Comments", Heading = "Comentarios del proyecto" }
         };
 
         // ---- field resolution --------------------------------------------------
@@ -138,6 +138,18 @@ namespace Horizun.Core.Tests
             Assert.Equal(Snapshot(), Snapshot());
             Assert.Equal(ScheduleEditRules.DefinitionFingerprint(Snapshot()),
                          ScheduleEditRules.DefinitionFingerprint(Snapshot()));
+        }
+
+        [Fact]
+        public void A_project_info_field_and_an_instance_field_have_distinct_fingerprints()
+        {
+            var fields = Fields();
+            fields[0].FieldType = "Instance";
+            string instance = ScheduleEditRules.CanonicalDefinition(fields, null, null, true, false, true);
+            fields[0].FieldType = "ProjectInfo";
+            string project = ScheduleEditRules.CanonicalDefinition(fields, null, null, true, false, true);
+            Assert.NotEqual(ScheduleEditRules.DefinitionFingerprint(instance),
+                            ScheduleEditRules.DefinitionFingerprint(project));
         }
 
         [Fact]

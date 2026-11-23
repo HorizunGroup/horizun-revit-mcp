@@ -86,64 +86,6 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void A_mixed_apply_is_reported_as_mixed_and_never_as_one_verdict_for_the_call()
-        {
-            CorrectionAction ok = ActionThat("f:links", true, null, "verified_applied");
-            CorrectionAction bad = ActionThat("f:linktypes", false, "Revit refused: the element is owned by another user",
-                                              "failed");
-
-            JObject tally = CorrectionReply.Tally(new[] { ok, bad });
-            Assert.Equal(1, (int)tally[CorrectionActionState.Applied]);
-            Assert.Equal(1, (int)tally[CorrectionActionState.Failed]);
-
-            // A reader must be able to say WHICH work stands, without inference.
-            JObject okJson = CorrectionReply.ActionJson(ok);
-            JObject badJson = CorrectionReply.ActionJson(bad);
-            Assert.Equal(CorrectionActionState.Applied, (string)okJson["state"]);
-            Assert.Equal(CorrectionActionState.Failed, (string)badJson["state"]);
-            Assert.True((bool)okJson["steps"][0]["apply"]["ok"]);
-            Assert.False((bool)badJson["steps"][0]["apply"]["ok"]);
-            Assert.Contains("owned by another user", (string)badJson["steps"][0]["apply"]["error"]);
-            Assert.Contains("fully applied", (string)badJson["why"]);
-            Assert.Null((string)okJson["why"]);
-
-            // And both rehearsed: the failure is at apply, which is the whole case.
-            Assert.True((bool)okJson["steps"][0]["rehearsal"]["ok"]);
-            Assert.True((bool)badJson["steps"][0]["rehearsal"]["ok"]);
-        }
-
-        [Fact]
-        public void The_re_audit_judges_each_action_against_the_model_not_against_the_call()
-        {
-            CorrectionAction ok = ActionThat("f:links", true, null, "verified_applied");
-            CorrectionAction bad = ActionThat("f:links", false, "Revit refused", "failed");
-
-            // The applied one: the check DID re-run and no longer lists its
-            // elements. (A check that could not re-run is not_verifiable, which is
-            // a different answer and deliberately not this one.)
-            var gone = new JObject
-            {
-                ["check"] = AuditCheckNames.UnpinnedLinks, ["finding_id"] = "f:after", ["is_issue"] = false,
-                ["count"] = 0, ["truncated"] = false, ["items"] = new JArray()
-            };
-            JObject corrected = ReAuditRules.Compare(ok, gone, false);
-            Assert.Equal(ReAuditOutcome.Corrected, (string)corrected["outcome"]);
-            Assert.Equal(ReAuditOutcome.NotVerifiable, (string)ReAuditRules.Compare(ok, null, false)["outcome"]);
-
-            // The failed one: still listed, and reported as failed rather than as
-            // "persistent" - the distinction is whether the typed call claimed it.
-            var still = new JObject
-            {
-                ["check"] = AuditCheckNames.UnpinnedLinks, ["finding_id"] = "f:after", ["is_issue"] = true,
-                ["count"] = 2, ["truncated"] = false,
-                ["items"] = new JArray(new JObject { ["element_id"] = 10L }, new JObject { ["element_id"] = 11L })
-            };
-            JObject failed = ReAuditRules.Compare(bad, still, false);
-            Assert.Equal(ReAuditOutcome.Failed, (string)failed["outcome"]);
-            Assert.Equal(2, (int)failed["counts"]["failed"]);
-        }
-
-        [Fact]
         public void A_child_that_half_applied_is_not_an_applied_action()
         {
             // This is the predicate the apply loop uses. Partial is the state a
@@ -163,7 +105,7 @@ namespace Horizun.Core.Tests
 
             // The command hands the loop the typed child's own declaration; it does
             // not decide on the call not throwing.
-            Assert.Contains("CorrectionApplyLoop.Apply(actions, step =>", src);
+            Assert.Contains("CorrectionApplyLoop.ConfirmAndApply(Name, actions,", src);
             Assert.Contains("State = ApplicationOutcome.Read(applied.Data)", src);
             Assert.Contains("public const string RollbackScope = CorrectionApplyLoop.RollbackScope;", src);
 

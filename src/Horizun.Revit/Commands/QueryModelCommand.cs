@@ -14,7 +14,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class QueryModelCommand : ICommand
+    public sealed partial class QueryModelCommand : ICommand
     {
         public string Name => "horizun_query_model";
         public string Description => "Composable, federated, paginated model query with explicit coverage.";
@@ -25,7 +25,8 @@ namespace Horizun.Revit.Commands
             JObject request;
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
-            try { request = QueryResponseOptions.Prepare(request); }
+            JArray normalized;
+            try { request = QueryResponseOptions.Prepare(request, out normalized); }
             catch (ArgumentException ex) { return CommandResult.Fail(ex.Message); }
             string responseMode = request.Value<string>("response_mode") ?? "full";
 
@@ -48,7 +49,7 @@ namespace Horizun.Revit.Commands
             string cacheKey = cacheEligible ? System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(host).ToString(CultureInfo.InvariantCulture) + ":" +
                 RequestFingerprint.Sha256Hex(RequestFingerprint.Canonical(cacheRequest)) : null;
             if (cacheEligible && QueryCacheLifecycle.Cache.TryGet(cacheKey, cacheEpoch, out JObject cached))
-                return Finish(cached, request, timer, 0, "hit", null, cacheEpoch);
+                return Finish(cached, request, timer, 0, "hit", null, cacheEpoch, normalized);
             if (scope != "model" && scope != "current_view" && scope != "view")
                 return CommandResult.Fail("scope must be model, current_view or view.");
             if (includeLinks && scope != "model")
@@ -63,11 +64,11 @@ namespace Horizun.Revit.Commands
             var availableSources = new List<QuerySourceFilter.Source> { new QuerySourceFilter.Source { Kind = "host", Title = host.Title } };
             if (sourceFilter.Active)
             {
-                if (!includeLinks && sourceFilter.NamesALink)
+                if (!includeLinks && sourceFilter.NamesLinkOtherThanHost(host.Title))
                     return CommandResult.Fail("source_models/link_instance_ids name a linked model, but include_links=false reads the " +
                                               "host only. Drop include_links=false, or name only \"host\". Nothing was read.");
                 if (includeLinks)
-                    foreach (RevitLinkInstance link in new FilteredElementCollector(host).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
+                    foreach (RevitLinkInstance link in QueryLinks(host))
                     {
                         Document linked = null;
                         try { linked = link.GetLinkDocument(); } catch { }
@@ -91,6 +92,12 @@ namespace Horizun.Revit.Commands
 
             List<string> categories = Strings(request["categories"] as JArray);
             List<string> returnParameters = Strings(request["return_parameters"] as JArray);
+            bool wildcardParameters = returnParameters.Contains(QueryPagingRules.AllParameters);
+
+            // offset used to be accepted and ignored (every call answered page one). It is a start
+            // position now, and refused by name when malformed or sent beside a cursor - never dropped.
+            string pagingError = QueryPagingRules.ParseOffset(request["offset"], request.Value<string>("cursor"), out int requestedOffset);
+            if (pagingError != null) return CommandResult.Fail(pagingError);
 
             // ---- The payload diet (field report 2026-08-04). Measured: ~741 characters
             // per row to read three numbers per wall - 500 walls cost 370,299 characters,
@@ -103,18 +110,8 @@ namespace Horizun.Revit.Commands
             HashSet<string> fieldSet = null;
             if (returnFields.Count > 0)
             {
-                var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    "source_reference", "unique_id", "category", "name", "family", "type", "type_id", "level",
-                    "is_element_type", "source_kind", "source_model", "link_instance_id",
-                    "host_id", "host_category",
-                    "is_view_template", "view_template_id", "view_type"
-                };
-                foreach (string f in returnFields)
-                    if (!known.Contains(f))
-                        return CommandResult.Fail("return_fields '" + f + "' is not a row field. Known: " +
-                                                  string.Join(", ", known.OrderBy(x => x)) + ". element_id is always present.");
-                fieldSet = new HashSet<string>(returnFields, StringComparer.OrdinalIgnoreCase);
+                try { fieldSet = QueryResponseOptions.ProjectedFields(returnFields); }
+                catch (ArgumentException ex) { return CommandResult.Fail(ex.Message); }
             }
             if (responseMode == "summary") fieldSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -124,25 +121,36 @@ namespace Horizun.Revit.Commands
             // three times. A histogram request should be one call.
             List<string> groupBy = Strings(request["group_by"] as JArray);
             List<string> sumParameters = Strings(request["sum_parameters"] as JArray);
+            // Keep projected sum parameters in the internal rows used for aggregation.
+            if (responseMode == "summary" && groupBy.Count > 0)
+                fieldSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "category" };
             foreach (string g in groupBy)
                 if (g != "category" && g != "level" && g != "type" && g != "family" &&
-                    g != "source_model" && g != "source_kind")
+                    g != "source_model" && g != "source_kind" && QueryGroupKeys.ParameterOf(g) == null)
                     return CommandResult.Fail("group_by '" + g + "' is not a grouping key. Known: category, level, " +
-                                              "type, family, source_model, source_kind.");
+                                              "type, family, source_model, source_kind, or parameter:<name> (for example " +
+                                              "parameter:ALL_MODEL_INSTANCE_COMMENTS).");
+            List<string> groupParameters = groupBy.Select(QueryGroupKeys.ParameterOf).Where(p => p != null).ToList();
             bool compactRows = parameterFormat == "compact" && groupBy.Count == 0;
             if (sumParameters.Count > 0 && groupBy.Count == 0)
                 return CommandResult.Fail("sum_parameters requires group_by: a sum with no groups is a single row " +
                                           "the summary already carries, and silently treating it as one group would " +
                                           "answer a question that was not asked.");
+            if (groupBy.Count > 0 && request["offset"] != null && request["offset"].Type != JTokenType.Null)
+                return CommandResult.Fail("group_by and offset cannot be combined: groups are computed over the " +
+                                          "WHOLE matched set in one call, so there is no page to start from.");
             if (groupBy.Count > 0 && !string.IsNullOrWhiteSpace(request.Value<string>("cursor")))
                 return CommandResult.Fail("group_by and cursor cannot be combined: groups are computed over the " +
                                           "WHOLE matched set in one call, so there is no page to resume.");
+            string allParametersProblem = QueryPagingRules.AllParametersProblem(returnParameters, parameterFormat, groupBy.Count > 0, sumParameters.Count > 0);
+            if (allParametersProblem != null) return CommandResult.Fail(allParametersProblem);
             // The sums read from each row's projected parameters, so make sure they are
             // projected - without echoing the internal union back as if the caller asked
             // for those columns.
             List<string> projected = returnParameters;
-            if (sumParameters.Count > 0)
-                projected = returnParameters.Union(sumParameters, StringComparer.OrdinalIgnoreCase).ToList();
+            if (sumParameters.Count > 0 || groupParameters.Count > 0)
+                projected = returnParameters.Union(sumParameters, StringComparer.OrdinalIgnoreCase)
+                                            .Union(groupParameters, StringComparer.OrdinalIgnoreCase).ToList();
             JArray predicates = request["parameters"] as JArray ?? new JArray();
             foreach (JToken token in predicates)
             {
@@ -167,6 +175,7 @@ namespace Horizun.Revit.Commands
             bool includeBox = request.Value<bool?>("include_bounding_box") == true;
             bool includeTypes = request.Value<bool?>("include_types") == true;
             bool includeMep = request.Value<bool?>("include_mep") == true;
+            bool excludeNested = request.Value<bool?>("exclude_nested") == true;
 
             int maxRows = Math.Max(1, Math.Min(500, request.Value<int?>("max_rows") ?? 100));
             // include_room (needs phase): each row's room/space, read by RoomMembershipReader.
@@ -183,7 +192,7 @@ namespace Horizun.Revit.Commands
             else if (request["phase"] != null)
                 return CommandResult.Fail("phase is read only with include_room=true; alone it would be silently ignored.");
             var matched = new List<Row>();
-            var summary = responseMode == "summary" && !includeMep ? new QuerySummaryAccumulator() : null;
+            var summary = responseMode == "summary" && !includeMep && groupBy.Count == 0 ? new QuerySummaryAccumulator() : null;
             var unreadable = new JArray();
             int unreadableTotal = 0;
             long collectionStartMs = timer.ElapsedMilliseconds;
@@ -212,49 +221,29 @@ namespace Horizun.Revit.Commands
                 return u;
             };
 
+            var categoryNames = new CategoryNameTally();
             if (sourceFilter.Admits(availableSources[0]))
-                Collect(host, "host", host.Title, null, Transform.Identity, viewId, categories, request,
+                Collect(new QueryDocument(host, Transform.Identity, viewId, null), categories, request,
                         predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
                         fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
-                        coopScope, cooperative, rooms, sumSet, compactUnits, hostUnit);
+                        coopScope, cooperative, rooms, sumSet, compactUnits, hostUnit, categoryNames);
 
             if (includeLinks)
             {
-                foreach (RevitLinkInstance link in new FilteredElementCollector(host)
-                    .OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
+                foreach (QueryDocument linked in ReadLinkedSources(host, sourceFilter,
+                    error => AddUnreadable(unreadable, ref unreadableTotal, error)))
                 {
-                    Document linked = null;
-                    try { linked = link.GetLinkDocument(); }
-                    catch (Exception ex)
-                    {
-                        AddUnreadable(unreadable, ref unreadableTotal, new JObject
-                        {
-                            ["link_instance_id"] = Rid.Value(link.Id), ["source_model"] = link.Name,
-                            ["reason"] = "link document could not be read: " + ex.Message
-                        });
-                        continue;
-                    }
-                    if (linked == null) continue; // FederatedVisibility names every unloaded link below.
-                    if (!sourceFilter.Admits(new QuerySourceFilter.Source { Kind = "link", Title = linked.Title, LinkInstanceId = Rid.Value(link.Id) }))
-                        continue;
-                    Transform transform;
-                    try { transform = link.GetTotalTransform() ?? Transform.Identity; }
-                    catch (Exception ex)
-                    {
-                        AddUnreadable(unreadable, ref unreadableTotal, new JObject
-                        {
-                            ["link_instance_id"] = Rid.Value(link.Id), ["source_model"] = linked.Title,
-                            ["reason"] = "link transform could not be read: " + ex.Message
-                        });
-                        continue;
-                    }
                     if (coopScope != null && !coopScope.Complete) break;
-                    Collect(linked, "link", linked.Title, Rid.Value(link.Id), transform, null, categories, request,
+                    Collect(linked, categories, request,
                             predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
                             fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
-                            coopScope, cooperative, rooms, sumSet, compactUnits, hostUnit);
+                            coopScope, cooperative, rooms, sumSet, compactUnits, hostUnit, categoryNames);
                 }
             }
+            foreach (string unknown in categoryNames.UnresolvedEverywhere())
+                AddUnreadable(unreadable, ref unreadableTotal, new JObject
+                { ["category"] = unknown,
+                  ["reason"] = "categories: '" + unknown + "' is neither a BuiltInCategory nor a category name of any model read; nothing of it was counted" });
 
             long collectMs = timer.ElapsedMilliseconds - collectionStartMs;
             string cacheStatus = !reuse ? "bypass" : cacheEligible ? "miss" : "ineligible";
@@ -272,8 +261,10 @@ namespace Horizun.Revit.Commands
                     ["federated_coverage"] = summaryCoverage, ["summary"] = summary.ToJson()
                 };
                 if (sourceFilter.Active) summaryResult["source_filter"] = sourceFilter.ToJson(availableSources);
+                QueryResponseOptions.ApplyCollectionCoverage(summaryResult, coopScope?.Complete,
+                    WithAccount(cooperative.Report(coopScope, 0, coopFingerprint, coopScope != null && !coopScope.Complete, ownCursorField: "next_cursor"), coopScope));
                 return Finish(QueryResponseOptions.Shape(summaryResult, responseMode), request, timer, collectMs,
-                              cacheStatus, cacheKey, cacheEpoch);
+                              cacheStatus, cacheKey, cacheEpoch, normalized);
             }
 
             matched = matched.OrderBy(r => r.SourceKind, StringComparer.Ordinal)
@@ -283,7 +274,7 @@ namespace Horizun.Revit.Commands
 
             string queryHash = QueryHash(request);
             string setHash = ResultSetHash(matched);
-            int offset = 0;
+            int offset = requestedOffset;
             string cursor = request.Value<string>("cursor");
             if (!string.IsNullOrWhiteSpace(cursor))
             {
@@ -305,8 +296,10 @@ namespace Horizun.Revit.Commands
                     ["matched_total"] = matched.Count,
                     ["group_by"] = new JArray(groupBy),
                     ["groups"] = Aggregate(matched, groupBy, sumParameters, out bool groupsTruncated,
+                                           out int omittedGroups,
                                            specKey => DisplayUnit(host, specKey)),
                     ["groups_truncated"] = groupsTruncated,
+                    ["groups_omitted"] = omittedGroups,
                     // The same honesty block a row answer carries: a histogram over a
                     // model with five links unloaded is a histogram of what was VISIBLE.
                     ["coverage_complete"] = aggCoverage.Value<bool>("coverage_complete") && unreadableTotal == 0,
@@ -323,10 +316,31 @@ namespace Horizun.Revit.Commands
                 // the caller grouped by level, so other aggregate replies are unchanged.
                 if (groupBy.Contains("level"))
                     aggregated["level_sources"] = Counts(matched, r => r.LevelSource ?? LevelResolutionRules.NoSourceLabel);
-                return Finish(aggregated, request, timer, collectMs, cacheStatus, cacheKey, cacheEpoch);
+                QueryResponseOptions.ApplyCollectionCoverage(aggregated, coopScope?.Complete,
+                    WithAccount(cooperative.Report(coopScope, 0, coopFingerprint, coopScope != null && !coopScope.Complete, ownCursorField: "next_cursor"), coopScope));
+                return Finish(QueryResponseOptions.Shape(aggregated, responseMode), request, timer, collectMs, cacheStatus, cacheKey, cacheEpoch, normalized);
             }
 
             List<Row> page = matched.Skip(offset).Take(maxRows).ToList();
+            if (wildcardParameters)
+            {
+                // Project only the requested page, never all matched parameter payloads.
+                // A rejected oversized row is not skipped: the caller must narrow it.
+                var budget = new QueryPagingRules.WildcardBudget(maxRows, 512 * 1024);
+                page = QueryPagingRules.ProjectWildcardPage(page, budget, row =>
+                {
+                    List<string> projectionErrors;
+                    JObject parameters = ProjectParameters(row.SourceDocument, row.SourceElement, row.SourceType,
+                        returnParameters, out projectionErrors, null, null);
+                    row.Json["parameters"] = parameters;
+                    foreach (string error in projectionErrors)
+                        AddUnreadable(unreadable, ref unreadableTotal, Error(row.SourceModel, row.LinkInstanceId, row.Id, error));
+                    QueryResponseOptions.ApplyIdOnlyProjection(row.Json, fieldSet);
+                    return Encoding.UTF8.GetByteCount(row.Json.ToString(Formatting.None));
+                }, row => row.Json.Remove("parameters"));
+                if (budget.Exhausted && page.Count == 0)
+                    return CommandResult.Fail("One wildcard parameter row exceeds the 512 KiB page budget. Request named parameters instead; nothing was returned.");
+            }
             int nextOffset = offset + page.Count;
             string nextCursor = nextOffset < matched.Count ? MakeCursor(nextOffset, queryHash, setHash) : null;
 
@@ -345,6 +359,8 @@ namespace Horizun.Revit.Commands
                 ["include_links"] = includeLinks,
                 ["matched_total"] = matched.Count,
                 ["returned"] = page.Count,
+                ["page_limit"] = maxRows,
+                ["remaining"] = QueryPageRules.Remaining(matched.Count, offset, page.Count),
                 ["offset"] = offset,
                 ["truncated"] = nextCursor != null,
                 ["next_cursor"] = nextCursor == null ? JValue.CreateNull() : new JValue(nextCursor),
@@ -358,6 +374,11 @@ namespace Horizun.Revit.Commands
                 ["summary"] = Summary(matched),
                 ["rows"] = new JArray(page.Select(r => r.Json))
             };
+            if (wildcardParameters && nextCursor != null)
+            {
+                queryResult["status"] = "cobertura_incompleta";
+                queryResult["coverage_complete"] = false;
+            }
             if (rooms != null) queryResult["room_membership"] = rooms.Summary();
             if (sourceFilter.Active) queryResult["source_filter"] = sourceFilter.ToJson(availableSources);
             if (compactUnits != null && compactUnits.Any)
@@ -367,11 +388,12 @@ namespace Horizun.Revit.Commands
             }
             // Present ONLY when the caller asked. Null is dropped rather than written, so a
             // reply to an ordinary request is byte-identical to what it was.
-            JObject coopReport = cooperative.Report(
+            JObject coopReport = WithAccount(cooperative.Report(
                 coopScope, offset + page.Count, coopFingerprint,
                 nextCursor != null || (coopScope != null && !coopScope.Complete),
-                ownCursorField: "next_cursor");
+                ownCursorField: "next_cursor"), coopScope);
             if (coopReport != null) queryResult["cooperative"] = coopReport;
+            QueryResponseOptions.ApplyCollectionCoverage(queryResult, coopScope?.Complete);
             if (includeMep)
             {
                 // Aggregated over every MATCHED row (not only the page), because "how
@@ -393,16 +415,18 @@ namespace Horizun.Revit.Commands
                 };
             }
             return Finish(QueryResponseOptions.Shape(queryResult, responseMode), request, timer, collectMs,
-                          cacheStatus, cacheKey, cacheEpoch);
+                          cacheStatus, cacheKey, cacheEpoch, normalized);
         }
 
         private static CommandResult Finish(JObject result, JObject request, System.Diagnostics.Stopwatch timer,
-                                            long collectMs, string cacheStatus, string cacheKey, long epoch)
+                                            long collectMs, string cacheStatus, string cacheKey, long epoch, JArray normalized)
         {
+            QueryResponseOptions.DescribeCoverage(result, request);
             // Never cache an incomplete measurement. Diagnostic metadata describes
             // this invocation, not the original miss, and is not stored in the cache.
             if (cacheKey != null && result.Value<bool?>("coverage_complete") == true)
                 QueryCacheLifecycle.Cache.Store(cacheKey, epoch, result);
+            if (normalized.Count > 0) result["normalized"] = normalized;
             if (request.Value<bool?>("include_diagnostics") == true)
             {
                 long measuredMs = timer.ElapsedMilliseconds;
@@ -419,8 +443,25 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(result);
         }
 
-        private static void Collect(Document source, string sourceKind, string sourceName, long? linkId,
-                                    Transform transform, ElementId viewId, List<string> categories, JObject request,
+        /// <summary>
+        /// What a budgeted read examined and what it did not, in the shape every budgeted reader
+        /// uses (Core/CooperativePartial.cs). Null report (no opt-in) stays null.
+        /// </summary>
+        private static JObject WithAccount(JObject report, CooperativeRead.Scope scope)
+        {
+            if (report == null || scope == null) return report;
+            report["measured_account"] = CooperativePartial.Account("elements", scope.Done, null,
+                new JObject { ["elements_examined"] = scope.Done, ["order"] = "host first, then each link, in collector order" },
+                scope.Complete ? null : (JToken)new JObject
+                {
+                    ["after_the_stop"] = "every element not yet examined: the rest of the source being read and every source " +
+                                         "(link) after it. Never looked at; not empty."
+                },
+                "between elements; one element's rows and parameters are never split");
+            return report;
+        }
+
+        private static void Collect(QueryDocument querySource, List<string> categories, JObject request,
                                     JArray predicates, List<string> returnParameters, Box queryBox, bool includeBox,
                                     double coordinateScale, bool includeTypes, bool includeMep, HashSet<string> fields,
                                     bool compactParameters, List<Row> rows, JArray unreadable,
@@ -430,25 +471,17 @@ namespace Horizun.Revit.Commands
                                     RoomMembershipReader rooms = null,
                                     HashSet<string> sumSpecs = null,
                                     CompactUnitTally compactUnits = null,
-                                    Func<string, DisplayUnitFact> hostUnit = null)
+                                    Func<string, DisplayUnitFact> hostUnit = null,
+                                    CategoryNameTally categoryNames = null)
         {
-            HashSet<long> categoryIds = ResolveCategories(source, categories, unreadable, ref unreadableTotal, sourceName);
-            FilteredElementCollector collector = viewId == null
-                ? new FilteredElementCollector(source)
-                : new FilteredElementCollector(source, viewId);
-            // Native quick filtering avoids materialising every category in managed
-            // code. Keep the TextNoteType supplement below for its special category.
-            if (categoryIds != null && categoryIds.Count > 0)
-                collector.WherePasses(new ElementMulticategoryFilter(categoryIds.Select(Rid.Make).ToList()));
-            // Revit refuses extraction from a collector with no native filter, even
-            // though the LINQ Cast/Where compiles. Apply a real ElementFilter before
-            // iteration. The OR is an explicit pass over types + instances when the
-            // caller requested both.
-            IEnumerable<Element> candidates = includeTypes
-                ? collector.WherePasses(new LogicalOrFilter(
-                    new ElementIsElementTypeFilter(false),
-                    new ElementIsElementTypeFilter(true))).Cast<Element>()
-                : collector.WhereElementIsNotElementType().Cast<Element>();
+            Document source = querySource.Document;
+            string sourceKind = querySource.Kind, sourceName = source.Title;
+            long? linkId = querySource.LinkId;
+            Transform transform = querySource.ToHost;
+            ElementId viewId = querySource.ViewId;
+            HashSet<long> categoryIds = ResolveCategories(source, categories, unreadable, ref unreadableTotal, sourceName,
+                categoryNames, out ElementFilter builtInOnly);
+            IEnumerable<Element> candidates = CollectCategoryCandidates(source, viewId, categoryIds, includeTypes, out var markFilters);
 
             // TextNoteType is a real document type, but Revit's generic category
             // collector does not return it under OST_TextNotes (measured on 2023:
@@ -483,9 +516,13 @@ namespace Horizun.Revit.Commands
             {
                 IEnumerable<Element> textTypes = new FilteredElementCollector(source)
                     .OfClass(typeof(TextNoteType)).Cast<Element>();
-                candidates = candidates.Concat(textTypes)
-                    .GroupBy(e => Rid.Value(e.Id)).Select(g => g.First());
+                candidates = StreamingDistinct.ByKey(candidates.Concat(textTypes), e => Rid.Value(e.Id));
             }
+            // A document-scoped grid query can read Grid directly without a view or
+            // the linked document's category table. Keep the other category results.
+            long gridCategory = (long)BuiltInCategory.OST_Grids;
+            candidates = querySource.GridCandidates(candidates,
+                categoryIds != null && categoryIds.Contains(gridCategory), request["element_ids"] != null);
 
             // The caller's cooperative scope, when there is one. Parsed ONCE in Execute and
             // shared across the host pass and every link pass: one budget for the whole read,
@@ -497,20 +534,25 @@ namespace Horizun.Revit.Commands
             // read would skip the same count again inside every link.
             var typeCache = new Dictionary<long, Element>();
             var levels = new ElementLevelReader(source);
+            bool askedById = request["element_ids"] is JArray askedIds && askedIds.Count > 0;
+            // The native category filter already proved membership for collector rows,
+            // including markers with no managed Category. Direct ids and supplemented types
+            // did not pass through that filter.
+            if (categoryIds != null && categoryIds.Count == 0) return;
             foreach (Element element in candidates)
             {
                 // Between elements. A query that stopped early says so; one that stopped
                 // mid-element would return a row nobody could tell was incomplete.
-                if (coopScope != null && !coopScope.Continue()) break;
-                if (coopScope != null && cooperative != null && cooperative.UnitsExhausted(coopScope.Done)) break;
+                if (coopScope != null && !coopScope.ContinueWithin(cooperative?.MaxUnits ?? 0)) break;
                 long id = Rid.Value(element.Id);
                 try
                 {
-                    if (categoryIds != null)
-                    {
-                        long? categoryId = CategoryId(source, element);
-                        if (categoryId == null || !categoryIds.Contains(categoryId.Value)) continue;
-                    }
+                    bool fromCategoryCollector = !askedById && !(supplementTextTypes && element is TextNoteType);
+                    if (!SectionMarkCategories.MatchesQuery(categoryIds, fromCategoryCollector,
+                        () => element is Grid ? gridCategory : CategoryId(source, element),
+                        () => markFilters.Any(filter => filter.PassesFilter(source, element.Id)) ||
+                            (builtInOnly != null && builtInOnly.PassesFilter(element))))
+                        continue;
 
                     Element type = element as ElementType;
                     if (type == null)
@@ -532,6 +574,22 @@ namespace Horizun.Revit.Commands
                         !Contains(typeName, request.Value<string>("type")) ||
                         !Contains(level, request.Value<string>("level"))) continue;
 
+                    // exclude_nested: a family instance nested in another (SuperComponent set) is a
+                    // part of its parent, not an element of its own. Unreadable nesting is unknown,
+                    // not "not nested": it is reported, never silently kept or dropped.
+                    if (request.Value<bool?>("exclude_nested") == true && element is FamilyInstance nestedInstance)
+                    {
+                        bool nestingKnown = true; Element parentInstance = null;
+                        try { parentInstance = nestedInstance.SuperComponent; } catch { nestingKnown = false; }
+                        if (!nestingKnown)
+                        {
+                            AddUnreadable(unreadable, ref unreadableTotal,
+                                Error(sourceName, linkId, id, "SuperComponent could not be read, so exclude_nested cannot tell whether it is nested"));
+                            continue;
+                        }
+                        if (parentInstance != null) continue;
+                    }
+
                     bool predicateUnknown;
                     string predicateError;
                     if (!PredicatesMatch(source, element, type, predicates, out predicateUnknown, out predicateError))
@@ -541,23 +599,34 @@ namespace Horizun.Revit.Commands
                         continue;
                     }
 
-                    Box elementBox = QueryResponseOptions.ReadBounds(queryBox != null, includeBox,
+                    DatumGeometryRules.GridReading gridReading = null;
+                    Box elementBox = null;
+                    if ((queryBox != null || includeBox) && element is Grid grid)
+                    {
+                        gridReading = querySource.ReadGridGeometry(grid, queryBox != null, coordinateScale,
+                            request.Value<string>("coordinate_units") ?? "mm");
+                        if (gridReading.SpatialBounds == null && queryBox == null)
+                            AddUnreadable(unreadable, ref unreadableTotal,
+                                Error(sourceName, linkId, id, gridReading.Error ?? "grid extents are unavailable"));
+                    }
+                    else elementBox = QueryResponseOptions.ReadBounds(queryBox != null, includeBox,
                         () => ElementBox(element, transform));
                     if (queryBox != null)
                     {
-                        if (elementBox == null)
+                        if (gridReading == null ? elementBox == null : gridReading.SpatialBounds == null)
                         {
                             AddUnreadable(unreadable, ref unreadableTotal,
                                 Error(sourceName, linkId, id, element is Level
                                     ? "a level is a plane with no model extent, so a box cannot intersect it; filter levels by name or read their datum.elevation"
-                                    : "bounding box is unavailable, so intersection is unknown"));
+                                    : gridReading?.Error ?? "bounding box is unavailable, so intersection is unknown"));
                             continue;
                         }
-                        if (!elementBox.Intersects(queryBox)) continue;
+                        if (!(gridReading?.Intersects(Coordinates(queryBox.Min), Coordinates(queryBox.Max)) ?? elementBox.Intersects(queryBox)))
+                            continue;
                     }
 
-                    // element_id is never projectable away: rows that cannot be told
-                    // apart are not an answer. Everything else is the caller's choice -
+                    // Both identities survive projection: a numeric id alone can be reused
+                    // after synchronization. Other fields remain the caller's choice -
                     // the identity and federation fields repeat identically down a page,
                     // and at ~741 measured characters per row they were most of the bill.
                     if (summary != null)
@@ -566,7 +635,7 @@ namespace Horizun.Revit.Commands
                         continue;
                     }
                     var json = new JObject { ["element_id"] = id };
-                    if (fields == null || fields.Contains("unique_id")) json["unique_id"] = Safe(() => element.UniqueId);
+                    json["unique_id"] = Safe(() => element.UniqueId);
                     if (fields != null && fields.Contains("source_reference"))
                     {
                         try { json["source_reference"] = SourceTraceStorage.Read(element); }
@@ -574,18 +643,33 @@ namespace Horizun.Revit.Commands
                     }
                     string categoryName = CategoryName(source, element);
                     if (fields == null || fields.Contains("category")) json["category"] = categoryName;
+                    // Category.Name follows Revit's language. A consuming audit must be
+                    // able to address the same category on every language installation.
+                    if (fields == null || fields.Contains("built_in_category"))
+                        json["built_in_category"] = Horizun.Revit.Core.CategoryKey.Of(element);
                     if (fields == null || fields.Contains("name")) json["name"] = elementName;
                     if (fields == null || fields.Contains("family")) json["family"] = family;
                     if (fields == null || fields.Contains("type")) json["type"] = typeName;
                     if (fields == null || fields.Contains("type_id")) json["type_id"] = type == null ? JValue.CreateNull() : new JValue(Rid.Value(type.Id));
                     if (fields == null || fields.Contains("level")) json["level"] = level;
                     if (fields == null || fields.Contains("is_element_type")) json["is_element_type"] = element is ElementType;
+                    // HOW IT IS PLACED (types only): placement type and required host, read from the family.
+                    if (element is FamilySymbol placementSymbol && (fields == null || fields.Contains("placement")))
+                    {
+                        try { json["placement"] = Horizun.Revit.Core.FamilyPlacementInfo.Describe(placementSymbol); }
+                        catch (Exception placementEx) { json["placement_error"] = placementEx.Message; }
+                    }
                     if (fields != null && fields.Contains("is_view_template")) json["is_view_template"] = element is View view ? (JToken)view.IsTemplate : JValue.CreateNull();
                     if (fields != null && fields.Contains("view_template_id")) json["view_template_id"] = element is View templateView ? (JToken)Rid.Value(templateView.ViewTemplateId) : JValue.CreateNull();
                     if (fields != null && fields.Contains("view_type")) json["view_type"] = element is View typedView ? (JToken)typedView.ViewType.ToString() : JValue.CreateNull();
-                    if (fields == null || fields.Contains("source_kind")) json["source_kind"] = sourceKind;
-                    if (fields == null || fields.Contains("source_model")) json["source_model"] = sourceName;
-                    if (fields == null || fields.Contains("link_instance_id")) json["link_instance_id"] = linkId == null ? JValue.CreateNull() : new JValue(linkId.Value);
+                    // 5.0.4: two reads field scripts did in Python - a plan's view range, and an element's sketch loops in mm.
+                    if (fields != null && fields.Contains("view_range")) json["view_range"] = element is ViewPlan rangePlan ? ViewRangeOf(rangePlan) : JValue.CreateNull();
+                    if (fields != null && fields.Contains("sketch")) json["sketch"] = SketchLoopsMm(element, linkId != null);
+                    // R2W m-1. A row of a LINKED model always says so, even when return_fields left source_kind / link_instance_id out: without them the
+                    // sync notice (IdFreshnessRules.Harvest) would take a linked row for an element of the host and revalidate or "change" a host id.
+                    querySource.WriteSourceFields(json, fields);
+                    // R2W M-c. A row asked for BY ID in a collaborative model: its unique_id is the one of the element that holds that id TODAY.
+                    QueryHolderNote.Apply(json, askedById, source.IsWorkshared);
 
                     // WHAT IT LIVES IN.
                     //
@@ -613,25 +697,18 @@ namespace Horizun.Revit.Commands
                     }
                     if (includeBox)
                     {
-                        json["bounding_box"] = BoxJson(elementBox, coordinateScale);
-                        // Grids and levels: the line and the elevation, comparable across links.
-                        JObject datum = DatumJson(element, transform, coordinateScale, request.Value<string>("coordinate_units") ?? "mm");
-                        if (datum != null)
+                        if (gridReading != null) gridReading.WriteTo(json, coordinateScale);
+                        else
                         {
-                            json["datum"] = datum;
-                            if (element is Grid && elementBox != null) json["bounding_box_source"] = DatumGeometryRules.SourceGridCurve;
+                            json["bounding_box"] = BoxJson(elementBox, coordinateScale);
+                            JObject datum = DatumJson(element, transform, coordinateScale, request.Value<string>("coordinate_units") ?? "mm");
+                            if (datum != null) json["datum"] = datum;
                         }
                     }
-                    if (request.Value<bool?>("include_cad_provenance") == true)
+                    if (request.Value<bool?>("include_compound_structure") == true)
                     {
-                        // WHICH DRAWING, WHICH RULES AND WHICH READING built it - the
-                        // record every CAD command writes, read back as stored.
-                        string problem;
-                        CadProvenance cad = null;
-                        try { cad = CadProvenanceStore.Read(element, out problem); }
-                        catch (Exception ex) { problem = ex.Message; }
-                        json["cad_provenance"] = cad == null ? JValue.CreateNull() : (JToken)cad.ToJson();
-                        if (problem != null) json["cad_provenance_problem"] = problem;
+                        JObject compound = CompoundJson(element);
+                        if (compound != null) json["compound_structure"] = compound;
                     }
                     if (request.Value<bool?>("include_orientation") == true)
                     {
@@ -664,7 +741,7 @@ namespace Horizun.Revit.Commands
                         }
                     }
                     Dictionary<string, SumSpec> specs = null;
-                    if (returnParameters.Count > 0)
+                    if (returnParameters.Count > 0 && !returnParameters.Contains(QueryPagingRules.AllParameters))
                     {
                         List<string> projectionErrors;
                         // Compact converts by spec, so it records every projected parameter's.
@@ -684,7 +761,11 @@ namespace Horizun.Revit.Commands
                         Specs = specs,
                         Id = id, SourceKind = sourceKind, SourceModel = sourceName,
                         LinkInstanceId = linkId, Category = categoryName,
-                        TypeName = typeName, Family = family, Level = level, LevelSource = levelSource, Json = json
+                        TypeName = typeName, Family = family, Level = level, LevelSource = levelSource,
+                        Json = QueryResponseOptions.ApplyIdOnlyProjection(json, fields),
+                        SourceDocument = returnParameters.Contains(QueryPagingRules.AllParameters) ? source : null,
+                        SourceElement = returnParameters.Contains(QueryPagingRules.AllParameters) ? element : null,
+                        SourceType = returnParameters.Contains(QueryPagingRules.AllParameters) ? type : null
                     });
                 }
                 catch (Exception ex)
@@ -692,6 +773,79 @@ namespace Horizun.Revit.Commands
                     AddUnreadable(unreadable, ref unreadableTotal, Error(sourceName, linkId, id, ex.Message));
                 }
             }
+        }
+
+        /// <summary>The four planes of a plan's view range: the level each is measured from and the offset in mm.</summary>
+        private static JToken ViewRangeOf(ViewPlan plan)
+        {
+            PlanViewRange range;
+            try { range = plan.GetViewRange(); } catch (Exception ex) { return new JObject { ["unreadable"] = ex.Message }; }
+            if (range == null) return JValue.CreateNull();
+            var o = new JObject();
+            foreach (var p in new[] { new KeyValuePair<string, PlanViewPlane>("top", PlanViewPlane.TopClipPlane),
+                                      new KeyValuePair<string, PlanViewPlane>("cut", PlanViewPlane.CutPlane),
+                                      new KeyValuePair<string, PlanViewPlane>("bottom", PlanViewPlane.BottomClipPlane),
+                                      new KeyValuePair<string, PlanViewPlane>("view_depth", PlanViewPlane.ViewDepthPlane) })
+            {
+                try
+                {
+                    ElementId levelId = range.GetLevelId(p.Value);
+                    string relative = levelId == PlanViewRange.Unlimited ? "unlimited" : levelId == PlanViewRange.LevelAbove ? "level_above"
+                        : levelId == PlanViewRange.LevelBelow ? "level_below" : levelId == PlanViewRange.Current ? "associated_level" : null;
+                    Level level = relative == null ? plan.Document.GetElement(levelId) as Level : null;
+                    o[p.Key] = new JObject
+                    {
+                        ["level"] = level?.Name ?? relative, ["level_id"] = level == null ? JValue.CreateNull() : new JValue(Rid.Value(level.Id)),
+                        ["offset_mm"] = relative == "unlimited" ? JValue.CreateNull() : new JValue(Math.Round(range.GetOffset(p.Value) * 304.8, 1))
+                    };
+                }
+                catch (Exception ex) { o[p.Key] = new JObject { ["unreadable"] = ex.Message }; }
+            }
+            o["associated_level"] = plan.GenLevel?.Name;
+            return o;
+        }
+
+        private const int SketchPointCap = 2000;
+
+        /// <summary>
+        /// The boundary loops of the element's sketch (floor, ceiling, roof, opening, filled region...), each curve's start
+        /// point in mm of the element's own document. Null when the element has no sketch.
+        /// </summary>
+        private static JToken SketchLoopsMm(Element element, bool linked)
+        {
+            Sketch sketch;
+            try
+            {
+                sketch = element is Sketch own ? own : element.GetDependentElements(new ElementClassFilter(typeof(Sketch)))
+                    .Select(id => element.Document.GetElement(id) as Sketch).FirstOrDefault(s => s != null);
+            }
+            catch (Exception ex) { return new JObject { ["unreadable"] = ex.Message }; }
+            if (sketch == null) return JValue.CreateNull();
+            var loops = new JArray(); int points = 0, curved = 0; bool truncated = false;
+            try
+            {
+                foreach (CurveArray loop in sketch.Profile)
+                {
+                    var pts = new JArray();
+                    foreach (Curve c in loop)
+                    {
+                        if (points >= SketchPointCap) { truncated = true; break; }
+                        XYZ a = c.GetEndPoint(0);
+                        pts.Add(new JArray(Math.Round(a.X * 304.8, 1), Math.Round(a.Y * 304.8, 1), Math.Round(a.Z * 304.8, 1)));
+                        if (!(c is Line)) curved++;
+                        points++;
+                    }
+                    loops.Add(pts);
+                    if (truncated) break;
+                }
+            }
+            catch (Exception ex) { return new JObject { ["unreadable"] = ex.Message }; }
+            return new JObject
+            {
+                ["sketch_id"] = Rid.Value(sketch.Id), ["loops"] = loops, ["points"] = points, ["curved_segments"] = curved,
+                ["truncated"] = truncated, ["coordinates"] = linked ? "the linked model's internal coordinates, mm" : "internal coordinates, mm",
+                ["means"] = "Each loop lists its curves' start points in order; a curved segment is summarised by its start point."
+            };
         }
 
         private static bool RequestsTextNotes(IEnumerable<string> categories)
@@ -714,28 +868,35 @@ namespace Horizun.Revit.Commands
             return null;
         }
 
+        // The one rule shared with the identity check (ElementIdentityGuard.CategoryNameFor): an
+        // expected_category read from this query must be the name the guard finds.
         private static string CategoryName(Document doc, Element element)
         {
-            try
-            {
-                if (element?.Category != null) return element.Category.Name;
-                if (element is TextNoteType)
-                    return Category.GetCategory(doc, BuiltInCategory.OST_TextNotes)?.Name ?? "OST_TextNotes";
-            }
-            catch { }
-            return null;
+            return ElementIdentityGuard.CategoryNameFor(
+                () => element?.Category?.Name, element is TextNoteType,
+                () => Category.GetCategory(doc, BuiltInCategory.OST_TextNotes)?.Name);
         }
 
         private static HashSet<long> ResolveCategories(Document doc, List<string> names, JArray errors,
-                                                       ref int errorTotal, string source)
+                                                       ref int errorTotal, string source, CategoryNameTally categoryNames,
+                                                       out ElementFilter builtInOnly)
         {
+            builtInOnly = null;
             if (names.Count == 0) return null;
             var ids = new HashSet<long>();
+            var rawBuiltIns = new List<ElementId>();
             foreach (string name in names)
             {
+                if (string.Equals(name, nameof(BuiltInCategory.OST_Grids), StringComparison.OrdinalIgnoreCase))
+                {
+                    ids.Add((long)BuiltInCategory.OST_Grids);
+                    continue;
+                }
                 Category category = null;
                 BuiltInCategory bic;
-                if (Enum.TryParse(name, true, out bic))
+                bool tableReadFailed = false;
+                bool definedBuiltIn = Enum.TryParse(name, true, out bic) && Enum.IsDefined(typeof(BuiltInCategory), bic);
+                if (definedBuiltIn)
                     try { category = Category.GetCategory(doc, bic); } catch { }
                 if (category == null)
                     try
@@ -745,11 +906,25 @@ namespace Horizun.Revit.Commands
                     }
                     catch (Exception ex)
                     {
+                        tableReadFailed = true;
                         AddUnreadable(errors, ref errorTotal, new JObject
                         { ["source_model"] = source, ["reason"] = "category table unreadable: " + ex.Message });
                     }
-                if (category != null) ids.Add(Rid.Value(category.Id));
+                CategoryResolution resolution = CategoryNameRules.Classify(category != null, definedBuiltIn);
+                if (resolution == CategoryResolution.Found)
+                    ids.Add(SectionMarkCategories.QueryId(name, Rid.Value(category.Id), BuiltInCategoryId).Value);
+                else if (resolution == CategoryResolution.RawBuiltIn)
+                {
+                    // Category.GetCategory gives null for OST_Viewers (measured on Revit 2025; ManageViewsGraphics) while a
+                    // plan shows section marks of it. Dropping the name made the filter empty and every element was
+                    // skipped: a false zero (DOC-30c). The built-in id still filters natively.
+                    ElementId raw = Rid.Make((long)(int)bic);
+                    ids.Add(Rid.Value(raw));
+                    rawBuiltIns.Add(raw);
+                }
+                categoryNames?.Read(name, resolution, tableReadFailed);
             }
+            if (rawBuiltIns.Count > 0) builtInOnly = new ElementMulticategoryFilter(rawBuiltIns);
             return ids;
         }
 
@@ -862,13 +1037,34 @@ namespace Horizun.Revit.Commands
             return compact;
         }
 
-        private static JObject ProjectParameters(Document doc, Element element, Element type, List<string> specs,
+        // internal: horizun_list_elements projects its return_parameters through this same code.
+        internal static JObject ProjectParameters(Document doc, Element element, Element type, List<string> specs,
                                                   out List<string> errors,
                                                   HashSet<string> recordSpecFor = null,
                                                   Dictionary<string, SumSpec> recordedSpecs = null)
         {
             errors = new List<string>();
             var result = new JObject();
+            if (specs.Contains(QueryPagingRules.AllParameters))
+            {
+                // Every parameter of the instance and of its type, keyed scope:name. This is what lets a caller see
+                // WHY a bounding box or a size is what it is without guessing parameter names one by one.
+                var used = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var owner in new[] { new KeyValuePair<string, Element>("instance", element), new KeyValuePair<string, Element>("type", type) })
+                {
+                    if (owner.Value == null) continue;
+                    foreach (Parameter listed in owner.Value.Parameters)
+                    {
+                        string name = Safe(() => listed.Definition?.Name) ?? "(unnamed)";
+                        result[QueryPagingRules.ParameterKey(owner.Key, name, used)] = new JObject
+                        {
+                            ["exists"] = true, ["scope"] = owner.Key, ["storage_type"] = listed.StorageType.ToString(),
+                            ["raw"] = Raw(listed), ["display"] = Safe(() => listed.AsValueString())
+                        };
+                    }
+                }
+                specs = specs.Where(s => s != QueryPagingRules.AllParameters).ToList();
+            }
             foreach (string spec in specs)
             {
                 string scope, error;
@@ -894,7 +1090,7 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>A summed value's spec, classified for Core/SumUnitRules.</summary>
-        private sealed class SumSpec
+        internal sealed class SumSpec
         {
             public string Key;       // the spec TypeId; "" when it could not be read
             public string Quantity;  // SumUnitRules.Length / Area / Volume / Measurable / Unitless / Identifier / Unknown
@@ -963,61 +1159,12 @@ namespace Horizun.Revit.Commands
             return raw?.Type == JTokenType.Null ? null : raw?.ToString(Formatting.None);
         }
 
-        private static Box ElementBox(Element element, Transform transform)
-        {
-            BoundingBoxXYZ b = element.get_BoundingBox(null);
-            // Datums have no model box (their extents are per view). A grid's box is its
-            // curve's, in host coordinates; a level is a plane and gets none. Core/DatumGeometryRules.cs.
-            if (b == null && element is Grid grid) return GridBox(grid, transform);
-            if (b == null) return null;
-            Transform own = b.Transform ?? Transform.Identity;
-            var points = new List<XYZ>();
-            foreach (double x in new[] { b.Min.X, b.Max.X })
-                foreach (double y in new[] { b.Min.Y, b.Max.Y })
-                    foreach (double z in new[] { b.Min.Z, b.Max.Z })
-                    {
-                        XYZ p = own.OfPoint(new XYZ(x, y, z));
-                        points.Add((transform ?? Transform.Identity).OfPoint(p));
-                    }
-            return new Box(
-                new XYZ(points.Min(p => p.X), points.Min(p => p.Y), points.Min(p => p.Z)),
-                new XYZ(points.Max(p => p.X), points.Max(p => p.Y), points.Max(p => p.Z)));
-        }
-
-        /// <summary>A grid's curve points in host coordinates: its ends, or its tessellation when curved.</summary>
-        private static List<XYZ> GridPoints(Grid grid, Transform transform, out bool curved)
-        {
-            Curve c = grid.Curve;
-            curved = !(c is Line);
-            IList<XYZ> raw = curved ? c.Tessellate() : new List<XYZ> { c.GetEndPoint(0), c.GetEndPoint(1) };
-            Transform t = transform ?? Transform.Identity;
-            return raw.Select(p => t.OfPoint(p)).ToList();
-        }
-
-        private static Box GridBox(Grid grid, Transform transform)
-        {
-            try
-            {
-                double[][] box = DatumGeometryRules.BoxOf(GridPoints(grid, transform, out bool _).Select(p => new[] { p.X, p.Y, p.Z }));
-                return box == null ? null : new Box(new XYZ(box[0][0], box[0][1], box[0][2]), new XYZ(box[1][0], box[1][1], box[1][2]));
-            }
-            catch { return null; }
-        }
-
         /// <summary>What a grid or a level IS, in host coordinates; null for any other element.</summary>
         private static JObject DatumJson(Element element, Transform transform, double scale, string units)
         {
             try
             {
                 Transform t = transform ?? Transform.Identity;
-                if (element is Grid grid)
-                {
-                    Curve c = grid.Curve;
-                    XYZ s = t.OfPoint(c.GetEndPoint(0)), e = t.OfPoint(c.GetEndPoint(1));
-                    List<XYZ> points = GridPoints(grid, transform, out bool curved);
-                    return DatumGeometryRules.Grid(new[] { s.X, s.Y, s.Z }, new[] { e.X, e.Y, e.Z }, curved,
-                        points.Select(p => new[] { p.X, p.Y, p.Z }).ToList(), scale, units);
-                }
                 if (element is Level level)
                 {
                     double own = level.Elevation;
@@ -1077,7 +1224,9 @@ namespace Horizun.Revit.Commands
             Func<XYZ, JArray> P = p =>
             {
                 XYZ q = transform == null ? p : transform.OfPoint(p);
-                return new JArray(Math.Round(q.X * scale, 3), Math.Round(q.Y * scale, 3), Math.Round(q.Z * scale, 3));
+                // These are reusable model coordinates, not formatted labels. Rounding
+                // feet to 0.001 invented sub-millimetre corrective moves on hosted doors.
+                return new JArray(q.X * scale, q.Y * scale, q.Z * scale);
             };
             Func<XYZ, JArray> V = v =>
             {
@@ -1156,7 +1305,7 @@ namespace Horizun.Revit.Commands
                         o["start"] = P(line.GetEndPoint(0));
                         o["end"] = P(line.GetEndPoint(1));
                     }
-                    try { o["width"] = Math.Round(wall.Width * scale, 3); } catch { }
+                    try { o["width"] = wall.Width * scale; } catch { }
                     try { o["exterior_normal"] = V(wall.Orientation); } catch { }
                     try { o["flipped"] = wall.Flipped; } catch { }
                     return o;
@@ -1187,7 +1336,7 @@ namespace Horizun.Revit.Commands
         /// that would have shown the gap are exactly what the caller asked not to see.
         /// </summary>
         private static JArray Aggregate(List<Row> rows, List<string> groupBy, List<string> sums,
-                                        out bool truncated, Func<string, DisplayUnitFact> displayUnit = null)
+                                        out bool truncated, out int omittedGroups, Func<string, DisplayUnitFact> displayUnit = null)
         {
             var displayCache = new Dictionary<string, DisplayUnitFact>(StringComparer.Ordinal);
             var groups = rows.GroupBy(r => string.Join("\u001f", groupBy.Select(g => KeyOf(r, g))))
@@ -1198,6 +1347,7 @@ namespace Horizun.Revit.Commands
             // person reads; past it the caller is enumerating, and rows do that better.
             const int maxGroups = 500;
             truncated = groups.Count > maxGroups;
+            omittedGroups = Math.Max(0, groups.Count - maxGroups);
             var result = new JArray();
             foreach (var g in groups.Take(maxGroups))
             {
@@ -1265,7 +1415,9 @@ namespace Horizun.Revit.Commands
                 case "family": return r.Family ?? "(no family)";
                 case "source_model": return r.SourceModel ?? "(unknown)";
                 case "source_kind": return r.SourceKind ?? "(unknown)";
-                default: return "(unknown key)";   // unreachable: validated at parse
+                default:
+                    string param = QueryGroupKeys.ParameterOf(g);
+                    return param == null ? "(unknown key)" : QueryGroupKeys.ValueOf(r.Json?["parameters"]?[param] as JObject);
             }
         }
 
@@ -1287,7 +1439,7 @@ namespace Horizun.Revit.Commands
         private static string QueryHash(JObject request)
         {
             JObject copy = (JObject)request.DeepClone();
-            copy.Remove("cursor"); copy.Remove("max_rows");
+            copy.Remove("cursor"); copy.Remove("max_rows"); copy.Remove("offset");
             copy.Remove("cache_mode"); copy.Remove("include_diagnostics");
             return RequestFingerprint.Sha256Hex(RequestFingerprint.Canonical(copy));
         }
@@ -1327,6 +1479,7 @@ namespace Horizun.Revit.Commands
 
         private sealed class Row
         {
+            public Document SourceDocument; public Element SourceElement; public Element SourceType;
             public string TypeName; public string Family;
             public long Id; public string SourceKind; public string SourceModel; public long? LinkInstanceId;
             public string Category; public string Level; public JObject Json;
@@ -1336,14 +1489,5 @@ namespace Horizun.Revit.Commands
             public string LevelSource;
         }
 
-        private sealed class Box
-        {
-            public readonly XYZ Min, Max;
-            public Box(XYZ min, XYZ max) { Min = min; Max = max; }
-            public bool Intersects(Box other) =>
-                Min.X <= other.Max.X && Max.X >= other.Min.X &&
-                Min.Y <= other.Max.Y && Max.Y >= other.Min.Y &&
-                Min.Z <= other.Max.Z && Max.Z >= other.Min.Z;
-        }
     }
 }

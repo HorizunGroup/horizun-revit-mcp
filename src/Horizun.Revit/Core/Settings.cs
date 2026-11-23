@@ -46,6 +46,14 @@
 //   unsafe_code  the above, plus eligibility for horizun_execute_python. It is
 //                never the implicit default.
 //
+// documentation is a SIDE rung, not a step on the ladder: reads and host steering
+// like read_only, plus the "documentation" toolset (views, annotation, sheets,
+// revisions), PDF and one-view image export and the local save - and NOTHING that changes a modelled
+// element. Admission is by toolset MEMBERSHIP (DocumentationAdmits), so a tool another
+// change adds to that toolset is admitted without editing a list here; the per-call
+// halves (export format, save operation, the element kinds delete/write_params may
+// touch) live in OperationPermission and are asked by the commands themselves.
+//
 // ToolEffect.HostState is why read_only still admits something that is not a
 // pure read: horizun_target chooses WHICH Revit every later call talks to, and a
 // read-only machine that cannot choose its Revit cannot read. It used to share a
@@ -79,6 +87,96 @@ namespace Horizun.Revit.Core
     public static class Settings
     {
         private static readonly object WriteLock = new object();
+        private const int BusyRetryDefaultMaxAttempts = 4;
+        private const int BusyRetryDefaultBaseDelayMs = 250;
+        private const int BusyRetryDefaultMaxDelayMs = 2000;
+        private const int BusyRetryDefaultBudgetMs = 5000;
+
+        public static bool AutoCloseDialogs => !string.Equals(
+            Environment.GetEnvironmentVariable("HORIZUN_AUTO_CLOSE_DIALOGS"), "false", StringComparison.OrdinalIgnoreCase) &&
+            Environment.GetEnvironmentVariable("HORIZUN_AUTO_CLOSE_DIALOGS") != "0";
+
+        // Re-signalling a queued ExternalEvent cannot execute a command twice: the
+        // same RequestGate entry is claimed once. Keep this separate from any model
+        // write retry, which requires its own idempotency key. These process knobs
+        // are bounded so a malformed value cannot extend a call indefinitely.
+        public static int BusyRetryMaxAttempts => BoundedEnvironmentInt("HORIZUN_BUSY_RETRY_MAX_ATTEMPTS",
+            BusyRetryDefaultMaxAttempts, 0, 20);
+        public static int BusyRetryBaseDelayMs => BoundedEnvironmentInt("HORIZUN_BUSY_RETRY_BASE_MS",
+            BusyRetryDefaultBaseDelayMs, 25, 5000);
+        public static int BusyRetryMaxDelayMs => BoundedEnvironmentInt("HORIZUN_BUSY_RETRY_MAX_DELAY_MS",
+            BusyRetryDefaultMaxDelayMs, 25, 10000);
+        public static int BusyRetryBudgetMs => BoundedEnvironmentInt("HORIZUN_BUSY_RETRY_BUDGET_MS",
+            BusyRetryDefaultBudgetMs, 0, 30000);
+
+        private static int BoundedEnvironmentInt(string name, int fallback, int min, int max)
+        {
+            string raw = Environment.GetEnvironmentVariable(name);
+            return int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out int value)
+                ? Math.Max(min, Math.Min(max, value)) : fallback;
+        }
+
+        /// <summary>Owner policy, with a Revit-process override for one session. Default remains true.</summary>
+        public static bool AutoCloseExternalToolFailure
+        {
+            get
+            {
+                JObject settings = Read(out FileState state);
+                return AutoCloseDialogs && ExternalToolFailureAutoCloseFrom(settings, state == FileState.Malformed,
+                    Environment.GetEnvironmentVariable("HORIZUN_AUTO_CLOSE_EXTERNAL_TOOL_FAILURE"));
+            }
+        }
+
+        /// <summary>Independent owner/session policy for the reminder; never saves the model.</summary>
+        public static bool AutoCloseSaveReminder
+        {
+            get
+            {
+                JObject settings = Read(out FileState state);
+                return AutoCloseDialogs && SaveReminderAutoCloseFrom(settings, state == FileState.Malformed,
+                    Environment.GetEnvironmentVariable("HORIZUN_AUTO_CLOSE_SAVE_REMINDER"));
+            }
+        }
+
+        public static bool SaveReminderAutoCloseFrom(JObject settings, bool malformed, string sessionOverride)
+        {
+            if (malformed || settings?["auto_close_save_reminder"]?.Type == JTokenType.Boolean &&
+                !(bool)settings["auto_close_save_reminder"]) return false;
+            return !string.Equals(sessionOverride, "false", StringComparison.OrdinalIgnoreCase) && sessionOverride != "0";
+        }
+
+        public static bool ExternalToolFailureAutoCloseFrom(JObject settings, bool malformed, string sessionOverride)
+        {
+            // A session may disable the policy, but never override the owner's false.
+            if (malformed || settings?["auto_close_external_tool_failure"]?.Type == JTokenType.Boolean &&
+                !(bool)settings["auto_close_external_tool_failure"]) return false;
+            return !string.Equals(sessionOverride, "false", StringComparison.OrdinalIgnoreCase) && sessionOverride != "0";
+        }
+
+        public static JObject ModalDialogPolicy() => new JObject
+        {
+            ["auto_close_external_tool_failure"] = AutoCloseExternalToolFailure,
+            ["default_auto_close_external_tool_failure"] = true,
+            ["owner_setting"] = "auto_close_external_tool_failure",
+            ["session_environment"] = "HORIZUN_AUTO_CLOSE_EXTERNAL_TOOL_FAILURE",
+            ["save_reminder_auto_close"] = AutoCloseSaveReminder,
+            ["auto_close_save_reminder"] = AutoCloseSaveReminder,
+            ["default_auto_close_save_reminder"] = true,
+            ["save_reminder_owner_setting"] = "auto_close_save_reminder",
+            ["save_reminder_session_environment"] = "HORIZUN_AUTO_CLOSE_SAVE_REMINDER",
+            ["all_dialogs_session_environment"] = "HORIZUN_AUTO_CLOSE_DIALOGS",
+            ["queued_busy_retry"] = new JObject
+            {
+                ["max_attempts"] = BusyRetryMaxAttempts,
+                ["base_delay_ms"] = BusyRetryBaseDelayMs,
+                ["max_delay_ms"] = BusyRetryMaxDelayMs,
+                ["budget_ms"] = BusyRetryBudgetMs,
+                ["configuration"] = "HORIZUN_BUSY_RETRY_MAX_ATTEMPTS, HORIZUN_BUSY_RETRY_BASE_MS, " +
+                    "HORIZUN_BUSY_RETRY_MAX_DELAY_MS, HORIZUN_BUSY_RETRY_BUDGET_MS",
+                ["scope"] = "re-signals one queued request; it never executes the command twice"
+            }
+        };
 
         public static string Path()
         {
@@ -102,13 +200,18 @@ namespace Horizun.Revit.Core
             {
                 FileState state;
                 JObject o = Read(out state);
-                if (state == FileState.Malformed) return false;
-                if (TemporaryExecutePythonGrant(o, DateTimeOffset.UtcNow, out _)) return true;
-                JToken ui = o?["execute_python_ui_granted"];
-                if (ui != null && ui.Type == JTokenType.Boolean && (bool)ui) return true;
-                JToken t = o?["enable_execute_python"];
-                return t != null && t.Type == JTokenType.Boolean && (bool)t;
+                return ExecutePythonEnabledFrom(o, state);
             }
+        }
+
+        private static bool ExecutePythonEnabledFrom(JObject o, FileState state)
+        {
+            if (state == FileState.Malformed) return false;
+            if (TemporaryExecutePythonGrant(o, DateTimeOffset.UtcNow, out _)) return true;
+            JToken ui = o?["execute_python_ui_granted"];
+            if (ui != null && ui.Type == JTokenType.Boolean && (bool)ui) return true;
+            JToken t = o?["enable_execute_python"];
+            return t != null && t.Type == JTokenType.Boolean && (bool)t;
         }
 
         /// <summary>
@@ -128,7 +231,7 @@ namespace Horizun.Revit.Core
             }
         }
 
-        /// <summary>read_only | safe_write (default) | full_write | unsafe_code.</summary>
+        /// <summary>read_only | documentation | safe_write (default) | full_write | unsafe_code.</summary>
         public static string PermissionProfile
         {
             get
@@ -210,6 +313,166 @@ namespace Horizun.Revit.Core
             }
         }
 
+        /// <summary>
+        /// M10: the owner's flag for the "sync only" permission (SyncOnlyGrantRules). OFF by default;
+        /// only an explicit boolean true counts, a malformed file falls closed. No MCP call writes it.
+        /// </summary>
+        public static bool SyncOnlyGrantEnabled
+        {
+            get
+            {
+                FileState state;
+                JObject o = Read(out state);
+                return state != FileState.Malformed && o?["allow_sync_only_grant"]?.Type == JTokenType.Boolean &&
+                       (bool)o["allow_sync_only_grant"];
+            }
+        }
+
+        /// <summary>
+        /// INT-6 m-1 / INT-7 m-k: the settings a sync decision depends on, from ONE read of the file (profile, the owner's grant,
+        /// the sync-only flag, the workshared protection and - for IsToolAllowed(contract, out reason, photo) - the file itself),
+        /// so everything a call decides with comes from one moment and not from several reads that a second process could split.
+        /// </summary>
+        public sealed class SyncSettingsSnapshot
+        {
+            public string Profile = "read_only";
+            public bool OwnerSyncGrant;
+            public bool SyncOnlyFlag;
+            /// <summary>force_read_only_on_workshared as the file said at that read. The default is the closed one: protected.</summary>
+            public bool ForceReadOnly = true;
+            internal JObject Raw;
+            internal FileState State;
+            internal string Failure;
+        }
+
+        public static SyncSettingsSnapshot ReadSyncSettings()
+        {
+            JObject o = Read(out FileState state, out string failure);
+            return new SyncSettingsSnapshot
+            {
+                Profile = ProfileFrom(o, state),
+                OwnerSyncGrant = state != FileState.Malformed && o?["sync_with_central_owner_granted"]?.Type == JTokenType.Boolean &&
+                                 (bool)o["sync_with_central_owner_granted"],
+                SyncOnlyFlag = state != FileState.Malformed && o?["allow_sync_only_grant"]?.Type == JTokenType.Boolean &&
+                               (bool)o["allow_sync_only_grant"],
+                ForceReadOnly = state != FileState.Malformed && o?["force_read_only_on_workshared"]?.Type == JTokenType.Boolean &&
+                                (bool)o["force_read_only_on_workshared"],
+                Raw = o,
+                State = state,
+                Failure = failure
+            };
+        }
+
+        // ---------------------------------------------------------------------------------------------
+        // INT-7 m-4: WHAT A SCRIPT RUN DID TO THE OWNER'S SYNC GRANTS - REPORTED, NEVER REVERTED.
+        //
+        // The two grants (allow_sync_only_grant, sync_with_central_owner_granted) are plain booleans in settings.json, written by
+        // the ribbon's owner dialog. horizun_execute_python (unsafe_code) runs as the user, so it - like any other process of
+        // the user, or the agent's own shell - can write that file, and nothing inside Revit can stop it: the real protection is
+        // the permission profile and the owner's decision not to grant unsafe_code (AGENTS.md). What the bridge CAN do is not
+        // stay silent: the value of each grant before and after a run is compared, and a difference is told to the human in the
+        // script's reply as `settings_changed`. Nothing is put back. When the owner's writer stamped the key during the run,
+        // another Revit instance (or the owner) is the more likely hand, and the report says so without blaming the script.
+        // ---------------------------------------------------------------------------------------------
+        /// <summary>The field of a script's reply that carries the changes (a stable name: AGENTS.md says it).</summary>
+        public const string SettingsChangedField = "settings_changed";
+
+        /// <summary>
+        /// The keys of settings.json that decide what the bridge may do, all of them writable by any process that runs with the user's
+        /// rights. AGENTS.md lists them; a test keeps the list and the document in step.
+        /// </summary>
+        public static readonly string[] SensitiveKeys =
+            { "allow_sync_only_grant", "sync_with_central_owner_granted", "force_read_only_on_workshared", "mcp_paused", "permission_profile" };
+
+        private static readonly string[] SyncGrantKeys = { "allow_sync_only_grant", "sync_with_central_owner_granted" };
+        private static readonly string[] SyncGrantStampKeys =
+            { "allow_sync_only_grant_changed_from_revit_at_utc", "sync_with_central_owner_changed_from_revit_at_utc" };
+
+        /// <summary>The settings file as it stood at one moment (null raw = it could not be read), taken before a script runs.</summary>
+        public sealed class SyncGrantPhoto
+        {
+            internal JObject Raw;
+        }
+
+        public static SyncGrantPhoto PhotoSyncGrants()
+        {
+            var photo = new SyncGrantPhoto();
+            try
+            {
+                string p = Path();
+                photo.Raw = File.Exists(p) ? JObject.Parse(File.ReadAllText(p)) : new JObject();
+            }
+            catch { photo.Raw = null; }
+            return photo;
+        }
+
+        /// <summary>
+        /// The `settings_changed` array for a run that started at <paramref name="before"/>: one row per grant whose value is
+        /// different now, or null when nothing changed (or the "before" could not be read, so nothing can be claimed).
+        /// </summary>
+        public static JArray SyncGrantsChangedSince(SyncGrantPhoto before)
+        {
+            if (before == null || before.Raw == null) return null;
+            return CompareSyncGrants(before.Raw, PhotoSyncGrants().Raw);
+        }
+
+        /// <summary>Pure: the comparison itself. <paramref name="after"/> null means the file could not be read after the run.</summary>
+        public static JArray CompareSyncGrants(JObject before, JObject after)
+        {
+            if (before == null) return null;
+            var rows = new JArray();
+            if (after == null)
+            {
+                rows.Add(new JObject
+                {
+                    ["key"] = "settings.json",
+                    ["problem"] = "unreadable_after_the_run",
+                    ["reverted"] = false,
+                    ["means"] = "settings.json could not be read after the script ran (missing, locked or no longer valid JSON), so whether the owner's " +
+                                "sync grants changed cannot be said. Nothing was put back. Check the file before relying on a sync permission."
+                });
+                return rows;
+            }
+            for (int i = 0; i < SyncGrantKeys.Length; i++)
+            {
+                string key = SyncGrantKeys[i];
+                bool was = IsOnToken(before[key]), now = IsOnToken(after[key]);
+                if (was == now) continue;
+                bool stamped = !string.Equals(StampOf(before, SyncGrantStampKeys[i]), StampOf(after, SyncGrantStampKeys[i]), StringComparison.Ordinal);
+                rows.Add(new JObject
+                {
+                    ["key"] = key,
+                    ["before"] = was,
+                    ["after"] = now,
+                    ["owner_writer_stamp_changed"] = stamped,
+                    ["reverted"] = false,
+                    ["possible_cause"] = stamped ? "owner_writer_of_another_revit_instance_or_the_owner" : "the_script_or_another_process_of_this_user",
+                    ["means"] = "The value of '" + key + "' in settings.json was " + was.ToString().ToLowerInvariant() + " when the script started and is " +
+                                now.ToString().ToLowerInvariant() + " now. Nothing was put back: this is a notice for the owner. " +
+                                (stamped
+                                    ? "The owner's writer (the Revit ribbon) stamped the key during the run, so another Revit instance of this user, or the owner, may have changed it; this does not say the script did."
+                                    : "No stamp of the owner's writer changed, so the script may have written it - or any other process of this user, or another Revit instance, in the same interval. The bridge cannot tell which.") +
+                                " Check the grant in Revit's Advanced options."
+                });
+            }
+            return rows.Count == 0 ? null : rows;
+        }
+
+        private static bool IsOnToken(JToken t) => t != null && t.Type == JTokenType.Boolean && (bool)t;
+        // The stamp is an ISO date the JSON reader turns into a date token: it is compared by what it writes back, whatever its type.
+        private static string StampOf(JObject o, string key) { JToken t = o?[key]; return t == null ? null : t.ToString(Newtonsoft.Json.Formatting.None); }
+
+        /// <summary>Written only by the ribbon's owner dialog (SyncOnlyGrantCommand).</summary>
+        public static bool TrySetSyncOnlyGrant(bool enabled, out string error)
+        {
+            return TryUpdate(o =>
+            {
+                o["allow_sync_only_grant"] = enabled;
+                o["allow_sync_only_grant_changed_from_revit_at_utc"] = DateTimeOffset.UtcNow.ToString("O");
+                return true;
+            }, out error);
+        }
+
         /// <summary>Written only by the ribbon's owner dialog (SyncCentralPermissionCommand).</summary>
         public static bool TrySetSyncWithCentralOwnerGrant(bool enabled, out string error)
         {
@@ -229,9 +492,9 @@ namespace Horizun.Revit.Core
         public static bool TrySetPermissionProfile(string profile, out string error)
         {
             error = null;
-            if (profile != "read_only" && profile != "safe_write" && profile != "full_write")
+            if (profile != "read_only" && profile != "documentation" && profile != "safe_write" && profile != "full_write")
             {
-                error = "Only read_only, safe_write and full_write may be selected from Revit. " +
+                error = "Only read_only, documentation, safe_write and full_write may be selected from Revit. " +
                         "unsafe_code is an administrator-only profile.";
                 return false;
             }
@@ -271,6 +534,14 @@ namespace Horizun.Revit.Core
             => IsToolAllowed(contract, out reason, ignoreToolPacks: false);
 
         /// <summary>
+        /// The same decision from the file as ONE earlier read left it (INT-7 m-k): the profile, the pause, the lists, the packs and
+        /// the Python grant all come from that photo, so a decision that also uses the photo's grants cannot straddle two moments.
+        /// A photo without the file behind it (a hand-made one) reads the file now.
+        /// </summary>
+        public static bool IsToolAllowed(CommandContract contract, out string reason, SyncSettingsSnapshot photo)
+            => IsToolAllowed(contract, out reason, ignoreToolPacks: false, photo: photo);
+
+        /// <summary>
         /// The same admission decision with the tool-pack restriction lifted, and ONLY
         /// that one. Everything else - denied_tools, the allowlist, the pause, the
         /// permission profile, the Python grant - still applies.
@@ -286,19 +557,22 @@ namespace Horizun.Revit.Core
         public static bool IsToolAllowedIgnoringPacks(CommandContract contract, out string reason)
             => IsToolAllowed(contract, out reason, ignoreToolPacks: true);
 
-        private static bool IsToolAllowed(CommandContract contract, out string reason, bool ignoreToolPacks)
+        private static bool IsToolAllowed(CommandContract contract, out string reason, bool ignoreToolPacks, SyncSettingsSnapshot photo = null)
         {
             reason = null;
             if (contract == null) { reason = "Unknown tool contract."; return false; }
-            if (McpPaused && contract.Name != "horizun_health")
+            // ONE read decides the whole admission (the pause, the lists, the packs, the profile and the Python grant), so the
+            // profile and the reason given for it come from the same bytes (a second read could disagree with the first).
+            JObject settings; FileState settingsState; string settingsFailure;
+            if (photo != null && photo.Raw != null) { settings = photo.Raw; settingsState = photo.State; settingsFailure = photo.Failure; }
+            else settings = Read(out settingsState, out settingsFailure);
+            if (settingsState != FileState.Malformed && settings?["mcp_paused"]?.Type == JTokenType.Boolean &&
+                (bool)settings["mcp_paused"] && contract.Name != "horizun_health")
             {
                 reason = contract.Name + " is hidden/refused because MCP is paused by the local Revit owner. " +
                          "Only horizun_health remains available to report that state; resume from the Revit ribbon.";
                 return false;
             }
-            // ONE read decides the whole admission, so the profile and the reason given for
-            // it come from the same bytes (a second read could disagree with the first).
-            JObject settings = Read(out FileState settingsState, out string settingsFailure);
             string fellClosed = settingsState == FileState.Malformed
                 ? " (" + Path() + " did not decide this: " + settingsFailure + ". An unreadable or malformed " +
                   "choice never elevates, so read_only applies whatever the file says; retry once the file reads.)"
@@ -327,9 +601,11 @@ namespace Horizun.Revit.Core
             bool persistentUiGrant = persistentUiToken != null &&
                                      persistentUiToken.Type == JTokenType.Boolean &&
                                      (bool)persistentUiToken;
+            bool temporaryUiGrant = settingsState != FileState.Malformed &&
+                                    TemporaryExecutePythonGrant(settings, DateTimeOffset.UtcNow, out DateTimeOffset _);
             bool humanPythonGrant = contract.Name == "horizun_execute_python" &&
-                                    profile != "read_only" &&
-                                    (persistentUiGrant || ExecutePythonTemporaryGrantUntilUtc != null);
+                                    profile != "read_only" && profile != "documentation" &&
+                                    (persistentUiGrant || temporaryUiGrant);
 
             // ExternalSideEffect is consulted by BOTH restrictive profiles, and that is
             // the fix rather than a detail. The classification exists precisely to mean
@@ -352,14 +628,24 @@ namespace Horizun.Revit.Core
                          "written outside it." + fellClosed;
                 return false;
             }
+            if (profile == "documentation" && !DocumentationAdmits(contract))
+            {
+                reason = contract.Name + " is hidden/refused by permission_profile=documentation in " + Path() +
+                         ": documentation permits reads, views, annotation, sheets, revisions, PDF and one-view image export and the " +
+                         "local save, and changes no modelled element." + fellClosed;
+                return false;
+            }
             if (!humanPythonGrant && profile == "safe_write" &&
                 (contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect ||
                  // Named as well as classified: these write outside the model while being
                  // classified MutatingUnlessDryRun, so the effect alone does not catch them.
-                 contract.Name == "horizun_open_document" || contract.Name == "horizun_save_document" ||
-                 contract.Name == "horizun_relinquish_all" || contract.Name == "horizun_export" ||
-                 contract.Name == "horizun_deliver_ifc" ||
-                 contract.Name == "horizun_power_bi_push" || contract.Name == "horizun_create_family"))
+                 // horizun_save_document and horizun_export are NOT here (2026-10-18): they
+                 // are admitted, and refuse per call what safe_write does not authorize -
+                 // save_document anything but save_local/relinquish_own, export anything
+                 // but format=pdf or a one-view format=image (OperationPermission, asked by each command).
+                 contract.Name == "horizun_open_document" ||
+                 contract.Name == "horizun_relinquish_all" ||
+                 contract.Name == "horizun_power_bi_push"))
             {
                 reason = contract.Name + " changes the Revit document session or writes external files and is " +
                          "hidden/refused by permission_profile=safe_write in " + Path() +
@@ -369,7 +655,7 @@ namespace Horizun.Revit.Core
             }
             if (contract.Name == "horizun_execute_python" &&
                 (!humanPythonGrant &&
-                 (profile != "unsafe_code" || !ExecutePythonEnabled)))
+                 (profile != "unsafe_code" || !ExecutePythonEnabledFrom(settings, settingsState))))
             {
                 reason = "horizun_execute_python requires explicit permission_profile=unsafe_code and " +
                          "enable_execute_python=true in " + Path() + ", OR a persistent owner grant made from " +
@@ -379,6 +665,38 @@ namespace Horizun.Revit.Core
             }
             return true;
         }
+
+        /// <summary>
+        /// Tools a permission_profile=documentation machine admits. By MEMBERSHIP of the
+        /// "documentation" toolset rather than by a list of names, so a documentation tool
+        /// added later is admitted without touching this file - minus two exclusions that
+        /// change model-wide definitions (styles, phases), minus anything that opens a
+        /// document session or writes external artefacts by its effect. The named extras
+        /// are the ones whose writes are narrowed PER CALL by OperationPermission:
+        /// capture_view (a PNG of a view), undo, and delete/write_params (only views,
+        /// sheets, view-owned and annotation elements).
+        /// </summary>
+        public static bool DocumentationAdmits(CommandContract contract)
+        {
+            if (contract == null || contract.Name == "horizun_execute_python") return false;
+            if (contract.Effect == ToolEffect.ReadOnly || contract.Effect == ToolEffect.HostState ||
+                contract.Effect == ToolEffect.ExternalSideEffectOnRequest) return true;
+            if (DocumentationNamed.Contains(contract.Name)) return true;
+            if (DocumentationExcluded.Contains(contract.Name)) return false;
+            if (contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect) return false;
+            return ToolsetCatalog.Of(contract.Name).Contains("documentation", StringComparer.Ordinal);
+        }
+
+        private static readonly HashSet<string> DocumentationNamed = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "horizun_capture_view", "horizun_save_document", "horizun_export", "horizun_undo",
+            "horizun_delete_verified", "horizun_write_params_verified"
+        };
+
+        private static readonly HashSet<string> DocumentationExcluded = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "horizun_manage_styles", "horizun_manage_phases"
+        };
 
         /// <summary>
         /// The resolved tool-pack selection, from the environment override or the
@@ -428,8 +746,6 @@ namespace Horizun.Revit.Core
             }
             if (!string.IsNullOrWhiteSpace(env)) r.SourceName = envName;
             else if (raw != null) r.SourceName = key;
-            // Session activations (horizun_activate_toolset) widen an ENVIRONMENT selection in this process only.
-            r = ToolPacks.WithSession(r);
             return r;
         }
 
@@ -441,7 +757,7 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static bool TrySetToolPacks(IEnumerable<string> packs, out string error)
         {
-            List<string> list = packs?.Select(Horizun.Contracts.ToolsetCatalog.Normalize)
+            List<string> list = packs?.Select(p => (p ?? "").Trim().ToLowerInvariant())
                                       .Where(p => p.Length > 0).Distinct().ToList();
             if (list != null && list.Count > 0)
             {
@@ -449,7 +765,7 @@ namespace Horizun.Revit.Core
                 // falls closed to core-only, which is safe and also nothing the user
                 // asked to happen.
                 var unknown = list.Where(p => p != ToolPacks.AllToken &&
-                                              Horizun.Contracts.ToolsetCatalog.ExpandName(p) == null).ToList();
+                                              !ToolPacks.KnownPacks.Contains(p)).ToList();
                 if (unknown.Count > 0)
                 {
                     error = "unknown pack name(s): " + string.Join(", ", unknown) + ". Known: " +
@@ -547,7 +863,7 @@ namespace Horizun.Revit.Core
         /// an ABSENT file means "the owner never chose" and the defaults apply, while a
         /// MALFORMED file may be a corrupted explicit choice and everything falls closed.
         /// </summary>
-        private enum FileState { Absent, Readable, Malformed }
+        internal enum FileState { Absent, Readable, Malformed }
 
         private static JObject Read(out FileState state) => Read(out state, out string ignored);
 
@@ -598,7 +914,7 @@ namespace Horizun.Revit.Core
             string p = o?.Value<string>("permission_profile");
             if (string.IsNullOrWhiteSpace(p)) return "safe_write";
             p = p.ToLowerInvariant();
-            return p == "read_only" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
+            return p == "read_only" || p == "documentation" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
                 ? p : "read_only"; // malformed privilege never elevates
         }
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -247,20 +247,22 @@ namespace Horizun.Core.Tests
         /// Both halves exist; this asserts they meet - the plan hash the rehearsal signs
         /// is the one execution presents.
         /// </summary>
-        [Fact]
-        public void A_token_issued_for_a_plan_opens_that_plan_and_nothing_else()
+        [Theory]
+        [InlineData("horizun_create_elements")]
+        [InlineData("horizun_write_params_verified")]
+        public void A_token_issued_for_a_plan_opens_that_plan_and_nothing_else(string tool)
         {
             var store = new ConfirmationStore();
             const string doc = "doc-fingerprint";
 
-            Confirmation issued = store.Issue("horizun_family_apply", doc, "plan-A");
+            Confirmation issued = store.Issue(tool, doc, "plan-A");
 
             Assert.False(store.Validate(issued.Token, "horizun_delete_verified", doc, "plan-A").Ok);
-            Assert.False(store.Validate(issued.Token, "horizun_family_apply", "other-doc", "plan-A").Ok);
-            Assert.False(store.Validate(issued.Token, "horizun_family_apply", doc, "plan-B").Ok);
+            Assert.False(store.Validate(issued.Token, tool, "other-doc", "plan-A").Ok);
+            Assert.False(store.Validate(issued.Token, tool, doc, "plan-B").Ok);
 
-            Assert.True(store.Validate(issued.Token, "horizun_family_apply", doc, "plan-A").Ok);
-            Assert.False(store.Validate(issued.Token, "horizun_family_apply", doc, "plan-A").Ok);
+            Assert.True(store.Validate(issued.Token, tool, doc, "plan-A").Ok);
+            Assert.False(store.Validate(issued.Token, tool, doc, "plan-A").Ok);
         }
     }
 }

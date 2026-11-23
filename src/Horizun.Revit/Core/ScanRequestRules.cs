@@ -63,6 +63,8 @@ namespace Horizun.Revit.Core
 
     public static class ScanRequestRules
     {
+        public enum AuditOperation { General, Warnings, WallSlab }
+
         /// <summary>
         /// Every key the scan understands. A request naming anything else is
         /// refused - it is not ignored, because a misspelt option produces a
@@ -70,6 +72,7 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static readonly string[] KnownKeys =
         {
+            "confirm_large_operation",
             // THE COMMAND READS THIS AND THE VALIDATOR REFUSED IT.
             //
             // horizun_model_scan's schema declares `cooperative` and the command
@@ -101,7 +104,7 @@ namespace Horizun.Revit.Core
         };
 
         /// <summary>
-        /// Every option horizun_audit_model understands. Its `top` had exactly the
+        /// Every option in the general horizun_audit_model surface. Its `top` had exactly the
         /// same clamp - `Math.Max(1, ...)` - and the same silence about anything
         /// misspelt, so it reads the SAME rules below rather than a second copy of
         /// them. Two tables of one fact is how the two halves came to disagree
@@ -109,6 +112,8 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static readonly string[] AuditKnownKeys =
         {
+            "confirm_large_operation",
+            "operation", "offset", "page_size", "byte_budget",
             "target_document",
             "top",
             "requirement_set",
@@ -123,7 +128,40 @@ namespace Horizun.Revit.Core
             "template_path",
             "spf_path",
             "wall_sketch_drift_tolerance_mm",
+            // Opt-in budget (Core/CooperativeReadOptions.cs). Absent = today's audit.
+            "cooperative",
         };
+
+        public static readonly string[] WallSlabKnownKeys =
+        {
+            "operation", "target_document", "tolerance_mm", "level_id", "wall_ids",
+            "offset", "page_size", "confirm_large_operation",
+        };
+
+        public static ScanRequestVerdict CheckAuditRequest(JObject request, out AuditOperation operation)
+        {
+            operation = AuditOperation.General;
+            JToken kind = request["operation"];
+            if (kind != null)
+            {
+                if (kind.Type == JTokenType.String && (string)kind == "wall_slab")
+                {
+                    operation = AuditOperation.WallSlab;
+                    return CheckUnknownKeys(request, WallSlabKnownKeys, "the wall_slab audit");
+                }
+                if (kind.Type == JTokenType.String && (string)kind == "warnings")
+                {
+                    operation = AuditOperation.Warnings;
+                    return CheckUnknownKeys(request, AuditKnownKeys, "the warnings audit");
+                }
+                return ScanRequestVerdict.Refused("invalid_audit_operation", "Unknown audit operation.");
+            }
+
+            foreach (string key in new[] { "offset", "page_size", "byte_budget" })
+                if (request[key] != null)
+                    return ScanRequestVerdict.Refused(ScanRequestCodes.UnknownKey, key + " requires operation=warnings");
+            return CheckAudit(request);
+        }
 
         /// <summary>Unknown option names, refused with the real list. Shared.</summary>
         public static ScanRequestVerdict CheckUnknownKeys(JObject request, IReadOnlyCollection<string> knownKeys,

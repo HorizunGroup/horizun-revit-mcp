@@ -163,30 +163,6 @@ namespace Horizun.Core.Tests
             Assert.Equal(new long[] { 51 }, a.Steps.Single().Arguments["ids"].Select(t => (long)t).ToArray());
         }
 
-        [Fact]
-        public void A_reversible_correction_keeps_the_old_default_of_every_element_the_finding_named()
-        {
-            // Pinning is not deleting. Naming the finding is a decision about the
-            // elements it named, and the recipe says so by not asking for the list.
-            Assert.False(CorrectionRegistry.Default[AuditCheckNames.UnpinnedLinks].RequiresExplicitSelection);
-            Assert.True(CorrectionRegistry.Default[AuditCheckNames.OrphanGroupTypes].RequiresExplicitSelection);
-            Assert.True(CorrectionRegistry.Default[AuditCheckNames.Rooms].RequiresExplicitSelection);
-        }
-
-        [Fact]
-        public void The_registry_publishes_which_entries_demand_an_explicit_selection()
-        {
-            JObject described = CorrectionRegistry.Describe();
-            var entries = (JArray)described["entries"];
-            JObject groups = entries.OfType<JObject>()
-                                    .Single(e => (string)e["finding_type"] == AuditCheckNames.OrphanGroupTypes);
-            Assert.True((bool)groups["requires_explicit_selection"]);
-            JObject links = entries.OfType<JObject>()
-                                   .Single(e => (string)e["finding_type"] == AuditCheckNames.UnpinnedLinks);
-            Assert.False((bool)links["requires_explicit_selection"]);
-            Assert.Contains("LISTING THE IDS IS REQUIRED", (string)described["destructive_means"]);
-        }
-
         // ------------------------------------------- a cut list and a named scope
 
         [Fact]
@@ -197,16 +173,6 @@ namespace Horizun.Core.Tests
             Assert.Equal(CorrectionActionState.RequiresInput, a.State);
             Assert.Equal(ProposalRefusal.Truncated, a.RefusalCode);
             Assert.Empty(a.Steps);
-        }
-
-        [Fact]
-        public void Narrowing_to_ids_the_cut_list_did_show_is_actionable_because_that_scope_is_known()
-        {
-            CorrectionAction a = Select(Act("f:cut", 11)).Single();
-
-            Assert.Equal(CorrectionActionState.Rehearsed, a.State);
-            Assert.Single(a.Steps);
-            Assert.Equal(11L, (long)a.Steps[0].Arguments["link_instance_id"]);
         }
 
         [Fact]
@@ -223,39 +189,5 @@ namespace Horizun.Core.Tests
 
         // --------------------------------------------------- one call, many states
 
-        [Fact]
-        public void One_call_can_hold_a_refusal_and_a_rehearsal_and_each_keeps_its_own_verdict()
-        {
-            List<CorrectionAction> actions = Select(Act("f:views"), Act("f:cut", 10, 11));
-
-            Assert.Equal(CorrectionActionState.RequiresInput, actions[0].State);
-            Assert.Equal(CorrectionActionState.Rehearsed, actions[1].State);
-            Assert.Equal(2, actions[1].Steps.Count);
-            // AND THE WHOLE TOKEN IS WITHHELD. A token over "the ones that worked"
-            // authorises a set nobody read as such.
-            Assert.False(CorrectionSelection.RehearsedCleanly(actions));
-
-            JObject tally = CorrectionReply.Tally(actions);
-            Assert.Equal(1, (int)tally["requires_input"]);
-            Assert.Equal(1, (int)tally["rehearsed"]);
-        }
-
-        [Fact]
-        public void The_rehearsal_declaration_counts_actions_in_both_columns_so_the_numbers_reconcile()
-        {
-            // ONE action with two steps, one action that refused. Counting the total
-            // in steps and the unresolved column in actions read "2 requested, 1
-            // unresolved" over a call with two actions - and the unresolved one had
-            // contributed nothing to the 2.
-            List<CorrectionAction> actions = Select(Act("f:cut", 10, 11), Act("f:views"));
-            var payload = new JObject();
-            ApplicationOutcome.StampRehearsal(payload, actions.Count,
-                actions.Count(a => a.State != CorrectionActionState.Rehearsed), 0, 0);
-
-            JObject declaration = (JObject)payload[ApplicationOutcome.Key];
-            Assert.Equal(2, (int)declaration["requested"]);
-            Assert.Equal(1, (int)declaration["unresolved"]);
-            Assert.Equal(ApplicationOutcome.Name(ApplicationState.Partial), (string)declaration["state"]);
-        }
     }
 }

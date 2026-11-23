@@ -54,8 +54,10 @@ $script:HzProbeModules += [pscustomobject]@{
         $wc = Code $w
         if ($w.isError -and $wc -eq 'not_workshared') { Case $nNotWs $S 'pass' 'refused before any census' }
         elseif ($w.isError -and -not $wc) { Case $nNotWs $S 'not_covered' ('refused before the operation ran (no detail code; profile, pause or dispatcher): ' + (Short $w)) }
-        elseif ($w.isError) { Case $nNotWs $S 'not_covered' "the write document refused as $wc (it may be workshared on this run)" }
         elseif ($Ctx.PSObject.Properties['LinkSourceFile'] -and $Ctx.LinkSourceFile -and (Test-Path -LiteralPath ([string]$Ctx.LinkSourceFile))) {
+            # Reached also when the workshared write document is refused for another reason
+            # (sync_blocked_unverified, sync_not_authorised...): not_workshared is a property of a
+            # plain model, so it is provoked on the plain copy either way.
             # The write document is workshared (the release gate's central, MEASURED 2026-09-27):
             # the refusal is provoked on a scratch copy of the run's link source, a plain model.
             New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
@@ -72,6 +74,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 finally { $null = Exit-HzWorksharedFixture $Ctx $pf 'sync-plain' }
             }
         }
+        elseif ($w.isError) { Case $nNotWs $S 'not_covered' "the write document refused as $wc and the run names no link source to copy as a plain model" }
         else { Case $nNotWs $S 'fail' ('not refused: ' + (Short $w)) }
 
         $fixture = Enter-HzWorksharedFixture $Ctx 'sync'
@@ -222,18 +225,21 @@ for e in FilteredElementCollector(doc).WhereElementIsNotElementType():
     if WorksharingUtils.GetCheckoutStatus(doc, e.Id) != CheckoutStatus.NotOwned: continue
     pick = e
     break
-out = {'uid': None, 'status': None}
+out = {'uid': None, 'checkout': None, 'status': 'failed'}
 if pick is not None:
     t = Transaction(doc, 'hz probe borrow')
     t.Start()
     pick.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS).Set('hz probe $run')
     t.Commit()
-    out = {'uid': pick.UniqueId, 'status': str(WorksharingUtils.GetCheckoutStatus(doc, pick.Id))}
+    co = str(WorksharingUtils.GetCheckoutStatus(doc, pick.Id))
+    # 'status' is the script's verdict for the bridge; the checkout state goes in its own key.
+    out = {'uid': pick.UniqueId, 'checkout': co, 'status': 'verified' if co == 'OwnedByCurrentUser' else 'failed',
+           'verification': {'checked': True, 'evidence': ['GetCheckoutStatus re-read: ' + co]}}
 __output__ = out
 "@
             $b = & $Ctx.Call 'horizun_execute_python' @{ code = $pyB; target_document = $local; idempotency_key = ('sync-borrow-' + $run) }
             $bo = Out $b
-            if ($b.isError -or -not $bo -or -not $bo.uid -or [string]$bo.status -ne 'OwnedByCurrentUser') {
+            if ($b.isError -or -not $bo -or -not $bo.uid -or [string]$bo.checkout -ne 'OwnedByCurrentUser') {
                 Case $nKeep $S 'not_covered' ('could not borrow one element of an unowned user workset by editing it: ' + (Short $b))
             }
             else {
@@ -255,10 +261,12 @@ __output__ = out
 from Autodesk.Revit.DB import FilteredWorksetCollector, WorksetKind, WorksharingUtils, WorksetId
 from System.Collections.Generic import List
 free = [w for w in FilteredWorksetCollector(doc).OfKind(WorksetKind.UserWorkset) if not w.Owner]
-out = {'workset': None, 'owned': False}
+out = {'workset': None, 'owned': False, 'status': 'failed'}
 if free:
     WorksharingUtils.CheckoutWorksets(doc, List[WorksetId]([free[0].Id]))
-    out = {'workset': free[0].Name, 'owned': bool(doc.GetWorksetTable().GetWorkset(free[0].Id).Owner)}
+    owned = bool(doc.GetWorksetTable().GetWorkset(free[0].Id).Owner)
+    out = {'workset': free[0].Name, 'owned': owned, 'status': 'verified' if owned else 'failed',
+           'verification': {'checked': True, 'evidence': ['workset owner re-read: ' + str(owned)]}}
 __output__ = out
 "@
             $k = & $Ctx.Call 'horizun_execute_python' @{ code = $pyW; target_document = $local; idempotency_key = ('sync-take-' + $run) }
@@ -280,11 +288,15 @@ __output__ = out
             }
         }
         finally {
-            if ($local) { $null = Exit-HzWorksharedFixture $Ctx @{ Title = $local; WritePath = $fixture.WritePath } 'sync-local' }
-            if (-not $centralClosed) { $null = Exit-HzWorksharedFixture $Ctx $fixture 'sync' }
+            # A failed close must not skip the deferred detached case below: it would go unreported.
+            $closeNote = $null
+            try { if ($local) { $null = Exit-HzWorksharedFixture $Ctx @{ Title = $local; WritePath = $fixture.WritePath } 'sync-local' } }
+            catch { $closeNote = 'closing the scratch local failed: ' + $_.Exception.Message }
+            try { if (-not $centralClosed) { $null = Exit-HzWorksharedFixture $Ctx $fixture 'sync' } }
+            catch { $closeNote = (@($closeNote, ('closing the fixture failed: ' + $_.Exception.Message)) | Where-Object { $_ }) -join '; ' }
             if ($deferDetached) {
                 $ownCentral = Join-Path $dir 'HZ_SYNC_CENTRAL.rvt'
-                if (-not (Test-Path -LiteralPath $ownCentral)) { Case $nDetached $S 'not_covered' 'the write model is the fixture and this probe made no central of its own to copy' }
+                if (-not (Test-Path -LiteralPath $ownCentral)) { Case $nDetached $S 'not_covered' ('the write model is the fixture and this probe made no central of its own to copy' + $(if ($closeNote) { ' (' + $closeNote + ')' } else { '' })) }
                 else {
                     $dcopy = Join-Path $dir 'HZ_SYNC_DETACHED.rvt'
                     Copy-Item -LiteralPath $ownCentral -Destination $dcopy -Force

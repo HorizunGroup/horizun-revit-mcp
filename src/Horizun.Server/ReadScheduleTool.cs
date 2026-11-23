@@ -6,13 +6,13 @@
 // notation and self-checks, and proposes the beam cards as a
 // horizun.structural-requirements/1 set keyed by mark. It writes nothing and it
 // never touches Revit: the caller plans and applies the proposal with
-// horizun_plan_reinforcement / horizun_apply_reinforcement, which resolve marks to
+// horizun_plan_reinforcement (Pro edition) / horizun_apply_reinforcement (Pro edition), which resolve marks to
 // hosts and refuse what does not fit.
 //
 // One reader, three sources, exactly one per call:
 //   file_path     - a vector PDF, read here with PdfPig (SchedulePdf.cs);
 //   cad_entities  - CAD IR entities that carry TEXT - the bridge's accoreconsole
-//                   reading of a DWG (horizun_cad_extract over a Revit link carries
+//                   reading of a DWG (horizun_cad_extract (Pro edition) over a Revit link carries
 //                   no text: Revit's import drops it) - with cad_text_anchor declared,
 //                   because a DWG text has no extent;
 //   primitives    - segments, polylines and texts any other extractor produced.

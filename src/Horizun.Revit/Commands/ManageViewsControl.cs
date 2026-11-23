@@ -123,7 +123,6 @@ namespace Horizun.Revit.Commands
                         throw new ArgumentException("a template is made from a graphical view, not a " + source.GetType().Name + ".");
                     if (string.IsNullOrWhiteSpace(a.Value<string>("name")))
                         throw new ArgumentException("name is required: Revit would call it after the source view, and nobody chose that.");
-                    RequireUnusedViewName(doc, a.Value<string>("name"));
                     break;
                 }
 
@@ -586,7 +585,9 @@ namespace Horizun.Revit.Commands
         internal static JArray ExplainGraphics(Document doc, View view, IList<ElementId> ids)
         {
             View template = view.ViewTemplateId == ElementId.InvalidElementId ? null : doc.GetElement(view.ViewTemplateId) as View;
-            bool templateFilters = TemplateGoverns(template, BuiltInParameter.VIS_GRAPHICS_FILTERS);
+            if (template == null && view.ViewTemplateId != ElementId.InvalidElementId)
+                throw new InvalidOperationException("The assigned view template could not be read.");
+            bool templateFilters = ReadTemplateControl(template, BuiltInParameter.VIS_GRAPHICS_FILTERS);
             bool templateModel = TemplateGoverns(template, BuiltInParameter.VIS_GRAPHICS_MODEL);
             bool templateAnnotation = TemplateGoverns(template, BuiltInParameter.VIS_GRAPHICS_ANNOTATION);
             View filterSource = templateFilters ? template : view;
@@ -615,23 +616,15 @@ namespace Horizun.Revit.Commands
                 {
                     order++;
                     FilterElement filter = doc.GetElement(filterId) as FilterElement;
-                    bool matches = Passes(doc, filter, element);
-                    bool enabled = true;
-                    try { enabled = filterSource.GetIsFilterEnabled(filterId); } catch { }
-                    bool visible = filterSource.GetFilterVisibility(filterId);
-                    var layer = new GraphicsLayer
-                    {
-                        Source = "filter", Label = "filter:" + Rid.Value(filterId),
-                        Applies = enabled && matches, Visible = visible ? (bool?)null : false,
-                        Fields = OverrideFields(doc, filterSource.GetFilterOverrides(filterId))
-                    };
-                    layers.Add(layer);
-                    rows.Add(new JObject
+                    var row = new JObject
                     {
                         ["source"] = "filter", ["filter_id"] = Rid.Value(filterId), ["name"] = filter?.Name, ["order"] = order,
-                        ["enabled"] = enabled, ["matches"] = matches, ["visible"] = visible,
-                        ["from_template"] = templateFilters, ["overrides"] = JObject.FromObject(layer.Fields)
-                    });
+                        ["from_template"] = templateFilters
+                    };
+                    GraphicsPrecedence.ReadFilter(row, layers, () => filterSource.GetIsFilterEnabled(filterId),
+                        () => ReadFilterMatch(filter, element), () => filterSource.GetFilterVisibility(filterId),
+                        () => OverrideFields(doc, filterSource.GetFilterOverrides(filterId)));
+                    rows.Add(row);
                 }
 
                 Category category = null;
@@ -657,7 +650,7 @@ namespace Horizun.Revit.Commands
                     });
                 }
 
-                reports.Add(new JObject
+                var report = new JObject
                 {
                     ["element_id"] = Rid.Value(id),
                     ["view_id"] = Rid.Value(view.Id),
@@ -668,31 +661,37 @@ namespace Horizun.Revit.Commands
                         ["governs_annotation_vg"] = templateAnnotation
                     },
                     ["layers"] = rows,
-                    ["winners"] = GraphicsPrecedence.Resolve(layers),
                     ["means"] = "element beats filters, a filter higher in the list beats a lower one, filters beat the " +
                                 "category, and object styles fill the rest. Any layer that hides wins. A template that " +
                                 "governs V/G supplies the filter or category rows (from_template)."
-                });
+                };
+                GraphicsPrecedence.AddWinners(report, layers, rows);
+                reports.Add(report);
             }
             return reports;
         }
 
-        private static bool Passes(Document doc, FilterElement filter, Element element)
+        internal static bool Passes(Document doc, FilterElement filter, Element element)
         {
-            try
-            {
-                if (filter is SelectionFilterElement selection) return selection.Contains(element.Id);
-                if (!(filter is ParameterFilterElement parameterFilter)) return false;
-                Category category = element.Category;
-                if (category == null || !parameterFilter.GetCategories().Contains(category.Id)) return false;
-                ElementFilter rules = parameterFilter.GetElementFilter();
-                return rules == null || rules.PassesFilter(element);
-            }
+            try { return ReadFilterMatch(filter, element); }
             catch { return false; }
         }
 
+        private static bool ReadFilterMatch(FilterElement filter, Element element)
+        {
+            if (filter is SelectionFilterElement selection) return selection.Contains(element.Id);
+            if (!(filter is ParameterFilterElement parameterFilter))
+                throw new InvalidOperationException("The view filter is missing or its kind cannot be evaluated.");
+            Category category = element.Category;
+            if (category == null)
+                throw new InvalidOperationException("The element's category could not be read.");
+            if (!parameterFilter.GetCategories().Contains(category.Id)) return false;
+            ElementFilter rules = parameterFilter.GetElementFilter();
+            return rules == null || rules.PassesFilter(element);
+        }
+
         /// <summary>Only the fields an override object SETS, as text.</summary>
-        private static IDictionary<string, string> OverrideFields(Document doc, OverrideGraphicSettings o)
+        internal static IDictionary<string, string> OverrideFields(Document doc, OverrideGraphicSettings o)
         {
             var fields = new Dictionary<string, string>();
             if (o == null) return fields;
@@ -724,14 +723,16 @@ namespace Horizun.Revit.Commands
         /// <summary>Does this template govern the named V/G parameter? False without a template.</summary>
         internal static bool TemplateGoverns(View template, BuiltInParameter parameter)
         {
-            if (template == null) return false;
-            try
-            {
-                var id = new ElementId(parameter);
-                return template.GetTemplateParameterIds().Contains(id) &&
-                       !template.GetNonControlledTemplateParameterIds().Contains(id);
-            }
+            try { return ReadTemplateControl(template, parameter); }
             catch { return false; }
+        }
+
+        private static bool ReadTemplateControl(View template, BuiltInParameter parameter)
+        {
+            if (template == null) return false;
+            var id = new ElementId(parameter);
+            return template.GetTemplateParameterIds().Contains(id) &&
+                   !template.GetNonControlledTemplateParameterIds().Contains(id);
         }
 
         // =====================================================================

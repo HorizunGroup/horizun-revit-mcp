@@ -97,7 +97,7 @@ namespace Horizun.Server.Tests
         [Fact]
         public void A_quarantined_call_is_refused_by_the_server_before_it_is_routed()
         {
-            JObject args = JObject.Parse("{\"detail\":\"full\"}");
+            JObject args = JObject.Parse("{\"include_verification_catalog\":true}");
             string root = NewRootWithQuarantine(args);
             try
             {
@@ -118,10 +118,10 @@ namespace Horizun.Server.Tests
         [Fact]
         public void A_call_with_other_arguments_is_routed_as_usual()
         {
-            string root = NewRootWithQuarantine(JObject.Parse("{\"detail\":\"full\"}"));
+            string root = NewRootWithQuarantine(JObject.Parse("{\"include_verification_catalog\":true}"));
             try
             {
-                JObject reply = CallReply(Run(root, JObject.Parse("{\"detail\":\"brief\"}")));
+                JObject reply = CallReply(Run(root, JObject.Parse("{\"include_verification_catalog\":false}")));
                 JObject result = (JObject)reply["result"];
                 Assert.True(result != null, "expected a tool result: " + reply);
                 Assert.NotEqual("call_quarantined", (string)result["structuredContent"]?["code"]);

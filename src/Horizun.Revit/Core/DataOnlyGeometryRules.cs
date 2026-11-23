@@ -2,7 +2,7 @@
 // Horizun MCP - original Horizun code.
 //
 // SpatialAfterWrite.cs skips the spatial coherence check for "data-only" tools
-// (horizun_write_params_verified, horizun_family_apply, ...) because Revit's
+// (horizun_write_params_verified, horizun_family_apply (Pro edition), ...) because Revit's
 // DocumentChanged cannot tell a moved element from a renamed one - a parameter
 // write to ten thousand elements would otherwise pay a full spatial pass for
 // every rename. But a parameter write CAN move geometry: an offset, a base

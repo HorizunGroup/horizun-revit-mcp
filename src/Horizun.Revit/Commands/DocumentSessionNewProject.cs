@@ -98,26 +98,46 @@ namespace Horizun.Revit.Commands
             if (!check.Ok)
                 return NewProjectRefuse("confirmation_rejected",
                     "REFUSING TO CREATE '" + target + "': " + check.Message + " Run operation=new_project with " +
-                    "dry_run=true again and apply with the token it returns. Nothing was created.");
+                    "dry_run=true again and apply with the token it returns. " + DocumentTokenGuidance.For("new_project") + " Nothing was created.");
 
             // ---- 1 + 2: create in memory, save to the proven-empty path. ----
             Document created = null;
+            Interference watch = Interference.Current;
+            int mark = watch == null ? 0 : watch.Seen.Count;
             try
             {
                 created = app.Application.NewProjectDocument(template);
                 if (created == null)
-                    return NewProjectRefuse("new_project_failed",
-                        "NewProjectDocument returned no document for template '" + template + "'. Nothing was created.");
+                    throw new InvalidOperationException("NewProjectDocument returned no document.");
+            }
+            catch (Exception ex)
+            {
+                var detail = NewProjectDetail("new_project_failed", target, created: false);
+                detail["stage"] = NewProjectRules.FailureStage(false, ex);
+                detail["template_path"] = template;
+                detail["template_file"] = ProbeFile(template);
+                detail["template_version"] = VersionOf((JObject)detail["template_file"]);
+                detail["host_version"] = host;
+                if (watch != null) detail["revit_raised"] = RaisedRecord.Window(watch.Seen, mark);
+                return CommandResult.FailWithDetail("Creating the project failed: " + ex.GetType().Name + ": " + ex.Message, detail);
+            }
+            try
+            {
                 var opts = new SaveAsOptions { OverwriteExistingFile = false };
                 created.SaveAs(ModelPathUtils.ConvertUserVisiblePathToModelPath(target), opts);
             }
             catch (Exception ex)
             {
-                string cleanup = DiscardNewProject(created, target, fileWasOurs: TestExists(target) == true);
+                string cleanup;
+                try { created.Close(false); cleanup = "The new document was closed without saving."; }
+                catch (Exception closeEx) { cleanup = "The new document could not be closed: " + closeEx.Message; }
+                bool? exists = TestExists(target);
+                var detail = NewProjectDetail("new_project_failed", target, created: false);
+                detail["stage"] = NewProjectRules.FailureStage(true, ex);
+                detail["destination_exists"] = exists.HasValue ? (JToken)exists.Value : JValue.CreateNull();
                 return CommandResult.FailWithDetail(
-                    "Creating the project failed: " + ex.GetType().Name + ": " + ex.Message + " (template '" + template +
-                    "', target '" + target + "'). " + cleanup,
-                    NewProjectDetail("new_project_failed", target, created: false));
+                    "Saving the project failed: " + ex.GetType().Name + ": " + ex.Message + ". " + cleanup +
+                    (exists == false ? " No file was written at the destination." : exists == true ? " A file remains at the destination." : " Destination existence could not be determined."), detail);
             }
 
             // ---- 3: the file and the document, re-read. ----
@@ -217,7 +237,7 @@ namespace Horizun.Revit.Commands
                                 "); delete it by hand.");
                 }
             }
-            else said.Append("No file was written at '" + target + "'.");
+            else said.Append("The destination file was not removed.");
             return said.ToString();
         }
 

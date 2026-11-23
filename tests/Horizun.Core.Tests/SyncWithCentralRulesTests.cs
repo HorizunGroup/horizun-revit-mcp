@@ -197,7 +197,7 @@ namespace Horizun.Core.Tests
         [Fact]
         public void The_token_binds_the_request_as_plan_and_the_estimate_as_model_fingerprint()
         {
-            Assert.Equal(new[] { "document", "comment", "relinquish", "compact" }, SyncWithCentralRules.RequestFields);
+            Assert.Equal(new[] { "document", "comment", "relinquish", "compact", "accept_findings_ids" }, SyncWithCentralRules.RequestFields);
             foreach (string field in new[] { "owned_worksets", "owned_elements", "borrowed_elements", "is_modified",
                                              "has_all_changes_from_central", "sample_status_counts" })
             {

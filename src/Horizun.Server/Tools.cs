@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP server — original Horizun code.
 //
 // The tool table: the single place that declares which MCP tools exist, the
@@ -8,6 +8,7 @@
 // plugin. As the deep tools are ported onto the plugin, they get one row here.
 // -----------------------------------------------------------------------------
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Threading;
 using Newtonsoft.Json.Linq;
@@ -50,6 +51,7 @@ namespace Horizun.Server
             {
                 { "horizun_job_status",       (a, ct) => JobStatus.Handle(a, ct) },
                 { "horizun_catalog_lookup",   (a, ct) => CatalogLookup.Handle(a, ct) },
+                { "horizun_template_kit",     (a, ct) => TemplateKitTool.Handle(a, ct) },
                 { "horizun_project_context",  (a, ct) => ProjectContext.Handle(a, ct) },
                 { "horizun_information_container", (a, ct) => InformationContainerTool.Handle(a, ct) },
                 { "horizun_exchange",         (a, ct) => ExchangeTool.Handle(a, ct) },
@@ -220,41 +222,8 @@ namespace Horizun.Server
             return list;
         }
 
-        /// <summary>
-        /// Tools that exist and that the permission profile ALLOWS, but that the active
-        /// toolset selection leaves out: exactly what a user could switch on by enabling a
-        /// toolset. A tool the profile, denied_tools or allowed_tools turns off is NOT here
-        /// (IsEnabledIgnoringPacks refuses it), so this can never offer to unlock something a
-        /// toolset does not unlock. For discovery only (SchemaFacade search); nothing
-        /// dispatches from it.
-        /// </summary>
-        internal static List<ToolDef> InactiveByToolset()
-        {
-            Discovered live = Live();
-            var list = new List<ToolDef>();
-            foreach (var t in All)
-                if (!IsEnabled(t) && IsEnabledIgnoringPacks(t) && WithheldReason(t, live) == null) list.Add(t);
-            return list;
-        }
-
         /// <summary>Why a known tool is withheld from the list right now, or null - the live-bridge half.</summary>
         internal static string WithheldNow(ToolDef t) => WithheldReason(t, Live());
-
-        /// <summary>
-        /// May this tool be called right now (the same gate every dispatch asks)? Used to condition ADVICE:
-        /// the server must not tell an agent to use a tool the active toolsets hide from it.
-        /// </summary>
-        internal static bool IsCallable(string toolName) => DisabledReason(toolName) == null;
-
-        /// <summary>
-        /// True when the toolset selection - and nothing else - is what keeps this tool out. The permission
-        /// profile and the allow/deny lists are not asked: only the toolsets are.
-        /// </summary>
-        internal static bool HiddenByToolsetsOnly(string toolName)
-        {
-            ToolDef t = Find(toolName);
-            return t != null && !IsEnabled(t) && IsEnabledIgnoringPacks(t);
-        }
 
         /// <summary>
         /// The list this server would publish if no tool pack were selected, at the same
@@ -293,11 +262,7 @@ namespace Horizun.Server
             {
                 if (!enabled(t)) continue;
                 if (WithheldReason(t, live) != null) continue;
-                JObject entry = Publish(t, advertiseTaskSupport);
-                // A task rides on horizun_submit_job; when the toolsets hide it (local alone) do not offer tasks.
-                if (advertiseTaskSupport && McpTasks.Supports(t) && !McpTasks.SupportsHere(t))
-                    entry["execution"]["taskSupport"] = "forbidden";
-                arr.Add(entry);
+                arr.Add(Publish(t, advertiseTaskSupport));
             }
             return arr;
         }
@@ -316,7 +281,11 @@ namespace Horizun.Server
                 ["name"] = t.Name,
                 ["title"] = Title(t.Name),
                 ["description"] = CompactDescription(t.Description),
-                ["inputSchema"] = CompactSchema(t.Name, t.InputSchema),
+                // HORIZUN_COMPACT_SCHEMAS=1 (4.0, default off): the five heaviest discriminated
+                // schemas are announced without their per-variant fields (CompactAnnouncement.cs).
+                ["inputSchema"] = CompactAnnouncement.Applies(t.Name)
+                    ? CompactAnnouncement.For(t.Name, t.InputSchema)
+                    : CompactSchema(t.Name, t.InputSchema),
                 ["outputSchema"] = t.OutputSchema,
                 ["annotations"] = Annotations(t)
 
@@ -333,14 +302,12 @@ namespace Horizun.Server
 
             // MCP Apps: a tool declares its interactive view in its own description,
             // through _meta.ui.resourceUri, and the host may preload it before the
-            // tool is ever called. Only horizun_clash has one, and only because the
-            // app renders that reply and nothing else - an app attached to a tool
-            // whose payload it cannot render is a blank panel the user blames their
-            // client for.
-            if (t.Name == "horizun_clash") published["_meta"] = McpAppResources.ToolUiMeta();
+            // tool is ever called. An app attached to a tool whose payload it cannot
+            // render is a blank panel the user blames their client for, so only the
+            // tools the app renders declare it.
             // The impact preview: the five bulk writes whose rehearsal payload
             // (change_preview / plan_resolved / confirmation_token) the app reads.
-            else if (ImpactPreviewApp.Renders(t.Name)) published["_meta"] = ImpactPreviewApp.ToolUiMeta();
+            if (ImpactPreviewApp.Renders(t.Name)) published["_meta"] = ImpactPreviewApp.ToolUiMeta();
 
             return published;
         }
@@ -356,7 +323,7 @@ namespace Horizun.Server
 
         internal static string CompactDescription(string description)
         {
-            const int max = 900;
+            const int max = 800;
             const string suffix = " Full installed contract: horizun://contract/tools";
             if (string.IsNullOrWhiteSpace(description)) return suffix.Trim();
             string normalized = description.Replace("\r", " ").Replace("\n", " ").Trim();
@@ -383,11 +350,48 @@ namespace Horizun.Server
         // ADVERTISED copy is compacted: argument validation reads t.InputSchema, and
         // horizun://contract/tools serves every word. The copy is computed once per tool.
         // 250 since 2026-09-26: the coordination loop, element kinds and re-read work took
-        // tools/list to 526 KB against the 512 KiB budget.
-        internal const int SchemaDescriptionMax = 250;
-        private const string SchemaDescriptionSuffix = " (full text: horizun://contract/tools)";
+        // tools/list to 526 KB against the 512 KiB budget. 230 since 2026-10-18 (Pro 3.1.0):
+        // view crop, sheet layout, callouts, visibility, associative dimensions and the
+        // documentation profile needed ~10 KB; measured saving of this step: 6.0 KB.
+        // 180 since 2026-10-23 (Pro 3.5.0): measure_geometry, query_relations and query_family_internals
+        // would have left tools/list at 522,702 of 524,288 B; at 180 it is 510,894 B (13,394 B of margin).
+        // 150 since 2026-10-24 (field cycle second batch): join_geometry and mep_fittings left 7,945 B of margin
+        // and four more tools were coming; at 150 the list is 503,058 B with 139 tools (21,230 B of margin).
+        // Only the advertised copy is shorter: horizun://contract/tools keeps every word.
+        // 140 for Pro 3.7.0: preserve growth room after integrating the local profile.
+        // Keep operation schemas reachable in full resources while reserving 8 KB for discovery growth.
+        internal const int SchemaDescriptionMax = 120;
+        // Original prose is folded more tightly after conditional requirements
+        // expanded. Curated short forms keep their complete argument names and
+        // REQUIRED instructions, within the public maximum above.
+        // 80 for 4.2.0: the scan plan pair (plan_from_scan, apply_scan_plan) left 5,437 B of the 8,000 B reserved.
+        // 74 for 5.2.0: integrating the T1 coverage branches left 2,958 B of the 8,000 B reserved.
+        // 73 for 5.2.0: retype_run and insulation (t2-mep) took the headroom to 7,871 B.
+        // 72 for 5.2.0: schedule appearance and colour schemes (t2-doc) took it to 7,334 B.
+        // 71 for 5.2.0: loaded_family, geometry and lookup_tables (t2-fam) took it to 7,827 B.
+        private const int SchemaProseDescriptionMax = 69;
+        private const string SchemaDescriptionSuffix = " (horizun://contract/tools)";
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JObject> CompactSchemas =
             new System.Collections.Concurrent.ConcurrentDictionary<string, JObject>(StringComparer.Ordinal);
+
+        // Schema nodes only: a "properties" map is walked by value, so an argument named
+        // "examples" would survive.
+        internal static void DropExamples(JToken node)
+        {
+            if (node is JObject o)
+            {
+                if (o["examples"] is JArray) o.Remove("examples");
+                foreach (JProperty p in o.Properties())
+                {
+                    if ((p.Name == "properties" || p.Name == "patternProperties") && p.Value is JObject props)
+                        foreach (JProperty arg in props.Properties()) DropExamples(arg.Value);
+                    else if (p.Name != "enum" && p.Name != "const" && p.Name != "default")
+                        DropExamples(p.Value);
+                }
+            }
+            else if (node is JArray a)
+                foreach (JToken item in a) DropExamples(item);
+        }
 
         internal static JObject CompactSchema(string toolName, JObject schema)
         {
@@ -395,14 +399,125 @@ namespace Horizun.Server
             return CompactSchemas.GetOrAdd(toolName, _ =>
             {
                 var copy = (JObject)schema.DeepClone();
+                // Worked examples (4.0: one requirement set per rule type) are served by
+                // describe_tool and the contract resource, never in the list a client pays for.
+                DropExamples(copy);
                 // The structural steps run on the FULL text, before the description caps,
                 // so "is this annotation identical to the union's" is an exact comparison.
                 SubtractBranchDuplicates(copy);
                 DropBranchTypeEqualToParent(copy);
                 ApplyAdvertisedShortForms(copy);
+                DropConstImpliedTypes(copy);
+                DropSchemaDefaults(copy);
                 CompactSchemaNode(copy);
+                if (schema["properties"] is JObject full && copy["properties"] is JObject advertised)
+                {
+                    string[] critical = toolName == "horizun_document_session"
+                        ? new[] { "allow_upgrade", "expected_version", "detach", "open_central" }
+                        : toolName == "horizun_export" ? new[] { "output_path", "pdf_print", "cobie" } : new string[0];
+                    foreach (string name in critical)
+                        if (full[name]?["description"] != null && advertised[name] is JObject field)
+                            field["description"] = full[name]["description"].DeepClone();
+                }
+                CompactClosedBranches(copy);
+                if (toolName == "horizun_execute_python")
+                {
+                    var props = copy["properties"] as JObject;
+                    if (props?["documentation_only"] is JObject doc)
+                        doc["description"] = "Documentation only; see full contract.";
+                    if (props?["includes"] is JObject includes)
+                        includes["description"] = "Python includes; see full contract.";
+                    if (props?["timeout_s"] is JObject timeout)
+                        timeout["description"] = "Cooperative timeout in seconds.";
+                    if (props?["deadline_s"] is JObject deadline)
+                        deadline["description"] = "Cooperative deadline <= timeout_s.";
+                }
                 return copy;
             });
+        }
+
+        // A string const or homogeneous string enum fixes its type. Clients that infer
+        // an omitted type as string still agree. Non-string types remain explicit. Keep every name,
+        // value and description; remove only that logically redundant keyword.
+        internal static void DropConstImpliedTypes(JToken node)
+        {
+            if (node is JObject o)
+            {
+                string type = o["type"]?.Type == JTokenType.String ? (string)o["type"] : null;
+                bool Matches(JToken value) => type == "string" && value?.Type == JTokenType.String;
+                if (Matches(o["const"]) || (o["enum"] is JArray values && values.Count > 0 && values.All(Matches)))
+                    o.Remove("type");
+                foreach (JProperty p in o.Properties())
+                    if (p.Name == "properties" && p.Value is JObject props)
+                        foreach (JProperty field in props.Properties()) DropConstImpliedTypes(field.Value);
+                    else if (p.Name != "const" && p.Name != "enum" && p.Name != "default") DropConstImpliedTypes(p.Value);
+            }
+            else if (node is JArray array) foreach (JToken item in array) DropConstImpliedTypes(item);
+        }
+
+        // Lossless structural encoding: the union already types each argument.
+        // A closed branch's repeated type-only entries merely enumerate allowed
+        // names. propertyNames expresses that same allowlist without duplicating
+        // the types. Every description and every stricter constraint stays.
+        internal static void CompactClosedBranches(JToken node)
+        {
+            if (node is JObject root)
+            {
+                if (root["properties"] is JObject union)
+                    foreach (string combinator in Combinators)
+                        if (root[combinator] is JArray branches)
+                            foreach (JObject branch in System.Linq.Enumerable.OfType<JObject>(branches))
+                            {
+                                if (branch.Value<bool?>("additionalProperties") != false || branch["propertyNames"] != null ||
+                                    branch["patternProperties"] != null || !(branch["properties"] is JObject own)) continue;
+                                var names = new JArray(); var redundant = new List<string>(); bool supported = true;
+                                foreach (JProperty field in own.Properties())
+                                {
+                                    names.Add(field.Name);
+                                    if (!(union[field.Name] is JObject inherited)) { supported = false; break; }
+                                    if (field.Value is JObject value && value.Count == 1 && value["type"] != null && JToken.DeepEquals(value["type"], inherited["type"]))
+                                        redundant.Add(field.Name);
+                                }
+                                if (!supported) continue;
+                                var candidate = (JObject)branch.DeepClone();
+                                foreach (string name in redundant) ((JObject)candidate["properties"]).Remove(name);
+                                candidate.Remove("additionalProperties");
+                                candidate["propertyNames"] = new JObject { ["enum"] = names };
+                                if (candidate.ToString(Newtonsoft.Json.Formatting.None).Length < branch.ToString(Newtonsoft.Json.Formatting.None).Length)
+                                {
+                                    foreach (string name in redundant) own.Remove(name);
+                                    branch.Remove("additionalProperties");
+                                    branch["propertyNames"] = candidate["propertyNames"].DeepClone();
+                                }
+                            }
+                foreach (JProperty p in root.Properties())
+                {
+                    if (p.Name == "properties" && p.Value is JObject properties)
+                        foreach (JProperty field in properties.Properties()) CompactClosedBranches(field.Value);
+                    else CompactClosedBranches(p.Value);
+                }
+            }
+            else if (node is JArray array) foreach (JToken item in array) CompactClosedBranches(item);
+        }
+
+        // These JSON Schema keywords equal their specified default. Removing them changes
+        // neither admitted values nor prose. Walk schema locations only, never data examples.
+        internal static void DropSchemaDefaults(JToken node)
+        {
+            if (node is JObject schema)
+            {
+                if (schema["additionalProperties"]?.Type == JTokenType.Boolean && (bool)schema["additionalProperties"])
+                    schema.Remove("additionalProperties");
+                foreach (string keyword in new[] { "minItems", "minLength", "minProperties" })
+                    if (schema[keyword]?.Type == JTokenType.Integer && (long)schema[keyword] == 0) schema.Remove(keyword);
+                foreach (string map in new[] { "properties", "patternProperties", "$defs", "definitions", "dependentSchemas" })
+                    if (schema[map] is JObject fields)
+                        foreach (JProperty field in fields.Properties()) DropSchemaDefaults(field.Value);
+                foreach (string keyword in new[] { "items", "additionalProperties", "propertyNames", "contains", "not", "if", "then", "else", "oneOf", "anyOf", "allOf", "prefixItems" })
+                    DropSchemaDefaults(schema[keyword]);
+            }
+            else if (node is JArray array)
+                foreach (JToken child in array) DropSchemaDefaults(child);
         }
 
         // STRUCTURAL SUBTRACTION (2026-09-26). A node that has both a `properties` map (the
@@ -520,13 +635,12 @@ namespace Horizun.Server
              "with the same key and identical operation returns the recorded result without " +
              "executing twice. Reusing it for different arguments is refused. Generate a new " +
              "UUID for each deliberate operation; keep it unchanged only for retries."] =
-                "Required when the call mutates the model or session: a new UUID per deliberate change; " +
-                "reuse it only to retry the identical call.",
+                "Required for a change: fresh UUID per operation; reuse only to retry.",
 
             // target_document
             ["REQUIRED. Title or full path of the model to change. It must be the document ACTIVE " +
              "in Revit; this never switches documents for you."] =
-                "REQUIRED. Title or full path of the ACTIVE document; this never switches documents.",
+                "REQUIRED. Title or full path of the ACTIVE document; never switches.",
             ["REQUIRED. Title or full path of the document to write to. It must be the document " +
              "that is ACTIVE in Revit; this command will not switch documents for you. A write aimed " +
              "at whatever window happens to be in front is a write aimed at whatever turns up."] =
@@ -534,18 +648,17 @@ namespace Horizun.Server
             ["REQUIRED. Title or full path of the document to change. It must be the document ACTIVE " +
              "in Revit; this never switches documents for you. Aliases accepted for compatibility: " +
              "expected_document, target_document_title."] =
-                "REQUIRED. Title or full path of the ACTIVE document; this never switches documents. " +
+                "REQUIRED. ACTIVE document title/path; never switches documents. " +
                 "Aliases: expected_document, target_document_title.",
 
             // confirmation_token
             ["REQUIRED when dry_run=false. The token this exact request's dry run returned. " +
              "Single-use, expiring, bound to this document and this scope."] =
-                "REQUIRED when dry_run=false: the token this exact request's dry run returned. Single-use, expiring.",
+                "REQUIRED when dry_run=false: the token of this request's dry run. Single-use, expiring.",
             ["REQUIRED when dry_run=false. The token returned by the dry run of this exact request. " +
              "Single-use, expires, and bound to this document and this request - if either changed, " +
              "execution is refused and nothing is written."] =
-                "REQUIRED when dry_run=false: the token this exact request's dry run returned. Single-use, " +
-                "expiring; refused if the document or request changed.",
+                "REQUIRED when dry_run=false: exact request's token, single-use and expiring; binds document and request.",
 
             // the cooperative-reading arguments of list_elements, query_model and model_scan
             ["OPT-IN cooperative reading. OMIT IT AND NOTHING CHANGES: this reader behaves exactly as " +
@@ -560,22 +673,20 @@ namespace Horizun.Server
              "travels back through the pipe, and Revit's own event queue decides when the window " +
              "repaints. Stopping work and releasing the interface are different events, and only a " +
              "sampler watching from outside can measure the second."] =
-                "OPT-IN; omit it and nothing changes. With it the read stops if you have gone away or at your " +
-                "budget, and a result that stopped early says PARTIAL. ui_budget_ms bounds the work, not Revit's responsiveness.",
+                "OPT-IN; omit: no change. Stops at ui_budget_ms; says PARTIAL.",
             ["How long this read may hold Revit's UI thread before it stops and says so. Twenty seconds " +
              "by default, chosen against what a person does: below about that a frozen window reads as " +
              "'it is working'; past it people start clicking, then killing Revit."] =
-                "How long this read may hold Revit's UI thread before it stops and says so. Default 20 seconds.",
+                "Max UI-thread time of this read. Default 20 s.",
             ["A hard bound on elements EXAMINED, independent of the clock. Separate from the budget on " +
              "purpose: a bound in units is reproducible across machines and a bound in milliseconds is not."] =
-                "A hard bound on elements EXAMINED, independent of the clock.",
+                "Hard bound on elements EXAMINED.",
             ["Continue a previous partial read. Opaque, and REFUSED against a different request: resuming " +
              "one query at another query's position produces a page of the wrong elements with nothing to " +
              "show that anything went wrong. Where this command already pages with its own cursor or " +
              "offset, the reply says so and issues none here - two continuation tokens over different " +
              "things is worse than either."] =
-                "Continue a previous partial read. Opaque; REFUSED against a different request. Where the command " +
-                "pages with its own cursor or offset, use that; the reply says so."
+                "Continue a partial read; another request's cursor is refused."
         };
 
         private static void ApplyAdvertisedShortForms(JToken node)
@@ -641,8 +752,10 @@ namespace Horizun.Server
 
         internal static string CompactSchemaDescription(string description)
         {
-            if (description == null || description.Length <= SchemaDescriptionMax) return description;
-            int limit = SchemaDescriptionMax - SchemaDescriptionSuffix.Length - 1;
+            int max = AdvertisedShortForms.ContainsValue(description)
+                ? SchemaDescriptionMax : SchemaProseDescriptionMax;
+            if (description == null || description.Length <= max) return description;
+            int limit = max - SchemaDescriptionSuffix.Length - 1;
             int cut = description.LastIndexOf(". ", limit, StringComparison.Ordinal);
             if (cut < limit / 2) cut = limit;
             else cut += 1;

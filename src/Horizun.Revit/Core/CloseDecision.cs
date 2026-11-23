@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
 // Whether closing a document would throw away work, and what the caller must have
@@ -32,6 +32,18 @@
 // -----------------------------------------------------------------------------
 namespace Horizun.Revit.Core
 {
+    public static class DocumentTokenGuidance
+    {
+        public static string For(string operation)
+        {
+            const string overview = "open_document and document_session open, save and save_as do not require a token; save and save_as can be rehearsed with dry_run=true. new_project requires a token; close requires one only when discarding unsaved or unknown changes. ";
+            if (operation == "close") return overview + "document_session close requires a token only when discarding unsaved or unknown changes: rehearse operation=close with dry_run=true and discard_unsaved=true, then apply the same request with dry_run=false and its token.";
+            if (operation == "new_project") return overview + "document_session new_project requires a token: rehearse operation=new_project with dry_run=true, then apply the same arguments with dry_run=false, its token and a new idempotency_key.";
+            if (operation == "batch") return overview + "document_session batch rehearses by default; apply the same models with dry_run=false, its token and a new idempotency_key. Source file bytes must not change.";
+            return overview + "document_session new_project requires a token, as does close when discarding unsaved or unknown changes; rehearse that operation with dry_run=true.";
+        }
+    }
+
     /// <summary>What must happen before this close may proceed.</summary>
     public enum CloseRequirement
     {

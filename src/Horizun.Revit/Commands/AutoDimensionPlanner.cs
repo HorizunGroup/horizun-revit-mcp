@@ -309,78 +309,87 @@ namespace Horizun.Revit.Commands
             foreach (FamilyInstance opening in found.OrderBy(e => Rid.Value(e.Id)))
             {
                 long id = Rid.Value(opening.Id);
-                var row = new AutoDimensionCandidate
-                {
-                    SubjectId = id, Source = "opening_center", Label = SafeName(opening),
-                    LinkInstanceId = source.IsLinked ? (long?)source.LinkInstanceId : null
-                };
                 try
                 {
-                    IList<Reference> centres = null;
-                    try { centres = opening.GetReferences(FamilyInstanceReferenceType.CenterLeftRight); }
-                    catch { centres = null; }
-                    if (centres == null || centres.Count == 0)
+                    Wall wall = opening.Host as Wall;
+                    if (wall == null)
                     {
-                        omissions.Add(new AutoDimensionOmission(row, AutoDimensionRules.CodeNoReference,
-                            "family instance " + id + " (" + SafeName(opening) + ") exposes no CenterLeftRight " +
-                            "reference. Its family has no left/right centre plane marked as a reference, so " +
-                            "there is nothing at its centre a dimension can attach to. Dimension to its host " +
-                            "wall's faces instead, or mark the plane in the family."));
+                        omissions.Add(new AutoDimensionOmission(new AutoDimensionCandidate { SubjectId = id,
+                            Source = "opening", Label = SafeName(opening) }, AutoDimensionRules.CodeUnreadable,
+                            "opening " + id + " has no host wall; a wall chain cannot be assigned."));
                         continue;
                     }
-                    if (centres.Count > 1)
+                    BoundingBoxXYZ box = opening.get_BoundingBox(null);
+                    Transform transform = opening.GetTotalTransform();
+                    if (box == null || transform == null)
                     {
-                        omissions.Add(new AutoDimensionOmission(row, AutoDimensionRules.CodeNoReference,
-                            "family instance " + id + " exposes " + centres.Count + " CenterLeftRight references; " +
-                            "which one is 'the centre' is not something this planner can decide. Name the " +
-                            "reference explicitly with intent_dimension."));
+                        omissions.Add(new AutoDimensionOmission(new AutoDimensionCandidate { SubjectId = id,
+                            HostId = Rid.Value(wall.Id), Source = "opening", Label = SafeName(opening) },
+                            AutoDimensionRules.CodeUnreadable, "opening " + id +
+                            " has no readable bounds or transform for ordering its references."));
                         continue;
                     }
-
-                    Reference lifted = source.Lift(centres[0]);
-                    string stable = lifted == null ? null : Stable(lifted, hostDoc);
-                    if (stable == null)
+                    Transform inverse = transform.Inverse;
+                    var corners = new List<XYZ>();
+                    foreach (double x in new[] { box.Min.X, box.Max.X })
+                        foreach (double y in new[] { box.Min.Y, box.Max.Y })
+                            foreach (double z in new[] { box.Min.Z, box.Max.Z })
+                                corners.Add(inverse.OfPoint(new XYZ(x, y, z)));
+                    XYZ local = inverse.OfPoint((opening.Location as LocationPoint)?.Point ??
+                                                    box.Min.Add(box.Max).Multiply(0.5));
+                    // The wall's own void, read once and only when a family reference is
+                    // missing or not unique. Its jamb faces are chosen by the Core rules
+                    // (facing the opening, nearest the centre), never by the family's
+                    // bounding box, which includes trim and frame.
+                    OpeningVoidResult voidFaces = null; string voidError = null; bool voidRead = false;
+                    foreach (var side in new[] {
+                        new { Name = "opening_left", Type = FamilyInstanceReferenceType.Left, X = corners.Min(p => p.X) },
+                        new { Name = "opening_right", Type = FamilyInstanceReferenceType.Right, X = corners.Max(p => p.X) } })
                     {
-                        omissions.Add(new AutoDimensionOmission(row, AutoDimensionRules.CodeNoReference,
-                            "the centre reference of " + id + " has no usable host-document representation."));
-                        continue;
+                        var row = new AutoDimensionCandidate { SubjectId = id, HostId = Rid.Value(wall.Id),
+                            Source = side.Name, Label = SafeName(opening) };
+                        // The WALL VOID first. Family Left/Right references are reference
+                        // planes inside the family: horizun_annotate cannot read geometry
+                        // behind them to fingerprint the plan, so every chain built on them
+                        // is refused at rehearsal (measured live, Revit 2026, 2026-10-17).
+                        // The host's jamb faces are real geometry; the family reference is
+                        // the fallback for an opening that does not cut its wall.
+                        XYZ point = source.ToHost.OfPoint(transform.OfPoint(new XYZ(side.X, local.Y, local.Z)));
+                        IList<Reference> refs = null;
+                        if (!voidRead) { voidRead = true; voidFaces = PlanimetryGeometryReader.OpeningVoid(hostDoc, opening, out voidError); }
+                        WallVoidFace preferred = OpeningVoidRules.ForSelector(voidFaces?.Choice, side.Name);
+                        if (preferred != null && voidFaces.Faces.TryGetValue(preferred.Stable, out PlanarFace preferredFace))
+                        {
+                            refs = new List<Reference> { preferredFace.Reference };
+                            point = source.ToHost.OfPoint(voidFaces.JambPoint(preferred));
+                            row.Label = SafeName(opening) + " (wall void jamb)";
+                        }
+                        else { try { refs = opening.GetReferences(side.Type); } catch { } }
+                        if ((refs == null || refs.Count != 1) && voidError != null)
+                            row.Label = SafeName(opening) + " (wall void unreadable: " + voidError + ")";
+                        if (refs == null || refs.Count != 1)
+                        {
+                            omissions.Add(new AutoDimensionOmission(row, AutoDimensionRules.CodeNoReference,
+                                "opening " + id + " exposes " + (refs == null ? 0 : refs.Count) + " " + side.Type +
+                                " references; exactly one is required for a width chain."));
+                            continue;
+                        }
+                        string stable = Stable(source.Lift(refs[0]), hostDoc);
+                        if (stable == null)
+                        {
+                            omissions.Add(new AutoDimensionOmission(row, AutoDimensionRules.CodeNoReference,
+                                "opening " + id + " " + side.Type + " reference has no stable representation."));
+                            continue;
+                        }
+                        row.StableRepresentation = stable;
+                        Project(row, point, source.ToHost.OfVector(transform.BasisX), right, up, origin);
+                        result.Add(row);
                     }
-
-                    XYZ point = null; XYZ direction = null;
-                    var location = opening.Location as LocationPoint;
-                    if (location != null) point = source.ToHost.OfPoint(location.Point);
-                    if (point == null)
-                    {
-                        BoundingBoxXYZ box = null;
-                        try { box = opening.get_BoundingBox(null); } catch { box = null; }
-                        if (box != null)
-                            point = source.ToHost.OfPoint((box.Min + box.Max) * 0.5);
-                    }
-                    if (point == null)
-                    {
-                        omissions.Add(new AutoDimensionOmission(row, AutoDimensionRules.CodeUnreadable,
-                            "opening " + id + " has neither a location point nor a readable bounding box, so " +
-                            "where it sits along the chain could not be measured."));
-                        continue;
-                    }
-
-                    // The centre plane faces along the family's own X; a chain of
-                    // openings is grouped by that so two walls at right angles do not
-                    // share one chain.
-                    try
-                    {
-                        Transform t = opening.GetTotalTransform();
-                        if (t != null) direction = source.ToHost.OfVector(t.BasisY);
-                    }
-                    catch { direction = null; }
-
-                    row.StableRepresentation = stable;
-                    Project(row, point, direction, right, up, origin);
-                    result.Add(row);
                 }
                 catch (Exception ex)
                 {
-                    omissions.Add(new AutoDimensionOmission(row, AutoDimensionRules.CodeUnreadable,
+                    omissions.Add(new AutoDimensionOmission(new AutoDimensionCandidate { SubjectId = id,
+                        Source = "opening", Label = SafeName(opening) }, AutoDimensionRules.CodeUnreadable,
                         "opening " + id + " could not be read: " + ex.Message));
                 }
             }
@@ -397,6 +406,62 @@ namespace Horizun.Revit.Commands
                        id == (long)BuiltInCategory.OST_GenericModel && fi.Host != null;
             }
             catch { return false; }
+        }
+
+        /// <summary>End faces of a straight host wall, found from its reference-carrying solid.</summary>
+        public static List<AutoDimensionCandidate> WallEndFaces(Document doc, View view, Wall wall,
+            List<AutoDimensionOmission> omissions)
+        {
+            var result = new List<AutoDimensionCandidate>();
+            var curve = (wall.Location as LocationCurve)?.Curve as Line;
+            if (curve == null)
+            {
+                omissions.Add(new AutoDimensionOmission(new AutoDimensionCandidate {
+                    SubjectId = Rid.Value(wall.Id), Source = "wall_end" }, AutoDimensionRules.CodeUnreadable,
+                    "host wall has no straight location line; end-face selection needs an explicit reference."));
+                return result;
+            }
+            XYZ tangent = curve.Direction.Normalize();
+            var faces = new List<PlanarFace>();
+            try
+            {
+                GeometryElement geometry = wall.get_Geometry(new Options { ComputeReferences = true,
+                    DetailLevel = ViewDetailLevel.Fine });
+                foreach (GeometryObject obj in geometry)
+                    if (obj is Solid solid)
+                        foreach (Face face in solid.Faces)
+                            if (face is PlanarFace planar && planar.Reference != null &&
+                                Math.Abs(planar.FaceNormal.DotProduct(tangent)) > 0.98)
+                                faces.Add(planar);
+            }
+            catch (Exception ex)
+            {
+                omissions.Add(new AutoDimensionOmission(new AutoDimensionCandidate {
+                    SubjectId = Rid.Value(wall.Id), Source = "wall_end" }, AutoDimensionRules.CodeUnreadable,
+                    "host wall end faces could not be read: " + ex.Message));
+                return result;
+            }
+            if (faces.Count < 2)
+            {
+                omissions.Add(new AutoDimensionOmission(new AutoDimensionCandidate {
+                    SubjectId = Rid.Value(wall.Id), Source = "wall_end" }, AutoDimensionRules.CodeNoReference,
+                    "host wall exposes fewer than two straight end faces with stable references."));
+                return result;
+            }
+            var ordered = faces.OrderBy(f => f.Origin.DotProduct(tangent)).ToList();
+            foreach (var entry in new[] { new { Face = ordered.First(), Name = "wall_start" },
+                                            new { Face = ordered.Last(), Name = "wall_end" } })
+            {
+                string stable = Stable(entry.Face.Reference, doc);
+                if (stable == null) continue;
+                var candidate = new AutoDimensionCandidate { SubjectId = Rid.Value(wall.Id),
+                    HostId = Rid.Value(wall.Id), Source = entry.Name, Label = SafeName(wall),
+                    StableRepresentation = stable };
+                Project(candidate, entry.Face.Origin, tangent, view.RightDirection.Normalize(),
+                    view.UpDirection.Normalize(), view.Origin);
+                result.Add(candidate);
+            }
+            return result;
         }
 
         // =====================================================================

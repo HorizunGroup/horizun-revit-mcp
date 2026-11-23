@@ -18,7 +18,7 @@ namespace Horizun.Core.Tests
     public class AuditRequestTests
     {
         private static ScanRequestVerdict Audit(string json) =>
-            ScanRequestRules.CheckAudit(JObject.Parse(json));
+            ScanRequestRules.CheckAuditRequest(JObject.Parse(json), out _);
 
         [Fact]
         public void An_ordinary_audit_request_is_accepted()
@@ -28,6 +28,25 @@ namespace Horizun.Core.Tests
                                   ""tolerances"": {}, ""readiness_roles"": [] }").Ok);
             Assert.True(Audit(@"{ ""target_document"": ""M"", ""store_snapshot"": true,
                                   ""health_profile"": { ""weights"": [] } }").Ok);
+        }
+
+        [Theory]
+        [InlineData("level_id", "12")]
+        [InlineData("wall_ids", "[14]")]
+        [InlineData("tolerance_mm", "3")]
+        public void Wall_slab_arguments_are_only_accepted_by_the_wall_slab_read(string key, string json)
+        {
+            var request = new JObject { ["target_document"] = "M", [key] = JToken.Parse(json) };
+            Assert.Equal(ScanRequestCodes.UnknownKey, ScanRequestRules.CheckAuditRequest(request, out var operation).Code);
+            Assert.Equal(ScanRequestRules.AuditOperation.General, operation);
+            request["operation"] = "warnings";
+            Assert.Equal(ScanRequestCodes.UnknownKey, ScanRequestRules.CheckAuditRequest(request, out operation).Code);
+            Assert.Equal(ScanRequestRules.AuditOperation.Warnings, operation);
+            request["operation"] = "wall_slab";
+            Assert.True(ScanRequestRules.CheckAuditRequest(request, out operation).Ok);
+            Assert.Equal(ScanRequestRules.AuditOperation.WallSlab, operation);
+            request["top"] = 20;
+            Assert.Equal(ScanRequestCodes.UnknownKey, ScanRequestRules.CheckAuditRequest(request, out _).Code);
         }
 
         [Fact]
@@ -99,7 +118,7 @@ namespace Horizun.Core.Tests
             string code = string.Join("\n", src.Split('\n')
                 .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal)));
 
-            Assert.Contains("ScanRequestRules.CheckAudit(request)", code);
+            Assert.Contains("ScanRequestRules.CheckAuditRequest(request, out var operation)", code);
             Assert.Contains("if (!shape.Ok) return CommandResult.Fail(", code);
             Assert.DoesNotContain("Math.Max(1, request.Value<int>(\"top\"))", code);
         }

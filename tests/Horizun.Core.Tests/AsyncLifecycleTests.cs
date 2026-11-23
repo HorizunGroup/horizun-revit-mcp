@@ -48,6 +48,7 @@ namespace Horizun.Core.Tests
         }
     }
 
+    [Collection("AsyncQueue")]
     public class AsyncLifecycleTests : IDisposable
     {
         private readonly List<string> _paths = new List<string>();
@@ -204,6 +205,181 @@ namespace Horizun.Core.Tests
             }
 
             Assert.NotEmpty(warnings);
+        }
+
+        [Fact]
+        public void Denied_after_a_slice_does_not_claim_the_job_never_started()
+        {
+            AsyncWork w = QueueOne("continuation");
+            w.Record.MarkRunning();
+            w.Record.Write("slice", 1, 2);
+            w.HasStarted = true;
+
+            AsyncPump.Pump(new FakeRaiser(RaiseOutcome.Denied));
+
+            string record = Text(w);
+            Assert.Contains("\"status\":\"failed\"", record);
+            Assert.DoesNotContain("\"status\":\"not_started\"", record);
+            Assert.DoesNotContain("NEVER STARTED", record);
+            Assert.Contains("already started", record);
+        }
+
+        [Fact]
+        public void Interrupted_continuation_records_its_snapshot_before_finish()
+        {
+            AsyncWork w = QueueOne("partial");
+            w.Record.MarkRunning();
+            w.HasStarted = true;
+            w.PartialResultJson = "{\"result\":\"partial\",\"valid\":true,\"observed\":2}";
+
+            AsyncPump.Pump(new FakeRaiser(RaiseOutcome.Denied));
+
+            string record = Text(w);
+            Assert.Contains("\\\"observed\\\":2", record);
+            Assert.Contains("\\\"valid\\\":false", record);
+            Assert.Contains("document could not be revalidated", record);
+            Assert.True(record.IndexOf("\"event\":\"result\"") < record.IndexOf("\"event\":\"finish\""));
+            Assert.Contains("partial snapshot", record);
+        }
+
+        [Fact]
+        public void Cancelled_continuation_keeps_revit_observations_with_its_snapshot()
+        {
+            AsyncWork w = QueueOne("partial-observations");
+            w.Record.MarkRunning();
+            w.HasStarted = true;
+            w.PartialResultJson = "{\"result\":\"partial\",\"valid\":true}";
+            w.PartialRevitSaidJson = "{\"observation_complete\":false,\"warnings\":1}";
+
+            w.FinishCancelledWhileWaiting("Cancelled after starting.");
+
+            var result = File.ReadAllLines(w.Record.Path)
+                .Select(Newtonsoft.Json.Linq.JObject.Parse)
+                .Single(e => (string)e["event"] == "result");
+            Assert.False((bool)result["revit_said"]["observation_complete"]);
+            Assert.Equal(1, (int)result["revit_said"]["warnings"]);
+            Assert.False((bool)Newtonsoft.Json.Linq.JObject.Parse((string)result["payload"])["valid"]);
+        }
+
+        
+
+        
+
+        [Fact]
+        public void Cancellation_accepted_at_last_slice_is_visible_at_terminal_decision()
+        {
+            AsyncWork work = QueueOne("cancel-at-terminal");
+            work.CooperativeCancellation = true;
+            Assert.Same(work, AsyncQueue.Take());
+            work.Record.MarkRunning();
+            work.HasStarted = true;
+            work.PartialResultJson = "{\"result\":\"partial\",\"valid\":true,\"observed\":2}";
+            Assert.True(AsyncQueue.CancelWaiting(work.JobId).Requested);
+            Assert.True(AsyncQueue.CompleteCooperative(work));
+            work.FinishInterrupted("cancelled_after_start", "Cancellation requested.");
+            var events = File.ReadAllLines(work.Record.Path).Select(Newtonsoft.Json.Linq.JObject.Parse).ToList();
+            var partial = Newtonsoft.Json.Linq.JObject.Parse((string)events.Single(e => (string)e["event"] == "result")["payload"]);
+            Assert.Equal(2, (int)partial["observed"]);
+            Assert.Equal("cancelled_after_start", (string)events.Last()["status"]);
+        }
+
+        [Fact]
+        public void Detached_synchronous_request_receives_queued_cancellation_and_partial()
+        {
+            var gate = new RequestGate();
+            var request = gate.Begin("sync-wire", "horizun_clash", "{}", out _);
+            Assert.Same(request, gate.Take());
+            AsyncWork work = QueueOne("sync-work");
+            work.CooperativeCancellation = true;
+            work.SyncRequest = request;
+            work.OnInterrupted = (status, reason) =>
+            {
+                request.Result = CommandResult.FailWithDetail(reason,
+                    new Newtonsoft.Json.Linq.JObject { ["partial_result"] = Newtonsoft.Json.Linq.JObject.Parse(work.PartialResultJson) });
+                gate.Complete(request);
+            };
+            Action cancel = () =>
+            {
+                work.RequestCancellation();
+                var removed = AsyncQueue.CancelWaiting(work.JobId);
+                removed.Work?.FinishCancelledWhileWaiting("cancelled");
+            };
+            Assert.True(gate.PrepareDetach(request, cancel));
+            Assert.True(gate.Detach(request, cancel));
+            Assert.Same(work, AsyncQueue.Take());
+            work.HasStarted = true;
+            work.PartialResultJson = "{\"result\":\"partial\",\"valid\":true,\"observed\":3}";
+            Assert.True(AsyncQueue.TryRequeueContinuation(work, out _));
+            Assert.False(gate.CancelQueued("sync-wire", out string state));
+            Assert.Equal("cancel_requested", state);
+            Assert.True(request.Wait(0));
+            Assert.False(request.Result.Success);
+            Assert.Equal(3, (int)request.Result.Detail["partial_result"]["observed"]);
+            Assert.False((bool)request.Result.Detail["partial_result"]["valid"]);
+        }
+
+        [Fact]
+        public void A_guard_refusing_a_later_callback_preserves_the_partial_result()
+        {
+            AsyncWork w = QueueOne("guard-refusal");
+            w.Record.MarkRunning();
+            w.HasStarted = true;
+            w.PartialResultJson = "{\"result\":\"partial\",\"valid\":true}";
+
+            w.FinishBeforeCallback("The document changed between callbacks.");
+
+            string record = Text(w);
+            Assert.Contains("\\\"valid\\\":false", record);
+            Assert.Contains("\\\"invalid_reason\\\":\\\"The document changed between callbacks.\\\"", record);
+            Assert.Contains("\"status\":\"failed\"", record);
+            Assert.Contains("document changed", record);
+            Assert.DoesNotContain("\"status\":\"not_started\"", record);
+            Assert.True(record.IndexOf("\"event\":\"result\"") < record.IndexOf("\"event\":\"finish\""));
+        }
+
+        [Fact]
+        public void Cancelling_a_waiting_continuation_does_not_assert_snapshot_is_still_valid()
+        {
+            AsyncWork w = QueueOne("cancel-waiting-snapshot");
+            w.Record.MarkRunning();
+            w.HasStarted = true;
+            w.PartialResultJson = "{\"result\":\"partial\",\"valid\":true,\"observed\":2}";
+            Assert.Same(w, AsyncQueue.CancelWaiting(w.JobId).Work);
+
+            w.FinishCancelledWhileWaiting("Cancelled after starting.");
+
+            string record = Text(w);
+            Assert.Contains("\\\"observed\\\":2", record);
+            Assert.Contains("\\\"valid\\\":false", record);
+            Assert.Contains("document state could not be revalidated", record);
+            Assert.Contains("\"status\":\"cancelled_after_start\"", record);
+        }
+
+        [Fact]
+        public void A_guard_refusing_the_first_callback_keeps_the_never_started_verdict()
+        {
+            AsyncWork w = QueueOne("first-guard-refusal");
+            w.FinishBeforeCallback("The target document is unavailable.");
+            string record = Text(w);
+            Assert.Contains("\"status\":\"not_started\"", record);
+            Assert.DoesNotContain("\"event\":\"running\"", record);
+            Assert.DoesNotContain("\"event\":\"result\"", record);
+        }
+
+        [Fact]
+        public void Shutdown_after_a_slice_does_not_claim_the_job_never_ran()
+        {
+            AsyncWork w = QueueOne("continuation");
+            w.Record.MarkRunning();
+            w.HasStarted = true;
+
+            AsyncPump.DrainForShutdown();
+
+            string record = Text(w);
+            Assert.Contains("\"status\":\"failed\"", record);
+            Assert.DoesNotContain("\"status\":\"not_started\"", record);
+            Assert.DoesNotContain("NEVER RAN", record);
+            Assert.Contains("already started", record);
         }
 
         [Fact]
@@ -391,7 +567,7 @@ namespace Horizun.Core.Tests
         [Fact]
         public void No_raise_result_is_discarded()
         {
-            string dispatcher = File.ReadAllText(RepoFile("Core", "Dispatcher.cs"));
+            string dispatcher = DispatcherWithExternalEvents();
 
             var discarded = new List<string>();
             string[] lines = dispatcher.Split('\n');
@@ -415,6 +591,7 @@ namespace Horizun.Core.Tests
         public void Both_completion_sites_pump_the_shared_sync_and_async_scheduler()
         {
             string dispatcher = File.ReadAllText(RepoFile("Core", "Dispatcher.cs"));
+            string events = File.ReadAllText(RepoFile("Core", "Dispatcher.ExternalEvents.cs"));
 
             // Two places finish work on the UI thread and may leave the queue non-empty:
             // the end of a caller's command, and the end of a queued job. Both have to
@@ -423,14 +600,14 @@ namespace Horizun.Core.Tests
             int pumps = System.Text.RegularExpressions.Regex.Matches(dispatcher, @"PumpNext\(\);").Count;
             Assert.True(pumps >= 2,
                 "expected the shared pump at both the command-completion and async-completion sites, found " + pumps);
-            Assert.Contains("_gate.HasPending", dispatcher);
-            Assert.Contains("AsyncQueue.Count", dispatcher);
+            Assert.Contains("_gate.HasPending", events);
+            Assert.Contains("AsyncQueue.Count", events);
         }
 
         [Fact]
         public void Every_background_raise_uses_the_bounded_denied_retry_policy()
         {
-            string dispatcher = File.ReadAllText(RepoFile("Core", "Dispatcher.cs"));
+            string dispatcher = DispatcherWithExternalEvents();
 
             Assert.Contains("RaiseRetryPolicy.TrySchedule", dispatcher);
             Assert.Contains("RaiseWithBoundedRetry", dispatcher);
@@ -439,6 +616,10 @@ namespace Horizun.Core.Tests
             Assert.DoesNotContain("try { raised = Raiser().Raise(); }", dispatcher);
             Assert.DoesNotContain("try { outcome = Raiser().Raise(); }", dispatcher);
         }
+
+        private static string DispatcherWithExternalEvents() =>
+            File.ReadAllText(RepoFile("Core", "Dispatcher.cs")) + "\n" +
+            File.ReadAllText(RepoFile("Core", "Dispatcher.ExternalEvents.cs"));
     }
 
     /// <summary>

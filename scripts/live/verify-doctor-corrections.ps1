@@ -18,7 +18,7 @@
 
     IT REFUSES TO WAIT FOR A MODEL TO CONTAIN THE DEFECTS. It BUILDS them - four
     orphan group types, an unplaced room, a view with no template, two view
-    templates - and makes the link defects with the typed link commands, so a
+    templates - and makes the link defects (an unpinned and an unloaded link), so a
     green run means the recipes work rather than that today's model happened to
     be broken in the right places.
 
@@ -354,7 +354,7 @@ else {
     $script:Fixture.route['group_types'] = 'execute_python (no typed command creates a group type)'
     $script:Fixture.route['unplaced_room'] = 'execute_python (no typed command creates a room without a location)'
     $script:Fixture.route['view_template'] = 'execute_python (no typed command mints or clears a view template)'
-    $script:Fixture.route['link_defects'] = 'horizun_manage_links unpin/unload (typed)'
+    $script:Fixture.route['link_defects'] = 'horizun_transform_elements unpin (typed), unload through execute_python'
     Add-HzProbe -Run $run -Id 'D0.1' -Name 'the defects this campaign corrects are built' `
         -Expected 'at least two orphan group types, one unplaced room, one bare view and one usable template' `
         -Observed ("status={0} group_types={1} room={2} view={3} template={4} wrong_template={5}" -f
@@ -447,12 +447,51 @@ else {
 }
 $run.Fixture['link_fixture'] = $linkStage
 
-$linksList = Invoke-HzTool -Run $run -Tool 'horizun_manage_links' -Label 'links-list' -TimeoutSec 300 `
-    -Arguments @{ operation = 'list'; target_document = $Document }
-$linkTypes = @()
-if (-not $linksList.IsError) {
-    foreach ($row in @(Get-HzPath $linksList.Result 'links')) { if ($null -ne $row) { $linkTypes += $row } }
+# THE LINKS, AND THE TWO LINK DEFECTS, THROUGH execute_python: this edition has no
+# typed command that lists, unloads or reloads a link type (the PIN goes through
+# horizun_transform_elements). The fixture set-up is self-reported; every verdict
+# below is still judged by re-auditing.
+$linkListPy = @"
+from Autodesk.Revit.DB import FilteredElementCollector, RevitLinkInstance, RevitLinkType
+def eid(x):
+    return None if x is None else (x.IntegerValue if hasattr(x, 'IntegerValue') else int(x.Value))
+rows = []
+for t in FilteredElementCollector(doc).OfClass(RevitLinkType).ToElements():
+    insts = [i for i in FilteredElementCollector(doc).OfClass(RevitLinkInstance).ToElements() if eid(i.GetTypeId()) == eid(t.Id)]
+    rows.append({'link_type_id': eid(t.Id), 'status': str(t.GetLinkedFileStatus()),
+                 'instances': [{'instance_id': eid(i.Id), 'pinned': bool(i.Pinned)} for i in insts]})
+__output__ = {'status': 'self_reported_verified', 'links': rows}
+"@
+function Get-HzLinkRows([string]$Label) {
+    $call = Invoke-HzTool -Run $run -Tool 'horizun_execute_python' -Label $Label -TimeoutSec 300 `
+        -Arguments @{ code = $linkListPy; target_document = $Document; idempotency_key = (New-HzKey $run $Label) }
+    if (-not $call.Ok) { return }
+    $out = Get-HzProp $call.Result 'output'
+    if (-not $out) { $out = Get-HzProp $call.Result '__output__' }
+    return @(Get-HzProp $out 'links' | Where-Object { $null -ne $_ })
 }
+function Invoke-HzLinkUnload($TypeId, [string]$Label) {
+    $py = @"
+from Autodesk.Revit.DB import ElementId
+t = doc.GetElement(ElementId($TypeId))
+out = {'status': 'failed', 'link_type_id': $TypeId}
+try:
+    t.Unload(None)
+    out['link_status'] = str(t.GetLinkedFileStatus())
+    if out['link_status'] in ('Unloaded', 'LocallyUnloaded'):
+        out['status'] = 'self_reported_verified'
+except Exception as ex:
+    out['why'] = str(ex)
+__output__ = out
+"@
+    $call = Invoke-HzTool -Run $run -Tool 'horizun_execute_python' -Label $Label -TimeoutSec 300 `
+        -Arguments @{ code = $py; target_document = $Document; idempotency_key = (New-HzKey $run $Label) }
+    $out = if ($call.Ok) { Get-HzProp $call.Result 'output' } else { $null }
+    if ($call.Ok -and -not $out) { $out = Get-HzProp $call.Result '__output__' }
+    [pscustomobject]@{ Ok = ($call.Ok -and [string](Get-HzProp $out 'status') -eq 'self_reported_verified'); Text = $call.Text }
+}
+
+$linkTypes = @(Get-HzLinkRows 'links-list')
 $linkInstanceIds = @()
 foreach ($row in $linkTypes) {
     foreach ($instance in @(Get-HzProp $row 'instances')) {
@@ -1140,7 +1179,7 @@ Write-Host '  PHASE 10 - links: pin, and reload' -ForegroundColor Cyan
 
 if ($linkInstanceIds.Count -eq 0) {
     Add-HzFixtureMissing -Id 'D10.1' -Name 'the unpinned-link recipe pins a link' `
-        -Needs ("a Revit link in '{0}'. No typed command LINKS a model in this build - horizun_manage_links says so by name - so the fixture cannot create one: put a .rvt link into the disposable copy before running. A link is another file and cannot be simulated." -f $Document)
+        -Needs ("a Revit link in '{0}'. No typed command LINKS a model in this build, so the fixture cannot create one: put a .rvt link into the disposable copy before running. A link is another file and cannot be simulated." -f $Document)
     Add-HzFixtureMissing -Id 'D10.2' -Name 'the pin applies and the re-audit reports corrected' -Needs 'the same link fixture as D10.1.'
     Add-HzFixtureMissing -Id 'D10.3' -Name 'the link really is pinned afterwards' -Needs 'the same link fixture as D10.1.'
     Add-HzFixtureMissing -Id 'D10.4' -Name 'the reload recipe selects only the UNLOADED link types' -Needs 'the same link fixture as D10.1.'
@@ -1151,8 +1190,8 @@ else {
     $instanceId = $null
     foreach ($candidate in $linkInstanceIds) {
         if ($candidate.Pinned -eq $true) {
-            $unpin = Invoke-HzWrite -Run $run -Tool 'horizun_manage_links' -Label 'unpin-fixture' -AllowRefusal -Arguments @{
-                target_document = $Document; operation = 'unpin'; link_instance_id = $candidate.InstanceId
+            $unpin = Invoke-HzWrite -Run $run -Tool 'horizun_transform_elements' -Label 'unpin-fixture' -AllowRefusal -Arguments @{
+                target_document = $Document; operation = 'unpin'; element_ids = @($candidate.InstanceId)
             }
             if (-not $unpin.Ok) { continue }
         }
@@ -1213,7 +1252,7 @@ else {
     # an Unloaded one may be reloaded; a NotFound one needs a path, which is a
     # decision nobody supplied.
     # TRY EVERY LINK TYPE, not just the first. A link whose file is not on disk
-    # unloads to NotFound, and horizun_manage_links refuses to call that a
+    # unloads to NotFound, and the unload below refuses to call that a
     # successful unload - correctly, and the harness then reported the whole case
     # as fixture_missing because ONE link happened to be broken. A model with a
     # broken link and a sound one has the fixture; it just was not the first.
@@ -1227,10 +1266,8 @@ else {
         $typeId = $candidateLink.TypeId
         if ($triedTypes -contains $typeId) { continue }
         $triedTypes += $typeId
-        $attempt = Invoke-HzWrite -Run $run -Tool 'horizun_manage_links' -Label ("unload-fixture-$typeId") -AllowRefusal -Arguments @{
-            target_document = $Document; operation = 'unload'; link_type_id = $typeId
-        }
-        $attemptText = if ($null -ne $attempt.Apply) { $attempt.Apply.Text } else { $attempt.Dry.Text }
+        $attempt = Invoke-HzLinkUnload $typeId ("unload-fixture-$typeId")
+        $attemptText = $attempt.Text
         $unloadAttempts += ("type {0}: {1}" -f $typeId, (Limit-HzText $attemptText 160))
         $state = Measure-HzCheck -Check 'links' -Label ("audit-links-$typeId")
         $listed = $false
@@ -1313,10 +1350,8 @@ else {
             # from the model rather than from the reply. A type is reloaded once
             # however many times it is placed, and the re-audit judges the TYPE:
             # this is the check that the instances came back with it.
-            $afterList = Invoke-HzTool -Run $run -Tool 'horizun_manage_links' -Label 'links-after-reload' `
-                -TimeoutSec 300 -Arguments @{ operation = 'list'; target_document = $Document }
             $afterRow = $null
-            foreach ($row in @(Get-HzPath $afterList.Result 'links')) {
+            foreach ($row in @(Get-HzLinkRows 'links-after-reload')) {
                 if ($null -ne $row -and [long](Get-HzProp $row 'link_type_id') -eq [long]$typeId) { $afterRow = $row }
             }
             $instancesBefore = @($linkInstanceIds | Where-Object { $_.TypeId -eq [long]$typeId }).Count
@@ -1338,9 +1373,7 @@ else {
             $secondType = $null
             foreach ($candidateLink in $linkInstanceIds) {
                 if ([long]$candidateLink.TypeId -eq [long]$typeId) { continue }
-                $try = Invoke-HzWrite -Run $run -Tool 'horizun_manage_links' -Label ("unload-second-$($candidateLink.TypeId)") `
-                    -AllowRefusal -Arguments @{
-                        target_document = $Document; operation = 'unload'; link_type_id = $candidateLink.TypeId }
+                $try = Invoke-HzLinkUnload $candidateLink.TypeId ("unload-second-$($candidateLink.TypeId)")
                 if ($try.Ok) { $secondType = [long]$candidateLink.TypeId; break }
             }
             if ($null -eq $secondType) {
@@ -1351,8 +1384,7 @@ else {
             else {
                 # Unload the first one again, so both are unloaded, and then name
                 # only ONE of them in the correction.
-                $null = Invoke-HzWrite -Run $run -Tool 'horizun_manage_links' -Label 'unload-again-first' -AllowRefusal `
-                    -Arguments @{ target_document = $Document; operation = 'unload'; link_type_id = $typeId }
+                $null = Invoke-HzLinkUnload $typeId 'unload-again-first'
                 $bothState = Measure-HzCheck -Check 'links' -Label 'audit-two-unloaded'
                 $narrow = Invoke-HzCorrections -SetFingerprint $bothState.SetFingerprint -DryRun $true `
                     -Label 'reload-one-of-two-rehearse' `

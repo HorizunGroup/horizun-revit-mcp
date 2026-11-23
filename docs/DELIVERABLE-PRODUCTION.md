@@ -111,6 +111,11 @@ Exported PDFs are reopened with pinned
 counts and page geometry are inspected. `emit_manifest=true` writes and rereads
 `output_path.manifest.json` with SHA256, source views and revision IDs.
 
+When paper and fit are implicit and both page dimensions change proportionally,
+`page_to_sheet_dimension_ratio` compares the PDF page with the source sheet
+outline. It measures paper geometry only. Content overflow and composition
+remain unverified, including when the page matches the titleblock or is smaller.
+
 The source/page association records the export invocation, not independent
 semantic recognition of the printed page. File/page verification does not
 certify legibility or drawing completeness. Export/verification failures report

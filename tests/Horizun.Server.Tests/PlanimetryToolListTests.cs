@@ -81,9 +81,11 @@ namespace Horizun.Server.Tests
                 JObject query = Entry("horizun_query_planimetry");
                 string[] modes = query["inputSchema"]["properties"]["mode"]["enum"]
                     .Select(t => (string)t).ToArray();
-                Assert.Equal(6, modes.Length);
+                Assert.Equal(16, modes.Length);
+                Assert.Contains("unplaced_views", modes);
                 Assert.Contains("inventory", modes);
                 Assert.Contains("references", modes);
+                Assert.Contains("annotation_overlaps", modes);
 
                 JObject audit = Entry("horizun_audit_planimetry");
                 Assert.NotNull(audit["inputSchema"]["properties"]["requirement_set"]);

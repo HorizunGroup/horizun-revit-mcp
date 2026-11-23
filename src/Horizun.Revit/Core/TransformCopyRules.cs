@@ -18,6 +18,11 @@ namespace Horizun.Revit.Core
 {
     public static class TransformCopyRules
     {
+        public static bool KnownOwnedDependent(string className) =>
+            className == "Opening" || className == "Sketch" || className == "SketchPlane" ||
+            className == "ModelLine" || className == "ModelArc" || className == "ModelCurve" ||
+            className == "MechanicalSystem" || className == "PipingSystem" || className == "ElectricalSystem";
+
         /// <summary>
         /// Split the created elements that are not matched copies into dependents (hosted,
         /// transitively, on a copy) and unexplained ones.

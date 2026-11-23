@@ -397,12 +397,19 @@ if (-not $SkipLive -and $problems.Count -eq 0) {
         Check 'live verification helper exists' $false $call
     }
     else {
+        # hz-call runs in this process, not in a second powershell.exe started with a
+        # bypassed policy: that chain is what an antivirus behaviour engine flags.
+        # Its `exit N` comes back as $LASTEXITCODE; a throw is exit 1.
+        function Invoke-HorizunCall([hashtable]$Arguments) {
+            $global:LASTEXITCODE = 0
+            try { & $call @Arguments | Out-Host }
+            catch { Write-Warning "hz-call.ps1: $($_.Exception.Message)"; return 1 }
+            return [int]$LASTEXITCODE
+        }
         $targetJson = Join-Path ([IO.Path]::GetTempPath()) ('horizun-target-' + [guid]::NewGuid().ToString('N') + '.json')
         $healthJson = Join-Path ([IO.Path]::GetTempPath()) ('horizun-health-' + [guid]::NewGuid().ToString('N') + '.json')
         try {
-            & powershell -NoProfile -ExecutionPolicy Bypass -File $call -Tool horizun_target `
-                -Server $ServerPath -TimeoutSec 30 -Quiet -Json $targetJson
-            $targetExit = $LASTEXITCODE
+            $targetExit = Invoke-HorizunCall @{ Tool = 'horizun_target'; Server = $ServerPath; TimeoutSec = 30; Quiet = $true; Json = $targetJson }
             $target = if (Test-Path -LiteralPath $targetJson) { Get-Content -LiteralPath $targetJson -Raw | ConvertFrom-Json } else { $null }
             $found = if ($target -and $target.result) { [int]$target.result.targets_found } else { 0 }
             if ($targetExit -ne 0) {
@@ -418,9 +425,7 @@ if (-not $SkipLive -and $problems.Count -eq 0) {
                 }
             }
             else {
-                & powershell -NoProfile -ExecutionPolicy Bypass -File $call -Tool horizun_health `
-                    -Server $ServerPath -TimeoutSec 120 -Quiet -Json $healthJson
-                $healthExit = $LASTEXITCODE
+                $healthExit = Invoke-HorizunCall @{ Tool = 'horizun_health'; Server = $ServerPath; TimeoutSec = 120; Quiet = $true; Json = $healthJson }
                 $healthReply = if (Test-Path -LiteralPath $healthJson) { Get-Content -LiteralPath $healthJson -Raw | ConvertFrom-Json } else { $null }
                 $health = if ($healthReply) { $healthReply.result } else { $null }
                 Check 'horizun_health answers through the installed server' ($healthExit -eq 0 -and $null -ne $health) `

@@ -61,6 +61,12 @@ namespace Horizun.Revit.Commands
                     "before anything else runs against it.");
             }
 
+            return Release(app, doc, null);
+        }
+
+        /// <summary>The release and its two censuses, shared by this tool and save_document.</summary>
+        internal static CommandResult Release(UIApplication app, Document doc, string operation)
+        {
             string me = app.Application.Username;
             int? ownedBefore = CountWorksetsOwnedBy(doc, me);
             ElementOwnershipCensus elementsBefore = CountElementsOwnedByCurrentUser(doc);
@@ -106,6 +112,7 @@ namespace Horizun.Revit.Commands
 
             return CommandResult.Ok(new
             {
+                operation,
                 relinquish_attempted = true,
                 relinquished = complete == true,
                 document = doc.Title,
@@ -142,6 +149,84 @@ namespace Horizun.Revit.Commands
                     : "This did not synchronize with central and did not save. Complete ownership release was NOT " +
                       "verified; your changes are wherever they already were."
             });
+        }
+
+        internal static JObject ExitOwnership(Document doc)
+        {
+            int? worksets = CountWorksetsOwnedBy(doc, doc.Application.Username);
+            var elements = CountElementsOwnedByCurrentUser(doc);
+            return new JObject { ["owned_worksets"] = worksets, ["owned_elements"] = elements.Owned,
+                ["unreadable_elements"] = elements.Unreadable,
+                ["warning"] = !worksets.HasValue || worksets > 0 || elements.Owned > 0 || !elements.Complete
+                    ? "Closing may leave borrowed elements/worksets. Relinquish before exit; exit does not synchronize." : null };
+        }
+
+        /// <summary>
+        /// horizun_save_document operation=relinquish_own: the same release and the same
+        /// before/after census as this command, behind a rehearsal. dry_run (the default)
+        /// lists what this user owns - the worksets by name, the elements by count and a
+        /// sample of ids - and issues a single-use token bound to that census; the apply
+        /// refuses when the ownership moved since. Only what THIS user owns is ever
+        /// released: RelinquishOwnership has no way to touch another user's checkout.
+        /// </summary>
+        internal static CommandResult RelinquishOwn(UIApplication app, GateResult gate, JObject req)
+        {
+            Document doc = gate.Document;
+            bool? workshared = null;
+            try { workshared = doc.IsWorkshared; } catch { }
+            if (workshared != true)
+                return CommandResult.Fail("operation=relinquish_own: '" + doc.Title + "' is not workshared (or its " +
+                    "worksharing state could not be read), so nothing can be owned or relinquished in it. Nothing ran.");
+
+            string me = app.Application.Username;
+            List<string> ownedWorksets = WorksetsOwnedBy(doc, me);
+            ElementOwnershipCensus census = CountElementsOwnedByCurrentUser(doc);
+            var preview = new JObject
+            {
+                ["user"] = me,
+                ["owned_worksets"] = ownedWorksets == null ? null : new JArray(ownedWorksets),
+                ["owned_elements"] = census.Owned,
+                ["owned_elements_sample"] = new JArray(census.OwnedSample),
+                ["elements_unreadable"] = census.Unreadable
+            };
+            string planHash = DocumentGate.PlanHash(preview, "user", "owned_worksets", "owned_elements",
+                                                    "owned_elements_sample", "elements_unreadable");
+            const string scope = "horizun_save_document:relinquish_own";
+            bool dryRun = req.Value<bool?>("dry_run") ?? true;
+            if (dryRun)
+            {
+                Confirmation issued = DocumentGate.Confirmations.Issue(scope, gate.Fingerprint, planHash);
+                preview["operation"] = "relinquish_own";
+                preview["dry_run"] = true;
+                preview["document"] = doc.Title;
+                preview["would_release"] = ownedWorksets == null
+                    ? "UNKNOWN: the worksets could not be read."
+                    : ownedWorksets.Count + " workset(s) and " + census.Owned + " element(s) owned by '" + me + "'" +
+                      (census.Unreadable > 0 ? "; " + census.Unreadable + " element(s) could not be read" : "") + ".";
+                preview["does_not"] = "Does not synchronize, does not save, and never touches another user's checkout.";
+                preview["confirmation_token"] = issued.Token;
+                preview["confirmation_expires_utc"] = issued.ExpiresUtc.ToString("u");
+                return CommandResult.Ok(preview);
+            }
+            ConfirmationCheck check = DocumentGate.Confirmations.Validate(req.Value<string>("confirmation_token"),
+                                                                          scope, gate.Fingerprint, planHash);
+            if (!check.Ok)
+                return CommandResult.Fail("REFUSING TO RELINQUISH in '" + doc.Title + "': " + check.Message +
+                    " Run operation=relinquish_own with dry_run=true again. Nothing was released.");
+            return Release(app, doc, "relinquish_own");
+        }
+
+        private static List<string> WorksetsOwnedBy(Document doc, string user)
+        {
+            try
+            {
+                var names = new List<string>();
+                foreach (Workset w in new FilteredWorksetCollector(doc))
+                    if (w != null && string.Equals(w.Owner, user, StringComparison.OrdinalIgnoreCase)) names.Add(w.Name);
+                names.Sort(StringComparer.Ordinal);
+                return names;
+            }
+            catch { return null; }
         }
 
         /// <summary>Worksets owned by the given user, or null when the count cannot be taken at all.</summary>

@@ -11,11 +11,11 @@
 //     apply. The reply grows a plan_resolved block and a sentence promising the
 //     token is bound to those elements, and nothing checks it. That is worse than
 //     not wiring the command at all, because the promise is now false in writing.
-//   * Somebody deletes the disclosure sentence in DocumentGate while commands are
+//   * Somebody deletes the disclosure in the confirmation response while commands are
 //     still unwired. Then eleven commands stop admitting the limit, and a caller
 //     reads a guarantee that was never there.
 //
-// These tests read the SOURCE, because that is where the mistake would be made. It
+// The wiring tests read the SOURCE, because that is where the mistake would be made. It
 // is a coarse instrument - it matches text, not behaviour - and it is deliberately
 // coarse: it has to keep working for the eleven commands that have no test harness
 // of their own, since they cannot be instantiated without Revit.
@@ -25,6 +25,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using Horizun.Revit.Core;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Horizun.Core.Tests
@@ -119,12 +121,14 @@ namespace Horizun.Core.Tests
                 .ToList();
             if (unwired.Count == 0) return;   // fully wired: the disclosure may go
 
-            string gate = File.ReadAllText(Path.Combine(
-                RepoRoot(), "src", "Horizun.Revit", "Core", "DocumentGate.cs"));
-            Assert.Contains("bound to the REQUEST, not to the resolved element set", gate);
-            // Asserted separately: in the source the sentence is split across a line break
-            // by string concatenation, so the joined phrase does not appear in the file.
-            Assert.Contains("materialise its plan yet", gate);
+            var reply = new JObject();
+            new ConfirmationStore().StampResponse(reply, new DocIdentity { Title = "model" },
+                "command_without_resolved_plan", "request_hash", issueToken: true, plan: null);
+            string note = (string)reply["confirmation_note"];
+            Assert.Contains("bound to the REQUEST, not to the resolved element set", note);
+            Assert.Contains("materialise its plan yet", note);
+            Assert.False(string.IsNullOrEmpty((string)reply["confirmation_token"]));
+            Assert.Null(reply["plan_resolved"]);
         }
     }
 }

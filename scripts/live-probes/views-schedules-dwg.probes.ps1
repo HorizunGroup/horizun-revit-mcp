@@ -279,10 +279,14 @@ $script:HzProbeModules += [pscustomobject]@{
         else { Out-Case 10 'unverified' 'no setup to write into' }
 
         if ($setupId -and $dup) {
+            # The fixture's views show loaded RVT links, which Revit writes as companion xref files:
+            # dwg_xrefs='bound' keeps the drawing one self-contained file, the count these cases assert.
             $dwg = Join-Path $Ctx.ScratchRoot "hz-vg-$tag.dwg"
-            $d3 = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg'; output_path = $dwg; view_ids = @($dup); dwg_setup = @{ name = $setup } } 'vg-dwg-export'
-            if ((Applied $d3) -and [int]$d3.answer.data.files_verified -ge 1 -and (Test-Path -LiteralPath $dwg)) {
-                Out-Case 11 'pass' ("{0} bytes exported with setup {1}" -f (Get-Item -LiteralPath $dwg).Length, $setup)
+            $d3 = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg'; output_path = $dwg; view_ids = @($dup); dwg_setup = @{ name = $setup }; dwg_xrefs = 'bound' } 'vg-dwg-export'
+            # The produced file is the one the reply names (file_naming may add an ordinal), not output_path.
+            $dwgOut = if (Applied $d3) { [string](@($d3.answer.data.files) | Select-Object -First 1).file } else { $null }
+            if ((Applied $d3) -and [int]$d3.answer.data.files_verified -ge 1 -and $dwgOut -and (Test-Path -LiteralPath $dwgOut)) {
+                Out-Case 11 'pass' ("{0} bytes exported with setup {1} to {2}" -f (Get-Item -LiteralPath $dwgOut).Length, $setup, $dwgOut)
             }
             else { Out-Case 11 'fail' (Short $d3.answer) }
 
@@ -290,7 +294,7 @@ $script:HzProbeModules += [pscustomobject]@{
             # ---- never folded into a bare "at least one matching file" count --------
             if (Applied $d3) {
                 $d4 = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg'; output_path = $dwg
-                        view_ids = @($dup); dwg_setup = @{ name = $setup }; overwrite = $true } 'vg-dwg-reexport'
+                        view_ids = @($dup); dwg_setup = @{ name = $setup }; dwg_xrefs = 'bound'; overwrite = $true } 'vg-dwg-reexport'
                 if ((Applied $d4) -and [int]$d4.answer.data.files_verified -eq 1) {
                     Out-Case 15 'pass' ("re-export with overwrite=true still measured exactly 1 produced file (was {0} before)" -f $d4.answer.data.files_verified)
                 }

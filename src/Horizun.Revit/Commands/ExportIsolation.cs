@@ -110,7 +110,7 @@ namespace Horizun.Revit.Commands
             try
             {
                 Element e = Rid.CanRepresent(id) ? _doc.GetElement(Rid.Make(id)) : null;
-                if (e != null) { row["category"] = e.Category?.Name; row["class"] = e.GetType().Name; row["name"] = e.Name; }
+                if (e != null) { row["category"] = e.Category?.Name; row["built_in_category"] = CategoryKey.Of(e); row["class"] = e.GetType().Name; row["name"] = e.Name; }
             }
             catch { }
             return row;

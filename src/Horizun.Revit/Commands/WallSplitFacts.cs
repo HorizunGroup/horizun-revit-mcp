@@ -527,7 +527,7 @@ namespace Horizun.Revit.Commands
             {
                 subject.Rejection = new WallSplitRejection(WallSplitCodes.UnsupportedCurve,
                     "the wall's exterior shell face and Wall.Orientation disagree about which side is outside " +
-                    "(agreement " + subject.NormalAgreement.ToString("F3") + "). Every layer offset is measured " +
+                    "(agreement " + subject.NormalAgreement.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) + "). Every layer offset is measured " +
                     "along that direction, and it is measured along the SAME direction afterwards - so a wrong " +
                     "answer here would build the wall inside-out and verify it as correct. Refused instead.");
                 return subject;
@@ -555,8 +555,8 @@ namespace Horizun.Revit.Commands
                     {
                         subject.Rejection = new WallSplitRejection(WallSplitCodes.DegenerateLayerRadius,
                             "layer " + layer.LayerNumberText + " (" + layer.MaterialName + ") would need radius " +
-                            WallLayerRules.FeetToMm(radius).ToString("F1") + " mm on an arc of radius " +
-                            WallLayerRules.FeetToMm(arc.Radius).ToString("F1") + " mm - it would collapse through " +
+                            WallLayerRules.FeetToMm(radius).ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " mm on an arc of radius " +
+                            WallLayerRules.FeetToMm(arc.Radius).ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " mm - it would collapse through " +
                             "the centre. Refused; nothing was written.");
                         return subject;
                     }

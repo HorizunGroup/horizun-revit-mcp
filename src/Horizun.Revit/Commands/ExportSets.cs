@@ -103,8 +103,43 @@ namespace Horizun.Revit.Commands
             return result;
         }
 
+        private static Dictionary<string, ExportFileStamp> SnapshotDwgImages(string folder, string target)
+        {
+            var result = new Dictionary<string, ExportFileStamp>(StringComparer.OrdinalIgnoreCase);
+            string[] found;
+            try { found = Directory.GetFiles(folder); } catch { return result; }
+            foreach (string file in found.Where(p => DwgCompanionRules.Kind(target, p) == "image"))
+            {
+                var stamp = new ExportFileStamp { Existed = true };
+                try
+                {
+                    var info = new FileInfo(file);
+                    stamp.Size = info.Length; stamp.Mtime = info.LastWriteTimeUtc.Ticks;
+                    stamp.Hash = FileHash(file); stamp.Readable = true;
+                }
+                catch { /* Keep existed=true; an unreadable old file is never called new. */ }
+                result[file] = stamp;
+            }
+            return result;
+        }
+
+        private static JObject ImageEvidence(string path)
+        {
+            var row = new JObject { ["path"] = path, ["role"] = "image" };
+            try
+            {
+                var info = new FileInfo(path);
+                row["bytes"] = info.Length;
+                row["last_write_utc"] = info.LastWriteTimeUtc.ToString("o");
+                row["header_verified"] = info.Length > 0 &&
+                    DwgCompanionRules.ValidImageHeader(path, ReadHeadBytes(path, 8));
+            }
+            catch (Exception ex) { row["header_verified"] = false; row["error"] = ex.Message; }
+            return row;
+        }
+
         // ---- D1/D4: DWG, DGN and DWFX view sets -------------------------------------
-        private CommandResult ExecuteViewSet(UIApplication app, GateResult gate, Document doc, JObject request, string format, string output)
+        private CommandResult ExecuteViewSet(UIApplication app, GateResult gate, Document doc, JObject request, string format, string output, List<JObject> assumptions)
         {
             CommandResult refused = RefuseFields(request, "a " + format + " view set (one container or preset names ONE file)",
                 "preset", "information_container", "delivery_id", "pdf_print", "pdf_combine", "emit_manifest", "schedule_id",
@@ -116,8 +151,10 @@ namespace Horizun.Revit.Commands
                 if (refused != null) return refused;
             }
             string folder = System.IO.Path.GetDirectoryName(output);
-            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
-                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly.");
+            var folderPlan = format == "dwg" ? new ExportDirectoryPlan(output, request.Value<bool?>("require_existing_folder") == true) : null;
+            bool folderMissing = folderPlan?.NeedsCreation == true;
+            if (folderPlan == null && (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)))
+                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly: create that folder first, or point output_path (the full path of the file to write) at a folder that exists. Nothing was written.");
             List<View> views = ReadViews(doc, request["view_ids"] as JArray, out string viewError);
             if (viewError != null) return CommandResult.Fail(viewError);
             if (views.Count == 0) return CommandResult.Fail(format + " requires one or more view_ids. Nothing was exported.");
@@ -154,7 +191,8 @@ namespace Horizun.Revit.Commands
             bool overwrite = request.Value<bool?>("overwrite") == true;
             // Each target's candidate files include what Revit writes beside it
             // (stem-*.dwg xrefs), so an overwrite=false approval refuses them too.
-            List<string> existing = targets.SelectMany(t => CandidateFiles(format, t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            List<string> existing = folderMissing ? new List<string>()
+                : targets.SelectMany(t => CandidateFiles(format, t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             if (!overwrite && existing.Count > 0)
                 return CommandResult.Fail("Output already exists and overwrite=false: " + string.Join(", ", existing));
 
@@ -162,8 +200,9 @@ namespace Horizun.Revit.Commands
             OperationGateResult gateDecision = OperationGate.Evaluate(app, doc, request["require_gate"], GatedOperation.Export, Name);
             if (gateDecision.Refusal != null) return gateDecision.Refusal;
             string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "overwrite", "dwg_setup",
-                "acad_version", "file_naming", "dwg_xrefs");
+                "acad_version", "file_naming", "dwg_xrefs", "require_existing_folder");
             ResolvedPlan resolvedPlan = NewPlan(app, gate, views, existing, overwrite);
+            resolvedPlan.ContextFingerprint += folderPlan?.Fingerprint;
             var viewRows = new JArray(views.Select((v, i) => new JObject
             {
                 ["id"] = Rid.Value(v.Id), ["name"] = SafePlanName(v), ["sheet_number"] = (v as ViewSheet)?.SheetNumber, ["file"] = targets[i]
@@ -198,13 +237,22 @@ namespace Horizun.Revit.Commands
                 DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(plan, gate, Name, planHash, true,
                     "the token binds format, destination, naming, options, the IDENTITY of every view and which destination files exist.");
+                if (folderMissing) assumptions.Add(folderPlan.Assumption(false));
                 return CommandResult.Ok(plan);
             }
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, resolvedPlan, null);
-            if (refusal != null) return refusal;
-            refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
+            CommandResult refusal = ExportDirectoryPlan.Apply(folderPlan,
+                () => DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, resolvedPlan, null),
+                () => DocumentGate.StillTheSame(app, gate.Fingerprint, Name), out JObject folderAssumption, out var directoryGuard);
+            using var exportDirectory = directoryGuard;
             if (refusal != null) return refusal;
 
+            assumptions.Add(folderAssumption);
+            if (folderMissing && !overwrite)
+            {
+                var conflicts = targets.SelectMany(t => CandidateFiles(format, t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                if (conflicts.Count > 0)
+                    return CommandResult.Fail("Output already exists and overwrite=false: " + string.Join(", ", conflicts));
+            }
             var files = new JArray();
             var failed = new List<string>();
             int verified = 0;
@@ -214,11 +262,16 @@ namespace Horizun.Revit.Commands
                 // One exporter call per view, and a snapshot around EACH call: whatever
                 // changed during call i belongs to view i, however the names overlap.
                 Dictionary<string, ExportFileStamp> before = SnapshotExtension(folder, extension, format, targets[i]);
+                Dictionary<string, ExportFileStamp> imageBefore = format == "dwg" ? SnapshotDwgImages(folder, targets[i]) : null;
                 bool accepted = false; string error = null;
                 try { accepted = ExportOneView(doc, format, folder, stems[i], views[i], dwgOptions); }
                 catch (Exception ex) { error = ex.Message; }
                 Dictionary<string, ExportFileStamp> after = SnapshotExtension(folder, extension, format, targets[i]);
+                Dictionary<string, ExportFileStamp> imageAfter = format == "dwg" ? SnapshotDwgImages(folder, targets[i]) : null;
                 (List<string> produced, List<string> unmeasured) = ExportFileDiff.Diff(before, after);
+                (List<string> images, List<string> imageUnmeasured) = format == "dwg"
+                    ? ExportFileDiff.Diff(imageBefore, imageAfter)
+                    : (new List<string>(), new List<string>());
                 bool mainProduced = produced.Contains(targets[i], StringComparer.OrdinalIgnoreCase);
                 JObject main = mainProduced ? FileEvidence(format, targets[i]) : null;
                 // Companions: unmerged, Revit writes a sheet's views AND a view's visible links as
@@ -233,15 +286,20 @@ namespace Horizun.Revit.Commands
                     CheckAcadVersion(evidence, acadWanted);
                     return evidence;
                 }));
+                foreach (string path in images) others.Add(ImageEvidence(path));
                 CheckAcadVersion(main, acadWanted);
                 // A file of this view's name family that the call left empty or unreadable is not a
                 // verified file either; one untouched since before the call is not this call's.
                 List<string> ownUnmeasured = unmeasured.Where(p => MatchesOutput(format, targets[i], p) && !Untouched(before, after, p)).ToList();
-                bool ok = main != null && Held(main) && others.All(o => Held((JObject)o) && o.Value<string>("role") == "xref") && ownUnmeasured.Count == 0;
+                ownUnmeasured.AddRange(imageUnmeasured.Where(p => !Untouched(imageBefore, imageAfter, p)));
+                bool ok = main != null && Held(main) && others.All(o => Held((JObject)o) &&
+                    (o.Value<string>("role") == "xref" || o.Value<string>("role") == "image")) && ownUnmeasured.Count == 0;
                 var row = new JObject
                 {
                     ["view_id"] = Rid.Value(views[i].Id), ["view_name"] = SafePlanName(views[i]), ["file"] = targets[i],
-                    ["api_accepted"] = accepted, ["verified"] = ok, ["main"] = main, ["other_files"] = others
+                    ["api_accepted"] = accepted, ["verified"] = ok, ["main"] = main, ["other_files"] = others,
+                    ["reference_files"] = new JArray(others.OfType<JObject>().Where(o =>
+                        o.Value<string>("role") == "xref" || o.Value<string>("role") == "image").Select(o => o.DeepClone()))
                 };
                 if (error != null) row["error"] = error;
                 if (ownUnmeasured.Count > 0) row["unmeasured_files"] = new JArray(ownUnmeasured);
@@ -252,9 +310,15 @@ namespace Horizun.Revit.Commands
             {
                 ["format"] = format, ["file_naming"] = naming, ["dwg_xrefs"] = format == "dwg" ? xrefs : null,
                 ["files_planned"] = targets.Length, ["files_verified"] = verified, ["files"] = files,
+                ["annotation_location"] = format == "dwg" ? ExportFormatRules.DwgAnnotationLocation(xrefs) : null,
+                ["reference_files"] = format == "dwg" ? new JArray(files.OfType<JObject>()
+                    .SelectMany(f => (f["reference_files"] as JArray ?? new JArray()).OfType<JObject>())
+                    .Select(r => r.DeepClone())) : (JToken)new JArray(),
                 ["means"] = "verified = the planned file was written or changed by its own exporter call, is non-empty and its first bytes " +
                             "are the format's signature (with acad_version, that DWG version); companion files the call wrote beside it - a " +
-                            "sheet's views and a view's links, for DWG linked and for DGN - must be named <stem>-... and pass the same check."
+                            "sheet's views and a view's links, for DWG linked and for DGN - must be named <stem>-... and pass the same check. " +
+                            "DWG raster companions with the same filename family are separately checked by image signature. " +
+                            "DWG entity contents and layouts are not verified by this file-level check."
             };
             if (gateDecision.Requested) result["prevention"] = gateDecision.Prevention;
             if (verified != targets.Length)
@@ -349,7 +413,7 @@ namespace Horizun.Revit.Commands
             if (refused != null) return refused;
             string folder = System.IO.Path.GetDirectoryName(output);
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
-                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly.");
+                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly: create that folder first, or point output_path (the full path of the file to write) at a folder that exists. Nothing was written.");
             // Counted in the energy settings' scope - their export category and phase - which is
             // what the model is built from; the built model's own analytical spaces are counted
             // again on apply, before anything is written.

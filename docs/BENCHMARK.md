@@ -77,8 +77,8 @@ Revit concepts.
 | O2 | 5 | B/S; L pending | Typed structural curve/point creation and structural-type re-read. |
 | O3 | 5 | B/S; L pending for cable tray | Native typed MEP APIs. |
 | O4 | 5 | B/S/T; L for the W10 batch (area plans, callouts, placeholder conversion, view range/crops, alignment) pending green matrix | `horizun_manage_views` at 24 operations, aliases, per-value post-commit re-reads (view ranges, crops, rotations, alignments), document+batch-unique sheet numbers. |
-| O5 | 5 | B/S; L pending | `horizun_create_family`; RFT→RFA compiler with connector face selection and file/project verification. |
-| O6 | 5 | B/S; L pending | `horizun_manage_system_types`; generic type parameters plus verified host compound structures. |
+| O5 | 5 | B/S; L pending | `horizun_create_family` (Pro edition; not in Community); RFT→RFA compiler with connector face selection and file/project verification. |
+| O6 | 5 | B/S; L pending | `horizun_manage_system_types` (Pro edition; not in Community); generic type parameters plus verified host compound structures. |
 | O7 | 5 | L/T/S | Native linked schedule creation/list/read path. |
 | X1 | 5 | B/S; L pending for expanded options | `horizun_export` IFC branch. |
 | X2 | 5 | B/S; L pending | Native optional NWC exporter branch. |

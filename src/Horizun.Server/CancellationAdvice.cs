@@ -75,7 +75,7 @@ namespace Horizun.Server
         /// server treats as a proof that nothing started ("FIFO queue", "NEVER
         /// STARTED") unless that verdict is the one being given.
         /// </summary>
-        public static string Sentence(string verdict, int batchSize, long elapsedMs, bool submitJobAvailable = true)
+        public static string Sentence(string verdict, int batchSize, long elapsedMs, string tool = null)
         {
             string s;
             switch (verdict)
@@ -95,19 +95,18 @@ namespace Horizun.Server
                         "the model before sending anything again.";
                     break;
             }
-            // Only advise the queue when the session can reach it: with `local` as the whole toolset
-            // submit_job and job_status are hidden, and telling the agent to use them would send it to a
-            // tool it cannot call.
-            if (elapsedMs >= LongWaitMs && submitJobAvailable)
+            if (elapsedMs >= LongWaitMs)
+            {
                 s += " This call waited " + (elapsedMs / 1000) + " s" +
-                     (batchSize > 0 ? " for a batch of " + batchSize + " items" : "") +
-                     "; work that outlives the client's timeout belongs in horizun_submit_job, polled with " +
-                     "horizun_job_status.";
+                     (batchSize > 0 ? " for a batch of " + batchSize + " items" : "") + "; ";
+                s += string.Equals(tool, "horizun_execute_python", System.StringComparison.Ordinal)
+                    ? "for a future long Python run, use horizun_execute_python with run_async=true and an idempotency_key, then poll horizun_job_status."
+                    : "work that outlives the client's timeout belongs in horizun_submit_job, polled with horizun_job_status.";
+            }
             return s;
         }
 
-        public static JObject ToJson(string verdict, bool hasIdempotencyKey, int batchSize, long elapsedMs,
-                                     bool submitJobAvailable = true)
+        public static JObject ToJson(string verdict, bool hasIdempotencyKey, int batchSize, long elapsedMs, string tool = null)
         {
             var o = new JObject
             {
@@ -117,7 +116,18 @@ namespace Horizun.Server
                 ["batch_items"] = batchSize,
                 ["waited_ms"] = elapsedMs
             };
-            if (elapsedMs >= LongWaitMs && submitJobAvailable) o["prefer"] = "horizun_submit_job";
+            if (elapsedMs >= LongWaitMs)
+            {
+                bool python = string.Equals(tool, "horizun_execute_python", System.StringComparison.Ordinal);
+                o["prefer"] = python ? "run_async" : "horizun_submit_job";
+                if (python)
+                    o["recommended_call"] = new JObject
+                    {
+                        ["tool"] = "horizun_execute_python",
+                        ["arguments"] = new JObject { ["run_async"] = true, ["idempotency_key"] = "<stable key>" },
+                        ["poll_with"] = "horizun_job_status"
+                    };
+            }
             return o;
         }
     }

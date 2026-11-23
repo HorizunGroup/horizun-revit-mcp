@@ -32,7 +32,7 @@ $artifactDir = Join-Path $repo 'artifacts\live'
 
 if (-not $RollUp) {
     if (-not (Test-Path -LiteralPath $artifactDir)) {
-        throw "no artifacts/live directory: run scripts/live/verify-structure-all.ps1 first."
+        throw "no artifacts/live directory: no structure roll-up has been written on this machine."
     }
     $found = @(Get-ChildItem -LiteralPath $artifactDir -Filter 'structure-all-*.json' -ErrorAction SilentlyContinue |
                Sort-Object LastWriteTime -Descending)

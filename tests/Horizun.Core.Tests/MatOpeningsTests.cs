@@ -11,6 +11,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Horizun.Revit.Core;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Horizun.Core.Tests
@@ -296,6 +297,8 @@ namespace Horizun.Core.Tests
         [Fact]
         public void NoPolicyAndABarThatWouldCrossIsRefusedByName()
         {
+            // The 1000 x 1000 hole is no penetration: what happens there (and what edge steel replaces the bars it
+            // cuts) is a design question, refused by name as it always was.
             MatResult r;
             List<StructuralRebarRule> made = Expand(Rule(null, Comp("top_x", X)), out r);
             Assert.False(r.Ok);
@@ -307,7 +310,157 @@ namespace Horizun.Core.Tests
             Assert.Contains("omit", r.Why);
             Assert.Contains("trim", r.Why);
             Assert.Contains("ignore", r.Why);
+            Assert.Contains("A trim is assumed only when every opening crossed is a penetration (at most 300 mm", r.Why);
             Assert.Equal(1, r.OpeningsFound);
+            Assert.DoesNotContain(r.Assumptions, a => ((string)a["code"]).StartsWith("mat_openings"));
+        }
+
+        /// <summary>A slab 6000 x 4000 x 200 with a hole of <paramref name="along"/> by <paramref name="across"/> at x 2000, centred on y 2000.</summary>
+        private static HostMesh WithHole(double along, double across)
+            => SlabWithHole(0, 0, 6000, 4000, 0, 200, 2000, 2000 - across / 2, 2000 + along, 2000 + across / 2);
+
+        // top_x at 200 maximum across 3950: bars at v = 25 + 197.5 k; k = 10 sits at v = 2000, through the hole.
+
+        [Fact]
+        public void A_100_mm_penetration_with_no_policy_is_cut_around_and_the_cut_is_a_marked_supuesto()
+        {
+            List<StructuralRebarRule> made;
+            MatResult r = MatRules.Expand(Rule(null, Comp("top_x", X)), WithHole(100, 100), Dia12, null, out made);
+            Assert.True(r.Ok, r.Why);
+            MatOpeningReport rep = r.Components[0].Openings;
+            Assert.Equal(new[] { 10 }, rep.BarsCrossing.ToArray());
+            MatTrimmedBar cut = Assert.Single(rep.BarsTrimmed);
+            // body over the hole 1994..2106 (6 mm radius), 50 mm clear each side.
+            Assert.Equal(2, cut.SegmentsMm.Count);
+            Assert.Equal(25, cut.SegmentsMm[0][0], 6); Assert.Equal(1944, cut.SegmentsMm[0][1], 6);
+            Assert.Equal(2156, cut.SegmentsMm[1][0], 6); Assert.Equal(5975, cut.SegmentsMm[1][1], 6);
+
+            // Not ignored for being small: considered by the rehearsal AND by the check after the commit.
+            Assert.Equal(0, rep.OpeningsIgnored);
+            Assert.All(made, x => Assert.NotNull(x.OpeningContext));
+            Assert.All(made, x => Assert.Equal(0, x.OpeningContext.MinimumSizeMm));
+            Assert.All(made, x => Assert.Single(x.OpeningContext.Considered));
+
+            JObject row = Assert.Single(r.Assumptions, a => (string)a["code"] == "mat_openings_trim_assumed");
+            Assert.Equal(AssumptionNotes.Flag, (string)row["flag"]);
+            Assert.True((bool)row["no_replacement_steel"]);
+            Assert.Contains("NO edge steel", (string)row["what"]);
+            Assert.Contains("no_replacement_steel", (string)row["what"]);
+            Assert.Equal(50, (double)row["value_mm"], 6);
+            Assert.Equal(300, (double)row["penetration_limit_mm"], 6);
+            Assert.Contains("openings: { policy", (string)row["override"]);
+            Assert.DoesNotContain("mm mm", (string)row["what"] + (string)row["why"]);
+        }
+
+        [Fact]
+        public void The_assumed_trim_keeps_at_least_the_cover_the_bars_hold()
+        {
+            List<StructuralRebarRule> made;
+            MatResult r = MatRules.Expand(Rule(null, Comp("top_x", X, end: 75)), WithHole(100, 100), Dia12, null, out made);
+            Assert.True(r.Ok, r.Why);
+            MatTrimmedBar cut = Assert.Single(r.Components[0].Openings.BarsTrimmed);
+            Assert.Equal(1994 - 75, cut.SegmentsMm[0][1], 6);
+            Assert.Equal(2106 + 75, cut.SegmentsMm[1][0], 6);
+            Assert.Equal(75, (double)r.Assumptions.Single(a => (string)a["code"] == "mat_openings_trim_assumed")["value_mm"], 6);
+        }
+
+        [Theory]
+        [InlineData(299.0, 200.0, true)]    // under 300 mm on its larger side: a penetration
+        [InlineData(300.0, 200.0, true)]
+        [InlineData(301.0, 200.0, false)]   // over it: refused by name
+        [InlineData(195.0, 100.0, true)]    // at 100 maximum the bars are laid 98.75 apart: two spacings, 197.5 mm, is the limit
+        [InlineData(199.0, 100.0, false)]
+        public void A_penetration_is_judged_by_its_larger_side_against_300_mm_or_two_spacings(double along, double spacing, bool trimmed)
+        {
+            List<StructuralRebarRule> made;
+            MatResult r = MatRules.Expand(Rule(null, Comp("top_x", X, spacing)), WithHole(along, 100), Dia12, null, out made);
+            Assert.Equal(trimmed, r.Ok);
+            if (trimmed)
+            {
+                Assert.NotEmpty(r.Components[0].Openings.BarsTrimmed);
+                Assert.Contains(r.Assumptions, a => (string)a["code"] == "mat_openings_trim_assumed");
+            }
+            else
+            {
+                Assert.Equal(MatRules.CodeOpeningsNeedAPolicy, r.Code);
+                Assert.Empty(made);
+                Assert.Contains("is larger", r.Why);
+            }
+        }
+
+        [Fact]
+        public void The_diagonal_does_not_count_a_280_mm_square_is_a_penetration()
+        {
+            // 280 x 280: its diagonal is 396 mm, its larger side 280.
+            List<StructuralRebarRule> made;
+            MatResult r = MatRules.Expand(Rule(null, Comp("top_x", X)), WithHole(280, 280), Dia12, null, out made);
+            Assert.True(r.Ok, r.Why);
+            Assert.True(r.Components[0].Openings.BarsTrimmed.Count >= 1);
+        }
+
+        /// <summary>
+        /// A slab on a grid of cells, with the listed cells missing (each a hole, or part of one). The same welded,
+        /// consistently oriented construction as <see cref="SlabWithHole"/>.
+        /// </summary>
+        private static HostMesh SlabWithCellsMissing(double[] xs, double[] ys, double z0, double z1, params int[][] missing)
+        {
+            var m = new HostMesh { Source = "a slab with holes, built in code" };
+            var gone = new HashSet<string>(missing.Select(c => c[0] + "," + c[1]));
+            var idx = new Dictionary<string, int>();
+            var bottomOf = new Dictionary<int, int>();
+            Func<int, int, bool, int> v = (ix, iy, top) =>
+            {
+                string k = ix + "," + iy + "," + top;
+                int i;
+                if (!idx.TryGetValue(k, out i)) { i = m.AddVertex(xs[ix], ys[iy], top ? z1 : z0); idx[k] = i; }
+                return i;
+            };
+            var directed = new Dictionary<long, int>();
+            long n = 100000;
+            Action<int, int> edge = (a, b) => { int had; directed[a * n + b] = directed.TryGetValue(a * n + b, out had) ? had + 1 : 1; };
+            for (int ix = 0; ix < xs.Length - 1; ix++)
+                for (int iy = 0; iy < ys.Length - 1; iy++)
+                {
+                    if (gone.Contains(ix + "," + iy)) continue;
+                    int a = v(ix, iy, true), b = v(ix + 1, iy, true), c = v(ix + 1, iy + 1, true), d = v(ix, iy + 1, true);
+                    m.AddTriangle(a, b, c); m.AddTriangle(a, c, d);
+                    edge(a, b); edge(b, c); edge(c, d); edge(d, a);
+                    int a2 = v(ix, iy, false), b2 = v(ix + 1, iy, false), c2 = v(ix + 1, iy + 1, false), d2 = v(ix, iy + 1, false);
+                    m.AddTriangle(a2, c2, b2); m.AddTriangle(a2, d2, c2);
+                    bottomOf[a] = a2; bottomOf[b] = b2; bottomOf[c] = c2; bottomOf[d] = d2;
+                }
+            foreach (KeyValuePair<long, int> e in directed)
+            {
+                int a = (int)(e.Key / n), b = (int)(e.Key % n);
+                if (directed.ContainsKey(b * n + a)) continue;
+                m.AddTriangle(b, a, bottomOf[a]);
+                m.AddTriangle(b, bottomOf[a], bottomOf[b]);
+            }
+            return m;
+        }
+
+        [Fact]
+        public void A_penetration_and_a_large_opening_together_are_refused_naming_the_large_one()
+        {
+            // A 100 x 100 sleeve at x 1000..1100, y 1950..2050 and a 1000 x 1000 hole at x 3000..4000, y 1500..2500.
+            HostMesh both = SlabWithCellsMissing(new double[] { 0, 1000, 1100, 3000, 4000, 6000 },
+                                                 new double[] { 0, 1500, 1950, 2050, 2500, 4000 }, 0, 200,
+                                                 new[] { 1, 2 }, new[] { 3, 1 }, new[] { 3, 2 }, new[] { 3, 3 });
+            List<StructuralRebarRule> made;
+            MatResult r = MatRules.Expand(Rule(null, Comp("top_x", X)), both, Dia12, null, out made);
+            Assert.Equal(2, r.OpeningsFound);
+            Assert.False(r.Ok);
+            Assert.Equal(MatRules.CodeOpeningsNeedAPolicy, r.Code);
+            Assert.Empty(made);
+            Assert.Contains("1000 mm along the bars by 1000 mm across) is larger", r.Why);
+            Assert.DoesNotContain("100 mm along the bars by 100 mm across) is larger", r.Why);
+            Assert.DoesNotContain(r.Assumptions, a => ((string)a["code"]).StartsWith("mat_openings"));
+
+            // The sleeve alone is cut around.
+            HostMesh sleeve = SlabWithCellsMissing(new double[] { 0, 1000, 1100, 6000 }, new double[] { 0, 1950, 2050, 4000 }, 0, 200, new[] { 1, 1 });
+            MatResult ok = MatRules.Expand(Rule(null, Comp("top_x", X)), sleeve, Dia12, null, out made);
+            Assert.True(ok.Ok, ok.Why);
+            Assert.Contains(ok.Assumptions, a => (string)a["code"] == "mat_openings_trim_assumed");
         }
 
         [Fact]

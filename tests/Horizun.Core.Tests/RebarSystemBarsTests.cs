@@ -180,6 +180,27 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Mode_rebar_keeps_a_named_system_bar_beside_a_set_and_matches_both()
+        {
+            // Field case (5.0.5): element_ids = [set, RebarInSystem] answered matched=1 of 2 and still
+            // said complete / is_whole_truth. The selection mode=rebar pages over is the scope's.
+            RebarScope s = RebarScope.FromIds(new long[] { 501, 10 }, KindOf, MembersOf);
+            Assert.Equal(new long[] { 10, 501 }, s.AllInOrder());
+            Assert.Empty(s.Reasons);
+        }
+
+        [Fact]
+        public void Mode_rebar_never_drops_an_id_silently_it_names_it_and_the_coverage_is_not_whole_truth()
+        {
+            // 9999 is not in the document (Missing): it carries no bars, and that is a reason.
+            RebarScope s = RebarScope.FromIds(new long[] { 501, 9999 }, KindOf, MembersOf);
+            Assert.Equal(new long[] { 501 }, s.AllInOrder());
+            Assert.Contains(s.Reasons.OfType<JObject>(), r => (string)r["what"] == "element_ids" && (long)r["element_id"] == 9999);
+            string coverage = s.Reasons.Count == 0 ? StructuralCoverage.Complete : StructuralCoverage.Partial;
+            Assert.False(StructuralCoverage.IsWholeTruth(coverage));
+        }
+
+        [Fact]
         public void A_path_system_id_scopes_to_its_bars()
         {
             RebarScope s = RebarScope.FromIds(new long[] { 600 }, KindOf, MembersOf);

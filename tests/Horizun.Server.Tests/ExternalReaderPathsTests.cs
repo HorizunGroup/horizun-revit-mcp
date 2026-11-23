@@ -19,44 +19,6 @@ namespace Horizun.Server.Tests
         private static JObject Advertised(string tool) =>
             (JObject)Tools.Publish(Tools.Find(tool), true)["inputSchema"];
 
-        [Theory]
-        // scripts/verify-live.ps1, the release gate's shape checks (~1662-1699).
-        [InlineData("horizun_create_elements", "properties.elements.items.properties.kind.enum")]
-        [InlineData("horizun_manage_views", "properties.actions.items.properties.operation.enum")]
-        [InlineData("horizun_export", "properties.format.enum")]
-        [InlineData("horizun_create_family", "properties.forms")]
-        [InlineData("horizun_create_family", "properties.connectors")]
-        [InlineData("horizun_create_family", "properties.parameters")]
-        [InlineData("horizun_create_family", "properties.types")]
-        [InlineData("horizun_create_family", "properties.reference_planes")]
-        [InlineData("horizun_create_family", "properties.dimensions")]
-        [InlineData("horizun_create_family", "properties.family_lines")]
-        [InlineData("horizun_create_family", "properties.nested_instances")]
-        [InlineData("horizun_create_family", "properties.forms.items.properties.kind.enum")]
-        [InlineData("horizun_manage_system_types", "properties.actions.items.properties.compound_structure.properties")]
-        // scripts/verify-live.ps1 ~6354-6363: the planimetry fix tool's closed schema.
-        [InlineData("horizun_fix_planimetry", "properties.actions.items.properties.operation.enum")]
-        [InlineData("horizun_fix_planimetry", "additionalProperties")]
-        [InlineData("horizun_fix_planimetry", "properties.dry_run.default")]
-        public void Reader_path_resolves_and_equals_the_contract(string tool, string path)
-        {
-            JToken advertised = Advertised(tool).SelectToken(path);
-            JToken full = Contract.Find(tool).InputSchema.SelectToken(path);
-            Assert.True(full != null, tool + " " + path + " is not in the contract; the reader list is stale");
-            Assert.True(advertised != null, tool + " " + path + " no longer resolves in tools/list");
-            if (full is JObject fo && advertised is JObject ao)
-            {
-                // A property map: the reader enumerates names (compound_structure.properties.*,
-                // power_bi_push) or reads nested enums, so names and every enum must survive.
-                Assert.Equal(string.Join(",", Names(fo)), string.Join(",", Names(ao)));
-                foreach (JToken e in fo.SelectTokens("..enum"))
-                    Assert.True(JToken.DeepEquals(e, ao.SelectToken(e.Path.Substring(fo.Path.Length).TrimStart('.'))),
-                        tool + " " + path + ": " + e.Path + " differs");
-            }
-            else
-                Assert.True(JToken.DeepEquals(full, advertised), tool + " " + path + " differs from the contract");
-        }
-
         [Fact]
         public void Gate_checks_on_the_planimetry_fix_still_hold()
         {

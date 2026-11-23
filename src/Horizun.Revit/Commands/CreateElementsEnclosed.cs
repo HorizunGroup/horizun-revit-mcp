@@ -75,11 +75,9 @@ namespace Horizun.Revit.Commands
                 // The expansion's own bookkeeping: a caller's row carrying it would be planned as a circuit it never was.
                 if (r["enclosed_from"] != null || r["circuit_area_m2"] != null)
                     return "elements[" + i + "]: enclosed_from and circuit_area_m2 are written by placement='all_enclosed', not by a caller.";
-                // A point room/space goes in with NewRoom(Level, UV)/NewSpace(Level, UV), in the phase Revit
-                // gives it: a phase_id or min_area_m2 beside a point would be accepted and silently ignored.
-                if (r["placement"] == null && (r["phase_id"] != null || r["min_area_m2"] != null))
-                    return "elements[" + i + "]: phase_id and min_area_m2 go with placement='all_enclosed' only.";
-                if (r["placement"] != null) enclosedEntries++; else otherEntries++;
+                string placementProblem = EnclosedRules.PlacementFieldsProblem(r);
+                if (placementProblem != null) return "elements[" + i + "]: " + placementProblem;
+                if (r.Value<string>("placement") == "all_enclosed") enclosedEntries++; else otherEntries++;
             }
             if (enclosedEntries == 0) return null;
             // The regions are read BEFORE anything in the batch is built, and each entry expands into
@@ -176,19 +174,6 @@ namespace Horizun.Revit.Commands
                 ["note"] = "no region is left to fill: each one listed already holds a room/space, is under min_area_m2 or has no " +
                            "interior point Revit can give. Nothing was written."
             });
-        }
-
-        /// <summary>
-        /// The row ValidateCreation judges. An expanded row carries the expansion's own bookkeeping
-        /// (enclosed_from, circuit_area_m2), which is not a caller field; ExpandEnclosed refuses a
-        /// caller's row that carries it, so only rows it wrote reach here with it.
-        /// </summary>
-        private static JObject EnclosedPublicView(JObject item)
-        {
-            if (item["enclosed_from"] == null) return item;
-            var copy = (JObject)item.DeepClone();
-            copy.Remove("enclosed_from"); copy.Remove("circuit_area_m2");
-            return copy;
         }
 
         /// <summary>The level's floor plan with the lowest id (not a template); null when it has none.</summary>
@@ -338,8 +323,13 @@ namespace Horizun.Revit.Commands
                 foreach (IList<BoundarySegment> loop in loops)
                 {
                     if (loop == null || loop.Count == 0) return false;
-                    XYZ first = loop[0].GetCurve().GetEndPoint(0), last = loop[loop.Count - 1].GetCurve().GetEndPoint(1);
-                    if (first.DistanceTo(last) > 1e-3) return false;
+                    XYZ previous = loop[loop.Count - 1].GetCurve().GetEndPoint(1);
+                    foreach (BoundarySegment segment in loop)
+                    {
+                        Curve curve = segment.GetCurve();
+                        if (curve.GetEndPoint(0).DistanceTo(previous) > 1e-3) return false;
+                        previous = curve.GetEndPoint(1);
+                    }
                 }
                 return true;
             }

@@ -2,9 +2,9 @@
 # written by the Core writer and re-read from disk cell by cell.
 #
 # Stages its OWN level far from the model, a 6 x 4 m ring of 'Generic - 200mm' walls
-# (BY NAME, brought from this Revit's own Autodesk template when the document lacks
-# it), a door brought BY NAME from the same template ('M_Single-Flush: 0915 x
-# 2134mm') placed in the south wall, and an own room in the ring, numbered and named
+# (the document's own type, BY NAME), a door of the document's own type BY NAME
+# ('M_Single-Flush: 0915 x 2134mm') placed in the south wall, and an own room in the
+# ring, numbered and named
 # by the probe, in the document's LAST phase (listed, never assumed). Then it
 # exports with component_categories [OST_Doors] and NO category_parameter, and
 # judges:
@@ -59,18 +59,10 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             [void]$why.Add($key + ' not created: ' + (Why $r)); return $null
         }
-        # A type found BY NAME, brought from this Revit's own template when the document lacks it.
-        # TemplateRoot exists only for the offline tests; a live run always uses Revit's own.
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-        $tpl = @(@('English\DefaultMetric.rte', 'English\Default-Multi-Discipline_Metric.rte') | ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
-        function TypeByName($category, $family, $type, $key) {
+        # A type found BY NAME in the document; a document without it cannot stage the probe.
+        function TypeByName($category, $family, $type) {
             $found = @(Types $category | Where-Object { [string]$_.family -eq $family -and [string]$_.type -eq $type }) | Select-Object -First 1
-            if ($found) { return $found }
-            if (-not $tpl) { [void]$why.Add("no '$family`: $type' in the document and no Autodesk template under $tplRoot"); return $null }
-            $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = $category
-                    type_names = @("$family`: $type"); duplicate_types = 'use_destination' } ('cobie-' + $key)
-            $found = @(Types $category | Where-Object { [string]$_.family -eq $family -and [string]$_.type -eq $type }) | Select-Object -First 1
-            if ($found) { [void]$created.Add([long]$found.element_id) } else { [void]$why.Add("copying '$family`: $type' gave no type: " + (Why $cp)) }
+            if (-not $found) { [void]$why.Add("no '$family`: $type' in the document") }
             return $found
         }
 
@@ -78,7 +70,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $ph = & $Ctx.Call 'horizun_manage_phases' @{ operation = 'list'; target_document = $doc }
         $phase = if ($ph.data) { @($ph.data.phases | Where-Object { $_ }) | Select-Object -Last 1 } else { $null }
         if (-not $phase) { [void]$why.Add('the phases could not be listed: ' + [string]$ph.text) }
-        $wallType = if ($phase) { TypeByName 'OST_Walls' 'Basic Wall' 'Generic - 200mm' 'walltype' } else { $null }
+        $wallType = if ($phase) { TypeByName 'OST_Walls' 'Basic Wall' 'Generic - 200mm' } else { $null }
         $E = 163000.0; $X0 = 1330000.0; $Y0 = 0.0; $W = 6000.0; $D = 4000.0
         $level = if ($phase -and $wallType) { Stage @{ kind = 'level'; name = ('HZ_COBIE_' + $run); elevation = $E } 'level' } else { $null }
         $walls = @()
@@ -90,7 +82,7 @@ $script:HzProbeModules += [pscustomobject]@{
             }
         }
         $closed = @($walls | Where-Object { $_ }).Count -eq 4
-        $doorType = if ($closed) { TypeByName 'OST_Doors' 'M_Single-Flush' '0915 x 2134mm' 'doortype' } else { $null }
+        $doorType = if ($closed) { TypeByName 'OST_Doors' 'M_Single-Flush' '0915 x 2134mm' } else { $null }
         # create_elements has no 'door' kind: a door is a family_instance hosted on its wall.
         $door = if ($doorType) {
             Stage @{ kind = 'family_instance'; type_id = [long]$doorType.element_id; point = @(($X0 + $W / 2), $Y0, $E); coordinate_mode = 'absolute'

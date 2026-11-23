@@ -1,6 +1,5 @@
 # Live probes for the newest horizun_create_elements kinds (sprinkler, flex_pipe,
-# flex_duct, space, area, area_boundary) and horizun_mep_routing's resize now covering
-# flex runs. Everything stands on the module's own level, own AreaScheme-backed area
+# flex_duct, space, area, area_boundary). Everything stands on the module's own level, own AreaScheme-backed area
 # plan view (created if none exists) and whatever sprinkler/flex-pipe/flex-duct types
 # the fixture happens to carry - discovered by querying it, never assumed by id or
 # name. What was created is deleted at the end; the document is never saved.
@@ -12,7 +11,6 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'flex_duct: create a path and re-read its points, size and level'; Tool = 'horizun_create_elements' }
         @{ Name = 'space: place at a point on a level and re-read the point and level'; Tool = 'horizun_create_elements' }
         @{ Name = 'area_boundary + area: close a loop on an area plan view and re-read the area'; Tool = 'horizun_create_elements' }
-        @{ Name = 'mep_routing resize: a flex run moves to another catalog size and back, re-read both times'; Tool = 'horizun_mep_routing' }
         @{ Name = 'element-kinds-flex probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
     )
     Run     = {
@@ -25,10 +23,9 @@ $script:HzProbeModules += [pscustomobject]@{
             'flex_duct: create a path and re-read its points, size and level',
             'space: place at a point on a level and re-read the point and level',
             'area_boundary + area: close a loop on an area plan view and re-read the area',
-            'mep_routing resize: a flex run moves to another catalog size and back, re-read both times',
             'element-kinds-flex probes: everything created is deleted')
         $tools = @('horizun_create_elements', 'horizun_create_elements', 'horizun_create_elements', 'horizun_create_elements',
-                   'horizun_create_elements', 'horizun_mep_routing', 'horizun_delete_verified')
+                   'horizun_create_elements', 'horizun_delete_verified')
         if ($Ctx.WriteGate) {
             for ($i = 0; $i -lt $catalog.Count; $i++) { Case $catalog[$i] $tools[$i] 'not_covered' 'the write tier is closed for this run' }
             return $cases
@@ -38,8 +35,7 @@ $script:HzProbeModules += [pscustomobject]@{
         function Short($a) { $t = [string]$a.text; if ($t.Length -gt 400) { $t.Substring(0, 400) } else { $t } }
         # THE REAL REPLY SHAPE (MEASURED 2026-09-26): create_elements carries no top-level
         # postconditions - its verdict is application.state and verification.verified; the
-        # per-row postconditions live on each row. mep_routing resize carries state and
-        # postconditions at the top. Checking a field the reply does not have made every
+        # per-row postconditions live on each row. Checking a field the reply does not have made every
         # creation read as unverified.
         function Verified($r) {
             if ($r.stage -ne 'apply' -or $r.answer.isError -or -not $r.answer.data) { return $false }
@@ -89,24 +85,12 @@ $script:HzProbeModules += [pscustomobject]@{
         $levelId = $lvOut.Id
 
         # ==== 1: sprinkler ==================================================================
-        # STAGED, NEVER ASSUMED. An HVAC fixture carries no sprinkler family; Autodesk's own
-        # plumbing template of the run's year does (MEASURED 2026-09-26: 'M_Sprinkler - Pendent -
-        # Hosted: 15 mm Pendent', face-based). Copy it with the typed copy, then host it on an
-        # own floor's top face at a point INSIDE that floor - a fixture ceiling far from the
-        # point is a face the symbol cannot sit on (2023: no_face_carries_this_point).
+        # Whatever sprinkler type the document carries; an HVAC fixture usually has none, and then
+        # the case is not_covered. It is hosted on an own floor's top face at a point INSIDE that
+        # floor - a fixture ceiling far from the point is a face the symbol cannot sit on.
         $sprinklerType = Types 'OST_Sprinklers' | Select-Object -First 1
-        $sprinklerNote = $null
-        if (-not $sprinklerType -and $levelId) {
-            $tpl = "C:\ProgramData\Autodesk\RVT $($Ctx.Year)\Templates\English\Plumbing-Default_Metric.rte"
-            if (-not (Test-Path -LiteralPath $tpl)) { $sprinklerNote = "no plumbing template at $tpl" }
-            else {
-                $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); type_names = @('M_Sprinkler - Pendent - Hosted: 15 mm Pendent'); category = 'OST_Sprinklers'; duplicate_types = 'use_destination' } ($run + '-ekf-spr-type')
-                $sprinklerType = Types 'OST_Sprinklers' | Select-Object -First 1
-                if (-not $sprinklerType) { $sprinklerNote = 'the sprinkler type could not be copied from the template: ' + (Why $cp) }
-            }
-        }
         if (-not $levelId -or -not $sprinklerType) {
-            Case $catalog[0] $tools[0] 'not_covered' ("no own level ($levelId) or no sprinkler type: " + $sprinklerNote)
+            Case $catalog[0] $tools[0] 'not_covered' ("no own level ($levelId) or no sprinkler type in the document")
         }
         else {
             $sx = $X + 5000; $sy = $Y
@@ -135,13 +119,9 @@ $script:HzProbeModules += [pscustomobject]@{
 
         # FlexPipeType/FlexDuctType carry their OWN categories (MEASURED 2026-09-26): asking
         # OST_PipeCurves/OST_DuctCurves for a Flex family finds nothing. Prefer a round flex
-        # duct so the resize case below has a round catalog to move through.
+        # duct.
         $flexDuctType = @(Types 'OST_FlexDuctCurves' | Sort-Object { if ($_.family -match 'Round') { 0 } else { 1 } }) | Select-Object -First 1
-        # A catalog size, so the resize case can go away AND come back (the round duct
-        # catalog of an imperial-based fixture holds 152.4, not 150; MEASURED 2026-09-26).
-        $cat = & $Ctx.Call 'horizun_mep_routing' @{ operation = 'read'; target_document = $doc; units = 'mm' }
-        $roundSizes = @(if ($cat.data -and $cat.data.duct_sizes) { @($cat.data.duct_sizes.round) | ForEach-Object { [double]$_.nominal } })
-        $flexDiameter = if ($roundSizes.Count -gt 0) { $roundSizes | Sort-Object { [math]::Abs($_ - 150) } | Select-Object -First 1 } else { 150 }
+        $flexDiameter = 150
         $ductSystem = SystemType 'OST_DuctSystem'
         if (-not $levelId -or -not $flexDuctType -or -not $ductSystem) {
             Case $catalog[2] $tools[2] 'not_covered' "no own level, no flex duct type or no duct system type in the fixture"
@@ -225,49 +205,14 @@ $script:HzProbeModules += [pscustomobject]@{
             }
         }
 
-        # ==== 6: mep_routing resize on a flex run ===========================================
-        $flexId = if ($fd -and $fd.Id) { $fd.Id } elseif ($fp -and $fp.Id) { $fp.Id } else { $null }
-        if (-not $flexId) { Case $catalog[5] $tools[5] 'not_covered' 'no flex_pipe or flex_duct was created to resize' }
-        else {
-            $isDuct = ($fd -and $fd.Id -eq $flexId)
-            $rd = & $Ctx.Call 'horizun_mep_routing' @{ operation = 'read'; target_document = $doc; units = 'mm'; element_ids = @($flexId) }
-            $before = @($rd.data.elements) | Select-Object -First 1
-            if (-not $before) { Case $catalog[5] $tools[5] 'fail' ('read: ' + (Short $rd)) }
-            else {
-                $round = ($null -ne $before.size.diameter)
-                # The catalog comes from a read WITHOUT element_ids (an element read lists no
-                # catalog; MEASURED 2026-09-26) - taken once, above, as $roundSizes.
-                $catalogList = if ($isDuct) { $roundSizes } else { @() }
-                if (-not $round -or $catalogList.Count -lt 2) {
-                    # No catalog to pick a second size from without live reads this module cannot
-                    # fake; a rectangular flex duct or a one-size catalog is not_covered, not a fail.
-                    Case $catalog[5] $tools[5] 'not_covered' 'the resized run has no second round catalog size to move to and back'
-                }
-                else {
-                    $current = [double]$before.size.diameter
-                    $other = $catalogList | Where-Object { [math]::Abs($_ - $current) -gt 0.01 } | Select-Object -First 1
-                    $there = & $Ctx.Apply 'horizun_mep_routing' @{ operation = 'resize'; target_document = $doc; units = 'mm'; element_ids = @($flexId); diameter = $other } ($run + '-ekf-resize-there')
-                    $back = $null
-                    if ($there.stage -eq 'apply' -and -not $there.answer.isError -and $there.answer.data.state -eq 'committed_verified' -and $there.answer.data.postconditions.all_verified -eq $true) {
-                        $back = & $Ctx.Apply 'horizun_mep_routing' @{ operation = 'resize'; target_document = $doc; units = 'mm'; element_ids = @($flexId); diameter = $current } ($run + '-ekf-resize-back')
-                    }
-                    $thereOk = ($there.stage -eq 'apply' -and -not $there.answer.isError -and $there.answer.data.postconditions.all_verified -eq $true)
-                    $backOk = ($back -and $back.stage -eq 'apply' -and -not $back.answer.isError -and $back.answer.data.postconditions.all_verified -eq $true)
-                    if (-not $thereOk) { Case $catalog[5] $tools[5] 'fail' ('resize: ' + (Short $there.answer)) }
-                    elseif (-not $backOk) { Case $catalog[5] $tools[5] 'fail' ('resize back: ' + (Short $back.answer)) }
-                    else { Case $catalog[5] $tools[5] 'pass' ("flex run $flexId $current -> $other -> $current mm, fitting postconditions verified both times") }
-                }
-            }
-        }
-
         # ---- cleanup: newest first, the area view and level last. -------------------------
         $ids = @($created | Select-Object -Unique)
-        if ($ids.Count -eq 0) { Case $catalog[6] $tools[6] 'not_covered' 'nothing was created' }
+        if ($ids.Count -eq 0) { Case $catalog[5] $tools[5] 'not_covered' 'nothing was created' }
         else {
             [array]::Reverse($ids)
             $del = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = $ids; id_cap = 500 } ($run + '-ekf-cleanup')
-            if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case $catalog[6] $tools[6] 'pass' ("deleted " + $ids.Count + " created ids") }
-            else { Case $catalog[6] $tools[6] 'fail' ('left in the disposable document: ' + ($ids -join ',') + ' - ' + (Why $del)) }
+            if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case $catalog[5] $tools[5] 'pass' ("deleted " + $ids.Count + " created ids") }
+            else { Case $catalog[5] $tools[5] 'fail' ('left in the disposable document: ' + ($ids -join ',') + ' - ' + (Why $del)) }
         }
         return $cases
     }

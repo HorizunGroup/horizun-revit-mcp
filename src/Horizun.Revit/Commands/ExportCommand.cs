@@ -21,6 +21,20 @@ namespace Horizun.Revit.Commands
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
+            JObject r;
+            try { r = JObject.Parse(paramsJson ?? "{}"); } catch { r = new JObject(); }
+            CommandResult result;
+            var assumptions = new List<JObject>();
+            try { result = NormalizeExportFailure(ExecuteCore(app, paramsJson, assumptions)); }
+            catch (Exception ex) { result = NormalizeExportFailure(ExportException(ex)); }
+            if (r.Value<string>("format") == "mesh_json" && !result.Success)
+                return AssumptionNotes.MarkFailure(result, "SUPUESTO used; ", ReliabilityDefaults.Mesh(r));
+            return result.Success ? AssumptionNotes.StampResult(result, assumptions)
+                : AssumptionNotes.MarkFailure(result, "SUPUESTO used; ", assumptions);
+        }
+
+        private CommandResult ExecuteCore(UIApplication app, string paramsJson, List<JObject> assumptions)
+        {
             JObject request;
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
@@ -29,16 +43,49 @@ namespace Horizun.Revit.Commands
             Document doc = gate.Document;
 
             string format = (request.Value<string>("format") ?? "").ToLowerInvariant();
-            if (format != "pdf" && format != "dwg" && format != "ifc" && format != "nwc" && format != "fbx" && format != "image" && format != "schedule_csv" && format != "dwg_layers"
-                && format != "dgn" && format != "dwfx" && format != "gbxml" && format != "rfa" && format != "cobie")
-                return CommandResult.Fail("format must be pdf, dwg, dgn, dwfx, ifc, nwc, fbx, image, schedule_csv, dwg_layers, gbxml, rfa or cobie.");
+            if (format != "pdf" && format != "dwg" && format != "ifc" && format != "nwc" && format != "fbx" && format != "image" && format != "schedule_csv" && format != "dwg_layers" && format != "ifc_setup"
+                && format != "dgn" && format != "dwfx" && format != "gbxml" && format != "rfa" && format != "cobie" && format != "pdf_qa" && format != "mesh_json")
+                return CommandResult.Fail(ExportDeliveryRules.InvalidFormatMessage(format));
+            // THE PER-CALL HALF OF THE PROFILE, before anything is resolved or written. The
+            // tool is listed on read_only/documentation/safe_write for PDF - the deliverable
+            // those profiles exist to produce - and a one-view image (a picture of a view,
+            // nothing written to the model); every other format refuses here, naming
+            // the profile (OperationPermission.ExportRefusal).
+            string formatRefusal = OperationPermission.ExportRefusal(Horizun.Revit.Core.Settings.PermissionProfile, format);
+            if (formatRefusal != null) return CommandResult.Fail(formatRefusal);
             if (format != "cobie" && request["cobie"] != null && request["cobie"].Type != JTokenType.Null)
                 return CommandResult.Fail("cobie applies to format cobie only. Nothing was exported.");
+            // dialog_policy (4.2-c): how the export answers the modal dialogs Revit raises while it
+            // runs. Parsed before anything is resolved; a typo refuses, it never falls back.
+            ExportDialogMode dialogMode = ExportDialogPolicy.Parse(request.Value<string>("dialog_policy"), out string dialogPolicyError);
+            if (dialogPolicyError != null) return CommandResult.Fail(dialogPolicyError);
+            bool dialogPolicyRequested = !string.IsNullOrWhiteSpace(request.Value<string>("dialog_policy"));
+            if (dialogPolicyRequested && !ExportDialogPolicy.AppliesTo(format, format == "dwg" && IsDwgSet(request)))
+                return CommandResult.Fail("dialog_policy applies to the single-file exports (pdf, dwg, ifc, nwc, fbx, image, schedule_csv); " +
+                                          "format=" + format + " does not use it. Nothing was exported.");
+            bool canCreateFolder = format == "pdf" || format == "image" || format == "dwg" || format == "ifc" || format == "fbx";
+            if (request["require_existing_folder"] != null && !canCreateFolder)
+                return CommandResult.RefuseBeforeWrite("require_existing_folder applies only to PDF, image, DWG, IFC and FBX.");
             string output = request.Value<string>("output_path");
-            if (string.IsNullOrWhiteSpace(output) || !System.IO.Path.IsPathRooted(output))
+            if (string.IsNullOrWhiteSpace(output) || !Path.IsPathRooted(output) ||
+                (canCreateFolder && Path.DirectorySeparatorChar == '\\' &&
+                 !(output.StartsWith(@"\\", StringComparison.Ordinal) || output.StartsWith("//", StringComparison.Ordinal) ||
+                   (output.Length >= 3 && output[1] == ':' && (output[2] == '\\' || output[2] == '/')))))
                 return CommandResult.Fail("output_path must be absolute.");
             try { output = System.IO.Path.GetFullPath(output); }
             catch (Exception ex) { return CommandResult.Fail("output_path is invalid: " + ex.Message); }
+            // 4.2-N4 (CT-S0-9, CT-P1-4d): QA of a PDF that already exists. Reads, writes nothing.
+            if (format == "pdf_qa") return ExecutePdfQa(doc, request, output);
+            if (format == "mesh_json") return ExecuteMeshJson(app, gate, doc, request, output);
+            foreach (string meshField in new[] { "categories", "skip_directshape", "include_links" })
+                if (request[meshField] != null) return CommandResult.RefuseBeforeWrite(meshField + " applies to mesh_json only.");
+            // 4.2-N4 (LP-P3-13a): with one file per sheet, output_path may be the FOLDER.
+            bool outputIsFolder = false;
+            if (format == "pdf" && request.Value<bool?>("pdf_combine") == false && ExportDeliveryRules.LooksLikeFolder(output, Directory.Exists))
+            {
+                try { output = ExportDeliveryRules.FolderStem(output); outputIsFolder = true; }
+                catch (ArgumentException ex) { return CommandResult.Fail(ex.Message + " Nothing was exported."); }
+            }
             // rfa writes one file per family into a FOLDER; see ExportSets.cs.
             if (format == "rfa") return ExecuteRfa(app, gate, doc, request, output);
             if (!ExpectedExtension(format, output))
@@ -46,12 +93,16 @@ namespace Horizun.Revit.Commands
             // The DWG layer table: a named export setup read, created and written in the
             // document, with its re-read table written to output_path. See ExportDwgSetup.cs.
             if (format == "dwg_layers") return ExecuteDwgLayers(app, gate, doc, request, output);
+            // A named IFC export setup saved in the document (the exporter UI's own storage),
+            // plus IfcExportAs/IfcExportType per type, re-read and mirrored to output_path. See ExportIfcSetup.cs.
+            if (format == "ifc_setup") return ExecuteIfcSetup(app, gate, doc, request, output);
+            if (request["ifc_setup"] != null) return CommandResult.Fail("ifc_setup applies to format ifc_setup only. Nothing was exported.");
             // gbXML and the DWG/DGN/DWFX view sets (one file per view or sheet). See ExportSets.cs.
             if (format == "gbxml") return ExecuteGbXml(app, gate, doc, request, output);
             // A COBie 2.4 workbook written by the Core writer and re-read cell by cell. See ExportCobie.cs.
             if (format == "cobie") return ExecuteCobie(app, gate, doc, request, output);
             if (format == "dgn" || format == "dwfx" || (format == "dwg" && IsDwgSet(request)))
-                return ExecuteViewSet(app, gate, doc, request, format, output);
+                return ExecuteViewSet(app, gate, doc, request, format, output, assumptions);
             foreach (string setField in new[] { "file_naming", "dwg_xrefs", "family_ids", "category" })
                 if (request[setField] != null)
                     return CommandResult.Fail(setField + " applies to the dwg/dgn/dwfx view sets and rfa only. Nothing was exported.");
@@ -88,8 +139,10 @@ namespace Horizun.Revit.Commands
                 output = InformationContainer.ContainerOutputPath(output, containerCheck);
             }
             string folder = System.IO.Path.GetDirectoryName(output);
-            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
-                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly.");
+            var folderPlan = canCreateFolder ? new ExportDirectoryPlan(output, request.Value<bool?>("require_existing_folder") == true) : null;
+            bool folderMissing = folderPlan?.NeedsCreation == true;
+            if (!canCreateFolder && (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)))
+                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly: create that folder first, or point output_path (the full path of the file to write) at a folder that exists. Nothing was written.");
             bool overwrite = request.Value<bool?>("overwrite") == true;
 
             List<View> views = ReadViews(doc, request["view_ids"] as JArray, out string viewError);
@@ -194,8 +247,42 @@ namespace Horizun.Revit.Commands
             bool emitManifest = request.Value<bool?>("emit_manifest") ?? false;
             if (format != "pdf" && (request["pdf_combine"] != null || emitManifest || request["pdf_print"] != null))
                 return CommandResult.Fail("pdf_combine, emit_manifest and pdf_print are PDF-only options.");
-            if (container != null && format == "pdf" && !pdfCombine)
-                return CommandResult.Fail("information_container names ONE file; pdf_combine=false produces one file per view. " +
+            // 4.2-N4 delivery options (ExportDeliveryRules, PdfQa).
+            int pdfParts = 0; bool pdfAlsoPerSheet = false, pdfArchivePrevious = false; string pdfArchiveFolder = ExportDeliveryRules.DefaultArchiveFolder;
+            PdfQaOptions pdfQa = null;
+            foreach (string only in new[] { "pdf_parts", "pdf_also_per_sheet", "pdf_archive_previous", "pdf_archive_folder", "pdf_qa" })
+                if (format != "pdf" && request[only] != null && request[only].Type != JTokenType.Null)
+                    return CommandResult.Fail(only + " is a PDF-only option. Nothing was exported.");
+            if (format == "pdf")
+            {
+                if (request["pdf_parts"] != null && request["pdf_parts"].Type != JTokenType.Null)
+                {
+                    if (request["pdf_parts"].Type != JTokenType.Integer) return CommandResult.Fail("pdf_parts must be an integer 2.." + ExportDeliveryRules.MaxParts + ". Nothing was exported.");
+                    pdfParts = (int)Math.Min(int.MaxValue, Math.Max(-1, request.Value<long>("pdf_parts")));
+                }
+                pdfAlsoPerSheet = request.Value<bool?>("pdf_also_per_sheet") == true;
+                pdfArchivePrevious = request.Value<bool?>("pdf_archive_previous") == true;
+                if (request["pdf_archive_folder"] != null)
+                {
+                    pdfArchiveFolder = request.Value<string>("pdf_archive_folder");
+                    string archiveError = ExportDeliveryRules.ArchiveFolderError(pdfArchiveFolder);
+                    if (archiveError != null) return CommandResult.Fail(archiveError + " Nothing was exported.");
+                }
+                if (request["pdf_qa"] != null && request["pdf_qa"].Type != JTokenType.Null)
+                {
+                    pdfQa = PdfQa.Parse(request["pdf_qa"], out string qaError);
+                    if (pdfQa == null) return CommandResult.Fail(qaError + " Nothing was exported.");
+                    if (pdfQa.CompareTo != null && (!pdfCombine || pdfParts > 0 || pdfAlsoPerSheet))
+                        return CommandResult.Fail("pdf_qa.compare_to compares ONE file with an earlier one; this export produces several. Export combined, or compare afterwards with format=pdf_qa. Nothing was exported.");
+                    if (pdfQa.CompareTo != null && !File.Exists(pdfQa.CompareTo))
+                        return CommandResult.Fail("pdf_qa.compare_to does not exist: " + pdfQa.CompareTo + ". Nothing was exported.");
+                    ResolvePaper(doc, pdfQa);
+                }
+                string jobError = ExportDeliveryRules.ValidateJobOptions(pdfCombine, pdfParts, pdfAlsoPerSheet, views.Count);
+                if (jobError != null) return CommandResult.Fail(jobError + " Nothing was exported.");
+            }
+            if (container != null && format == "pdf" && (!pdfCombine || pdfParts > 0 || pdfAlsoPerSheet))
+                return CommandResult.Fail("information_container names ONE file; pdf_combine=false, pdf_parts and pdf_also_per_sheet produce several. " +
                     "Export combined, or export each view with its own container. Nothing was exported.");
             if (container != null && File.Exists(InformationContainer.SidecarPath(output)))
                 return CommandResult.Fail("An information-container sidecar already exists at " + InformationContainer.SidecarPath(output) +
@@ -213,9 +300,77 @@ namespace Horizun.Revit.Commands
                 printPolicy = PdfPrintPolicy.Parse(request["pdf_print"], request.Value<string>("units") ?? "mm", hostYear);
             }
             catch (ArgumentException ex) { return CommandResult.Fail(ex.Message + " Nothing was exported."); }
-            string[] pdfPaths = format == "pdf" ? DeliveryPdf.Paths(output,pdfCombine,views.Select(v=>Rid.Value(v.Id))) : new string[0];
+            // FILE NAMES BY PATTERN (PdfNamePattern.cs): {sheet_number} {sheet_name} {view_name}
+            // {date} {version} {index}, per file or - combined - from the first view; the
+            // folder is output_path's. Resolved and checked for collisions here, before any
+            // exporter runs, and bound into the plan hash below so a rehearsal that named
+            // A101_20261018_v1.pdf cannot apply under another name.
+            string pdfPattern = request.Value<string>("pdf_name_pattern");
+            int pdfVersion = 1;
+            bool autoVersion = false;
+            if (request["pdf_version"] != null && request["pdf_version"].Type != JTokenType.Null)
+            {
+                // 4.2-N4 (CT-P1-4c): "auto" = one more than the highest {version} already in the folder.
+                if (request["pdf_version"].Type == JTokenType.String && string.Equals(request.Value<string>("pdf_version"), "auto", StringComparison.OrdinalIgnoreCase))
+                    autoVersion = true;
+                else if (request["pdf_version"].Type != JTokenType.Integer || (long)request["pdf_version"] < 0 || (long)request["pdf_version"] > int.MaxValue)
+                    return CommandResult.Fail("pdf_version must be an integer of 0 or more, or \"auto\". Nothing was exported.");
+                else pdfVersion = (int)(long)request["pdf_version"];
+            }
+            if (format != "pdf" && (pdfPattern != null || request["pdf_version"] != null))
+                return CommandResult.Fail("pdf_name_pattern and pdf_version are PDF-only options. Nothing was exported.");
+            if (pdfPattern != null && container != null)
+                return CommandResult.Fail("Give pdf_name_pattern OR information_container: both name the file. Nothing was exported.");
+            if (pdfPattern == null && request["pdf_version"] != null)
+                return CommandResult.Fail("pdf_version fills {version} in pdf_name_pattern; give the pattern too. Nothing was exported.");
+            if (pdfArchivePrevious && (pdfPattern == null || !ExportDeliveryRules.HasVersionToken(pdfPattern)))
+                return CommandResult.Fail("pdf_archive_previous moves the OLDER versions of pdf_name_pattern aside; the pattern needs {version}. Nothing was exported.");
+            if (autoVersion)
+            {
+                try { pdfVersion = ExportDeliveryRules.NextVersion(pdfPattern ?? "", folderMissing ? Array.Empty<string>() : Directory.GetFiles(folder, "*.pdf")); }
+                catch (ArgumentException ex) { return CommandResult.Fail(ex.Message + " Nothing was exported."); }
+            }
+            string[] pdfPaths;
+            PdfJobs pdfJobs = null;
+            bool wantsPerSheet = !pdfCombine || pdfAlsoPerSheet;
+            if (format == "pdf" && pdfPattern != null)
+            {
+                try
+                {
+                    List<PdfNameSource> nameSources = views.Select(NameSource).ToList();
+                    DateTime stamp = DateTime.Now;
+                    string combinedPath = PdfNamePattern.Paths(folder, pdfPattern, nameSources, true, stamp, pdfVersion)[0];
+                    string[] perSheet = wantsPerSheet ? PdfNamePattern.Paths(folder, pdfPattern, nameSources, false, stamp, pdfVersion) : new string[0];
+                    pdfJobs = ExportDeliveryRules.Jobs(combinedPath, perSheet, views.Count, pdfCombine, pdfParts, pdfAlsoPerSheet);
+                    pdfPaths = pdfJobs.Paths;
+                    output = combinedPath;
+                }
+                catch (ArgumentException ex) { return CommandResult.Fail(ex.Message); }
+            }
+            else
+            {
+                try
+                {
+                    if (format == "pdf")
+                    {
+                        long[] viewIds = views.Select(v => Rid.Value(v.Id)).ToArray();
+                        string[] perSheet = DeliveryPdf.Paths(output, false, viewIds);
+                        DeliveryPdf.Paths(output, true, viewIds);
+                        pdfJobs = ExportDeliveryRules.Jobs(output, perSheet, views.Count, pdfCombine, pdfParts, pdfAlsoPerSheet);
+                        pdfPaths = pdfJobs.Paths;
+                    }
+                    else pdfPaths = new string[0];
+                }
+                catch (ArgumentException ex)
+                {
+                    return CommandResult.FailWithDetail(ex.Message + " Nothing was exported.", ErrorCodes.Detail(ErrorCodes.EntradaInvalida));
+                }
+            }
+            // The older versions that will be MOVED (never deleted) after the new one is verified.
+            List<string> archiveCandidates = format == "pdf" && pdfArchivePrevious && !folderMissing
+                ? ExportDeliveryRules.PreviousVersions(pdfPattern, Directory.GetFiles(folder, "*.pdf"), pdfVersion) : new List<string>();
             string manifestPath = output + ".manifest.json";
-            List<string> existing = format == "pdf" ? pdfPaths.ToList() : CandidateFiles(format, output);
+            List<string> existing = format == "pdf" ? pdfPaths.ToList() : folderMissing ? new List<string>() : CandidateFiles(format, output);
             if (emitManifest) existing.Add(manifestPath);
             if (!overwrite && existing.Any(File.Exists))
                 return CommandResult.Fail("Output already exists and overwrite=false: " + string.Join(", ", existing.Where(File.Exists)));
@@ -253,11 +408,12 @@ namespace Horizun.Revit.Commands
                         string.Join("; ", deliveryGate["reasons"].Values<string>()) + ". Nothing was exported.",
                         new JObject { ["publish_gate"] = deliveryGate, ["reverification"] = deliveryReverification });
             }
-            string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite", "preset", "dwg_setup",
+            string planHash = DocumentGate.PlanHash(request, "pdf_name_pattern", "pdf_version", "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite", "preset", "dwg_setup",
                 "ifc_version", "ifc_filter_view_id", "ifc_export_base_quantities", "ifc_split_walls_and_columns", "ifc_space_boundary_level",
                 "nwc_scope", "nwc_coordinates", "nwc_parameters", "nwc_export_links", "nwc_export_element_ids", "nwc_export_room_geometry",
                 "nwc_export_parts", "fbx_without_boundary_edges", "fbx_use_lod", "fbx_lod", "fbx_stop_on_error", "pdf_combine", "emit_manifest",
-                "pdf_print", "units", "delivery_id", "information_container");
+                "pdf_print", "units", "delivery_id", "information_container", "dialog_policy",
+                "pdf_parts", "pdf_also_per_sheet", "pdf_archive_previous", "pdf_archive_folder", "pdf_qa", "require_existing_folder");
             // ---- The MATERIALISED plan: the SOURCES and the DESTINATION as they stand. --
             // An export publishes the model outward, and two ambient facts shape what
             // lands on disk: WHICH views/schedule the ids resolve to - a renamed or
@@ -301,7 +457,11 @@ namespace Horizun.Revit.Commands
             // drift.
             resolvedPlan.ContextFingerprint = "existing=" + string.Join(",",
                 existing.Where(File.Exists).OrderBy(x => x, StringComparer.OrdinalIgnoreCase)) +
-                ";overwrite=" + (overwrite ? "1" : "0");
+                ";overwrite=" + (overwrite ? "1" : "0") +
+                // A patterned name carries {date}: the RESOLVED names are part of what was
+                // approved, so a rehearsal that named A101_20261018_v1.pdf cannot apply
+                // under the next day's name.
+                (pdfPattern != null ? ";pdf_files=" + string.Join("|", pdfPaths) : "") + folderPlan?.Fingerprint;
 
             if (dryRun)
             {
@@ -309,16 +469,30 @@ namespace Horizun.Revit.Commands
                 {
                     ["dry_run"] = true, ["format"] = format, ["output_path"] = output,
                     ["planned_files"] = new JArray(format == "pdf" ? pdfPaths : new[]{output}),
+                    ["pdf_name_pattern"] = pdfPattern,
+                    ["pdf_version_resolved"] = format == "pdf" && pdfPattern != null ? (JToken)pdfVersion : JValue.CreateNull(),
+                    ["pdf_version_auto"] = autoVersion,
+                    ["output_is_folder"] = outputIsFolder,
+                    ["pdf_jobs"] = pdfJobs == null ? (JToken)JValue.CreateNull() : new JArray(Enumerable.Range(0, pdfJobs.Paths.Length).Select(i => (JToken)new JObject
+                    {
+                        ["path"] = pdfJobs.Paths[i], ["sheets"] = new JArray(pdfJobs.Groups[i].Select(ix => (JToken)Rid.Value(views[ix].Id)))
+                    })),
+                    ["archive_previous"] = format == "pdf" && pdfArchivePrevious
+                        ? (JToken)new JObject { ["folder"] = System.IO.Path.Combine(folder, pdfArchiveFolder), ["would_move"] = new JArray(archiveCandidates), ["deleted"] = 0 }
+                        : JValue.CreateNull(),
+                    ["pdf_qa"] = pdfQa == null ? JValue.CreateNull() : new JObject { ["expected_fonts"] = new JArray(pdfQa.ExpectedFonts), ["runs_after_export"] = true },
                     ["delivery"] = deliveryGate == null ? (JToken)JValue.CreateNull() : new JObject { ["delivery_id"] = deliveryId, ["publish_gate"] = deliveryGate, ["reverification"] = deliveryReverification },
                     ["print_policy"] = format == "pdf" ? (JToken)new JObject { ["requested"] = printPolicy.Requested.DeepClone(),
                         ["effective"] = printPolicy.Canonical(), ["verified_from_output"] = new JArray(PdfPrintPolicy.VerifiableFromOutput),
                         ["means"] = "effective is what the exporter will be handed; only paper_format and orientation are proved from the produced pages" } : JValue.CreateNull(),
                     ["manifest_path"] = emitManifest ? manifestPath : null,
+                    ["dialog_policy"] = ExportDialogPolicy.Block(dialogMode, dialogPolicyRequested, null),
                     ["views"] = new JArray(views.Select(v => new JObject { ["id"] = Rid.Value(v.Id), ["name"] = v.Name })),
                     ["schedule"] = schedule?.Name, ["overwrite"] = overwrite,
                     ["exporter_available"] = exporterAvailable,
                     ["note"] = "Nothing was exported and no file was created."
                 };
+                if (format == "pdf" && views.Count > 6 && Job.Ambient == null) result["advice"] = PdfVerification.Advice;
                 if (container != null)
                     result["information_container"] = new JObject
                     {
@@ -332,43 +506,65 @@ namespace Horizun.Revit.Commands
                         ? "the token binds format, destination, options, the IDENTITY of every selected view and " +
                           "schedule as resolved now, and which destination files already exist - a source renamed or " +
                           "a file that appears under a no-overwrite approval refuses as a stale plan."
-                        : "no usable token is issued because the optional Navisworks exporter is not installed");
+                        : "no usable token is issued because the optional Navisworks exporter is not installed",
+                    // 4.2-N4 (CT-P1-4e): a set of many files takes long to read and approve.
+                    format == "pdf" && pdfPaths.Length > 1 ? ExportDeliveryRules.TokenTtl(pdfPaths.Length) : (TimeSpan?)null);
+                if (folderMissing) assumptions.Add(folderPlan.Assumption(false));
                 return CommandResult.Ok(result);
             }
             if (!exporterAvailable)
                 return CommandResult.Fail("The optional Autodesk Navisworks NWC exporter is not installed for this Revit version.");
             // Recomputed by THIS call, including the file-existence context.
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
-                                                                     resolvedPlan, null);
-            if (refusal != null) return refusal;
-            refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
+            CommandResult refusal = ExportDirectoryPlan.Apply(folderPlan,
+                () => DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, resolvedPlan, null),
+                () => DocumentGate.StillTheSame(app, gate.Fingerprint, Name), out JObject folderAssumption, out var directoryGuard);
+            using var exportDirectory = directoryGuard;
             if (refusal != null) return refusal;
 
+            assumptions.Add(folderAssumption);
+            if (folderMissing && !overwrite)
+            {
+                var conflicts = format == "pdf" ? pdfPaths.Where(File.Exists).ToList() : CandidateFiles(format, output);
+                if (emitManifest && File.Exists(manifestPath)) conflicts.Add(manifestPath);
+                if (conflicts.Count > 0)
+                    return CommandResult.Fail("Output already exists and overwrite=false: " + string.Join(", ", conflicts));
+            }
             var before = Snapshot(folder, format, output, pdfPaths);
             bool apiAccepted = false;
             JObject pdfApplied = null;
-            // An export is output, not a write: the exporters that commit to the document
-            // (NWC regenerates - measured on rebar; IFC writes export marks) run inside a
-            // group that is rolled back once the file is on disk. Core/ExportIsolationRules.cs.
-            ExportIsolation isolation = ExportIsolationRules.Isolates(format) ? ExportIsolation.Begin(app, doc, format) : null;
-            Exception exportFailure = null;
-            try
+            JObject scheduleRefresh = null;
+            ExportIsolation isolation = null;
+            JObject isolationReport = null, provenChanges = null; string isolationHeadline = null;
+            CommandResult exportFailure = ExecuteExportAttempt(format, format == "pdf" ? pdfPaths : new[] { output },
+                overwrite, File.Move, () =>
             {
+              // Only the export call answers dialogs from the catalog; the scope is restored on any exit,
+              // and a failure leads with the dialog that caused it instead of "exporter rejected output".
+              using (Interference.WithExportDialogs(dialogMode))
+              try
+              {
+                isolation = ExportIsolationRules.Isolates(format) ? ExportIsolation.Begin(app, doc, format) : null;
                 switch (format)
                 {
                     case "pdf":
                         apiAccepted = true;
+                        // Schedules on the sheets are rebuilt first (renamed types printed their old names),
+                        // inside a group rolled back after the files are written. See ScheduleRefresh.cs.
+                        scheduleRefresh = ScheduleRefresh.Around(doc, views, () => {
                         for(int p=0;p<pdfPaths.Length;p++)
                         {
+                            // 4.2-N4 (CT-P1-4e): progress per file, polled through job_status when run as a job.
+                            CallProgress.Checkpoint("pdf " + System.IO.Path.GetFileName(pdfPaths[p]), p, pdfPaths.Length);
                             // Single-view calls give deterministic one-file-per-view names.
                             // Revit appends .pdf itself. Including the extension
                             // produces name.pdf.pdf and violates the approved path.
                             var pdf = new PDFExportOptions { Combine = true, FileName = System.IO.Path.GetFileNameWithoutExtension(pdfPaths[p]) };
                             pdfApplied = ApplyPrintPolicy(pdf, printPolicy);
-                            bool accepted = doc.Export(folder, pdfCombine ? views.Select(v=>v.Id).ToList() : new List<ElementId>{views[p].Id}, pdf);
+                            bool accepted = doc.Export(folder, pdfJobs.Groups[p].Select(ix=>views[ix].Id).ToList(), pdf);
                             apiAccepted = apiAccepted && accepted;
                             if (!accepted) throw new InvalidOperationException("PDF exporter rejected output " + pdfPaths[p]);
                         }
+                        });
                         break;
                     case "dwg":
                         apiAccepted = doc.Export(folder, System.IO.Path.GetFileNameWithoutExtension(output),
@@ -430,47 +626,93 @@ namespace Horizun.Revit.Commands
                         };
                         image.SetViewsAndSheets(new List<ElementId> { views[0].Id }); doc.ExportImage(image); apiAccepted = true; break;
                     case "schedule_csv":
-                        schedule.Export(folder, System.IO.Path.GetFileName(output), new ViewScheduleExportOptions()); apiAccepted = true; break;
+                        // Revit's defaults are a tab-separated file with a title row: Excel, Power BI and
+                        // tabular_source read it as ONE column. A .csv is comma-separated, quoted, one header row.
+                        schedule.Export(folder, System.IO.Path.GetFileName(output), new ViewScheduleExportOptions
+                        {
+                            FieldDelimiter = ",", TextQualifier = ExportTextQualifier.DoubleQuote, Title = false,
+                            ColumnHeaders = ExportColumnHeaders.OneRow, HeadersFootersBlanks = false
+                        }); apiAccepted = true; break;
                 }
-            }
-            catch (Exception ex) { exportFailure = ex; }
-            JObject isolationReport = null, provenChanges = null; string isolationHeadline = null;
-            if (isolation != null)
+                return apiAccepted;
+              }
+              catch (Exception exportEx) when (Interference.Current != null && Interference.Current.ExportDecisions.Count > 0)
+              {
+                  throw new InvalidOperationException(ExportDialogPolicy.CauseFirst(Interference.Current.ExportDecisions, exportEx.Message), exportEx);
+              }
+            }, () =>
             {
-                ExportIsolationRules.Facts isolationFacts = isolation.End();
-                isolationReport = ExportIsolationRules.Report(format, isolationFacts);
-                isolationHeadline = ExportIsolationRules.Headline(format, isolationFacts);
-                // MEASURED: DocumentChanged keeps listing eleven rebar the rollback restored.
-                // When Revit's own flag proves the document unchanged, the reply says so
-                // instead of letting the dispatcher stamp that residue as model_changes.
-                provenChanges = ExportIsolationRules.ProvenModelChanges(isolationFacts);
-            }
+                if (isolation != null)
+                {
+                    ExportIsolationRules.Facts isolationFacts = isolation.End();
+                    isolationReport = ExportIsolationRules.Report(format, isolationFacts);
+                    isolationHeadline = ExportIsolationRules.Headline(format, isolationFacts);
+                    provenChanges = ExportIsolationRules.ProvenModelChanges(isolationFacts);
+                }
+            }, () => isolationReport, () => isolationHeadline,
+                out var asideFiles, out var restoredPdfs, out var attemptAccepted);
+            apiAccepted = attemptAccepted;
+            JArray RestoreAsides() => RestorePdfAsides(asideFiles);
             if (exportFailure != null)
             {
-                var failure = new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
-                    ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}) };
-                if (isolationReport != null) failure["model_isolation"] = isolationReport;
-                return CommandResult.FailWithDetail("Revit export failed: " + exportFailure.Message +
-                    (isolationHeadline != null ? " " + isolationHeadline : ""), failure);
+                if (format == "pdf" && exportFailure.Detail != null)
+                {
+                    var failedAfter = Snapshot(folder, format, output, pdfPaths);
+                    var failedProduced = ExportFileDiff.Diff(before, failedAfter).Produced;
+                    exportFailure.Detail["verification"] = PdfVerification.Compare(pdfPaths, failedProduced.Select(x => new KeyValuePair<string, long>(x, failedAfter[x].Size)), rule: "export_exception");
+                    return CommandResult.FailWithDetail(exportFailure.Error + ". " + PdfVerification.Advice, exportFailure.Detail);
+                }
+                return exportFailure;
             }
-
-            JObject WithIsolation(JObject detail) { if (isolationReport != null) detail["model_isolation"] = isolationReport; return detail; }
+            IList<ExportDialogDecision> dialogDecisions = Interference.Current?.ExportDecisions;
+            JObject DialogBlock() => ExportDialogPolicy.Block(dialogMode, dialogPolicyRequested, dialogDecisions);
+            JObject WithIsolation(JObject detail)
+            {
+                if (isolationReport != null) detail["model_isolation"] = isolationReport;
+                detail["dialog_policy"] = DialogBlock();
+                return detail;
+            }
             var after = Snapshot(folder, format, output, pdfPaths);
             (List<string> produced, List<string> unmeasured) = ExportFileDiff.Diff(before, after);
+            // Nothing new was measured: the old PDFs go back, so the failure leaves them where they were.
+            if (produced.Count == 0 && asideFiles.Count > 0) restoredPdfs = RestoreAsides();
             if (produced.Count == 0)
-                return CommandResult.FailWithDetail("Revit returned from export (accepted=" + apiAccepted +
+            {
+                var noFilesDetail = new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
+                    ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}),
+                    ["unmeasured_files"]=new JArray(unmeasured) };
+                if (format == "pdf") noFilesDetail["verification"] = PdfVerification.Compare(pdfPaths, produced.Select(x => new KeyValuePair<string, long>(x, after[x].Size)));
+                if (restoredPdfs != null) noFilesDetail["previous_pdfs_restored"] = restoredPdfs;
+                return CommandResult.FailWithDetail(ExportDialogPolicy.CauseFirst(dialogDecisions, "Revit returned from export (accepted=" + apiAccepted +
                     "), but no new or changed non-empty file was measured in " + folder +
                     (unmeasured.Count > 0 ? ". " + unmeasured.Count + " matching file(s) existed before this call and could " +
                         "not be read then, so a change could not be proven either way: " + string.Join(", ", unmeasured) + "." : ".") +
-                    " Success is not claimed.",
-                    WithIsolation(new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
-                        ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}),
-                        ["unmeasured_files"]=new JArray(unmeasured) }));
+                    " Success is not claimed." + (format == "pdf" ? " " + PdfVerification.Advice : "")),
+                    WithIsolation(noFilesDetail));
+            }
             // Non-PDF formats produce exactly one file per call (dwg/image/nwc(view) take
             // exactly one view_id, ifc/nwc(model)/schedule_csv take none, fbx combines every
             // 3D view_id into ONE .fbx) - so, unlike PDF's per-view pdfPaths, the expected
             // set here is always {output}. More than one matching produced file, as much as
             // fewer, is reported by name rather than folded into a bare count.
+            string imageRenamedFrom = null;
+            // overwrite: the output exists and was approved for replacement, but Revit still
+            // writes the image under the view's name, never onto it - so replace it here.
+            if (format == "image" && (!File.Exists(output) || overwrite))
+            {
+                // Revit names the image after the view (ExportFileDiff.ImageToRename); the one file
+                // it produced is moved to the path the caller asked for, then measured there.
+                string revitNamed = ExportFileDiff.ImageToRename(produced, output);
+                if (revitNamed != null)
+                {
+                    try
+                    {
+                        if (File.Exists(output)) File.Replace(revitNamed, output, null); else File.Move(revitNamed, output);
+                        produced = new List<string> { output }; imageRenamedFrom = revitNamed;
+                    }
+                    catch (Exception moveEx) { Log.Warn("image export: could not move '" + revitNamed + "' to '" + output + "': " + moveEx.Message); }
+                }
+            }
             if (format != "pdf")
             {
                 (List<string> missing, List<string> extra) = ExportFileDiff.AgainstExpectedSingleFile(produced, output);
@@ -492,6 +734,7 @@ namespace Horizun.Revit.Commands
                             ["unmeasured_files"] = new JArray(unmeasured) }));
             }
 
+            var replacedPdfs = new JArray();
             var files = new JArray();
             foreach (string path in produced)
             {
@@ -505,6 +748,20 @@ namespace Horizun.Revit.Commands
                 ["note"] = produced.Count == 1 ? "One produced file was re-read from disk." :
                     "Revit produced multiple sidecar/output files; every changed non-empty file is reported."
             };
+            exportResult["dialog_policy"] = DialogBlock();
+            if (format == "schedule_csv" && schedule != null)
+            {
+                // Re-read the header from disk and compare its columns with the schedule's visible fields.
+                JObject csv = ScheduleCsvCheck(output, schedule);
+                exportResult["csv"] = csv;
+                if (csv.Value<bool?>("columns_match") != true)
+                    return CommandResult.FailWithDetail("The schedule was exported, but its header row read back from " + output + " has " +
+                        csv["header_columns"] + " comma-separated column(s) and the schedule shows " + csv["expected_columns"] +
+                        ". Success is not claimed.", WithIsolation(new JObject { ["external_files_may_exist"] = true,
+                            ["rollback_available"] = false, ["csv"] = csv, ["files"] = files }));
+            }
+            if (scheduleRefresh != null) exportResult["schedule_refresh"] = scheduleRefresh;
+            if (imageRenamedFrom != null) exportResult["revit_named_it"] = imageRenamedFrom;
             if (unmeasured.Count > 0)
                 exportResult["unmeasured_files"] = new JObject
                 {
@@ -518,18 +775,21 @@ namespace Horizun.Revit.Commands
             if (format == "pdf")
             {
                 var verifiedPdf=new JArray();
+                int? pagesExpected = null, pagesFound = null;
                 try
                 {
-                    if (produced.Count!=pdfPaths.Length) throw new InvalidOperationException("Not every requested PDF was produced or changed.");
-                    var pageVerdicts=new List<JObject>();
+                    if (PdfVerification.Compare(pdfPaths, produced.Select(x => new KeyValuePair<string, long>(x, after[x].Size))).Value<string>("rule") != null) throw new InvalidOperationException("PDF file names do not match the requested package.");
+                    var pageVerdicts=new List<JObject>(); var pageFiles=new List<string>();
                     for(int i=0;i<pdfPaths.Length;i++)
                     {
-                        JObject file=DeliveryPdf.Inspect(pdfPaths[i],pdfCombine?views.Count:1);
-                        List<View> sources=pdfCombine?views:new List<View>{views[i]};
+                        List<View> sources=pdfJobs.Groups[i].Select(ix=>views[ix]).ToList();
+                        JObject file=DeliveryPdf.Inspect(pdfPaths[i],sources.Count);
                         file["source_views"]=new JArray(sources.Select(v=>new JObject {
                             ["id"]=Rid.Value(v.Id),["unique_id"]=v.UniqueId,["name"]=v.Name,
                             ["sheet_number"]=(v as ViewSheet)?.SheetNumber,
                             ["revision_ids"]=v is ViewSheet sheet ? new JArray(sheet.GetAllRevisionIds().Select(Rid.Value)) : new JArray() }));
+                        verifiedPdf.Add(file);
+                        pagesExpected = sources.Count; pagesFound = file.Value<int>("pages");
                         if (file.Value<bool>("page_count_verified")!=true) throw new InvalidOperationException("PDF page count mismatch.");
                         // Every produced page is judged against the print policy: the
                         // page geometry PdfPig read is compared with the requested paper
@@ -544,23 +804,76 @@ namespace Horizun.Revit.Commands
                                 SheetPoints(source), 2.0, TitleblockPoints(doc, source));
                             verdict["page"]=pages[pg]["page"].DeepClone();
                             verdict["source_view_id"]=source==null?(JToken)JValue.CreateNull():Rid.Value(source.Id);
-                            filePages.Add(verdict); pageVerdicts.Add(verdict);
+                            filePages.Add(verdict); pageVerdicts.Add(verdict); pageFiles.Add(System.IO.Path.GetFileName(pdfPaths[i]));
                         }
                         file["page_verdicts"]=filePages;
-                        verifiedPdf.Add(file);
+                    }
+                    // 4.2-N4 (CT-P1-4d, LP-P3-13c): read every produced file back for fonts, blank pages and text collisions.
+                    JObject qaSummary = null;
+                    if (pdfQa != null)
+                    {
+                        int qaClean = 0, qaPartial = 0;
+                        int qaFile = 0;
+                        foreach (JObject produced1 in verifiedPdf.OfType<JObject>())
+                        {
+                            JObject qa;
+                            List<View> qaPages = qaFile < pdfJobs.Groups.Length ? pdfJobs.Groups[qaFile].Select(ix => views[ix]).ToList() : new List<View>();
+                            qaFile++;
+                            try { qa = PdfQa.Inspect(produced1.Value<string>("path"), ForPages(doc, pdfQa, qaPages)); }
+                            catch (Exception qaEx) { qa = new JObject { ["verdict"] = "unreadable", ["reason"] = qaEx.Message }; }
+                            produced1["qa"] = qa;
+                            if (qa.Value<string>("verdict") == "clean") qaClean++;
+                            else if (qa.Value<string>("verdict") == "partial") qaPartial++;
+                        }
+                        qaSummary = new JObject { ["files"] = verifiedPdf.Count, ["clean"] = qaClean, ["partial"] = qaPartial, ["with_findings"] = verifiedPdf.Count - qaClean - qaPartial, ["render_checked"] = false,
+                            ["note"] = "findings are reported, not hidden and not fatal: the files exist as exported" };
+                    }
+                    // 4.2-N4 (CT-P1-4c): older versions move into the archive folder - moved, never deleted - and are re-read there.
+                    JObject archiveReport = null;
+                    if (pdfArchivePrevious)
+                    {
+                        string archiveDir = System.IO.Path.Combine(folder, pdfArchiveFolder);
+                        var moved = new JArray(); var notMoved = new JArray();
+                        foreach (string old in archiveCandidates)
+                        {
+                            try
+                            {
+                                Directory.CreateDirectory(archiveDir);
+                                string target = System.IO.Path.Combine(archiveDir, System.IO.Path.GetFileName(old));
+                                if (File.Exists(target)) { notMoved.Add(new JObject { ["file"] = old, ["reason"] = "a file with that name is already in the archive" }); continue; }
+                                File.Move(old, target);
+                                if (File.Exists(target) && !File.Exists(old)) moved.Add(new JObject { ["from"] = old, ["to"] = target });
+                                else notMoved.Add(new JObject { ["file"] = old, ["reason"] = "the move could not be confirmed on disk" });
+                            }
+                            catch (Exception moveEx) { notMoved.Add(new JObject { ["file"] = old, ["reason"] = moveEx.Message }); }
+                        }
+                        archiveReport = new JObject { ["folder"] = archiveDir, ["moved"] = moved, ["not_moved"] = notMoved, ["deleted"] = 0 };
                     }
                     JObject printReport=printPolicy.Report(pdfApplied,pageVerdicts);
                     if (!printReport.Value<bool>("verifiable_options_held"))
                         // Every reason the report holds against the policy is named: a page
                         // that contradicts it (verified_mismatch), an option the exporter
                         // rewrote (applied_mismatch) and a page larger than its titleblock.
-                        throw new InvalidOperationException("The produced PDF contradicts the print policy: " +
-                            string.Join("; ",((JArray)printReport["options"]).Where(r=>r.Value<string>("status")==PdfPrintPolicy.StatusVerifiedMismatch
-                                                                                    || r.Value<string>("status")==PdfPrintPolicy.StatusAppliedMismatch)
-                                .Select(r=>r.Value<string>("option")+" ("+r.Value<string>("status")+") - "+r.Value<string>("reason"))
-                                .Concat(((JArray)printReport["composition"]["pages_exceeding_titleblock"]).Select(c=>"page "+c["page"]+" (sheet "+c["source_view_id"]+") - "+c.Value<string>("reason")))));
+                        throw new PdfVerification.PolicyContradiction(PdfVerification.PolicyFailureMessage(printReport, idx =>
+                        {
+                            // idx is the page's position among ALL produced pages (each file numbers its own from 1).
+                            try
+                            {
+                                if (idx < 0 || idx >= pageVerdicts.Count) return null;
+                                JObject verdict = pageVerdicts[idx];
+                                long sid = verdict.Value<long?>("source_view_id") ?? 0;
+                                ViewSheet sheet = sid != 0 ? doc.GetElement(Rid.Make(sid)) as ViewSheet : null;
+                                PdfSheetMap map = sheet != null ? SheetMap(doc, sheet, verdict.Value<int?>("page") ?? 0) : null;
+                                return PdfVerification.PaperMismatchDetail(verdict, sheet != null ? sheet.SheetNumber + " - " + sheet.Name : null, map,
+                                    printPolicy.PaperFormat, pageFiles[idx]);
+                            }
+                            catch { return null; }
+                        }));
                     var manifest=new JObject { ["schema"]="horizun.delivery-manifest/1",["utc"]=DateTime.UtcNow.ToString("o"),
                         ["document"]=doc.Title,["combined"]=pdfCombine,["files"]=verifiedPdf,
+                        ["version"]=pdfPattern!=null?(JToken)pdfVersion:JValue.CreateNull(),["version_auto"]=autoVersion,
+                        ["parts"]=pdfParts,["also_per_sheet"]=pdfAlsoPerSheet,
+                        ["archive"]=archiveReport==null?JValue.CreateNull():archiveReport,["qa"]=qaSummary==null?JValue.CreateNull():qaSummary,
                         ["print_policy"]=printReport,
                         ["source_mapping"]="export invocation mapping; page identity and visual content are not independently verified",
                         ["visual_approval"]="required",["package_verified"]=true };
@@ -598,9 +911,17 @@ namespace Horizun.Revit.Commands
                             ["publish_gate_at_export"]=deliveryGate,["reverification"]=deliveryReverification,["notes"]=ledgerNotes };
                     }
                 }
-                catch(Exception ex) { return CommandResult.FailWithDetail("PDF package verification failed: "+ex.Message,
-                    new JObject { ["files"]=files,["pdf_evidence"]=verifiedPdf,["external_files_may_exist"]=true,["rollback_available"]=false }); }
+                catch(Exception ex) { return CommandResult.FailWithDetail(PdfVerification.FailureText(ex),
+                    new JObject { ["verification"] = PdfVerification.Compare(pdfPaths, produced.Select(x => new KeyValuePair<string, long>(x, after[x].Size)), pagesExpected, pagesFound, ex.Message == "PDF page count mismatch." ? "page_count" : ex.Message == "PDF file names do not match the requested package." ? null : "pdf_inspection_or_policy"), ["files"]=files,["pdf_evidence"]=verifiedPdf,["external_files_may_exist"]=true,["rollback_available"]=false,
+                        ["previous_pdfs_restored"] = RestoreAsides() }); }
             }
+            // Keep old PDFs until all requested PDFs and their print policy pass verification.
+            foreach (AsideFile moved in asideFiles)
+            {
+                try { File.Delete(moved.Aside); replacedPdfs.Add(moved.Original); }
+                catch (Exception deleteEx) { replacedPdfs.Add(new JObject { ["path"] = moved.Original, ["old_copy_left_at"] = moved.Aside, ["reason"] = deleteEx.Message }); }
+            }
+            if (replacedPdfs.Count > 0) exportResult["replaced_existing_pdfs"] = replacedPdfs;
             if (container != null)
             {
                 // The container names ONE file, the effective output. Revit not producing
@@ -905,6 +1226,21 @@ namespace Horizun.Revit.Commands
             }
         }
 
+        /// <summary>What pdf_name_pattern may read from one exported view.</summary>
+        private static PdfNameSource NameSource(View v)
+        {
+            var sheet = v as ViewSheet;
+            string name = null;
+            try { name = v.Name; } catch { }
+            return new PdfNameSource
+            {
+                ViewId = Rid.Value(v.Id),
+                ViewName = name,
+                SheetNumber = sheet == null ? null : (sheet.SheetNumber ?? ""),
+                SheetName = sheet == null ? null : (name ?? "")
+            };
+        }
+
         private static List<View> ReadViews(Document doc, JArray ids, out string error)
         {
             error = null; var views = new List<View>(); if (ids == null) return views;
@@ -934,14 +1270,35 @@ namespace Horizun.Revit.Commands
             string folder = System.IO.Path.GetDirectoryName(output);
             return Directory.GetFiles(folder).Where(path => MatchesOutput(format, output, path)).ToList();
         }
+        /// <summary>The header of an exported schedule CSV: its comma-separated columns against the visible fields.</summary>
+        private static JObject ScheduleCsvCheck(string path, ViewSchedule schedule)
+        {
+            int expected = -1;
+            try
+            {
+                ScheduleDefinition def = schedule.Definition;
+                expected = def.GetFieldOrder().Count(id => !def.GetField(id).IsHidden);
+            }
+            catch { }
+            string header = null;
+            try { header = File.ReadLines(path).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)); } catch { }
+            int columns = header == null ? 0 : TabularRules.CountCsvFields(header, ',');
+            return new JObject
+            {
+                ["delimiter"] = ",",
+                ["text_qualifier"] = "\"",
+                ["title_row"] = false,
+                ["header_columns"] = columns,
+                ["expected_columns"] = expected < 0 ? (JToken)JValue.CreateNull() : expected,
+                ["columns_match"] = expected >= 0 && header != null && columns == expected
+            };
+        }
+
         private static bool MatchesOutput(string format, string output, string path)
         {
             string wantedStem = System.IO.Path.GetFileNameWithoutExtension(output);
             string actualStem = System.IO.Path.GetFileNameWithoutExtension(path);
-            if (!actualStem.Equals(wantedStem, StringComparison.OrdinalIgnoreCase) &&
-                !actualStem.StartsWith(wantedStem + "-", StringComparison.OrdinalIgnoreCase) &&
-                !actualStem.StartsWith(wantedStem + "_", StringComparison.OrdinalIgnoreCase))
-                return false;
+            if (!ExportFileDiff.StemMatches(wantedStem, actualStem)) return false;
             string ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
             switch (format)
             {
@@ -975,7 +1332,7 @@ namespace Horizun.Revit.Commands
                 case "cobie": return ext == ".xlsx";
                 case "image": return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif" || ext == ".tiff";
                 case "schedule_csv": return ext == ".csv" || ext == ".txt";
-                case "dwg_layers": return ext == ".json";
+                case "dwg_layers": case "ifc_setup": return ext == ".json";
                 default: return false;
             }
         }
@@ -983,7 +1340,7 @@ namespace Horizun.Revit.Commands
         {
             if (format == "image") return ".png, .jpg, .jpeg, .bmp, .tif or .tiff";
             if (format == "schedule_csv") return ".csv or .txt";
-            if (format == "dwg_layers") return ".json";
+            if (format == "dwg_layers" || format == "ifc_setup") return ".json";
             if (format == "gbxml") return ".xml";
             if (format == "cobie") return ".xlsx";
             return "." + format;
@@ -1010,7 +1367,7 @@ namespace Horizun.Revit.Commands
             foreach (string file in files)
             {
                 bool relevant = format == "pdf"
-                    ? pdfPaths != null && pdfPaths.Contains(file, StringComparer.OrdinalIgnoreCase)
+                    ? string.Equals(Path.GetExtension(file), ".pdf", StringComparison.OrdinalIgnoreCase)
                     : MatchesOutput(format, output, file);
                 if (!relevant) continue;
                 var stamp = new ExportFileStamp { Existed = true };

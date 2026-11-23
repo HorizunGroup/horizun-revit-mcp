@@ -160,7 +160,10 @@ namespace Horizun.Revit.Commands
                 rows.Add(new ParameterClassificationRules.TypeCode
                 {
                     Id = id, Name = t.Name, Category = t.Category?.Name ?? "Materials",
-                    Code = p.AsString(), Instances = placed.TryGetValue(id, out int n) ? n : 0
+                    Code = p.AsString(), Instances = placed.TryGetValue(id, out int n) ? n : 0,
+                    // By CLASS, not by category name: "RVT Links" is a display name and reads
+                    // differently in every Revit language.
+                    IsReference = t is RevitLinkType || t is CADLinkType
                 });
             }
             return rows;

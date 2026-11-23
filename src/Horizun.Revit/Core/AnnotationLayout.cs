@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The Revit half of annotation layout. AnnotationVisibility.cs holds the
@@ -22,6 +22,7 @@ namespace Horizun.Revit.Core
     internal sealed class AnnotationSurvey
     {
         public List<PlanBox> Obstacles = new List<PlanBox>();
+        public List<long> ObstacleIds = new List<long>();
         public PlanBox? Bounds;
         public JObject Coverage;
         public bool Complete;
@@ -61,15 +62,17 @@ namespace Horizun.Revit.Core
         private static bool IsAnnotation(Element e)
         {
             return e is IndependentTag || e is SpatialElementTag || e is TextNote ||
-                   e is Dimension || e is AnnotationSymbol;
+                   e is Dimension || e is AnnotationSymbol || e is ElevationMarker ||
+                   e is FamilyInstance fi && fi.Category?.CategoryType == CategoryType.Annotation;
         }
 
         // ---------------------------------------------------------------------
         // The survey. Everything else in this file is built on it.
         // ---------------------------------------------------------------------
         internal static AnnotationSurvey Survey(Document doc, View view, ElementId except = null,
-                                                HashSet<long> accepted = null)
+                                                HashSet<long> accepted = null, AnnotationBudget budget = null)
         {
+            budget?.Check();
             accepted = accepted ?? new HashSet<long>();
             var survey = new AnnotationSurvey();
             var entries = new List<JObject>();
@@ -80,14 +83,13 @@ namespace Horizun.Revit.Core
             // an empty view and calls any placement clear.
             long primaryViewId = 0;
             var considered = new Dictionary<long, Element>();
-            foreach (Element e in Owned(doc, view.Id)) considered[Rid.Value(e.Id)] = e;
+            AddOwned(view.Id);
             try
             {
                 ElementId primary = view.GetPrimaryViewId();
                 if (primary != null && primary != ElementId.InvalidElementId && primary != view.Id)
                 {
                     primaryViewId = Rid.Value(primary);
-                    foreach (Element e in Owned(doc, primary)) considered[Rid.Value(e.Id)] = e;
                 }
             }
             catch
@@ -96,6 +98,16 @@ namespace Horizun.Revit.Core
                 // dependent, and the visible-element probe below still runs.
                 primaryViewId = 0;
             }
+            if (primaryViewId != 0) AddOwned(Rid.Make(primaryViewId));
+
+            void AddOwned(ElementId viewId)
+            {
+                foreach (Element e in Owned(doc, viewId))
+                {
+                    budget?.Check();
+                    considered[Rid.Value(e.Id)] = e;
+                }
+            }
 
             HashSet<long> visible = null;
             bool visibleProbed = false;
@@ -103,6 +115,7 @@ namespace Horizun.Revit.Core
 
             foreach (KeyValuePair<long, Element> pair in considered.OrderBy(p => p.Key))
             {
+                budget?.Check();
                 Element e = pair.Value;
                 if (except != null && e.Id == except) continue;
 
@@ -125,6 +138,7 @@ namespace Horizun.Revit.Core
                 if (TryBox(e, view, out box, out readFailure))
                 {
                     survey.Obstacles.Add(box);
+                    survey.ObstacleIds.Add(pair.Key);
                     entries.Add(AnnotationVisibility.Entry(pair.Key, category, className, ownerViewId,
                         AnnotationVisibility.Measured, "extent read in this view: " + PlanimetryGeometry.Signature(box)));
                     continue;
@@ -140,7 +154,7 @@ namespace Horizun.Revit.Core
 
                 if (!visibleProbed)
                 {
-                    visible = VisibleIds(doc, view, out visibleProbeNote);
+                    visible = VisibleIds(doc, view, out visibleProbeNote, budget);
                     visibleProbed = true;
                 }
                 if (visible != null && !visible.Contains(pair.Key))
@@ -177,6 +191,7 @@ namespace Horizun.Revit.Core
                                                             boundsReport, visibleProbed ? visibleProbeNote : "not_required",
                                                             entries);
             survey.Complete = survey.Coverage.Value<bool>("coverage_complete");
+            budget?.Check();
             return survey;
         }
 
@@ -252,7 +267,7 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>Revit's own answer to "what is visible in this view". Null when it cannot be asked.</summary>
-        private static HashSet<long> VisibleIds(Document doc, View view, out string note)
+        private static HashSet<long> VisibleIds(Document doc, View view, out string note, AnnotationBudget budget)
         {
             if (view.IsTemplate)
             {
@@ -263,11 +278,14 @@ namespace Horizun.Revit.Core
             {
                 var ids = new HashSet<long>();
                 foreach (ElementId id in new FilteredElementCollector(doc, view.Id).ToElementIds())
+                {
+                    budget?.Check();
                     ids.Add(Rid.Value(id));
+                }
                 note = "FilteredElementCollector(doc, view_id) returned " + ids.Count + " visible elements";
                 return ids;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!(ex is AnnotationBudgetExceeded))
             {
                 note = "FilteredElementCollector(doc, view_id) threw " + ex.GetType().Name + ": " + ex.Message;
                 return null;
@@ -454,9 +472,11 @@ namespace Horizun.Revit.Core
         }
 
         internal static XYZ Place(Document doc, View view, IndependentTag tag, XYZ seed, double gap, double maxMove,
-                                  HashSet<long> accepted = null, JObject coverageOut = null)
+                                  HashSet<long> accepted = null, JObject coverageOut = null, AnnotationBudget budget = null)
         {
+            budget?.Check();
             doc.Regenerate();
+            budget?.Check();
             // The bounding box includes the native leader when present: conservative
             // collision rejection, not a claim of exact glyph/leader intersection.
             // A LABEL-ONLY family publishes no box at all - that is every stock Autodesk
@@ -472,7 +492,7 @@ namespace Horizun.Revit.Core
                 XYZ at = tag.TagHeadPosition;
                 initial = Project(PointBox(at), view);
             }
-            AnnotationSurvey survey = Survey(doc, view, tag.Id, accepted);
+            AnnotationSurvey survey = Survey(doc, view, tag.Id, accepted, budget);
             if (!survey.Complete) throw new AnnotationCoverageException(survey.Coverage);
             if (coverageOut != null)
             {
@@ -487,29 +507,43 @@ namespace Horizun.Revit.Core
             }
             List<PlanBox> obstacles = survey.Obstacles;
             PlanBox? bounds = survey.Bounds;
-            double step = Math.Max(gap, Math.Max(initial.Width, initial.Height) * .25);
-            step = Math.Max(step, 1.0 / 304.8);
-            for (int ring = 0; ring <= 40; ring++)
+            var fallback = new DeliveryLayoutRules.TagFallback();
+            XYZ currentHeadFromSeed = tag.TagHeadPosition.Subtract(seed);
+            XYZ right = view.RightDirection, up = view.UpDirection;
+            (double X, double Y)? projectedHeadOffset = null;
+            if (currentHeadFromSeed.GetLength() > 1e-9)
+                projectedHeadOffset = (currentHeadFromSeed.DotProduct(right), currentHeadFromSeed.DotProduct(up));
+            ((double X, double Y) Head, PlanBox Box) MoveAndMeasure(double x, double y)
             {
-                for (int y = -ring; y <= ring; y++)
-                    for (int x = -ring; x <= ring; x++)
-                    {
-                        if (Math.Max(Math.Abs(x), Math.Abs(y)) != ring) continue;
-                        double dx = x * step, dy = y * step;
-                        if (Math.Sqrt(dx * dx + dy * dy) > maxMove + 1e-7) continue;
-                        if (!DeliveryLayoutRules.Clear(DeliveryLayoutRules.Shift(initial, dx, dy), obstacles, gap, bounds)) continue;
-                        XYZ chosen = seed.Add(view.RightDirection.Multiply(dx)).Add(view.UpDirection.Multiply(dy));
-                        tag.TagHeadPosition = chosen; doc.Regenerate();
-                        if (extentProblem != null) return chosen;
-                        if (DeliveryLayoutRules.Clear(Box(tag, view), obstacles, gap, bounds)) return chosen;
-                    }
+                tag.TagHeadPosition = seed.Add(right.Multiply(x)).Add(up.Multiply(y));
+                budget?.Check();
+                doc.Regenerate();
+                budget?.Check();
+                XYZ head = tag.TagHeadPosition;
+                XYZ actual = head.Subtract(seed);
+                PlanBox box = extentProblem == null ? Box(tag, view) : Project(PointBox(head), view);
+                return ((actual.DotProduct(right), actual.DotProduct(up)), box);
             }
-            throw new InvalidOperationException(
-                "No measured collision-free tag layout within the approved displacement; batch refused. " +
-                "Searched " + obstacles.Count + " measured obstacle(s) inside " +
-                (bounds.HasValue ? "the view's " + survey.Coverage["bounds"].Value<string>("source") : "no view limit") +
-                " for tag " + Rid.Value(tag.Id) + ". Raise layout_max_displacement, lower layout_clearance, or " +
-                "make room in the view.");
+
+            var offset = DeliveryLayoutRules.FindTagOffset(initial, obstacles, gap, maxMove, bounds, budget, (x, y) =>
+            {
+                var measured = MoveAndMeasure(x, y);
+                return fallback.Measure(measured.Head, measured.Box, obstacles, gap, maxMove, bounds, budget);
+            }, projectedHeadOffset, fallback);
+            if (!offset.HasValue)
+                throw new InvalidOperationException("No measured tag position fit the view limit within layout_max_displacement.");
+            if (fallback.RestoreBest)
+            {
+                var measured = MoveAndMeasure(offset.Value.X, offset.Value.Y);
+                if (!fallback.VerifyRestored(measured.Head, measured.Box))
+                    throw new InvalidOperationException("Revit did not reproduce the measured fallback tag head and extent.");
+                if (coverageOut != null && fallback.Used)
+                {
+                    coverageOut["layout_fallback"] = true;
+                    coverageOut["layout_claim"] = "No clear position was confirmed within the search budget. The least conflicting measured position was selected.";
+                }
+            }
+            return tag.TagHeadPosition;
         }
 
         // EVIDENCE IS NOT LAYOUT. Placing a tag somewhere specific is verified by the
@@ -521,6 +555,9 @@ namespace Horizun.Revit.Core
         // of them for a fact that changes nothing about whether the tag is correct, so
         // the missing extent is now REPORTED, with the reason Revit gave, and only the
         // callers that actually lay a tag out still refuse.
+        /// <summary>IndependentTag.TagText, or null when Revit refuses to read it (a tag on a LINKED element throws a bare
+        /// InternalException from the getter inside the rehearsal transaction).</summary>
+        internal static string SafeTagText(IndependentTag tag) { try { return tag.TagText; } catch { return null; } }
         internal static JObject Evidence(IndependentTag tag, View view)
         {
             XYZ p = tag.TagHeadPosition;
@@ -532,7 +569,7 @@ namespace Horizun.Revit.Core
                 ["view_id"] = Rid.Value(tag.OwnerViewId), ["type_id"] = Rid.Value(tag.GetTypeId()),
                 ["head"] = new JArray(Math.Round(p.X, 8), Math.Round(p.Y, 8), Math.Round(p.Z, 8)),
                 ["orientation"] = tag.TagOrientation.ToString(), ["has_leader"] = tag.HasLeader, ["orphaned"] = tag.IsOrphaned,
-                ["text"] = tag.TagText,
+                ["text"] = SafeTagText(tag),
                 ["extent"] = extentProblem == null ? PlanimetryGeometry.Signature(box) : null,
                 ["view_scale"] = view.Scale
             };
@@ -544,7 +581,22 @@ namespace Horizun.Revit.Core
                     "extent, so nothing here claims it avoids overlapping other annotation. Automatic layout and " +
                     "avoid_collisions still refuse such a tag by name rather than guess.";
             }
-            else evidence["extent_measured"] = true;
+            else
+            {
+                evidence["extent_measured"] = true;
+                // The extent is "minR,minU,maxR,maxU" in tenths of a millimetre, in the view frame, measured
+                // from the view origin. Field report (2025, 1:16): a box that looked like it was multiplied by
+                // the scale. The box is checked against the tag head in the SAME frame (view axes, from the view
+                // origin): it must hold the head as read; holding it only once divided by the view scale is the
+                // known scale trap. Evidence only: verification does not depend on it.
+                XYZ rel = p.Subtract(view.Origin);
+                int scale; try { scale = view.Scale; } catch { scale = 1; }
+                double tol = 2.0 / 304.8 * Math.Max(1, scale) + 0.01 * Math.Max(box.MaxX - box.MinX, box.MaxY - box.MinY);
+                evidence["extent_units"] = "0.1 mm, view frame, from the view origin";
+                evidence["extent_check"] = TagRules.ExtentHeadCheck(
+                    new[] { box.MinX, box.MinY, box.MaxX, box.MaxY },
+                    new[] { rel.DotProduct(view.RightDirection), rel.DotProduct(view.UpDirection) }, scale, tol);
+            }
             return evidence;
         }
     }

@@ -10,7 +10,7 @@
 # area_parameter_before_m2, area_parameter_after_m2, area_check) under transaction_status
 # 'Committed' with application.state; and the wording of two refusals (off-plane names the
 # plane as "(x, y, z) mm" in invariant numbers; FootPrintRoof names SketchId). The
-# template's type names below are the probe's guesses, equally unmeasured.
+# type names below are the probe's guesses, equally unmeasured.
 $ErrorActionPreference = 'Stop'
 $script:HzProbeModules = @()
 . (Join-Path $PSScriptRoot 'sketch-edits.probes.ps1')
@@ -19,17 +19,23 @@ $fails = 0
 function Check($name, $ok) { if ($ok) { "  PASS  $name" } else { "  FAIL  $name"; $script:fails++ } }
 function Reply($data, $isError, $text) { @{ isError = $isError; data = $data; text = $text } }
 
-# The probe looks for the template under TemplateRoot; give it an empty stand-in.
-$fakeRoot = Join-Path ([IO.Path]::GetTempPath()) ('hz-sketch-tests-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path (Join-Path $fakeRoot 'English') | Out-Null
-Set-Content -LiteralPath (Join-Path $fakeRoot 'English\DefaultMetric.rte') -Value ''
 $LevelZ = 117000.0
 
+# Types the fake document carries, as 'Family: Type'.
+function Seed($names) {
+    foreach ($nm in $names) {
+        $fam, $typ = $nm -split ': ', 2
+        $cat = if ($fam -eq 'Floor') { 'OST_Floors' } elseif ($fam -like '*Ceiling') { 'OST_Ceilings' } else { 'OST_Roofs' }
+        $script:typeId++
+        $script:docTypes[$cat] = @(@($script:docTypes[$cat]) + @([pscustomobject]@{ element_id = $script:typeId; is_element_type = $true; family = $fam; type = $typ }) | Where-Object { $_ })
+    }
+}
+
 function New-State {
-    $script:nextId = 5000; $script:sent = @{}; $script:deleted = $null; $script:dryCalls = 0; $script:createdIds = New-Object System.Collections.ArrayList; $script:copiedIds = New-Object System.Collections.ArrayList
-    $script:docTypes = @{}; $script:elements = @{}
+    $script:nextId = 5000; $script:sent = @{}; $script:deleted = $null; $script:dryCalls = 0; $script:createdIds = New-Object System.Collections.ArrayList
+    $script:docTypes = @{}; $script:elements = @{}; $script:typeId = 900
     # Scenario switches, all off by default.
-    $script:templateNames = @('Floor: Generic 150mm', 'Compound Ceiling: 600 x 600mm Grid', 'Basic Roof: Generic - 400mm')
+    Seed @('Floor: Generic 150mm', 'Compound Ceiling: 600 x 600mm Grid', 'Basic Roof: Generic - 400mm')
     $script:ceilingPlaneLift = 0.0; $script:rehearsalCommits = $false; $script:areaOff = 0.0
     $script:lostAfterCommit = $false; $script:roofEditable = $false
 }
@@ -108,14 +114,6 @@ $fakeApply = {
     param($tool, $arguments, $key)
     $script:sent[$key] = $arguments
     switch ($tool) {
-        'horizun_copy_between_documents' {
-            $name = @($arguments.type_names)[0]
-            if ($script:templateNames -notcontains $name) { return @{ stage = 'dry_run'; answer = (Reply $null $true "type '$name' was not found in the source document") } }
-            $fam, $typ = $name -split ': ', 2
-            $script:nextId++; [void]$script:copiedIds.Add([long]$script:nextId)
-            $script:docTypes[$arguments.category] = @($script:docTypes[$arguments.category]) + @([pscustomobject]@{ element_id = $script:nextId; is_element_type = $true; family = $fam; type = $typ }) | Where-Object { $_ }
-            return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ copied = 1 }) $false '') }
-        }
         'horizun_create_elements' {
             $script:nextId++; [void]$script:createdIds.Add([long]$script:nextId)
             $item = @($arguments.elements)[0]
@@ -138,7 +136,7 @@ $fakeApply = {
     }
 }
 
-function Ctx($runId) { [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; TemplateRoot = $fakeRoot; RunId = $runId; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply } }
+function Ctx($runId) { [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; RunId = $runId; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply } }
 function RunBy($ctx) { $by = @{}; foreach ($c in @(& $module.Run $ctx)) { $by[$c.Name] = $c }; $by }
 $n = @($module.Catalog | ForEach-Object { $_.Name })
 
@@ -159,18 +157,18 @@ try {
     Check 'the move is held to 20 - 2 = 18 m2' ($by[$n[2]].Detail -match '20 -> 18 m2')
     Check 'the ceiling receives the six-vertex L' (@(@($script:sent['t1-sk-ceiling-replace'].operations)[0].loop).Count -eq 6)
     Check 'the floor was created with the first named floor type' ($script:sent['t1-sk-floor'].elements[0].type_id -eq @($script:docTypes['OST_Floors'] | Where-Object { $_.type -eq 'Generic 150mm' })[0].element_id)
-    Check 'the roof type falls back to the second name when the template lacks the first' (($script:sent.ContainsKey('t1-sk-rooftype1')) -and ($script:sent.ContainsKey('t1-sk-rooftype2')) -and
-        ($script:sent['t1-sk-roof'].elements[0].type_id -eq @($script:docTypes['OST_Roofs'])[0].element_id) -and (@($script:docTypes['OST_Roofs'])[0].type -eq 'Generic - 400mm'))
-    Check 'cleanup deletes the four staged elements and the three types copied from the template, and nothing else' ((@($script:deleted).Count -eq 7) -and
-        ($script:createdIds.Count -eq 4) -and ($script:copiedIds.Count -eq 3) -and
-        (@(@($script:createdIds) + @($script:copiedIds) | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0))
+    Check 'the roof type falls back to the second name when the document lacks the first' ((
+        $script:sent['t1-sk-roof'].elements[0].type_id -eq @($script:docTypes['OST_Roofs'])[0].element_id) -and (@($script:docTypes['OST_Roofs'])[0].type -eq 'Generic - 400mm'))
+    Check 'cleanup deletes the four staged elements, and nothing else' ((@($script:deleted).Count -eq 4) -and
+        ($script:createdIds.Count -eq 4) -and
+        (@(@($script:createdIds) | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0))
     Check 'the rehearsal case sends two dry runs on the floor, the ceiling one, the roof one' ($script:dryCalls -eq 4)
 
-    # ---- a type already in the document is used without a copy ----
+    # ---- the second floor name is used when the document lacks the first ----
     New-State
     $script:docTypes['OST_Floors'] = @([pscustomobject]@{ element_id = 77; is_element_type = $true; family = 'Floor'; type = 'Generic 300mm' })
     $null = RunBy (Ctx 't2')
-    Check 'a floor type the document already carries by name is used, no floor copy sent' (($script:sent['t2-sk-floor'].elements[0].type_id -eq 77) -and -not ($script:sent.Keys | Where-Object { $_ -like 't2-sk-floortype*' }))
+    Check 'a floor type the document carries under the second name is used' ($script:sent['t2-sk-floor'].elements[0].type_id -eq 77)
     Check 'a type the document already carried is not deleted at cleanup' (@($script:deleted) -notcontains 77)
 
     # ---- the ceiling's plane lies elsewhere: re-sent there once, and said ----
@@ -201,7 +199,7 @@ try {
     Check 'an accepted footprint-roof rehearsal fails the refusal case' (($roofBy[$n[4]].Outcome -eq 'fail') -and ($roofBy[$n[4]].Detail -match 'was accepted'))
 
     # ---- no floor type by name anywhere: the floor cases are not_covered, named ----
-    New-State; $script:templateNames = @('Compound Ceiling: 600 x 600mm Grid', 'Basic Roof: Generic - 125mm')
+    New-State; $script:docTypes = @{}; Seed @('Compound Ceiling: 600 x 600mm Grid', 'Basic Roof: Generic - 125mm')
     $bareBy = RunBy (Ctx 't8')
     Check 'without a named floor type the three floor cases are not_covered with the names tried' ((@(0, 1, 2 | Where-Object { $bareBy[$n[$_]].Outcome -ne 'not_covered' }).Count -eq 0) -and
         ($bareBy[$n[0]].Detail -match 'Floor: Generic 150mm, Floor: Generic 300mm'))
@@ -214,8 +212,6 @@ try {
     Check 'a closed write tier names the delete tool on the cleanup case and only there' ((@($shut | Where-Object { $_.Name -like 'edit_sketch probes:*' -and $_.Tool -eq 'horizun_delete_verified' }).Count -eq 1) -and
         (@($shut | Where-Object { $_.Name -notlike 'edit_sketch probes:*' -and $_.Tool -ne 'horizun_transform_elements' }).Count -eq 0))
 }
-finally {
-    Remove-Item -LiteralPath $fakeRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
+finally { }
 
 if ($fails) { "sketch-edits tests: $fails FAILED"; exit 1 } else { 'sketch-edits tests: ALL PASS'; exit 0 }

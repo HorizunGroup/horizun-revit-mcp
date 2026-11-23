@@ -39,15 +39,7 @@ param(
     [switch]$SkipInstaller,
     [switch]$InstallerOnly,
     # Package from a tree with uncommitted changes. OFF by default - see below.
-    [switch]$AllowDirty,
-    # RELEASE SIGNING (Certum, through the local signing queue - scripts/firmar-cola.ps1).
-    # -SignStage signs every unsigned binary of the staged payload and recomputes the
-    # manifest; -InstallerOnly -Sign then compiles Setup with Inno's sign tool, which
-    # also signs the uninstaller and the temporary copy Setup runs from %TEMP%, and
-    # refuses a stage that still holds an unsigned binary. Smart App Control blocks
-    # every unsigned file it is asked to load (issues #74, #75).
-    [switch]$SignStage,
-    [switch]$Sign
+    [switch]$AllowDirty
 )
 $ErrorActionPreference = 'Stop'
 $repo  = Split-Path -Parent $PSScriptRoot
@@ -58,6 +50,7 @@ $stage = Join-Path $dist 'stage'
 . (Join-Path $PSScriptRoot 'horizun-deploy.lib.ps1')
 
 function Step($m) { Write-Host "[pack] $m" -ForegroundColor Cyan }
+
 
 # ---------------------------------------------------------------------------
 # THE PACKAGE MUST NAME ONE COMMIT, AND THE TREE MUST BE THAT COMMIT.
@@ -95,34 +88,8 @@ if ($dirty) {
 }
 Step ("commit {0}{1}" -f $commit, $(if ($dirty) { ' (DIRTY)' } else { ' (clean)' }))
 
-if ($SignStage) {
-    if (-not (Test-Path (Join-Path $stage 'manifest.json'))) { throw "Nothing staged yet - run pack.ps1 -SkipInstaller first." }
-    $mismatch = @(Test-HorizunStageMatchesManifest $stage)
-    if ($mismatch.Count -gt 0) { throw "Refusing to sign a stage that does not match its manifest: $(($mismatch | Select-Object -First 6) -join '; ')" }
-    $unsigned = @(Get-HorizunSignableBinaries $stage | Where-Object { -not (Get-HorizunSignatureInfo $_).Signed })
-    Step ("signing {0} unsigned binaries of the stage through the signing queue" -f $unsigned.Count)
-    if ($unsigned.Count -gt 0) {
-        & (Join-Path $PSScriptRoot 'firmar-cola.ps1') @unsigned
-        if (-not $?) { throw 'signing the stage failed' }
-    }
-    $doc = Update-HorizunManifestToStage $stage
-    $still = @(Get-HorizunSignableBinaries $stage | Where-Object { (Get-HorizunSignatureInfo $_).Status -ne 'Valid' })
-    if ($still.Count -gt 0 -or -not $doc.Signed) {
-        throw "the stage is not fully signed after signing: $(($still | Select-Object -First 6) -join '; ')"
-    }
-    Step ("stage signed: {0} binaries Valid, manifest recomputed (signer {1})" -f @(Get-HorizunSignableBinaries $stage).Count, (($doc.Signature.SignerSubject -split ',')[0]))
-    if (-not $InstallerOnly) { return }
-}
-
 if ($InstallerOnly) {
     if (-not (Test-Path (Join-Path $stage 'plugin'))) { throw "Nothing staged yet - run pack.ps1 -SkipInstaller first." }
-    if ($Sign) {
-        $unsigned = @(Get-HorizunSignableBinaries $stage | Where-Object { (Get-HorizunSignatureInfo $_).Status -ne 'Valid' })
-        if ($unsigned.Count -gt 0) {
-            throw ("Refusing to wrap a signed Setup around unsigned binaries (run -SignStage first): " +
-                   (($unsigned | Select-Object -First 6 | ForEach-Object { Split-Path $_ -Leaf }) -join ', '))
-        }
-    }
     # VALIDATE BEFORE WRAPPING. The manifest must describe the stage as it is NOW.
     # If sign.ps1 (or anything) changed a staged byte after the manifest was written
     # and the manifest was not recomputed, wrapping it would ship an installer whose
@@ -215,9 +182,13 @@ Copy-Item (Join-Path $repo 'scripts\register-client.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\verify-clients.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\verify-install.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\complete-install.ps1') $clientTools -Force
+Copy-Item (Join-Path $repo 'scripts\backup-retention.lib.ps1') $clientTools -Force
+Copy-Item (Join-Path $repo 'scripts\cleanup-backups.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\stop-installed-server.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\hz-call.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\uninstall-cleanup.ps1') $clientTools -Force
+# 4.0: the installer's tool-profile page writes settings.json through this helper.
+Copy-Item (Join-Path $repo 'scripts\set-tool-profile.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\toml-section.lib.ps1') $clientTools -Force
 # The desktop and ChatGPT Work integrations and their libraries travel with the installer,
 # because a shortcut that dot-sources a file the installer did not stage fails
@@ -469,19 +440,7 @@ foreach ($s in $stale) {
 }
 
 Step ("compiling the installer for version $version")
-$isccArgs = @((Join-Path $repo 'installer\horizun-mcp.iss'), '/Q', "/DAppVersion=$version")
-if ($Sign) {
-    # Inno replaces $f with the quoted path of each file it signs: Setup, the
-    # uninstaller and Setup's temporary self-copy.
-    $signer = Join-Path $PSScriptRoot 'firmar-cola.ps1'
-    # $q is Inno's quote character: a literal " inside this argument would be escaped
-    # by PowerShell 7's native argument passing and reach ISCC as \".
-    # The signer runs in THIS host (pwsh or Windows PowerShell): a powershell.exe started
-    # from pwsh inherits pwsh's PSModulePath and cannot load Get-AuthenticodeSignature.
-    $hostExe = (Get-Process -Id $PID).Path
-    $isccArgs += @('/DHorizunSign', ('/Shorizun=$q' + $hostExe + '$q -NoProfile -ExecutionPolicy Bypass -File $q' + $signer + '$q $f'))
-}
-& $iscc @isccArgs
+& $iscc (Join-Path $repo 'installer\horizun-mcp.iss') /Q "/DAppVersion=$version"
 if ($LASTEXITCODE -ne 0) { throw 'ISCC failed' }
 
 $built = @(Get-ChildItem $dist -Filter '*setup.exe' -File)

@@ -23,7 +23,7 @@
 #     third-party notice (Autodesk's Insights "External Tool Failure", English
 #     or Spanish) on that pid and nothing else.
 #
-# MEASURED 2026-09-18, why it exists: the previous dwg-bim session script sent a
+# MEASURED 2026-09-18, why it exists: a previous session script sent a
 # close to every Revit.exe and closed the machine owner's own Revit 2023 session;
 # its successor still asked its own Revit to exit BEFORE looking at the
 # documents, and treated "the Save dialog names HZ_" as proof of ownership.
@@ -337,7 +337,7 @@ function Stop-HzOwnedSession {
 
 # -----------------------------------------------------------------------------
 # A RECORDED REVIT WITHOUT A DEVELOPMENT MANIFEST. Scripts that start Revit on the
-# INSTALLED add-in (live-cycle.ps1, verify-structure-matrix.ps1,
+# INSTALLED add-in (live-cycle.ps1,
 # deploy-and-verify.ps1) used to "close every Revit" - by process name, or by
 # closing every open document with discard_unsaved - before their next step.
 # They now record the Revit they start and the documents they open, under their

@@ -24,13 +24,17 @@ namespace Horizun.Revit.Transport
         /// <summary>The bare envelope: id, success, data, error.</summary>
         public static JObject Of(string id, bool success, object data, string error)
         {
-            return new JObject
+            var reply = new JObject
             {
                 ["id"] = id,
                 ["success"] = success,
                 ["data"] = data == null ? null : JToken.FromObject(data),
                 ["error"] = error
             };
+            // Every failure leaves with its cause as data (error_code). The bare envelope is
+            // one of the two seats where a failure reply is assembled; Build is the other.
+            if (!success) reply["detail"] = ErrorCodes.Ensure(error, null);
+            return reply;
         }
 
         /// <summary>
@@ -59,6 +63,7 @@ namespace Horizun.Revit.Transport
                     ["transaction_status"] = result?.Detail?["transaction_status"]?.DeepClone(),
                     ["observation_complete"] = false
                 };
+                reply["detail"] = ErrorCodes.Ensure(reply["error"]?.ToString(), reply["detail"] as JObject);
                 return reply;
             }
         }
@@ -87,6 +92,12 @@ namespace Horizun.Revit.Transport
             // the error, never inside it, so a client branches on transaction_group_started /
             // rollback_status instead of matching the words of a sentence.
             if (result.Detail != null) reply["detail"] = result.Detail;
+
+            // THE STABLE CAUSE, on every failure, whichever command produced it and however it
+            // was built (Fail, FailWithDetail, an exception turned into a result). A command
+            // may have named its own code; this only fills in what none of them said, from the
+            // detail first and the message second. See ErrorCodes.cs.
+            if (!result.Success) reply["detail"] = ErrorCodes.Ensure(result.Error, reply["detail"] as JObject);
 
             return reply;
         }

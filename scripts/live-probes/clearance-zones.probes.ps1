@@ -1,8 +1,8 @@
 # Live probe module: equipment maintenance/access clearance zones (horizun_verify_changes
 # clearance_rules, see docs/TOOLS-EXTENDED.md). Stages, on an OWN level far from the
-# fixture: a basic wall, a face-hosted panelboard on its +Y face (the same Autodesk
-# electrical template type styles-units-electrical.probes.ps1 stages), and an own
-# architectural column standing in front of the panel. verify_changes with a declared
+# fixture: a basic wall, a face-hosted panelboard on its +Y face (the document's own
+# 'M_Lighting and Appliance Panelboard - 208V MLO: 100 A' type, by name), and an own
+# architectural column standing in front of the panel (the document's own column type). verify_changes with a declared
 # rule {OST_ElectricalEquipment, front, 900 mm} must return an ERROR naming the column;
 # after the column is moved 5 m away the same call must come back without a clearance
 # finding. A malformed rule is refused by index. Everything created is deleted.
@@ -44,29 +44,10 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             return @{ ids = @(); reply = $r }
         }
-        # Copies ONE type of $category from the first template that lists one; the type is
-        # queued for deletion only when its id is NEW - a copy with use_destination onto a
-        # type the document already held returns that type, and deleting it would take the
-        # document's own instances with it.
-        function Bring($category, $wanted, $match, $key) {
-            $before = @(Types $category)
-            $had = @($before | Where-Object { (& $match $_) })
+        # The document's own type of $category that $match accepts; none is not_covered.
+        function Bring($category, $match) {
+            $had = @(Types $category | Where-Object { (& $match $_) })
             if ($had.Count -gt 0) { return $had[0] }
-            $beforeIds = @($before | ForEach-Object { [long]$_.element_id })
-            $root = 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates\'
-            foreach ($rel in @('English\Electrical-Default_Metric.rte', 'English\DefaultMetric.rte', 'Default_M_ENU.rte', 'English\Default-Multi-Discipline_Metric.rte')) {
-                $src = ($root + $rel).Replace([char]92, '/')
-                $name = $wanted
-                if (-not $name) {
-                    $probe = & $Ctx.Call 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $src; category = $category; type_names = @('__hz_probe_no_such_type__') }
-                    $listed = [regex]::Match([string]$probe.text, 'Types there[^:]*:\s*(.+)$', 'Singleline')
-                    $name = if ($listed.Success) { (($listed.Groups[1].Value -split ' \| ')[0] -replace '\s*(\.\.\.)?\.?\s*$', '').Trim() } else { $null }
-                }
-                if (-not $name) { continue }
-                $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $src; category = $category; type_names = @($name); duplicate_types = 'use_destination' } ($run + '-cz-' + $key)
-                $t = @(Types $category | Where-Object { (& $match $_) -or ($_.family + ': ' + $_.type) -eq $name -or $_.type -eq $name }) | Select-Object -First 1
-                if ($t) { if ($beforeIds -notcontains [long]$t.element_id) { [void]$created.Add([long]$t.element_id) }; return $t }
-            }
             return $null
         }
         function Clearance($reply) { @($reply.data.spatial_check.findings | Where-Object { [string]$_.reason -match 'clearance zone' }) }
@@ -76,8 +57,8 @@ $script:HzProbeModules += [pscustomobject]@{
             $lv = Create @(@{ kind = 'level'; name = "HZ_CLEAR_$run"; elevation = $E }) 'level'
             $levelId = if ($lv.ids.Count -gt 0) { $lv.ids[0] } else { $null }
             $basic = @(Types 'OST_Walls' | Where-Object { -not ($_.family -match 'Curtain|cortina|Stacked|apilad' -or $_.type -match 'Curtain|cortina') }) | Select-Object -First 1
-            $panelType = Bring 'OST_ElectricalEquipment' 'M_Lighting and Appliance Panelboard - 208V MLO: 100 A' { param($t) [string]$t.family -like 'M_Lighting and Appliance Panelboard - 208V MLO*' -and ([string]$t.type -eq '100 A' -or [string]$t.name -eq '100 A') } 'paneltype'
-            $column = Bring 'OST_Columns' $null { param($t) $false } 'coltype'
+            $panelType = Bring 'OST_ElectricalEquipment' { param($t) [string]$t.family -like 'M_Lighting and Appliance Panelboard - 208V MLO*' -and ([string]$t.type -eq '100 A' -or [string]$t.name -eq '100 A') }
+            $column = Bring 'OST_Columns' { param($t) $true }
             if (-not $levelId -or -not $basic -or -not $panelType -or -not $column) {
                 $why = "the probe could not stage its model (level=$levelId, basic wall=" + $basic.element_id + ', panel type=' + $panelType.element_id + ', column type=' + $column.element_id + ')'
                 foreach ($i in 0, 1) { Case $i 'not_covered' $why }

@@ -29,6 +29,54 @@ namespace Horizun.Core.Tests
     {
         private const double FeetPerMm = 1.0 / 304.8;
 
+        [Theory]
+        [InlineData("opening_left", "Left")]
+        [InlineData("opening_right", "Right")]
+        [InlineData("opening_center", "CenterLeftRight")]
+        [InlineData("opening_head", "Top")]
+        [InlineData("opening_sill", "Bottom")]
+        [InlineData("opening_front_back_center", "CenterFrontBack")]
+        public void Opening_selectors_map_to_family_reference_planes(string selector, string apiName)
+        {
+            Assert.True(DimensionReferenceRules.IsFamilyReferenceSelector(selector));
+            Assert.Equal(apiName, DimensionReferenceRules.FamilyReferenceType(selector));
+            Assert.True(DimensionReferenceRules.SelectorApplies(selector,
+                new ElementTraits { IsFamilyInstance = true }));
+            Assert.False(DimensionReferenceRules.SelectorApplies(selector,
+                new ElementTraits { IsHostObject = true }));
+        }
+
+        [Fact]
+        public void Named_family_reference_requires_a_nonempty_explicit_name()
+        {
+            Assert.Equal("named", DimensionReferenceRules.FamilyReferenceType("family_named_reference"));
+            Assert.NotNull(DimensionReferenceRules.ValidateFamilyReferenceName("family_named_reference", null));
+            Assert.NotNull(DimensionReferenceRules.ValidateFamilyReferenceName("family_named_reference", "  "));
+            Assert.Null(DimensionReferenceRules.ValidateFamilyReferenceName("family_named_reference", "Jamb A"));
+            Assert.Null(DimensionReferenceRules.ValidateFamilyReferenceName("opening_left", null));
+        }
+
+        [Fact]
+        public void Top_and_bottom_face_selectors_require_a_host_object()
+        {
+            Assert.True(DimensionReferenceRules.SelectorApplies("top_face", new ElementTraits { IsHostObject = true }));
+            Assert.True(DimensionReferenceRules.SelectorApplies("bottom_face", new ElementTraits { IsHostObject = true }));
+            Assert.False(DimensionReferenceRules.SelectorApplies("top_face", new ElementTraits { IsFamilyInstance = true }));
+        }
+
+        [Fact]
+        public void Section_face_selection_prefers_the_nearest_cut_plane_then_the_height_extreme()
+        {
+            var faces = new[]
+            {
+                new SectionFaceFact { CutDistance = 0.2, Elevation = 14, Stable = "a" },
+                new SectionFaceFact { CutDistance = 0.01, Elevation = 11, Stable = "b" },
+                new SectionFaceFact { CutDistance = 0.01, Elevation = 12, Stable = "c" }
+            };
+            Assert.Equal("c", DimensionReferenceRules.ChooseSectionFace(faces, true).Stable);
+            Assert.Equal("b", DimensionReferenceRules.ChooseSectionFace(faces, false).Stable);
+        }
+
         // ---- selector parsing ------------------------------------------------
 
         [Fact]

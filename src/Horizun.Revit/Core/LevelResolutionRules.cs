@@ -80,6 +80,14 @@ namespace Horizun.Revit.Core
         public const string HostLevel = "FamilyInstance.Host";
 
         /// <summary>
+        /// A railing hosted on a stair or a ramp keeps no level of its own (its Base Level reads -1 and
+        /// is read-only), so no parameter names a floor and it was counted under "(no level)". Its floor
+        /// is the floor of the element that carries it: the stair's base level. Reported as its own
+        /// source so a count per source shows how many levels were inherited from a host.
+        /// </summary>
+        public const string RailingHostElement = "Railing.HostElement";
+
+        /// <summary>
         /// The order sources are asked in. Element.LevelId first: it is Revit's own
         /// consolidated answer and right for most categories (walls, floors, rooms and
         /// other spatial elements, doors). Then the parameters a category keeps its
@@ -106,6 +114,7 @@ namespace Horizun.Revit.Core
             "ROOM_LEVEL_ID",
             "FAMILY_LEVEL_PARAM",
             HostLevel,
+            RailingHostElement,
             "INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM",
             "SCHEDULE_LEVEL_PARAM"
         };

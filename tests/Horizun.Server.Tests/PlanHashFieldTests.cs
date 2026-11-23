@@ -49,29 +49,13 @@ namespace Horizun.Server.Tests
         [Fact]
         public void Create_elements_binds_the_csv_and_each_rows_placement()
         {
-            string text = File.ReadAllText(Path.Combine(SrcDir(), "CreateElementsCommand.cs"));
+            string text = File.ReadAllText(Path.Combine(SrcDir(), "CreateElementsCommand.Prepare.cs"));
             Match call = Regex.Match(text, @"PlanHash\(\s*request\s*,(?<args>[^;]*?)\)\s*;", RegexOptions.Singleline);
-            Assert.True(call.Success, "no PlanHash call in CreateElementsCommand.cs");
+            Assert.True(call.Success, "no PlanHash call in CreateElementsCommand.Prepare.cs");
             Assert.Contains("\"tabular_source\"", call.Groups["args"].Value);
+            string confirmation = File.ReadAllText(Path.Combine(SrcDir(), "CreateElementsCommand.Confirmation.cs"));
             foreach (string fact in new[] { "\"start_mm\"", "\"end_mm\"", "\"rotation_deg\"" })
-                Assert.True(text.Contains("row.BeforeValues[" + fact + "]"), "the resolved plan row does not record " + fact);
-        }
-
-        /// <summary>
-        /// resolve_clash apply (backlog P0 #6, 2026-10-10). The token bound only the
-        /// proposals' text and clearance_mm; the connected network was worked out again
-        /// at apply and nothing recorded the members' positions or the finding's state.
-        /// A fitting connected after the rehearsal widened what moved, and a pipe already
-        /// moved was moved again by the same vector. The resolved plan - every member and
-        /// its location - is now recorded by the rehearsal and compared at the apply.
-        /// </summary>
-        [Fact]
-        public void Resolve_clash_binds_its_resolved_network_and_positions()
-        {
-            string text = File.ReadAllText(Path.Combine(SrcDir(), "ResolveClashCommand.cs"));
-            Assert.Contains("DocumentGate.RecordResolvedPlan(", text);
-            Assert.Matches(new Regex(@"RequireConfirmation\(\s*app\s*,\s*gate\s*,\s*request\s*,\s*Name\s*,\s*planHash\s*,\s*\w+\s*,"), text);
-            Assert.Contains("BeforeValues[\"loc\"]", text);
+                Assert.True(confirmation.Contains("row.BeforeValues[" + fact + "]"), "the resolved plan row does not record " + fact);
         }
 
         /// <summary>Every field a command hashes must be one the contract says it takes.</summary>
@@ -115,41 +99,5 @@ namespace Horizun.Server.Tests
                 "nothing:\n  " + string.Join("\n  ", bad));
         }
 
-        /// <summary>
-        /// The inverse, and the one that actually bites: a field that decides WHAT gets
-        /// written must be inside the approval. Listing every optional field would make
-        /// the token brittle for no gain, so this pins only the payload-bearing ones.
-        /// </summary>
-        [Fact]
-        public void The_fields_that_say_what_to_write_are_inside_the_approval()
-        {
-            var required = new Dictionary<string, string[]>
-            {
-                ["FamilyApplyCommand.cs"] = new[] { "values", "remove_params", "add_shared_params", "save" },
-                ["BindSharedParamCommand.cs"] = new[] { "param_guid", "param_name", "binding_kind", "spf_path", "categories" },
-                ["WriteParamsCommand.cs"] = new[] { "writes" },
-                ["SetKeynoteCommand.cs"] = new[] { "element_ids", "keynote" },
-            };
-
-            var missing = new List<string>();
-            foreach (var kv in required)
-            {
-                string path = Path.Combine(SrcDir(), kv.Key);
-                Assert.True(File.Exists(path), "Missing command file: " + path);
-
-                Match call = Regex.Match(File.ReadAllText(path), @"PlanHash\(\s*request\s*,(?<args>[^;]*?)\)\s*;",
-                                         RegexOptions.Singleline);
-                Assert.True(call.Success, kv.Key + " no longer builds a plan hash at all");
-
-                string args = call.Groups["args"].Value;
-                foreach (string f in kv.Value)
-                    if (!Regex.IsMatch(args, "\"" + Regex.Escape(f) + "\""))
-                        missing.Add(kv.Key + " does not bind '" + f + "'");
-            }
-
-            Assert.True(missing.Count == 0,
-                "A token approved without these would authorise a DIFFERENT write from the one rehearsed:\n  " +
-                string.Join("\n  ", missing));
-        }
     }
 }

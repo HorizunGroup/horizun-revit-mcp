@@ -1,10 +1,10 @@
-﻿// -----------------------------------------------------------------------------
-// Horizun MCP server — original Horizun code.
+// -----------------------------------------------------------------------------
+// Horizun MCP server â€” original Horizun code.
 //
 // A stdio MCP server. It reads newline-delimited JSON-RPC from stdin, answers the
 // MCP handshake, and for tools/call forwards the arguments to the Revit add-in
 // over its named pipe and returns the reply. The MCP wire format is implemented
-// directly from the open spec — no third-party MCP SDK.
+// directly from the open spec â€” no third-party MCP SDK.
 //
 // Tools are declared in one place (the Tools table). Each maps an MCP tool name
 // to the plugin command it forwards to, plus the JSON schema the client sees.
@@ -12,11 +12,14 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Horizun.Contracts;
+using ErrorCodes = Horizun.Revit.Core.ErrorCodes;
 
 namespace Horizun.Server
 {
@@ -25,18 +28,32 @@ namespace Horizun.Server
         private const string ServerName = "horizun-mcp";
         // Read from the assembly the build stamped, never hand-typed: a version that has
         // to be edited in two places is a version that will disagree with itself.
+        /// <summary>The Revit.exe processes on this machine, with the year read from their path when Windows lets us. Never throws.</summary>
+        private static List<Horizun.Revit.Core.RunningRevit> RunningRevits()
+        {
+            var list = new List<Horizun.Revit.Core.RunningRevit>();
+            try
+            {
+                foreach (System.Diagnostics.Process p in System.Diagnostics.Process.GetProcessesByName("Revit"))
+                {
+                    string path = null;
+                    try { path = p.MainModule?.FileName; } catch { path = null; }
+                    list.Add(new Horizun.Revit.Core.RunningRevit(p.Id, Horizun.Revit.Core.RevitAvailabilityRules.YearFromPath(path)));
+                    p.Dispose();
+                }
+            }
+            catch { }
+            return list;
+        }
+
         private static readonly string ServerVersion = ReadVersion();
         private const int CommandTimeoutMs = 600000;
-        // horizun_health is the diagnostic command: its whole job is to answer fast, and
-        // an answer that does not come fast IS the diagnosis (Revit busy, or a modal up).
-        // Measured 2026-08-07: three health calls each waited the full 600 s behind a
-        // "New Project" dialog - 30 minutes to learn what one minute would have said.
-        // The ceiling is generous against warm-up (25 s measured on first call after
-        // add-in load) and still 20x faster than the general timeout. The add-in side
-        // now also detects a persistent modal and answers in seconds; this bound is the
-        // backstop for when that probe cannot see (health is queued behind long real
-        // work, or the probe never captured its facts).
-        private const int HealthTimeoutMs = 30000;
+        // The add-in times a synchronous call out at the same 600 s, measured from when IT
+        // received the request, and its reply then carries what only it knows: whether the
+        // call ever started and the job_id its progress and late result are recorded under
+        // (Core/CallProgress.cs). Waiting exactly as long here meant this side usually gave
+        // up first and that reply was never read. A short grace lets it arrive.
+        private const int AddinReplyGraceMs = 15000;
         // The version list and the negotiation rule live in ProtocolNegotiation.cs,
         // where they are golden-tested - see that file for why 2026-07-28 is absent.
 
@@ -99,14 +116,35 @@ namespace Horizun.Server
         /// </summary>
         private static int _responseChannelLost;
 
-        private static int Main()
+        /// <summary>The value of --profile NAME or --profile=NAME, or null.</summary>
+        internal static string ProfileArgument(string[] args)
         {
+            if (args == null) return null;
+            for (int i = 0; i < args.Length; i++)
+            {
+                string a = args[i] ?? "";
+                if (a.StartsWith(ToolVisibility.ProfileArgument + "=", StringComparison.OrdinalIgnoreCase))
+                    return a.Substring(ToolVisibility.ProfileArgument.Length + 1);
+                if (string.Equals(a, ToolVisibility.ProfileArgument, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                    return args[i + 1];
+            }
+            return null;
+        }
+
+        private static int Main(string[] args)
+        {
+            // 4.0: `--profile <name>` chooses this client's tool profile (ToolVisibility). It is a
+            // client-side choice like HORIZUN_PROFILE and wins over it and over settings.json.
+            ToolVisibility.CommandLineProfile = ProfileArgument(args);
+            ToolVisibility.ClientName = () => Volatile.Read(ref _clientName);
             // MCP stdio is UTF-8, newline-delimited, no BOM.
             var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
             // The raw stream, not a StreamReader: the size limit has to be enforced WHILE
             // reading, and ReadLine() allocates the whole line before anyone can object.
             // See BoundedLineReader.cs.
             var stdin = new BoundedLineReader(Console.OpenStandardInput());
+            Log.Start();
+            using var parentLifetime = ParentLifetime.Capture();
 
             // LOSING STDOUT IS TERMINAL, and it has to be acted on rather than waited out.
             // stdout and stdin are separate pipes: a client that has stopped reading its
@@ -127,8 +165,6 @@ namespace Horizun.Server
 
             _clientRequests = new McpClientRequests(_writer.Write);
 
-            Log.Start();
-
             // Orphaned discovery files - left by a Revit that crashed or was killed past a
             // modal - are swept at startup. The add-in sweeps only when it publishes (when
             // a Revit STARTS); a server that comes up after a crash, with no new Revit, is
@@ -139,6 +175,19 @@ namespace Horizun.Server
                 if (swept > 0) Log.Info("swept " + swept + " orphaned discovery file(s) at startup");
             }
             catch (Exception ex) { Log.Warn("discovery sweep at startup failed: " + ex.Message); }
+
+            // T2: a target pinned by HORIZUN_REVIT_PID or remembered for HORIZUN_SESSION_KEY
+            // (TargetMemory.cs), so a harness that starts one server per call does not have to
+            // call horizun_target before every write.
+            try
+            {
+                PipeClient.Target = TargetMemory.Initial(
+                    pid => System.Linq.Enumerable.Any(PipeClient.ListAll(), d => d.Pid == pid && d.ProcessAlive),
+                    Horizun.Revit.Core.HorizunPaths.DataRoot(), out string targetNote);
+                TargetMemory.SetStartupNote(targetNote);
+                if (targetNote != null) Log.Info("target at startup: " + targetNote);
+            }
+            catch (Exception ex) { Log.Warn("the remembered target could not be applied: " + ex.Message); }
 
             Log.Info("server " + ServerVersion + " up" +
                      (string.IsNullOrEmpty(TargetYear) ? "" : ", HORIZUN_REVIT_YEAR=" + TargetYear) +
@@ -152,6 +201,11 @@ namespace Horizun.Server
             // to be asked while Revit is busy.
             while (true)
             {
+                if (parentLifetime != null && parentLifetime.HasExited())
+                {
+                    Log.Info("parent process exited; stopping input and draining outstanding work");
+                    break;
+                }
                 // Checked before the read AND after it: the channel can die while this
                 // thread is blocked waiting for the next line, and the request that
                 // arrives next would then be accepted with nowhere to send its answer.
@@ -161,7 +215,20 @@ namespace Horizun.Server
                     break;
                 }
 
-                BoundedLine incoming = stdin.ReadLine();
+                // The input pipe can stay open in an unrelated descendant after the
+                // launcher exits. Wait on the read without blocking parent checks.
+                var read = Task.Factory.StartNew(() => stdin.ReadLine(), CancellationToken.None,
+                    TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                while (!read.Wait(1000))
+                {
+                    if (parentLifetime != null && parentLifetime.HasExited()) break;
+                }
+                if (!read.IsCompleted)
+                {
+                    Log.Info("parent process exited; stopping input and draining outstanding work");
+                    break;
+                }
+                BoundedLine incoming = read.GetAwaiter().GetResult();
 
                 if (Volatile.Read(ref _responseChannelLost) != 0)
                 {
@@ -482,7 +549,7 @@ namespace Horizun.Server
             string refusal;
             // The deadline this request will be drained against on shutdown - the same
             // limit the call itself is held to, so the two cannot drift apart.
-            int requestDeadlineMs = toolName == "horizun_health" ? HealthTimeoutMs : CommandTimeoutMs;
+            int requestDeadlineMs = Horizun.Revit.Core.CommandDeadlinePolicy.WaitMs(toolName, CommandTimeoutMs);
             if (!_inFlight.TryStart(key, toolName, cts, out refusal, requestDeadlineMs))
             {
                 cts.Dispose();
@@ -494,6 +561,26 @@ namespace Horizun.Server
             // One answer for THIS request. McpSession separately owns the stronger MCP
             // rule that an id is never reused during the lifetime of this connection.
             ReplySlot reply = _writer.Slot(id);
+
+            // Bound the whole health path, including discovery and server-side processing,
+            // not just the pipe. Revit may still finish the read; ReplySlot sends only one answer.
+            if (HealthAnswer.IsHealth(prms))
+            {
+                System.Threading.Tasks.Task.Delay(7000).ContinueWith(_ =>
+                {
+                    if (reply.Answered || cts.IsCancellationRequested) return;
+                    var body = new JObject
+                    {
+                        ["estado"] = "ocupado", ["ready"] = false,
+                        ["error_code"] = ErrorCodes.TiempoAgotado,
+                        ["mensaje"] = "Health exceeded 7000 ms; Revit has not answered. The cause and active document are unknown.",
+                        ["limite_ms"] = 7000, ["server"] = Protocol.ProvenanceStamp.Compact()
+                    };
+                    reply.TryReply(Protocol.ResultEnvelope.Stamp(McpResult.Structured(body, body.ToString()),
+                        envelope != null ? envelope.Era : Protocol.McpEra.Legacy,
+                        "tools/call", prms, Protocol.ResultEnvelope.Complete));
+                });
+            }
 
             // A progressToken means the caller wants to know it is still alive. We do not
             // invent a percentage - a Revit command reports no fraction of itself - so the
@@ -971,12 +1058,8 @@ namespace Horizun.Server
             // registry and no second permission check: a step is dispatched by the code
             // that dispatches every other call, or it is not dispatched.
             ProcedureRun.Invoker = (call, token) => CallTool(call, token);
-            try
-            {
-                _toolListMonitor = new ToolListMonitor(NotifyChange);
-                // horizun_activate_toolset changes the list; announce it now rather than at the next 30 s tick.
-                ToolsetActivation.AfterActivation = () => _toolListMonitor?.CheckNow();
-            }
+            TemplateKitTool.Invoker = (call, token) => CallTool(call, token);
+            try { _toolListMonitor = new ToolListMonitor(NotifyChange); }
             catch (Exception ex)
             {
                 // tools/list still re-reads settings on every call. Only the convenience
@@ -1027,16 +1110,18 @@ namespace Horizun.Server
 
         private static void NotifyChange(string method, JObject parameters)
         {
+            int delivered = 0;
             string type = Protocol.SubscriptionStream.TypeForMethod(method);
             if (type != null)
             {
-                try { Protocol.SubscriptionStream.Publish(type, parameters, _writer.Notify); }
+                try { delivered += Protocol.SubscriptionStream.Publish(type, parameters, _writer.Notify); }
                 catch (Exception ex) { Log.Warn("subscription delivery failed: " + ex.Message); }
             }
 
             // The legacy broadcast. Not conditional on anybody having subscribed - a legacy
             // client cannot subscribe - and not sent to a peer that never handshook.
-            if (_legacyHandshake) _writer.Notify(method, parameters);
+            if (_legacyHandshake) { _writer.Notify(method, parameters); delivered++; }
+            if (delivered > 0 && method == "notifications/tools/list_changed") ToolVisibility.CountNotification();
         }
 
         /// <summary>
@@ -1051,7 +1136,7 @@ namespace Horizun.Server
             "UI thread. Do not resend it assuming the model is untouched. " +
             CancellationAdvice.Sentence(
                 CancellationAdvice.Classify(false, CancellationAdvice.HasKey(args)),
-                CancellationAdvice.BatchSize(args), ms, Tools.IsCallable("horizun_submit_job"));
+                CancellationAdvice.BatchSize(args), ms, tool);
 
         /// <summary>
         /// A tool call BLOCKS for its whole round trip to Revit, so it gets a thread of its
@@ -1111,12 +1196,33 @@ namespace Horizun.Server
                     }
                 }
                 catch (OperationCanceledException) { }
+                catch (ObjectDisposedException) { }
                 catch (Exception ex) { Log.Warn("heartbeat stopped: " + ex.Message); }
             });
-            return stop;
+            return new HeartbeatStop(stop);
         }
 
         private sealed class NoHeartbeat : IDisposable { public void Dispose() { } }
+
+        /// <summary>
+        /// Disposing a CancellationTokenSource does not cancel it: the loop above woke from its
+        /// delay, saw "not cancelled", could send one more progress notification AFTER the call
+        /// had answered, and then died on the disposed token ("heartbeat stopped: The
+        /// CancellationTokenSource has been disposed", 26 times in a week of bridge logs).
+        /// Stopping is Cancel first, then Dispose.
+        /// </summary>
+        private sealed class HeartbeatStop : IDisposable
+        {
+            private CancellationTokenSource _source;
+            public HeartbeatStop(CancellationTokenSource source) { _source = source; }
+            public void Dispose()
+            {
+                CancellationTokenSource source = Interlocked.Exchange(ref _source, null);
+                if (source == null) return;
+                try { source.Cancel(); } catch (ObjectDisposedException) { }
+                source.Dispose();
+            }
+        }
 
         private static void HandleCancel(JObject prms)
         {
@@ -1365,8 +1471,49 @@ namespace Horizun.Server
             // Idempotent, and here too: a procedure step or a task enters through this
             // method rather than DispatchToolCall.
             prms = SchemaFacade.UnwrapCall(prms, SchemaMode.Current);
+            string aliasRefusal;
+            List<string> aliasWarnings;
+            JToken aliasName = prms?["name"];
+            string aliasTool = aliasName?.Type == JTokenType.String ? (string)aliasName : null;
+            JObject aliasArgs = prms?["arguments"] as JObject;
+            JObject normalizedArgs = UndeclaredArguments.NormalizeAliases(aliasTool, aliasArgs, out aliasWarnings, out aliasRefusal);
+            JObject aliasExample = aliasRefusal == null ? null : SchemaHelp.ContractExample(aliasTool);
+            if (aliasRefusal == null && aliasArgs != null) prms["arguments"] = normalizedArgs;
             ContentSafety.Report safety = null;
-            JToken result = CallToolCore(prms, ct, observe, envelope, ref safety);
+            JToken result;
+            bool isHealth = HealthAnswer.IsHealth(prms);
+            try
+            {
+                result = aliasRefusal == null
+                    ? CallToolCore(prms, ct, observe, envelope, ref safety)
+                    : ErrorResult("Error: " + aliasRefusal + (aliasExample == null ? "" : " Minimal valid example: " + aliasTool + " " + aliasExample.ToString(Formatting.None) + "."), null, null, ErrorCodes.Detail(ErrorCodes.EntradaInvalida,
+                        extra: new JObject
+                        {
+                            ["write_started"] = false,
+                            ["changes_applied"] = false,
+                            ["minimal_valid_call"] = aliasExample == null ? null : new JObject { ["tool"] = aliasTool, ["arguments"] = aliasExample }
+                        }));
+            }
+            catch (Exception ex) when (isHealth && HealthAnswer.ShouldAnswer(ex))
+            {
+                // horizun_health ANSWERS. An exception here would reach the client as a failed
+                // call - the 23 % of session starts that made agents retry blind.
+                Log.Warn("horizun_health: answering with a state instead of the exception " + ex.GetType().Name);
+                result = HealthAnswer.FromException(ex);
+            }
+            catch (Exception ex) when (!(ex is McpError) && !(ex is InputRequiredException) && !(ex is OperationCanceledException))
+            {
+                result = McpResult.ExceptionError((string)prms?["name"] ?? "unknown tool", ex);
+            }
+            if (result is JObject initialFailure)
+                result = McpResult.EnsureFailureMessage(initialFailure, (string)prms?["name"]);
+            if (isHealth) result = HealthAnswer.Apply(result);
+            else
+            {
+                string observedTool = prms?["name"]?.Type == JTokenType.String ? (string)prms["name"] : null;
+                ServerFacts.Observe(observedTool, result);
+                PartialWriteGate.Observe(observedTool, result);
+            }
             // A failed call whose arguments violate the FULL contract carries the exact
             // schema it violated (advice only; see SchemaHelp). Before Finish, so the
             // safety verdict covers the reply as it leaves.
@@ -1374,7 +1521,14 @@ namespace Horizun.Server
             result = SchemaHelp.Attach(result,
                 toolName != null && toolName.Type == JTokenType.String ? (string)toolName : null,
                 prms?["arguments"]);
-            return safety == null ? result : ContentSafety.Finish(result, safety);
+            // THE STABLE CAUSE, last: whatever built the failure - this method, a task, the
+            // facade - it leaves with an error_code. Idempotent (see McpResult.StampError).
+            if (result is JObject failed) result = McpResult.ExplainFailure(McpResult.StampError(failed), (string)toolName);
+            result = safety == null ? result : ContentSafety.Finish(result, safety);
+            result = CompactResponse.Apply(result, toolName?.Type == JTokenType.String ? (string)toolName : null);
+            if (aliasWarnings != null && aliasWarnings.Count > 0 && result is JObject aliasResult && aliasResult["structuredContent"] is JObject aliasContent)
+                aliasContent["compatibility_warnings"] = new JArray(aliasWarnings);
+            return result;
         }
 
         private static JToken CallToolCore(JObject prms, CancellationToken ct, Action<JObject> observe,
@@ -1404,7 +1558,7 @@ namespace Horizun.Server
             // The facade's own tools answer here, in this process, and touch neither the
             // contract nor Revit. A horizun_call_tool reaching this point is one UnwrapCall
             // refused to unwrap, and Answer says why.
-            if (SchemaFacade.IsMetaTool(name, SchemaMode.Current) || name == ToolsetActivation.Name)
+            if (SchemaFacade.IsMetaTool(name, SchemaMode.Current))
             {
                 if (prms?["task"] != null)
                     throw new McpError(-32602, "'" + name + "' does not support MCP task augmentation; call it " +
@@ -1434,7 +1588,64 @@ namespace Horizun.Server
             if (disabled != null)
             {
                 Log.Warn(name + " refused: disabled by settings");
-                return TextResult("Error: " + disabled, true);
+                return ErrorResult("Error: " + disabled, null, null, ErrorCodes.Detail(
+                    name == "horizun_execute_python" ? ErrorCodes.PermisoPythonRequerido
+                    : disabled.IndexOf("permission_profile", StringComparison.Ordinal) >= 0 ? ErrorCodes.PermisoInsuficiente
+                    : ErrorCodes.HerramientaDesactivada,
+                    extra: new JObject { ["write_started"] = false, ["changes_applied"] = false }));
+            }
+
+            // Python right after a typed write that failed mid-way is refused until the model is re-read
+            // (PartialWriteGate.cs): the fallback said no, and a script would be a second write on a partial one.
+            string partial = PartialWriteGate.Refusal(name, args);
+            if (partial != null)
+            {
+                Log.Warn(name + " refused: an unread partial write");
+                return ErrorResult("Error: " + partial, null, null, ErrorCodes.Detail(ErrorCodes.PrecondicionNoCumplida,
+                    extra: new JObject { ["write_started"] = false, ["changes_applied"] = false, ["partial_write"] = PartialWriteGate.Pending() }));
+            }
+
+            // An argument the schema does not declare is REFUSED by name, before anything is
+            // routed: additionalProperties:false was advertised but never enforced, so a
+            // `description` for `purpose` or a `dry_run` on a tool without one ran and was
+            // ignored. Open schemas stay passthrough; see UndeclaredArguments.cs.
+            List<string> undeclared = UndeclaredArguments.Find(name, args);
+            if (undeclared.Count > 0)
+            {
+                Log.Warn(name + " refused: undeclared argument(s) " + string.Join(", ", undeclared));
+                JObject refusal = UndeclaredArguments.Refusal(name, undeclared, args);
+                return ErrorResult((string)refusal["text"], null, null, (JObject)refusal["detail"]);
+            }
+            if (name == "horizun_create_elements" && UndeclaredArguments.CreationRowRefusal(args) is JObject invalidRow)
+                return ErrorResult("Error: " + (string)invalidRow["field_path"] + ": " + (string)invalidRow["message"] +
+                    " Nothing was sent to Revit.", null, null, ErrorCodes.Detail(ErrorCodes.EsquemaInvalido, extra: invalidRow));
+
+            // Reject invalid query arguments before the pipe: the full schema includes
+            // conditional requirements that the undeclared-name gate cannot detect.
+            if (name == "horizun_query_model")
+            {
+                var violations = ContractSchemaCheck.Validate(args, IdentitySchema.For(name));
+                if (violations.Count > 0)
+                {
+                    var detail = new JObject { ["write_started"] = false, ["changes_applied"] = false,
+                        ["contract_uri"] = McpResources.ContractToolPrefix + name };
+                    if (args["return_fields"] is JArray fields)
+                    {
+                        var valid = (JArray)Contract.Find(name).InputSchema["properties"]["return_fields"]["items"]["enum"];
+                        var kept = new JArray(fields.Where(f => f.Type == JTokenType.String &&
+                            valid.Any(v => JToken.DeepEquals(v, f))).Select(f => f.DeepClone()));
+                        if (kept.Count != fields.Count)
+                        {
+                            var corrected = (JObject)args.DeepClone();
+                            if (kept.Count == 0) corrected.Remove("return_fields");
+                            else corrected["return_fields"] = kept;
+                            detail["suggested_call"] = new JObject { ["tool"] = name, ["arguments"] = corrected };
+                        }
+                    }
+                    return ErrorResult("Error: invalid schema: " + string.Join("; ", violations.GetRange(0, Math.Min(20, violations.Count))) +
+                        ". Nothing was sent to Revit.", null, null, ErrorCodes.Detail(ErrorCodes.EsquemaInvalido,
+                        extra: detail));
+                }
             }
 
             // A call a person QUARANTINED in the repair memory: the same tool with the same
@@ -1444,6 +1655,7 @@ namespace Horizun.Server
             if (quarantined != null)
             {
                 Log.Warn(name + " refused: " + QuarantineGate.Code + " (shape " + (string)quarantined["shape"] + ")");
+                quarantined["error_code"] = ErrorCodes.LlamadaEnCuarentena;
                 return ErrorResult("Error: " + (string)quarantined["message"], null, null, quarantined);
             }
 
@@ -1458,12 +1670,6 @@ namespace Horizun.Server
                 return McpTasks.Create(prms, CallTool, ct);
             }
 
-            // COMPACT MODE ONLY: a read that has a short response mode and was not told which one
-            // gets the short one (SchemaCompact.ReadDefaults). Here, after the quarantine check and
-            // the task branch, so neither the quarantine shape nor the task's stored request sees it;
-            // an explicit response_mode from the caller is never replaced; writes are never touched.
-            args = SchemaCompact.ApplyReadDefaults(name, args, SchemaMode.Current);
-
             var clock = System.Diagnostics.Stopwatch.StartNew();
 
             // From here on every answer - success, refusal or failure - belongs to this tool,
@@ -1476,7 +1682,7 @@ namespace Horizun.Server
                 };
 
             // Host-resident tool: answer in this process, never touch Revit. Same result shape
-            // as the pipe path — the handler returns the data payload, we wrap it in TextResult.
+            // as the pipe path â€” the handler returns the data payload, we wrap it in TextResult.
             if (def.Host != null)
             {
                 try
@@ -1510,7 +1716,7 @@ namespace Horizun.Server
                 catch (Exception ex)
                 {
                     Log.Error(name + " (host) FAILED in " + clock.ElapsedMilliseconds + " ms", ex);
-                    return TextResult("Error: " + ex.Message, true);
+                    return McpResult.ExceptionError(name, ex, HostFailure.Detail(name, ex, CommandTimeoutMs));
                 }
             }
 
@@ -1528,15 +1734,49 @@ namespace Horizun.Server
             // year alongside a pid worked only because Resolve happens to ignore the year
             // when a pid is given; saying it here means the intent survives a change there.
             string year = target.Year ?? (target.Pid != null ? null : TargetYear);
-            string ambiguity;
-            Discovered d = PipeClient.Resolve(year, target.Pid, out ambiguity);
 
-            // More than one live instance and nothing saying which: refused, not guessed.
-            // A command sent to the wrong session is a correct edit to the wrong model.
+            // More than one live instance and nothing saying which: refused, not guessed -
+            // the SAME refusal for every tool, reads included, with the candidates as data
+            // (InstanceRouting.cs). A command sent to the wrong session is a correct edit
+            // to the wrong model, and a read from it is the right answer from the wrong one.
+            RoutingDecision routing = InstanceRouting.Decide(target, TargetYear);
+            string ambiguity = routing.Refusal;
+            Discovered d = routing.Instance;
+            bool selectedByDocument = false;
+            JObject selectedDocument = null;
+            string requestedDocument = args["target_document"]?.Type == JTokenType.String ? (string)args["target_document"] : null;
+            if (routing.Ambiguous && target.IsAutomatic && string.IsNullOrEmpty(TargetYear) && !string.IsNullOrWhiteSpace(requestedDocument))
+            {
+                var live = PipeClient.ListAll().Where(x => x.ProcessAlive).ToArray();
+                if (live.Length > 1)
+                {
+                    var probes = HealthAnswer.ProbeInstances(live, HealthAnswer.ProbeInstance, HealthAnswer.InstanceProbeTimeoutMs + 500);
+                    // Owner decision 2026-11-13: with many Revit instances open, a change aimed at one document goes to that one.
+                    // Open in exactly one: it goes there (a write still rehearses and needs its own token). The same
+                    // model open in several, or open in none: refused, naming where it is or what is open.
+                    InstanceRouting.DocumentMatch match = InstanceRouting.MatchDocument(requestedDocument, live, probes);
+                    d = match?.Instance;
+                    if (d != null) { ambiguity = null; selectedByDocument = true; selectedDocument = match.Document; }
+                    else
+                    {
+                        JObject refusal = InstanceRouting.DocumentRefusal(requestedDocument, match);
+                        if (refusal != null)
+                        {
+                            Log.Warn(name + " refused: " + (string)refusal["extra"]["target_document_state"] + " '" + requestedDocument + "'");
+                            return ErrorResult("Error: " + (string)refusal["text"], null, null,
+                                ErrorCodes.Detail(ErrorCodes.DocumentoObjetivoAmbiguo, extra: (JObject)refusal["extra"]));
+                        }
+                    }
+                }
+            }
             if (ambiguity != null)
             {
                 Log.Warn(name + " refused: " + ambiguity);
-                return TextResult("Error: " + ambiguity, true);
+                return ErrorResult("Error: " + ambiguity, null, null,
+                    ErrorCodes.Detail(routing.Ambiguous ? ErrorCodes.DocumentoObjetivoAmbiguo : ErrorCodes.RevitNoDisponible,
+                        extra: routing.Ambiguous
+                            ? InstanceRouting.AmbiguityExtra(InstanceRouting.LiveCandidates())
+                            : new JObject { ["write_started"] = false, ["changes_applied"] = false }));
             }
 
             if (d == null)
@@ -1544,24 +1784,41 @@ namespace Horizun.Server
                 if (target.Pid != null)
                 {
                     Log.Warn(name + ": no bridge to route to for the pinned process " + target.Pid);
-                    return TextResult(
+                    return ErrorResult(
                         "Error: no Revit with process id " + target.Pid + " is reachable. That instance was pinned " +
                         "explicitly with horizun_target; call horizun_target to see which instances did publish a " +
-                        "bridge, or pass year 'auto' to clear the choice.", true);
+                        "bridge, or pass year 'auto' to clear the choice. Live instances are listed in " +
+                        "structuredContent.live_targets.", null, null,
+                        ErrorCodes.Detail(ErrorCodes.RevitNoDisponible,
+                            extra: new JObject
+                            {
+                                ["write_started"] = false, ["changes_applied"] = false,
+                                ["live_targets"] = InstanceRouting.LiveTargets(),
+                                ["retry_with"] = new JObject { ["tool"] = "horizun_target", ["arguments"] = new JObject() }
+                            }));
                 }
                 Log.Warn(name + ": no bridge to route to" +
                          (string.IsNullOrEmpty(year) ? "" : " for the requested Revit " + year));
                 // A Revit that loaded the add-in and refused to start looks exactly like
                 // a Revit that is not running. If one said why, say so here.
                 string refused = PipeClient.StartupFailures(year);
-                return TextResult(
+                // CLOSED or OPEN WITHOUT A BRIDGE: the two need different steps, and the old text could not tell them apart.
+                List<Horizun.Revit.Core.RunningRevit> running = RunningRevits();
+                string nextStep = refused.Length > 0 ? "" : Horizun.Revit.Core.RevitAvailabilityRules.NextStep(running, year);
+                return ErrorResult(
                     (string.IsNullOrEmpty(year)
-                        ? "Error: no Revit is reachable. Is Revit running with the Horizun add-in loaded?"
-                        : "Error: no Revit " + year + " is reachable. That target was chosen explicitly (" +
+                        ? "Error: no Revit is reachable."
+                        : "Error: no Revit is reachable for Revit " + year + ". That target was chosen explicitly (" +
                           (target.Year != null ? "horizun_target" : "HORIZUN_REVIT_YEAR") +
-                          "); " + (Tools.IsCallable("horizun_target")
-                              ? "call horizun_target to see which Revit versions did publish a bridge."
-                              : "ask the user which Revit versions are running with the Horizun add-in loaded.")) + refused, true);
+                          "); call horizun_target to see which Revit versions did publish a bridge.") + nextStep + refused, null, null,
+                    ErrorCodes.Detail(ErrorCodes.RevitNoDisponible,
+                        extra: new JObject
+                        {
+                            ["write_started"] = false, ["changes_applied"] = false,
+                            ["revit_state"] = Horizun.Revit.Core.RevitAvailabilityRules.State(running, year),
+                            ["revit_processes"] = new JArray(Horizun.Revit.Core.RevitAvailabilityRules.Relevant(running, year)
+                                .Select(r => new JObject { ["pid"] = r.Pid, ["year"] = r.Year }))
+                        }));
             }
 
             // A discovery file can outlive the Revit that wrote it (a crash, or a close that
@@ -1570,11 +1827,13 @@ namespace Horizun.Server
             if (!d.ProcessAlive)
             {
                 Log.Warn(name + ": Revit " + d.Year + " (pid " + d.Pid + ") is gone; its discovery file is stale");
-                return TextResult(
+                return ErrorResult(
                     "Error: the Revit " + d.Year + " that published this bridge (process " + d.Pid + ") is no longer " +
                     "running, so there is nothing to talk to. Its discovery file was left behind at " + d.SourceFile +
                     " - Revit did not get to clean up, which usually means it crashed or was killed. Start Revit " +
-                    "again; the add-in republishes the file on load.", true);
+                    "again; the add-in republishes the file on load.", null, null,
+                    ErrorCodes.Detail(ErrorCodes.RevitNoDisponible,
+                        extra: new JObject { ["write_started"] = false, ["changes_applied"] = false }));
             }
 
             // Does the add-in on the other end actually have this command? The two halves
@@ -1601,24 +1860,24 @@ namespace Horizun.Server
                              "closed), then restart Revit.";
                 Log.Warn(name + " refused: contract hash mismatch (server " + Horizun.Contracts.Contract.Hash +
                          " vs add-in " + d.ContractHash + ")");
-                return TextResult(msg, true);
+                return ContractMismatch(msg);
             }
 
             string legacyRefusal = PipeClient.LegacyContractRefusal(d, def);
             if (legacyRefusal != null)
             {
                 Log.Warn(name + " refused: " + legacyRefusal);
-                return TextResult("Error: " + legacyRefusal, true);
+                return ContractMismatch("Error: " + legacyRefusal);
             }
 
             if (d.ProtocolVersion != 0 && d.ProtocolVersion != Horizun.Contracts.Contract.ProtocolVersion)
             {
                 Log.Warn(name + " refused: protocol " + d.ProtocolVersion + " vs " +
                          Horizun.Contracts.Contract.ProtocolVersion);
-                return TextResult("Error: the add-in in Revit " + d.Year + " speaks wire protocol " +
+                return ContractMismatch("Error: the add-in in Revit " + d.Year + " speaks wire protocol " +
                                   d.ProtocolVersion + " and this server speaks " +
                                   Horizun.Contracts.Contract.ProtocolVersion + ". The shape of the exchange itself " +
-                                  "differs. Nothing was sent - redeploy the add-in.", true);
+                                  "differs. Nothing was sent - redeploy the add-in.");
             }
 
             bool? supported = d.Supports(def.Command);
@@ -1630,14 +1889,15 @@ namespace Horizun.Server
                              "). Rebuild and redeploy the add-in for Revit " + d.Year +
                              " (scripts/deploy.ps1 -Year " + d.Year + ", with Revit closed), then restart Revit.";
                 Log.Warn(name + " refused: plugin " + d.Year + " v" + (d.AddinVersion ?? "unknown") + " lacks it");
-                return TextResult(msg, true);
+                return ContractMismatch(msg);
             }
 
             JObject reply;
             try
             {
                 reply = PipeClient.Send(d, def.Command, args,
-                                        def.Command == "horizun_health" ? HealthTimeoutMs : CommandTimeoutMs,
+                                        Horizun.Revit.Core.CommandDeadlinePolicy.WaitMs(def.Command, CommandTimeoutMs) +
+                                        (def.Command == "horizun_health" ? 0 : AddinReplyGraceMs),
                                         ct,observe);
             }
             catch (Exception ex)
@@ -1660,13 +1920,7 @@ namespace Horizun.Server
                                   ? " (cancelled by client '" + (Volatile.Read(ref _clientName) ?? "(unnamed)") +
                                     "'; retry " + (string)transport?["retry"]?["verdict"] + ")"
                                   : ""), ex);
-                return ErrorResult("Error talking to Revit: " + ex.Message, null, null,
-                    ex.Data["horizun_transport_detail"] as JObject ?? new JObject
-                    {
-                        ["code"] = "revit_transport_failed", ["tool"] = name,
-                        ["exception_type"] = ex.GetType().FullName, ["exception_message"] = ex.Message,
-                        ["write_started"] = null, ["changes_applied"] = null, ["transaction_status"] = "unknown"
-                    });
+                return McpResult.ExceptionError(name, ex, ex.Data["horizun_transport_detail"] as JObject, bridge: true);
             }
 
             bool ok = reply["success"] != null && reply["success"].Type == JTokenType.Boolean && (bool)reply["success"];
@@ -1688,9 +1942,20 @@ namespace Horizun.Server
                 }
             }
 
+            // WHICH INSTANCE ANSWERED, on every routed reply (InstanceRouting rule 1): with
+            // two Revits open an answer that does not name its source cannot be trusted.
+            JObject answeredBy = InstanceRouting.AnsweredBy(d, target, TargetYear, InstanceRouting.LiveCount());
+            if (selectedByDocument && answeredBy != null)
+            {
+                answeredBy["selected_by"] = "target_document";
+                answeredBy["document"] = selectedDocument?["title"]?.DeepClone() ?? requestedDocument;
+                answeredBy["path"] = selectedDocument?["path"]?.DeepClone() ?? JValue.CreateNull();
+            }
+
             if (ok)
             {
                 JToken data = reply["data"];
+                InstanceRouting.Stamp(data, answeredBy);
 
                 // BOTH HALVES, IN THE ONE ANSWER THAT EXISTS TO IDENTIFY THEM. health
                 // already reports the add-in's version, commit and assembly hash, asked
@@ -1701,15 +1966,22 @@ namespace Horizun.Server
                 // support conversation, or a benchmark run, gets to tell them apart.
                 if (def.Command == "horizun_health" && data is JObject health)
                 {
+                    ProEdition.StampHealth(health);
                     health["server_provenance"] = Protocol.ProvenanceStamp.Current();
                     // The toolset selection lives in THIS process's environment, which the
                     // add-in cannot see, so the server reports it: which toolsets are active
                     // and how many characters/estimated tokens the tool list costs.
                     health["toolsets"] = ToolsetReport.HealthBlock();
-                    health["tool_profile"] = ToolProfiles.HealthBlock();
                     // Which surface tools/list carries (full or the facade), what it costs, and
                     // both identities: the contract hash the add-in shares, the facade's own.
                     health["schema_mode"] = SchemaFacade.HealthBlock();
+                    // 4.0 tool groups: the profile, the active/inactive groups, this session's
+                    // activations, the ceiling and what tools/list costs now.
+                    health["tool_groups"] = ToolVisibility.HealthBlock();
+                    Discovered[] discovered = null;
+                    try { discovered = PipeClient.ListAll().ToArray(); }
+                    catch { /* The successful reply still identifies the answering instance. */ }
+                    HealthAnswer.StampSuccess(health, d, discovered);
                 }
 
                 // model_diff explain: the ISO 19650 gaps come from the SAME validator
@@ -1731,9 +2003,11 @@ namespace Horizun.Server
             // McpResult.FromPluginReply, this forwarder did not call it, and the live
             // probe caught the difference - the same shipped-unnoticed shape as the
             // success path's verdict, now guarded the same way.
+            JObject failureDetail = reply["detail"] as JObject;
+            if (failureDetail != null) InstanceRouting.Stamp(failureDetail, answeredBy);
             return ErrorResult("Error: " + (string)reply["error"] + RevitSaidText(reply["revit_said"]),
                                reply["fallback"] as JObject, reply["capability_gaps"] as JArray,
-                               reply["detail"] as JObject);
+                               failureDetail);
         }
 
         /// <summary>
@@ -1772,6 +2046,20 @@ namespace Horizun.Server
         }
 
         private static JObject TextResult(string text, bool isError) => McpResult.Text(text, isError);
+
+        /// <summary>A refusal because the server and the add-in were built from different contracts. Nothing was sent.</summary>
+        private static JObject ContractMismatch(string text)
+        {
+            JObject extra = new JObject { ["write_started"] = false, ["changes_applied"] = false, ["transaction_status"] = "not_started" };
+            JObject stale = StaleServer.InstalledDiagnosis();
+            if (stale != null)
+            {
+                extra.Merge(stale);
+                text = "Error: this server process predates the installation (" + stale["server_version"] +
+                       "); the installed server is " + stale["installed_version"] + ". " + stale["remediation"] + " Nothing was sent.";
+            }
+            return ErrorResult(text, null, null, ErrorCodes.Detail(ErrorCodes.ContratoIncompatible, extra: extra));
+        }
 
         /// <summary>
         /// A failure that may carry the fallback signal. The text keeps the human reason;

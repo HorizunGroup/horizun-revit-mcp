@@ -68,7 +68,11 @@ $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter
 # would produce fresh bytes (a new timestamp) that no longer match what is inside
 # the installer just built. So the payload is signed once, on the first pass; the
 # second pass finds it already signed, skips it, and signs only the setup.exe.
-$staged = @(Get-HorizunOwnBinaries $stage) | Where-Object { $_ -and -not (Get-HorizunSignatureInfo $_).Signed } | ForEach-Object { Get-Item $_ }
+# The installer's own PowerShell helpers are signed in the same pass (and so are
+# inside the installer the second pass signs): Setup runs them, and an unsigned
+# script started by an installer is what an antivirus behaviour engine flagged.
+$staged = @(@(Get-HorizunOwnBinaries $stage) + @(Get-HorizunOwnScripts $stage)) |
+    Where-Object { $_ -and -not (Get-HorizunSignatureInfo $_).Signed } | ForEach-Object { Get-Item $_ }
 $setup  = @(Get-ChildItem (Join-Path $repo 'dist') -Filter '*setup.exe' -File -ErrorAction SilentlyContinue)
 $targets = @($staged) + @($setup)
 $signedStagedPayload = $staged.Count -gt 0
@@ -143,6 +147,14 @@ if ($signedStagedPayload -and (Test-Path (Join-Path $stage 'manifest.json'))) {
     $mismatch = @(Test-HorizunStageMatchesManifest $stage)
     if ($mismatch.Count -gt 0) { throw "manifest still does not match the stage after recompute: $($mismatch -join '; ')" }
     Write-Host "  stage now matches manifest (all hashes re-verified)" -ForegroundColor Green
+}
+
+# Every shipped script must now carry a VALID signature: one that does not (an
+# encoding the signer read differently, a file edited after signing) would run
+# unsigned on the customer's machine - the very thing this pass exists to prevent.
+$badScripts = @(Get-HorizunOwnScripts $stage | Where-Object { (Get-AuthenticodeSignature -LiteralPath $_).Status -ne 'Valid' })
+if ($badScripts.Count -gt 0) {
+    throw ("client-tools scripts without a valid signature: " + (($badScripts | ForEach-Object { Split-Path -Leaf $_ }) -join ', '))
 }
 
 Write-Host ""

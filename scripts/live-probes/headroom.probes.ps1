@@ -2,13 +2,13 @@
 # Stages its OWN two levels 3 m apart far above the model, a 4 x 4 m floor on each at
 # X = 1,140,000 mm (the lower one is the surface the upper one stands clear of), a third floor
 # 10 m away with nothing below it, and its own 3D view (no template, no section box). The
-# floor type comes BY NAME from this Revit's Autodesk template. Two own pipes exercise the
+# floor type is the document's own first Generic floor type. Two own pipes exercise the
 # curve path: one hung 500 mm under the upper floor over the lower one (sampled along its
 # location curve), one run through the middle of the lone floor's thickness (the ray meets
 # that floor before the pipe and again after it: inside_target, never a clear height to the
-# floor's own far side). Pipe and piping-system types come BY NAME from the document or the
-# year's MEP template; copied MEP types stay in the disposable document and the cleanup case
-# names them. Everything else created is deleted; the document is never saved.
+# floor's own far side). Pipe and piping-system types come BY NAME from the document; a
+# document without them leaves the pipe cases not staged, with the reason. Everything created
+# is deleted; the document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'headroom'
     Catalog = @(
@@ -54,28 +54,9 @@ $script:HzProbeModules += [pscustomobject]@{
             @($rows | Where-Object { $want -eq [string]$_.type -or $want -eq ([string]$_.family + ': ' + [string]$_.type) -or
                                      ([string]$_.type -and $want.EndsWith(': ' + [string]$_.type)) }) | Select-Object -First 1
         }
-        # TemplateRoot exists only for the offline tests; a live run always uses Revit's own.
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-        $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte', 'English\Default-Multi-Discipline_Metric.rte') |
-            ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        # A floor type BY NAME from the template (the refusal for an impossible name lists what it holds).
-        $floorType = $null
-        if (-not $tpl) { [void]$why.Add("no Autodesk template under $tplRoot") }
-        else {
-            $probe = & $Ctx.Call 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Floors'; type_names = @('__hz_probe_no_such_type__') }
-            $listed = [regex]::Match([string]$probe.text, 'Types there[^:]*:\s*(.+)$', 'Singleline')
-            $names = if ($listed.Success) { @(($listed.Groups[1].Value -split ' \| ') | ForEach-Object { ($_ -replace '\s*(\.\.\.)?\.?\s*$', '').Trim() } | Where-Object { $_ }) } else { @() }
-            $want = @($names | Where-Object { $_ -match 'Generic' }) | Select-Object -First 1
-            if (-not $want) { [void]$why.Add('the template lists no Generic floor type: ' + (Short $probe)) }
-            else {
-                $floorType = Named (TypeRows 'OST_Floors') $want
-                if (-not $floorType) {
-                    $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Floors'; type_names = @($want); duplicate_types = 'use_destination' } ($run + '-hdr-floortype')
-                    $floorType = Named (TypeRows 'OST_Floors') $want
-                    if ($floorType) { [void]$created.Add([long]$floorType.element_id) } else { [void]$why.Add("copying '$want' gave no floor type: stage=" + $cp.stage + ' ' + (Short $cp.answer)) }
-                }
-            }
-        }
+        # The document's own first Generic floor type, by name.
+        $floorType = @(TypeRows 'OST_Floors' | Where-Object { ([string]$_.family + ': ' + [string]$_.type) -match 'Generic' }) | Select-Object -First 1
+        if (-not $floorType) { [void]$why.Add('the document holds no Generic floor type') }
 
         # ---- staging (mm): two own levels 3 m apart, floors A (lower), B (upper), C (alone) ------
         $E = 112000.0; $H = 3000.0; $X = 1140000.0; $Y = 30000.0; $S = 4000.0; $XC = $X + 10000.0
@@ -98,22 +79,13 @@ $script:HzProbeModules += [pscustomobject]@{
             if ($fine.stage -ne 'apply' -or $fine.answer.isError) { [void]$why.Add('the own 3D view could not be set to Fine: ' + (Short $fine.answer)) }
         }
         # ---- two own pipes: hung under B over A, and run through the middle of C's thickness ------
-        $kept = New-Object System.Collections.ArrayList
-        function Bring($category, $candidates, $key) {
+        function Bring($category, $candidates) {
             foreach ($cand in $candidates) { $hit = Named (TypeRows $category) $cand; if ($hit) { return $hit } }
-            $mepTpl = @('English\Systems-Default_Metric.rte', 'English\Plumbing-Default_Metric.rte', 'English\Default-Multi-Discipline_Metric.rte') |
-                ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-            if (-not $mepTpl) { [void]$why.Add("no MEP template under $tplRoot for $category"); return $null }
-            foreach ($cand in $candidates) {
-                $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $mepTpl; category = $category; type_names = @($cand); duplicate_types = 'use_destination' } ($run + '-hdr-' + $key + '-' + ($cand -replace '[^A-Za-z0-9]', ''))
-                $hit = Named (TypeRows $category) $cand
-                if ($hit) { [void]$kept.Add([long]$hit.element_id); return $hit }
-            }
-            [void]$why.Add("no $category type named " + ($candidates -join ' / ') + ' in the document or in ' + (Split-Path $mepTpl -Leaf))
+            [void]$why.Add("no $category type named " + ($candidates -join ' / ') + ' in the document')
             return $null
         }
-        $pipeType = Bring 'OST_PipeCurves' @('Pipe Types: Default', 'Pipe Types: Standard') 'pipetype'
-        $pipeSys = Bring 'OST_PipingSystem' @('Domestic Cold Water', 'Hydronic Supply') 'pipesys'
+        $pipeType = Bring 'OST_PipeCurves' @('Pipe Types: Default', 'Pipe Types: Standard')
+        $pipeSys = Bring 'OST_PipingSystem' @('Domestic Cold Water', 'Hydronic Supply')
         $pipeHung = $null; $pipeIn = $null
         if ($l1 -and $floorA -and $floorB -and $pipeType -and $pipeSys) {
             $pipeHung = Create @{ kind = 'pipe'; start = @(($X + 500), ($Y + 2000), ($E + 2500)); end = @(($X + 3500), ($Y + 2000), ($E + 2500)); diameter = 25
@@ -217,8 +189,7 @@ $script:HzProbeModules += [pscustomobject]@{
         else {
             [array]::Reverse($ids)
             $del = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = $ids; id_cap = 500 } ($run + '-hdr-cleanup')
-            $keptText = if ($kept.Count) { '; MEP types copied from a template stay in the disposable document: ' + (@($kept) -join ',') } else { '' }
-            if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case $catalog[5] $tools[5] 'pass' ("deleted " + $ids.Count + " created ids" + $keptText) }
+            if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case $catalog[5] $tools[5] 'pass' ("deleted " + $ids.Count + " created ids") }
             else { Case $catalog[5] $tools[5] 'fail' ('left in the disposable document: ' + ($ids -join ',') + ' - ' + (Short $del.answer)) }
         }
         return $cases

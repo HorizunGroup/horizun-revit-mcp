@@ -43,6 +43,7 @@ namespace Horizun.Revit.Commands
                     Element host = fi.Host;
                     return host is Level ? FromId(host.Id) : LevelProbe.Absent();
                 }
+                if (source == LevelResolutionRules.RailingHostElement) return FromRailingHost(element);
                 BuiltInParameter bip;
                 if (!Parameters.TryGetValue(source, out bip)) return LevelProbe.Absent();
                 Parameter p = element.get_Parameter(bip);
@@ -51,6 +52,32 @@ namespace Horizun.Revit.Commands
                 return FromId(p.AsElementId());
             }
             catch (Exception ex) { return LevelProbe.Failed(ex.Message); }
+        }
+
+        // Where a stair, ramp or floor keeps its own level, in the order they are asked.
+        private static readonly BuiltInParameter[] HostLevelParameters =
+        {
+            BuiltInParameter.STAIRS_BASE_LEVEL_PARAM, BuiltInParameter.LEVEL_PARAM, BuiltInParameter.FAMILY_LEVEL_PARAM,
+            BuiltInParameter.SCHEDULE_LEVEL_PARAM
+        };
+
+        /// <summary>The level of the element a railing is hosted on (a stair's base level, a floor's level).</summary>
+        private LevelProbe FromRailingHost(Element element)
+        {
+            if (!(element is Autodesk.Revit.DB.Architecture.Railing railing)) return LevelProbe.Absent();
+            if (!railing.HasHost) return LevelProbe.Absent();
+            Element host = doc.GetElement(railing.HostId);
+            if (host == null) return LevelProbe.Absent();
+            LevelProbe own = FromId(host.LevelId);
+            if (own.State == LevelProbeState.Level) return own;
+            foreach (BuiltInParameter bip in HostLevelParameters)
+            {
+                Parameter p = host.get_Parameter(bip);
+                if (p == null || p.StorageType != StorageType.ElementId) continue;
+                LevelProbe probe = FromId(p.AsElementId());
+                if (probe.State == LevelProbeState.Level) return probe;
+            }
+            return LevelProbe.NoLevel();
         }
 
         private LevelProbe FromId(ElementId id)

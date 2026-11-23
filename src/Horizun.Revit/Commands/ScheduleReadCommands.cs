@@ -2,6 +2,7 @@
 // Horizun Revit MCP — bounded, read-only inspection of native schedules.
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -59,6 +60,8 @@ namespace Horizun.Revit.Commands
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             Document doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
             int maxRows = Math.Max(1, Math.Min(1000, request.Value<int?>("max_rows") ?? 200));
 
             // Revision schedules are one per titleblock family and they bury the real
@@ -124,10 +127,28 @@ namespace Horizun.Revit.Commands
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             Document doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
-            long id = request.Value<long?>("schedule_id") ?? -1;
-            if (!Rid.CanRepresent(id)) return CommandResult.Fail(Rid.RangeError(id));
-            ViewSchedule schedule = doc.GetElement(Rid.Make(id)) as ViewSchedule;
-            if (schedule == null) return CommandResult.Fail("schedule_id does not identify a native ViewSchedule in the active document.");
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
+            JToken idToken = request["schedule_id"];
+            long? sentId = idToken == null || idToken.Type == JTokenType.Null ? (long?)null : request.Value<long?>("schedule_id");
+            // The order (not sent, negative, no element, other element, TEMPLATE, readable) is decided in
+            // ScheduleIdMessages.Classify and tested there; this only answers what the document holds.
+            if (sentId.HasValue && sentId.Value >= 0 && !Rid.CanRepresent(sentId.Value))
+                return CommandResult.Fail(Rid.RangeError(sentId.Value));
+            Element found = null;
+            ScheduleIdHit hit = ScheduleIdMessages.Classify(sentId, id =>
+            {
+                found = doc.GetElement(Rid.Make(id));
+                var asSchedule = found as ViewSchedule;
+                bool isTemplate = false;
+                if (asSchedule != null)
+                {
+                    try { isTemplate = asSchedule.IsTemplate; } catch (Exception) { isTemplate = false; }
+                }
+                return new ScheduleIdFacts(found != null, asSchedule != null, isTemplate);
+            });
+            if (hit != ScheduleIdHit.Readable) return CommandResult.Fail(ScheduleIdRefusal(doc, hit, sentId, found));
+            var schedule = (ViewSchedule)found;
 
             int maxRows = Math.Max(1, Math.Min(1000, request.Value<int?>("max_rows") ?? 200));
             int maxColumns = Math.Max(1, Math.Min(100, request.Value<int?>("max_columns") ?? 50));
@@ -150,6 +171,25 @@ namespace Horizun.Revit.Commands
                 ["header"] = ReadSection(schedule, SectionType.Header, header, maxRows, maxColumns),
                 ["body"] = ReadSection(schedule, SectionType.Body, body, maxRows, maxColumns)
             });
+        }
+
+        /// <summary>
+        /// Why schedule_id names no readable schedule, and which ones exist (ScheduleIdMessages says it;
+        /// this only gathers the facts from the document).
+        /// </summary>
+        internal static string ScheduleIdRefusal(Document doc, ScheduleIdHit hit, long? id, Element found)
+        {
+            string type = null, name = null;
+            try { type = found?.GetType().Name; } catch (Exception) { }
+            try { name = found?.Name; } catch (Exception) { }
+            List<KeyValuePair<long, string>> schedules;
+            try
+            {
+                schedules = new FilteredElementCollector(doc).OfClass(typeof(ViewSchedule)).Cast<ViewSchedule>()
+                    .Where(v => !v.IsTemplate).Select(v => new KeyValuePair<long, string>(Rid.Value(v.Id), v.Name)).ToList();
+            }
+            catch (Exception) { schedules = null; }
+            return ScheduleIdMessages.Refusal(hit, id, type, name, schedules);
         }
 
         private static JArray ReadSection(ViewSchedule schedule, SectionType type, TableSectionData section, int maxRows, int maxColumns)

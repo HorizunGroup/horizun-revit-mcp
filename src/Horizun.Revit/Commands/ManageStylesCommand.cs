@@ -34,7 +34,8 @@ namespace Horizun.Revit.Commands
         public string Description => "Object styles, subcategories, line styles, line patterns and fill patterns: list, set and create, re-read after commit.";
 
         private const string Known = "list_object_styles, set_object_style, create_subcategory, list_line_styles, " +
-                                     "create_line_style, list_line_patterns, create_line_pattern, list_fill_patterns, create_fill_pattern";
+                                     "create_line_style, list_line_patterns, create_line_pattern, list_fill_patterns, create_fill_pattern, " +
+                                     "list_color_schemes, create_color_scheme, edit_color_scheme, apply_color_scheme, place_color_legend";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -47,6 +48,7 @@ namespace Horizun.Revit.Commands
                 case "list_line_styles":
                 case "list_line_patterns":
                 case "list_fill_patterns":
+                case ColorSchemeRules.OpList:
                 {
                     Document doc = app.ActiveUIDocument?.Document;
                     if (doc == null) return CommandResult.Fail("No document is open.");
@@ -54,6 +56,7 @@ namespace Horizun.Revit.Commands
                     if (guard != null) return guard;
                     if (op == "list_line_patterns") return VerifiedModelEdit.ReadReply(ListLinePatterns(doc));
                     if (op == "list_fill_patterns") return VerifiedModelEdit.ReadReply(ListFillPatterns(doc));
+                    if (op == ColorSchemeRules.OpList) return ColorSchemeEdits.List(doc, request);
                     string category = op == "list_line_styles" ? "OST_Lines" : request.Value<string>("category");
                     return ListObjectStyles(doc, category);
                 }
@@ -62,6 +65,10 @@ namespace Horizun.Revit.Commands
                 case "create_line_style":
                 case "create_line_pattern":
                 case "create_fill_pattern":
+                case ColorSchemeRules.OpCreate:
+                case ColorSchemeRules.OpEdit:
+                case ColorSchemeRules.OpApply:
+                case ColorSchemeRules.OpLegend:
                 {
                     GateResult gate = DocumentGate.ForMutation(app, request, Tool);
                     if (!gate.Ok) return gate.Refusal;
@@ -70,12 +77,14 @@ namespace Horizun.Revit.Commands
                     if (op == "set_object_style") edit = PlanSetStyle(gate.Document, request, out error);
                     else if (op == "create_line_pattern") edit = PlanLinePattern(gate.Document, request, out error);
                     else if (op == "create_fill_pattern") edit = PlanFillPattern(gate.Document, request, out error);
+                    else if (ColorSchemeRules.WriteOperations.Contains(op)) edit = ColorSchemeEdits.Plan(gate.Document, request, op, out error);
                     else edit = PlanSubcategory(gate.Document, request, op == "create_line_style", out error);
                     if (edit == null) return CommandResult.Fail(error + " Nothing was written.");
                     edit.Tool = Tool; edit.Operation = op;
                     return VerifiedModelEdit.Run(app, gate, request, edit,
                         "category", "subcategory", "name", "projection_weight", "cut_weight", "color", "line_pattern",
-                        "material", "segments", "target", "fill", "angle", "spacing", "spacing2", "units");
+                        "material", "segments", "target", "fill", "angle", "spacing", "spacing2", "units",
+                        "scheme_id", "parameter", "by_range", "include_links", "title", "entries", "value_units", "view_id", "point");
                 }
                 default:
                     return VerifiedModelEdit.UnknownOperation(Tool, op, Known);
@@ -485,6 +494,10 @@ namespace Horizun.Revit.Commands
             error = "'" + parent.Name + "' has no subcategory named '" + sub + "' (operation=list_object_styles with category lists them).";
             return null;
         }
+
+        /// <summary>The same resolution, for the colour scheme operations in their own file.</summary>
+        internal static Category ResolveCategoryPublic(Document doc, string key, out string error)
+            => ResolveCategory(doc, key, out error);
 
         private static Category ResolveCategory(Document doc, string key, out string error)
         {

@@ -99,10 +99,16 @@ guardó únicamente la copia de prueba. No se sincronizó el Core.
 - `slope_ratio` es subida/avance: una cubierta 8:12 usa `0.6666666666666666`.
   `slope_degrees` se convierte a esa relación. Son mutuamente excluyentes con
   `edge_slopes`, que sigue el orden de aristas del perímetro.
-- `dry_run` de creación y tipos sigue siendo true por defecto. La profundidad
-  predeterminada `validation_mode: "arguments"` no construye elementos.
-  `"revit_rollback"` construye, confirma una transacción interna, mide y revierte
-  el grupo completo. Sus IDs son provisionales: no deben reutilizarse.
+- `dry_run` de creación y tipos sigue siendo true por defecto. `validation_mode: "arguments"`
+  comprueba los argumentos. La creación ensaya automáticamente en Revit los casos que
+  dependen de la construcción, como las derivaciones oblicuas en Y. `"revit_rollback"`
+  también construye los demás elementos provisionalmente, confirma una transacción
+  interna, mide y revierte el grupo completo. Descarta los IDs de ese ensayo.
+- En `horizun_create_elements`, una construcción provisional verificada y revertida
+  devuelve `application.state: "rehearsed"` y `transaction_status: "RolledBack"`.
+  `horizun_execute_plan` acepta ese ensayo cuando `api_rehearsal` confirma la reversión
+  y la ausencia de los elementos provisionales, y los contadores de aplicación y de
+  incidencias del ensayo están en cero.
 - Una aplicación conserva la secuencia ensayo/token/idempotency_key. Una lectura
   fallida después de la asimilación se informa como cambio cometido sin verificación
   completa; nunca como rollback ficticio.

@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Mechanical;
@@ -27,7 +28,7 @@ namespace Horizun.Revit.Commands
                 if (Math.Abs(p.Start.Z - p.End.Z) > GeometryInput.Tolerance) throw new ArgumentException("wall start/end must share one horizontal base plane.");
                 p.Offset = p.Start.Z - p.Level.ProjectElevation;
                 CheckOffset(p, p.Input["base_offset"] ?? p.Input["offset"]);
-                p.TopLevel = Optional<Level>(doc, p.Input, "top_level_id");
+                p.TopLevel = p.TopLevel ?? Optional<Level>(doc, p.Input, "top_level_id");
                 if (p.Input["top_offset"] != null && p.TopLevel == null) throw new ArgumentException("top_offset requires top_level_id.");
                 p.TopOffset = (p.Input.Value<double?>("top_offset") ?? 0) * p.Scale;
                 if (p.TopLevel != null && Math.Abs(p.TopLevel.ProjectElevation + p.TopOffset - p.Start.Z - p.Height) > GeometryInput.Tolerance)
@@ -50,7 +51,7 @@ namespace Horizun.Revit.Commands
                     throw new ArgumentException("host_id requires a hosted or work-plane-based family.");
                 if (p.Host == null && placement != FamilyPlacementType.OneLevelBased && placement != FamilyPlacementType.TwoLevelsBased)
                     throw new ArgumentException("This family placement requires an explicit compatible host or a different placement route.");
-                if (placement == FamilyPlacementType.TwoLevelsBased)
+                if (placement == FamilyPlacementType.TwoLevelsBased || p.Kind == "structural_column" || InCategory(p.Type, BuiltInCategory.OST_StructuralColumns))
                 {
                     // A column's TOP, stated rather than left to Revit's default (which puts it at
                     // whatever level happens to be above, or nowhere useful on the top level).
@@ -94,35 +95,82 @@ namespace Horizun.Revit.Commands
         }
         private static void ReadRoofSlopes(Plan p)
         {
-            int count = p.Loops[0].Count();
+            var loopSizes = p.Loops.Select(l => l.Count()).ToList();
+            int count = RoofFootprintRules.EdgeCount(loopSizes);
             p.Slopes = new double[count]; p.DefinesSlope = new bool[count];
+            p.Overhangs = new double?[count]; p.EdgeOffsets = new double?[count];
             int modes = new[] { "slope_degrees", "slope_ratio", "edge_slopes" }.Count(f => p.Input[f] != null);
             if (modes > 1) throw new ArgumentException("Use exactly one of slope_degrees, slope_ratio or edge_slopes.");
             var edges = p.Input["edge_slopes"] as JArray;
             if (p.Input["edge_slopes"] != null && (edges == null || edges.Count != count))
-                throw new ArgumentException("edge_slopes needs exactly one entry per perimeter edge, in input order.");
+                throw new ArgumentException("edge_slopes needs exactly one entry per edge, in input order across ALL contours (perimeter first, then each hole): " + count + " here.");
+            bool[] uniform = null;
             for (int i = 0; i < count; i++)
             {
                 JObject spec = edges == null ? p.Input : edges[i] as JObject;
                 if (spec == null) throw new ArgumentException("edge_slopes[" + i + "] must be an object.");
                 if (edges != null)
                 {
-                    if (spec.Properties().Any(f => f.Name != "defines_slope" && f.Name != "slope_degrees" && f.Name != "slope_ratio"))
+                    if (spec.Properties().Any(f => f.Name != "defines_slope" && f.Name != "slope_degrees" && f.Name != "slope_ratio" && f.Name != "overhang" && f.Name != "offset"))
                         throw new ArgumentException("Unknown edge_slopes field at edge " + i);
                     if (spec["defines_slope"]?.Type != JTokenType.Boolean) throw new ArgumentException("Each edge needs boolean defines_slope.");
                     if (spec["slope_degrees"] != null && spec["slope_ratio"] != null) throw new ArgumentException("An edge cannot use both slope units.");
+                    foreach (string field in new[] { "overhang", "offset" })
+                    {
+                        if (spec[field] == null) continue;
+                        double v = GeometryInput.Number(spec[field], field) * p.Scale;
+                        string bad = RoofFootprintRules.EdgeNumberError(field, v, i);
+                        if (bad != null) throw new ArgumentException(bad);
+                        if (field == "overhang") p.Overhangs[i] = v; else p.EdgeOffsets[i] = v;
+                    }
                 }
                 double ratio = spec["slope_degrees"] != null ? GeometryInput.SlopeRatio(GeometryInput.Number(spec["slope_degrees"], "slope_degrees")) :
                     spec["slope_ratio"] == null ? 0 : GeometryInput.Number(spec["slope_ratio"], "slope_ratio");
                 if (ratio < 0) throw new ArgumentException("slope_ratio must be non-negative.");
-                bool defines = edges == null ? ratio > 0 : spec.Value<bool>("defines_slope");
+                if (edges == null && uniform == null) uniform = RoofFootprintRules.UniformDefinesSlope(loopSizes, ratio);
+                bool defines = edges == null ? uniform[i] : spec.Value<bool>("defines_slope");
                 if (edges != null && (defines ? ratio <= 0 : ratio != 0)) throw new ArgumentException("A sloping edge needs a positive slope; a non-sloping edge cannot specify a nonzero slope.");
                 p.Slopes[i] = ratio; p.DefinesSlope[i] = defines;
             }
         }
+        private static void ReadCeilingSlope(Plan p)
+        {
+            bool hasSlope = p.Input["slope_degrees"] != null || p.Input["slope_ratio"] != null;
+            bool hasArrow = p.Input["slope_arrow_start"] != null || p.Input["slope_arrow_end"] != null;
+            bool hasExpected = p.Input["expected_arrow_elevations"] != null;
+            if (!hasSlope && !hasArrow && !hasExpected) return;
+            if (!hasSlope || p.Input["slope_arrow_start"] == null || p.Input["slope_arrow_end"] == null)
+                throw new ArgumentException("A sloped " + p.Kind + " needs slope_ratio or slope_degrees and both slope_arrow_start/end.");
+            if (p.Input["slope_degrees"] != null && p.Input["slope_ratio"] != null)
+                throw new ArgumentException("Use slope_ratio or slope_degrees for a " + p.Kind + ", not both.");
+            double ratio = p.Input["slope_degrees"] != null
+                ? GeometryInput.SlopeRatio(GeometryInput.Number(p.Input["slope_degrees"], "slope_degrees"))
+                : GeometryInput.Number(p.Input["slope_ratio"], "slope_ratio");
+            if (ratio <= 0 || double.IsInfinity(ratio))
+                throw new ArgumentException("A sloped " + p.Kind + " needs a finite positive slope.");
+            XYZ start = Point(p.Input["slope_arrow_start"], p.Scale, true);
+            XYZ end = Point(p.Input["slope_arrow_end"], p.Scale, true);
+            double datum = p.Loops[0].First().GetEndPoint(0).Z;
+            if (Math.Abs(start.Z - end.Z) > GeometryInput.Tolerance || Math.Abs(start.Z - datum) > GeometryInput.Tolerance)
+                throw new ArgumentException("The " + p.Kind + " slope arrow must be horizontal and on the profile datum plane.");
+            if (start.DistanceTo(end) < 1 / 304.8)
+                throw new ArgumentException("The " + p.Kind + " slope arrow must be at least 1 mm long.");
+            p.CeilingArrow = Line.CreateBound(start, end);
+            p.CeilingSlopeRatio = ratio;
+            if (hasExpected)
+            {
+                JArray values = p.Input["expected_arrow_elevations"] as JArray;
+                if (values == null || values.Count != 2)
+                    throw new ArgumentException("expected_arrow_elevations needs two absolute Z values, at arrow start and end.");
+                p.CeilingExpectedElevations = values.Select(v => GeometryInput.Number(v, "expected_arrow_elevations") * p.Scale).ToArray();
+                double rise = p.CeilingExpectedElevations[1] - p.CeilingExpectedElevations[0];
+                if (Math.Abs(rise - ratio * start.DistanceTo(end)) > 1 / 304.8)
+                    throw new ArgumentException("expected_arrow_elevations disagree with the arrow length and slope by more than 1 mm.");
+            }
+        }
         private static int MatchEdge(Plan p, Curve found)
         {
-            var edges = p.Loops[0].ToList();
+            var edges = p.Loops.SelectMany(l => l).ToList();
             var matches = Enumerable.Range(0, edges.Count).Where(i => SameXYEdge(edges[i], found)).ToList();
             if (matches.Count != 1) throw new InvalidOperationException("Revit roof edge cannot be mapped unambiguously to the input perimeter.");
             return matches[0];
@@ -184,6 +232,7 @@ namespace Horizun.Revit.Commands
                 SetTop(doc, p, instance);
                 PositionInstance(doc, p, instance);
                 SetTop(doc, p, instance);
+                VerifyColumnBody(doc, p, instance);
                 return;
             }
             try { PositionInstance(doc, p, instance); }
@@ -193,6 +242,16 @@ namespace Horizun.Revit.Commands
                 PositionInstance(doc, p, instance);
             }
             SetTop(doc, p, instance);
+            VerifyColumnBody(doc, p, instance);
+        }
+
+        private static void VerifyColumnBody(Document doc, Plan p, FamilyInstance instance)
+        {
+            if (p.Kind != "structural_column" && !InCategory(p.Type, BuiltInCategory.OST_StructuralColumns)) return;
+            doc.Regenerate();
+            double? top = p.TopLevel == null ? (double?)null : p.TopLevel.ProjectElevation + p.TopOffset;
+            string problem = ColumnConstraintOrder.SolidSpanProblem(p.Start.Z, top, SolidElevationSpan(instance), 1 / 304.8);
+            if (problem != null) throw new InvalidOperationException(problem + ": the physical column body does not retain the requested base/top; bind the family profile to its reference datum and height before placing it");
         }
 
         private static bool TopGoesFirst(Document doc, Plan p, FamilyInstance instance)
@@ -238,9 +297,9 @@ namespace Horizun.Revit.Commands
 
         // The lowest and highest Z of the element's real solids, in project feet, or
         // null when it publishes no solid geometry. Reported as evidence beside the
-        // governed elevation, never asserted: a wall attached to a floor legitimately
-        // differs from its base constraint, and calling that a failure would refuse
-        // correct models.
+        // governed elevation. Hosted doors/windows also use it to prove their solid
+        // stays within the requested storey; an attached wall may legitimately
+        // differ from its base constraint, so walls retain reporting only.
         private static double[] SolidElevationSpan(Element e)
         {
             try
@@ -256,9 +315,11 @@ namespace Horizun.Revit.Commands
                         {
                             BoundingBoxXYZ box = solid.GetBoundingBox();
                             Transform total = transform.Multiply(box.Transform);
-                            foreach (XYZ corner in new[] { box.Min, box.Max })
+                            foreach (double x in new[] { box.Min.X, box.Max.X })
+                            foreach (double y in new[] { box.Min.Y, box.Max.Y })
+                            foreach (double zz in new[] { box.Min.Z, box.Max.Z })
                             {
-                                double z = total.OfPoint(corner).Z;
+                                double z = total.OfPoint(new XYZ(x, y, zz)).Z;
                                 if (z < low) low = z;
                                 if (z > high) high = z;
                             }
@@ -271,6 +332,75 @@ namespace Horizun.Revit.Commands
                 return low == double.MaxValue ? null : new[] { low, high };
             }
             catch { return null; }
+        }
+
+        // Geometry that Revit actually generated for the temporary footing. A type
+        // name and the bearing wall's base cannot establish the footing's top Z:
+        // offsets and joins can change it. Tessellated solid edges give the physical
+        // extents, even when the wall axis is rotated in plan.
+        private static JObject MeasureWallFoundation(Document doc, Created made)
+        {
+            var footing = doc.GetElement(made.Id) as WallFoundation;
+            var wall = made.Plan.FoundationWall;
+            if (footing == null || !(wall?.Location is LocationCurve location) || location.Curve == null)
+                throw new InvalidOperationException("The provisional wall foundation or its host axis could not be read.");
+            Curve axis = location.Curve;
+            XYZ start = axis.GetEndPoint(0), end = axis.GetEndPoint(1);
+            bool straight = axis is Line;
+            XYZ along = straight ? new XYZ(end.X - start.X, end.Y - start.Y, 0).Normalize() : null;
+            XYZ across = straight ? new XYZ(-along.Y, along.X, 0) : null;
+            double minZ = double.MaxValue, maxZ = double.MinValue;
+            double minAlong = double.MaxValue, maxAlong = double.MinValue;
+            double minAcross = double.MaxValue, maxAcross = double.MinValue;
+            int samples = 0;
+            var options = new Options { ComputeReferences = false, DetailLevel = ViewDetailLevel.Fine };
+            void Walk(GeometryElement geometry, Transform transform)
+            {
+                if (geometry == null) return;
+                foreach (GeometryObject item in geometry)
+                {
+                    if (item is Solid solid && solid.Volume > 1e-9)
+                    {
+                        foreach (Edge edge in solid.Edges)
+                            foreach (XYZ local in edge.Tessellate())
+                            {
+                                XYZ point = transform.OfPoint(local);
+                                minZ = Math.Min(minZ, point.Z); maxZ = Math.Max(maxZ, point.Z);
+                                if (straight)
+                                {
+                                    XYZ relative = point - start;
+                                    double station = relative.DotProduct(along), lateral = relative.DotProduct(across);
+                                    minAlong = Math.Min(minAlong, station); maxAlong = Math.Max(maxAlong, station);
+                                    minAcross = Math.Min(minAcross, lateral); maxAcross = Math.Max(maxAcross, lateral);
+                                }
+                                samples++;
+                            }
+                    }
+                    else if (item is GeometryInstance instance)
+                        Walk(instance.GetInstanceGeometry(), transform);
+                }
+            }
+            Walk(footing.get_Geometry(options), Transform.Identity);
+            if (samples == 0) throw new InvalidOperationException("The provisional wall foundation exposed no measurable solid edges.");
+            string Mm(double feet) => Math.Round(feet * 304.8, 1).ToString(CultureInfo.InvariantCulture);
+            var values = new JObject
+            {
+                ["measurement"] = "revit_provisional_solid_rolled_back",
+                ["host_wall_id"] = Rid.Value(wall.Id).ToString(CultureInfo.InvariantCulture),
+                ["axis_start_mm"] = SafePlanPoint(start),
+                ["axis_end_mm"] = SafePlanPoint(end),
+                ["axis_length_mm"] = Mm(axis.Length),
+                ["top_z_mm"] = Mm(maxZ),
+                ["bottom_z_mm"] = Mm(minZ),
+                ["thickness_mm"] = Mm(maxZ - minZ)
+            };
+            if (straight)
+            {
+                values["solid_length_mm"] = Mm(maxAlong - minAlong);
+                values["solid_width_mm"] = Mm(maxAcross - minAcross);
+            }
+            else values["plan_dimensions_note"] = "curved host: length and width cannot be inferred from one straight cross-section";
+            return values;
         }
 
         // The level a point-placed instance measures its base offset from, or null
@@ -351,144 +481,53 @@ namespace Horizun.Revit.Commands
             return null;
         }
 
-        private static CommandResult ApplyPlans(Document doc, JObject request, List<Plan> plans, int requested, bool rehearsal = false)
+        private static bool IsRoomRegionWarning(Guid definition) =>
+            definition == BuiltInFailures.RoomFailures.RoomsInSameRegionRooms.Guid ||
+            definition == BuiltInFailures.RoomFailures.RoomsInSameRegion.Guid;
+
+        /// <summary>Records every failure message of the batch's transaction (description, severity, element ids); resolves nothing.</summary>
+        private sealed class BatchFailureCapture : IFailuresPreprocessor
         {
-            if (plans.Count == 1 && plans[0].Kind == "stairs") return ApplyStairs(doc, plans[0], rehearsal);
-            string name = request.Value<string>("transaction_name") ?? "Horizun: create elements";
-            var created = new List<Created>(); var rows = new JArray(); bool started = false;
-            int index = -1; string phase = "start";
-            using (var group = new TransactionGroup(doc, name))
+            public readonly List<FailureFact> Facts = new List<FailureFact>();
+            public readonly HashSet<long> RoomRegionIds = new HashSet<long>();
+            public FailureProcessingResult PreprocessFailures(FailuresAccessor accessor)
             {
                 try
                 {
-                    if (group.Start() != TransactionStatus.Started) throw new InvalidOperationException("Transaction group did not start.");
-                    using (var tx = new Transaction(doc, name))
+                    foreach (FailureMessageAccessor message in accessor.GetFailureMessages())
                     {
-                        if (tx.Start() != TransactionStatus.Started) throw new InvalidOperationException("Transaction did not start.");
-                        started = true; phase = "create";
-                        foreach (Plan plan in plans)
+                        var ids = new List<long>();
+                        try { foreach (ElementId id in message.GetFailingElementIds()) ids.Add(Rid.Value(id)); } catch { }
+                        try { foreach (ElementId id in message.GetAdditionalElementIds()) ids.Add(Rid.Value(id)); } catch { }
+                        if (IsRoomRegionWarning(message.GetFailureDefinitionId().Guid)) RoomRegionIds.UnionWith(ids);
+                        string text;
+                        try { text = message.GetDescriptionText(); } catch { text = null; }
+                        Facts.Add(new FailureFact
                         {
-                            index = plan.Index;
-                            Element element = Create(doc, plan, created);
-                            if (element == null) throw new InvalidOperationException("Creation returned no element.");
-                            RecordCreated(doc, plan, element, created);
-                            ApplyInstanceParameters(element, plan);
-                            if (plan.Input["source_reference"] is JObject trace) SourceTraceStorage.Write(element, trace);
-                        }
-                        doc.Regenerate(); phase = "commit"; Guard.Commit(tx, name);
-                    }
-                    phase = "postcondition";
-                    foreach (Created made in created)
-                    {
-                        index = made.Index; var row = VerifyCreated(doc, made); rows.Add(row);
-                        if (row.Value<bool>("verified") != true)
-                        {
-                            // WHICH PROPERTY, NOT JUST THAT ONE FAILED.
-                            //
-                            // This message used to say only that the committed
-                            // element disagreed with the request, and the whole
-                            // batch rolled back around it - so the one fact a
-                            // reader needs, and the only one this code has, was
-                            // thrown away. Naming the properties turns a retry
-                            // into a diagnosis.
-                            var wrong = new List<string>();
-                            foreach (JObject property in
-                                     (row["postconditions"]?["properties"] as JArray ?? new JArray()).OfType<JObject>())
-                            {
-                                if (property.Value<bool?>("matches") == true) continue;
-                                wrong.Add(property.Value<string>("property") + ": asked " +
-                                          (property["requested"]?.ToString() ?? "(none)") +
-                                          ", model has " +
-                                          (property["found_in_committed_model"]?.ToString() ?? "(unreadable)"));
-                            }
-                            throw new InvalidOperationException(
-                                "Requested properties do not match the committed element" +
-                                (wrong.Count == 0 ? "." : ": " + string.Join("; ", wrong) + "."));
-                        }
-                    }
-                    if (rehearsal)
-                    {
-                        phase = "rehearsal_rollback";
-                        var rolled = Guard.RollBack(group);
-                        bool absent = rolled.Confirmed && created.All(x => doc.GetElement(x.Id) == null);
-                        if (!absent) throw new InvalidOperationException("Rehearsal rollback could not be verified.");
-                        return CommandResult.Ok(new JObject
-                        {
-                            ["dry_run"] = true,
-                            ["transaction_status"] = rolled.StatusName,
-                            ["changes_applied"] = false,
-                            ["provisional_elements_absent"] = true,
-                            ["provisional_verification"] = rows
+                            Description = text,
+                            IsError = message.GetSeverity() == FailureSeverity.Error,
+                            ElementIds = ids.ToArray()
                         });
                     }
-                    phase = "assimilate"; Guard.Assimilate(group, name);
                 }
-                catch (Exception ex)
-                {
-                    string rollback = "not_attempted", rollbackError = null;
-                    try { if (group.GetStatus() == TransactionStatus.Started) rollback = Guard.RollBack(group).StatusName; }
-                    catch (Exception rb) { rollback = "failed"; rollbackError = rb.Message; }
-                    bool? changed = started ? (bool?)null : false;
-                    if (rollback == "RolledBack")
-                    {
-                        try { changed = created.Any(x => doc.GetElement(x.Id) != null) ? (bool?)null : false; }
-                        catch { changed = null; }
-                    }
-                    return CommandResult.FailWithDetail("Atomic creation failed at item " + index + ": " + ex.Message, new JObject
-                    {
-                        ["code"] = phase == "postcondition" ? "geometry_postcondition_failed" : "revit_creation_failed",
-                        ["tool"] = "horizun_create_elements",
-                        ["operation"] = "create",
-                        ["index"] = index,
-                        ["phase"] = phase,
-                        ["exception_type"] = ex.GetType().FullName,
-                        ["exception_message"] = ex.Message,
-                        ["exception_stack_trace"] = ex.StackTrace,
-                        ["write_started"] = started,
-                        ["changes_applied"] = changed,
-                        ["transaction_status"] = group.GetStatus().ToString(),
-                        ["rollback_status"] = rollback,
-                        ["rollback_error"] = rollbackError,
-                        ["verification"] = rows
-                    });
-                }
+                catch { }
+                return FailureProcessingResult.Continue;
             }
-            // Fresh reads after the outermost commit too. Failure here is reported as
-            // committed/unverified: it cannot be erased by pretending rollback is possible.
-            rows = new JArray(created.Select(x => VerifyCreated(doc, x)));
-            int verified = rows.Count(r => r.Value<bool>("verified"));
-            if (verified != created.Count) return CommandResult.FailWithDetail("Post-assimilation verification failed; inspect the model.", new JObject
-            { ["code"] = "postcommit_verification_failed", ["write_started"] = true, ["changes_applied"] = true, ["transaction_status"] = "Committed", ["verification"] = rows });
-            var result = new JObject
-            {
-                ["dry_run"] = false,
-                ["transaction_status"] = "Committed",
-                ["transaction_name"] = name,
-                ["requested"] = requested,
-                ["created_verified"] = verified,
-                ["rows"] = rows,
-                ["verification"] = new JObject { ["intended"] = requested, ["actual"] = verified, ["verified"] = verified == requested }
-            };
-            ApplicationOutcome.StampApplied(result, ApplicationOutcome.Committed, requested, verified, verified, 0, 0, 0);
-            // horizun_undo: created elements are deleted by the inverse.
-            result["undo"] = UndoCapture.Record(doc, "horizun_create_elements", new List<UndoEntry>
-            {
-                UndoCapture.Entry(doc, "created", created.Select(x => Rid.Value(x.Id)), new JObject(), new JObject())
-            });
-            return CommandResult.Ok(result);
         }
 
         private static void ApplyInstanceParameters(Element element, Plan p)
         {
-            p.ParameterWrites = new List<ManageSystemTypesCommand.Write>();
+            p.ParameterWrites = new List<TypeParameterWrites.Write>();
             if (!(p.Input["parameters"] is JObject parameters)) return;
             foreach (var property in parameters.Properties())
             {
-                var parameter = ManageSystemTypesCommand.ResolveParameter(element, property.Name, out string why);
+                var parameter = TypeParameterWrites.ResolveParameter(element, property.Name, out string why);
                 if (parameter == null || parameter.IsReadOnly) throw new ArgumentException("parameters." + property.Name + ": " + (why ?? "read-only"));
-                ManageSystemTypesCommand.ValidateValue(parameter, property.Value);
-                var write = new ManageSystemTypesCommand.Write { Spec = property.Name, Requested = property.Value.DeepClone() };
-                ManageSystemTypesCommand.Apply(parameter, write); p.ParameterWrites.Add(write);
+                TypeParameterWrites.ValidateValue(parameter, property.Value);
+                string rawLength = TypeParameterWrites.RawLengthRefusal(parameter, property.Name, property.Value);
+                if (rawLength != null) throw new ArgumentException("parameters." + property.Name + ": " + rawLength);
+                var write = new TypeParameterWrites.Write { Spec = property.Name, Requested = property.Value.DeepClone() };
+                TypeParameterWrites.Apply(parameter, write); p.ParameterWrites.Add(write);
             }
         }
 
@@ -498,11 +537,77 @@ namespace Horizun.Revit.Commands
             catch (Exception ex) { return new JObject { ["index"] = made.Index, ["element_id"] = Rid.Value(made.Id), ["verified"] = false, ["error"] = ex.Message, ["measurement_complete"] = false }; }
         }
 
-        private static Created BatchElbowAt(Created made, XYZ requested)
+        private static Created BatchFittingAt(Created made, XYZ requested)
         {
-            return made.Batch?.FirstOrDefault(c => c.Plan.FittingSubtype == "elbow" &&
+            return made.Batch?.FirstOrDefault(c => (c.Plan.FittingSubtype == "elbow" || c.Plan.FittingSubtype == "union") &&
                 c.ExpectedConnected?.Any(m => m.Owner?.Id == made.Id && m.Fact != null &&
                     new XYZ(m.Fact.X, m.Fact.Y, m.Fact.Z).DistanceTo(requested) <= GeometryInput.Tolerance) == true);
+        }
+
+        private static JObject ReadInlineFittingEnd(Document doc, Created made, Created fitting, int end)
+        {
+            const double tolerance = 0.1 / 304.8;
+            XYZ requested = end == 0 ? made.Plan.Start : made.Plan.End;
+            XYZ other = end == 0 ? made.Plan.End : made.Plan.Start;
+            XYZ inward = (other - requested).Normalize();
+            var curve = (MEPCurve)doc.GetElement(made.Id);
+            XYZ physical = ((LocationCurve)curve.Location).Curve.GetEndPoint(end);
+
+            var ports = MepFacts.Ordered(MepFacts.ManagerOf(doc.GetElement(fitting.Id)))
+                .Where(port => port.ConnectorType == ConnectorType.End).ToArray();
+            if (ports.Length != 2 || fitting.ExpectedConnected.Count != 2)
+                throw new InvalidOperationException("An inline fitting must expose exactly two physical end connectors.");
+
+            Connector ConnectedPort(FittingMember member)
+            {
+                var runPort = MepFacts.Ordered(MepFacts.ManagerOf(doc.GetElement(member.Owner.Id)))
+                    .SingleOrDefault(port => port.ConnectorType == ConnectorType.End && port.Id == member.ConnectorId);
+                return runPort == null ? null : ports.SingleOrDefault(port =>
+                    runPort.IsConnectedTo(port) && runPort.Origin.DistanceTo(port.Origin) <= tolerance);
+            }
+
+            var local = ConnectedPort(fitting.ExpectedConnected.Single(m => m.Owner.Id == made.Id));
+            var opposite = ConnectedPort(fitting.ExpectedConnected.Single(m => m.Owner.Id != made.Id));
+            if (local == null || opposite == null || local.Id == opposite.Id)
+                throw new InvalidOperationException("The inline fitting does not join the two planned run ports.");
+
+            XYZ localVector = physical - requested, oppositeVector = opposite.Origin - requested;
+            double trim = localVector.DotProduct(inward);
+            bool covers = MepOffsetProfileRules.InlineFittingCoversEnd(trim,
+                localVector.CrossProduct(inward).GetLength(), requested.DistanceTo(other),
+                oppositeVector.DotProduct(inward), oppositeVector.CrossProduct(inward).GetLength(),
+                physical.DistanceTo(local.Origin), true, tolerance);
+
+            JArray Millimeters(XYZ point) => new JArray(point.X * 304.8, point.Y * 304.8, point.Z * 304.8);
+            return new JObject
+            {
+                ["fitting_id"] = Rid.Value(fitting.Id), ["physical_mm"] = Millimeters(physical),
+                ["run_port_mm"] = Millimeters(local.Origin), ["opposite_port_mm"] = Millimeters(opposite.Origin),
+                ["junction_mm"] = Millimeters(requested), ["trim_mm"] = trim * 304.8, ["covers_junction"] = covers
+            };
+        }
+
+        /// <summary>The tee's insertion point: where the branch line meets the main's axis.</summary>
+        private static XYZ TeePoint(Document doc, ElementId tee) => ((LocationPoint)doc.GetElement(tee).Location).Point;
+
+        /// <summary>Is end (0/1) of this curve the one joined to the tee (the nearer one)?</summary>
+        private static bool TeeEndIs(Document doc, Element e, ElementId tee, int end)
+        {
+            try
+            {
+                Curve c = ((LocationCurve)e.Location).Curve; XYZ t = TeePoint(doc, tee);
+                return c.GetEndPoint(end).DistanceTo(t) <= c.GetEndPoint(1 - end).DistanceTo(t);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>A curve split by takeoff_or_tee: the end, among both pieces' four, nearest the asked point.</summary>
+        private static XYZ SplitEndNearest(Document doc, Element e, ElementId piece, XYZ asked)
+        {
+            var ends = new List<XYZ>();
+            foreach (Element x in new[] { e, doc.GetElement(piece) })
+                if (x?.Location is LocationCurve lc) { ends.Add(lc.Curve.GetEndPoint(0)); ends.Add(lc.Curve.GetEndPoint(1)); }
+            return ends.OrderBy(q => q.DistanceTo(asked)).First();
         }
 
         private static XYZ ReadElbowJunction(Document doc, Created made, Created fitting, int end)
@@ -555,6 +660,7 @@ namespace Horizun.Revit.Commands
             Plan p = made.Plan;
             var expected = new Dictionary<string, JToken>(); var reads = new Dictionary<string, Func<JToken>>();
             var tolerances = new Dictionary<string, double>();
+            var inlineFittingEnds = new HashSet<string>();
             void Exact(string field, JToken value, Func<JToken> read) { expected.Add(field, value); reads.Add(field, read); }
             void Numeric(string field, double value, Func<double> read, double tolerance = GeometryInput.Tolerance)
             { Exact(field, value, () => read()); tolerances.Add(field, tolerance); }
@@ -562,6 +668,33 @@ namespace Horizun.Revit.Commands
             try { e = doc.GetElement(made.Id); } catch { }
             Exact("kind", p.Kind, () => KindMatches(e, p.Kind) ? p.Kind : e?.GetType().Name);
             if (p.Type != null) Exact("type_id", Rid.Value(p.Type.Id), () => Rid.Value(e.GetTypeId()));
+            if (p.BuiltWyeTypeUniqueId != null)
+                Exact("wye_type_unique_id", p.BuiltWyeTypeUniqueId, () => (e as FamilyInstance)?.Symbol?.UniqueId);
+            if (p.Kind == "wall_foundation")
+            {
+                Exact("host_wall_id", Rid.Value(p.FoundationWall.Id), () => Rid.Value(((WallFoundation)e).WallId));
+                // These are measurements of the physical solid, not the read-only
+                // "Elevation at Top" or "Width" instance labels. A wall foundation
+                // follows its host wall's base, so a different requested top must
+                // refuse atomically rather than move somebody else's wall.
+                JObject footingGeometry = null;
+                double MeasuredMm(string field)
+                {
+                    if (footingGeometry == null) footingGeometry = MeasureWallFoundation(doc, made);
+                    JToken value = footingGeometry[field];
+                    if (value == null) throw new InvalidOperationException(field + " cannot be measured on this host");
+                    return double.Parse(value.Value<string>(), CultureInfo.InvariantCulture);
+                }
+                if (p.FoundationTop.HasValue)
+                    Numeric("foundation_top_z_mm", p.FoundationTop.Value * 304.8,
+                        () => MeasuredMm("top_z_mm"), 1.0);
+                if (p.FoundationWidth.HasValue)
+                    Numeric("foundation_width_mm", p.FoundationWidth.Value * 304.8,
+                        () => MeasuredMm("solid_width_mm"), 1.0);
+                if (p.FoundationThickness.HasValue)
+                    Numeric("foundation_thickness_mm", p.FoundationThickness.Value * 304.8,
+                        () => MeasuredMm("thickness_mm"), 1.0);
+            }
             if (p.Level != null)
             {
                 // level_elevation used to re-read the level that was REQUESTED, which
@@ -584,9 +717,19 @@ namespace Horizun.Revit.Commands
                     () => doc.GetElement(actualLevel()) is Level carried ? carried.ProjectElevation : double.NaN);
             }
             if (p.WantName != null) Exact("name", p.WantName, () => IdentityOf(e, p.Kind, false));
+            if (p.Kind == "reference_plane")
+            {
+                // The plane holds the line start-end AND the cut vector: both ends lie on it, and its normal is
+                // perpendicular to the cut vector - read from the committed plane, not from what was passed in.
+                Func<ReferencePlane> plane = () => (ReferencePlane)e;
+                Numeric("start_distance_to_plane", 0, () => Math.Abs(plane().Normal.DotProduct(p.Start - plane().BubbleEnd)), 1e-5);
+                Numeric("end_distance_to_plane", 0, () => Math.Abs(plane().Normal.DotProduct(p.End - plane().BubbleEnd)), 1e-5);
+                Numeric("normal_to_cut_vector", 0, () => Math.Abs(plane().Normal.DotProduct(p.RefCut)), 1e-6);
+            }
             if (p.Kind == "wall_profile")
             {
-                Exact("profile_world_silhouette", true, () => ProfileWallMatches(e, p));
+                Exact("profile_world_silhouette", true, () => ProfileWallMatches(e, p)
+                    ? (JToken)true : ProfileWallMismatchDetails(e, p));
                 Numeric("profile_plane_distance", 0, () => (((LocationCurve)e.Location).Curve.Evaluate(0.5, true) - p.ProfileOrigin).DotProduct(p.ProfileNormal));
                 Exact("structural", p.Input.Value<bool?>("structural") ?? false, () => e.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT).AsInteger() == 1);
             }
@@ -598,11 +741,32 @@ namespace Horizun.Revit.Commands
                 for (int axis = 0; axis < 3; axis++) { int a = axis; Numeric("displacement_" + "xyz"[a], p.Displacement[a], () => ((DisplacementElement)e).GetAbsoluteDisplacement()[a]); }
             }
             if (p.Kind == "level") Numeric("elevation", p.Elevation, () => ((Level)e).ProjectElevation);
+            if (p.Kind == "grid" && p.GridExtent3D == GridExtentRules.Maximize)
+            {
+                // Read the vertical extent back: it must reach every level, or the grid will
+                // still be invisible (and its dimensions unavailable) on the upper plans.
+                Exact("extent_3d_covers_levels", true, () =>
+                {
+                    Outline extent = ((Grid)e).GetExtents();
+                    var elevations = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().Select(l => l.Elevation).ToList();
+                    bool covers = GridExtentRules.CoversLevels(extent.MinimumPoint.Z, extent.MaximumPoint.Z, elevations, 1e-3, out List<double> uncovered);
+                    if (covers) return (JToken)true;
+                    return GridExtentRules.Report(p.GridExtent3D, extent.MinimumPoint.Z, extent.MaximumPoint.Z, elevations.Count, uncovered);
+                });
+            }
             if (p.Kind == "wall_opening")
             {
                 Exact("opening_corners", true, () =>
                 {
                     var corners = ((Opening)e).BoundaryRect;
+                    var hostLine = (p.OpeningHost.Location as LocationCurve)?.Curve as Line;
+                    if (corners.Count == 2 && hostLine != null)
+                    {
+                        double[] Coordinates(XYZ point) => new[] { point.X, point.Y, point.Z };
+                        return GeometryInput.SameWallOpening(Coordinates(hostLine.GetEndPoint(0)),
+                            Coordinates(hostLine.GetEndPoint(1)), Coordinates(p.Start), Coordinates(p.End),
+                            Coordinates(corners[0]), Coordinates(corners[1]));
+                    }
                     return corners.Count == 2 &&
                         ((corners[0].DistanceTo(p.Start) <= GeometryInput.Tolerance && corners[1].DistanceTo(p.End) <= GeometryInput.Tolerance) ||
                          (corners[1].DistanceTo(p.Start) <= GeometryInput.Tolerance && corners[0].DistanceTo(p.End) <= GeometryInput.Tolerance));
@@ -617,6 +781,9 @@ namespace Horizun.Revit.Commands
             // running between these points. So it is checked as such - strictly
             // across the line, with a stated allowance along it - and both
             // numbers are measured and reported.
+            if (p.Kind == "wall")
+                Exact("wall_location_line", (int)WallLocationLine.WallCenterline,
+                    () => ((Wall)e).get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)?.AsInteger());
             if (p.Kind == "wall" && p.Start != null && p.End != null && p.ArcThird == null)
             {
                 // IN PLAN. A wall's line is where it stands; its height is a separate
@@ -662,16 +829,32 @@ namespace Horizun.Revit.Commands
             }
             else if (p.Start != null && p.Kind != "wall_opening" && p.Kind != "flex_pipe" && p.Kind != "flex_duct")
             {
-                Created elbow = e is MEPCurve ? BatchElbowAt(made, p.Start) : null;
-                XYZ PointNow() => elbow != null ? ReadElbowJunction(doc, made, elbow, 0) : e is Grid grid ? grid.Curve.GetEndPoint(0) : e.Location is LocationCurve curve ? curve.Curve.GetEndPoint(0) : ((LocationPoint)e.Location).Point;
-                for (int axis = 0; axis < (p.Kind == "room" || p.Kind == "space" || p.Kind == "area" ? 2 : 3); axis++)
-                { int a = axis; Numeric((elbow == null ? "start_" : "start_junction_") + "xyz"[a], p.Start[a], () => a == 2 && elbow == null ? (GovernedBaseZ(doc, e) ?? PointNow()[2]) : PointNow()[a]); }
+                Created fitting = e is MEPCurve ? BatchFittingAt(made, p.Start) : null;
+                if (fitting?.Plan.FittingSubtype == "union")
+                {
+                    inlineFittingEnds.Add("start_fitting_trim");
+                    Exact("start_fitting_trim", true, () => ReadInlineFittingEnd(doc, made, fitting, 0));
+                }
+                else
+                {
+                    XYZ PointNow() => p.TeeJunction != null && TeeEndIs(doc, e, p.TeeJunction, 0) ? TeePoint(doc, p.TeeJunction) : p.SplitPiece != null ? SplitEndNearest(doc, e, p.SplitPiece, p.Start) : fitting != null ? ReadElbowJunction(doc, made, fitting, 0) : e is Grid grid ? grid.Curve.GetEndPoint(0) : e.Location is LocationCurve curve ? curve.Curve.GetEndPoint(0) : ((LocationPoint)e.Location).Point;
+                    for (int axis = 0; axis < (p.Kind == "room" || p.Kind == "space" || p.Kind == "area" ? 2 : 3); axis++)
+                    { int a = axis; Numeric((fitting == null ? "start_" : "start_junction_") + "xyz"[a], p.Start[a], () => a == 2 && fitting == null ? (GovernedBaseZ(doc, e) ?? PointNow()[2]) : PointNow()[a]); }
+                }
             }
             if (p.End != null && p.Kind != "wall_opening" && p.Kind != "flex_pipe" && p.Kind != "flex_duct" && !(p.Kind == "wall" && p.ArcThird == null))
             {
-                Created elbow = e is MEPCurve ? BatchElbowAt(made, p.End) : null;
-                for (int axis = 0; axis < 3; axis++)
-                { int a = axis; Numeric((elbow == null ? "end_" : "end_junction_") + "xyz"[a], p.End[a], () => a == 2 && elbow == null && GovernedBaseZ(doc, e) is double governed ? governed : elbow != null ? ReadElbowJunction(doc, made, elbow, 1)[a] : (e is Grid grid ? grid.Curve : ((LocationCurve)e.Location).Curve).GetEndPoint(1)[a]); }
+                Created fitting = e is MEPCurve ? BatchFittingAt(made, p.End) : null;
+                if (fitting?.Plan.FittingSubtype == "union")
+                {
+                    inlineFittingEnds.Add("end_fitting_trim");
+                    Exact("end_fitting_trim", true, () => ReadInlineFittingEnd(doc, made, fitting, 1));
+                }
+                else
+                {
+                    for (int axis = 0; axis < 3; axis++)
+                    { int a = axis; Numeric((fitting == null ? "end_" : "end_junction_") + "xyz"[a], p.End[a], () => p.TeeJunction != null && TeeEndIs(doc, e, p.TeeJunction, 1) ? TeePoint(doc, p.TeeJunction)[a] : p.SplitPiece != null ? SplitEndNearest(doc, e, p.SplitPiece, p.End)[a] : a == 2 && fitting == null && GovernedBaseZ(doc, e) is double governed ? governed : fitting != null ? ReadElbowJunction(doc, made, fitting, 1)[a] : (e is Grid grid ? grid.Curve : ((LocationCurve)e.Location).Curve).GetEndPoint(1)[a]); }
+                }
             }
             // FLEX RUNS ARE NOT ONE CURVE. FlexPipe/FlexDuct expose their path as Points
             // (including both ends), not as a LocationCurve.Curve with two endpoints - the
@@ -714,6 +897,16 @@ namespace Horizun.Revit.Commands
                     try { return space.IsPointInSpace(new XYZ(p.Start.X, p.Start.Y, testZ)); } catch { return false; }
                 });
             }
+            // Point placement and enclosure are distinct outcomes. Missing boundaries are
+            // reported below; only all_enclosed promises a closed region.
+            if (p.Kind == "room" && !p.Enclosed)
+            {
+                Exact("area_readable", true, () =>
+                {
+                    try { double area = ((SpatialElement)e).Area; return !double.IsNaN(area) && !double.IsInfinity(area); }
+                    catch { return false; }
+                });
+            }
             // ALL_ENCLOSED rows: the circuit really was filled - a positive area, every
             // boundary loop closing on itself, the phase asked for, the interior point inside.
             if (p.Enclosed)
@@ -752,6 +945,38 @@ namespace Horizun.Revit.Commands
             }
             if (p.Kind == "family_instance" || p.Kind == "sprinkler" || p.Kind == "structural_column" || p.Kind == "structural_framing")
                 Exact("structural_type", p.StructuralType.ToString(), () => ((FamilyInstance)e).StructuralType.ToString());
+            if (p.Kind == "structural_column" || InCategory(p.Type, BuiltInCategory.OST_StructuralColumns))
+            {
+                // A family body can remain at its origin while every constraint agrees.
+                Numeric("column_solid_base", p.Start.Z, () =>
+                    SolidElevationSpan(e)?[0] ?? throw new InvalidOperationException("column solid base could not be measured"), 1 / 304.8);
+                if (p.TopLevel != null)
+                {
+                    Exact("column_top_level_id", Rid.Value(p.TopLevel.Id), () => Rid.Value(e.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM).AsElementId()));
+                    Numeric("column_top_offset", p.TopOffset, () => e.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM).AsDouble());
+                    Numeric("column_solid_top", p.TopLevel.ProjectElevation + p.TopOffset, () =>
+                        SolidElevationSpan(e)?[1] ?? throw new InvalidOperationException("column solid top could not be measured"), 1 / 304.8);
+                }
+            }
+            // Hosted door/window families can report a correct host and level while their
+            // physical solid extends into the storey below (observed on GFX40_2). Check
+            // the solid itself; a bounding box can include symbolic or analytical lines.
+            if (p.Kind == "family_instance" && p.Level != null && e?.Category != null &&
+                (Rid.Value(e.Category.Id) == (long)BuiltInCategory.OST_Doors ||
+                 Rid.Value(e.Category.Id) == (long)BuiltInCategory.OST_Windows))
+            {
+                Exact("solid_within_storey", true, () =>
+                {
+                    double[] span = SolidElevationSpan(e);
+                    if (span == null) return false;
+                    double baseZ = p.Level.ProjectElevation;
+                    double? nextZ = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>()
+                        .Where(level => level.ProjectElevation > baseZ + 1e-6)
+                        .Select(level => (double?)level.ProjectElevation).OrderBy(z => z).FirstOrDefault();
+                    return LevelSpanRules.WithinStorey(span[0] * 304.8, span[1] * 304.8,
+                        baseZ * 304.8, nextZ.HasValue ? (double?)(nextZ.Value * 304.8) : null);
+                });
+            }
             if ((p.Kind == "family_instance" || p.Kind == "sprinkler") && p.Input["flip"] != null)
             {
                 // TWO OPERATIONS, TWO TRACES. flipHand sets HandFlipped; a
@@ -799,17 +1024,17 @@ namespace Horizun.Revit.Commands
                 Exact("facing_after_reflection", Direction(p.FacingBeforeReflection),
                       () => Direction(((FamilyInstance)e).FacingOrientation));
             if (p.Input["rotation_degrees"] != null && p.FacePlacement == null && p.HostedFacing == null && !reflectedCopy)
-                Numeric("rotation", ((p.Rotation % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI),
-                    () => ((((LocationPoint)e.Location).Rotation % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI), 1e-8);
+                Numeric("rotation", AngleRules.Normalize(p.Rotation),
+                    () => AngleRules.NearestTurn(AngleRules.Normalize(p.Rotation), ((LocationPoint)e.Location).Rotation), 1e-8);
             if (p.SystemType != null && (p.Kind == "duct" || p.Kind == "pipe"))
                 Exact("system_type_id", Rid.Value(p.SystemType.Id), () => Rid.Value(e.get_Parameter(p.Kind == "duct" ? BuiltInParameter.RBS_DUCT_SYSTEM_TYPE_PARAM : BuiltInParameter.RBS_PIPING_SYSTEM_TYPE_PARAM).AsElementId()));
             if (p.Kind == "floor" || p.Kind == "ceiling" || p.Kind == "roof") AddProfileChecks(doc, p, e, Exact, Numeric);
-            foreach (var write in p.ParameterWrites ?? new List<ManageSystemTypesCommand.Write>())
+            foreach (var write in p.ParameterWrites ?? new List<TypeParameterWrites.Write>())
             {
                 var w = write;
                 if (w.Expected.Type == JTokenType.Float)
-                    Numeric("parameters." + w.Spec, w.Expected.Value<double>(), () => ManageSystemTypesCommand.Read(ManageSystemTypesCommand.ResolveParameter(e, w.Spec, out _)).Value<double>(), 1e-9);
-                else Exact("parameters." + w.Spec, w.Expected, () => ManageSystemTypesCommand.Read(ManageSystemTypesCommand.ResolveParameter(e, w.Spec, out _)));
+                    Numeric("parameters." + w.Spec, w.Expected.Value<double>(), () => TypeParameterWrites.Read(TypeParameterWrites.ResolveParameter(e, w.Spec, out _)).Value<double>(), 1e-9);
+                else Exact("parameters." + w.Spec, w.Expected, () => TypeParameterWrites.Read(TypeParameterWrites.ResolveParameter(e, w.Spec, out _)));
             }
             var check = new PostconditionCheck(expected.Keys.ToArray());
             foreach (string field in expected.Keys)
@@ -820,7 +1045,8 @@ namespace Horizun.Revit.Commands
                     if (tolerances.TryGetValue(field, out double tolerance))
                         check.Measure(field, expected[field].Value<double>(), actual.Value<double>(), tolerance,
                             field == "rotation" ? "radians" : field.EndsWith("_mm") ? "millimetres" : field == "roof_projected_area" ? "square feet" : field.StartsWith("slope_") ? "rise/run" : field.StartsWith("parameters.") ? "Revit internal" : "feet", "Revit parameter/location/sketch/face readback");
-                    else check.Record(field, expected[field], actual, JToken.DeepEquals(expected[field], actual));
+                    else check.Record(field, expected[field], actual, inlineFittingEnds.Contains(field)
+                        ? actual.Value<bool>("covers_junction") : JToken.DeepEquals(expected[field], actual));
                 }
                 catch (Exception ex) { check.Unreadable(field, expected[field], ex.Message); }
             }
@@ -865,13 +1091,27 @@ namespace Horizun.Revit.Commands
             // that is a legitimate finding about the model's boundaries, not a placement
             // failure this row caused. Same convention as ModelScanCommand's rooms:
             // unreadable and unbounded are told apart, never folded into one "0".
-            if ((p.Kind == "space" || p.Kind == "area") && e is SpatialElement spatial)
+            if ((p.Kind == "room" || p.Kind == "space" || p.Kind == "area") && e is SpatialElement spatial)
             {
                 double? areaSqFt = null;
                 try { areaSqFt = spatial.Area; } catch { }
                 row["area_sqft"] = areaSqFt.HasValue ? (JToken)Math.Round(areaSqFt.Value, 4) : JValue.CreateNull();
                 row["area_enclosed"] = areaSqFt.HasValue ? (JToken)(areaSqFt.Value > 0) : JValue.CreateNull();
-                row["area_means"] = areaSqFt.HasValue
+                if (p.Kind == "room")
+                {
+                    JObject placement = ArchitectureCreationRules.RoomPlacement(areaSqFt, BoundaryClosed(e));
+                    foreach (string name in new[] { "boundary_closed", "room_status", "area_sqft", "area_enclosed", "area_means" })
+                        row[name] = placement[name].DeepClone();
+                    row["phase_id"] = PhaseOf(e);
+                    foreach (JObject note in (placement["assumptions"] as JArray ?? new JArray()).OfType<JObject>())
+                        p.Assumptions.Add(note.DeepClone());
+                    row["placement_only"] = !p.Enclosed;
+                    if (row.Value<string>("room_status") == "not_enclosed")
+                    {
+                        row["warning"] = "Room placed without a closed boundary. Enclosure is not verified.";
+                    }
+                }
+                else row["area_means"] = areaSqFt.HasValue
                     ? (areaSqFt.Value > 0 ? "the placement point found a closed boundary; area is measured, not assumed."
                                           : "area is 0: the point found no enclosing boundary at commit time - the element exists, unbounded.")
                     : "the Area property could not be read.";
@@ -920,6 +1160,11 @@ namespace Horizun.Revit.Commands
                         .Select(c => c.GetEndPoint(0)).Select(v => new JArray(v.X, v.Y, v.Z)));
                 }
                 catch (Exception ex) { row["profile_geometry_read_error"] = ex.Message; }
+            }
+            if (p.Kind == "room" || p.Kind == "space")
+            {
+                row["phase_id"] = PhaseOf(e);
+                row["phase_source"] = p.Enclosed ? "explicit phase_id" : "assigned by Revit NewRoom/NewSpace(Level, UV)";
             }
             var production = VerifyProductionProperties(doc, made);
             foreach (var property in production.Properties())
@@ -975,7 +1220,30 @@ namespace Horizun.Revit.Commands
                 }
                 return true;
             });
-            if (p.Kind == "floor" || p.Kind == "ceiling")
+            if ((p.Kind == "ceiling" || p.Kind == "floor") && p.CeilingArrow != null)
+            {
+                double[] Actual()
+                {
+                    var faces = (p.Kind == "floor" ? HostObjectUtils.GetTopFaces((HostObject)e) : HostObjectUtils.GetBottomFaces((HostObject)e))
+                        .Select(r => e.GetGeometryObjectFromReference(r) as PlanarFace).ToList();
+                    if (faces.Count == 0 || faces.Any(f => f == null || Math.Abs(f.FaceNormal.Z) < 0.2))
+                        throw new InvalidOperationException("Sloped " + p.Kind + " has no readable planar " + (p.Kind == "floor" ? "top face." : "underside."));
+                    PlanarFace face = faces.OrderByDescending(f => f.Area).First();
+                    XYZ a = p.CeilingArrow.GetEndPoint(0), b = p.CeilingArrow.GetEndPoint(1);
+                    return PlanimetrySlopeRules.ElevationsOnPlane(a.X, a.Y, b.X, b.Y,
+                        face.Origin.X, face.Origin.Z, face.FaceNormal.X, face.FaceNormal.Y,
+                        face.FaceNormal.Z, face.Origin.Y);
+                }
+                double run = p.CeilingArrow.Length;
+                numeric(p.Kind + "_slope_ratio", p.CeilingSlopeRatio,
+                    () => { double[] z = Actual(); return (z[1] - z[0]) / run; }, 0.0005);
+                if (p.CeilingExpectedElevations != null)
+                {
+                    numeric("arrow_start_elevation", p.CeilingExpectedElevations[0], () => Actual()[0], 5 / 304.8);
+                    numeric("arrow_end_elevation", p.CeilingExpectedElevations[1], () => Actual()[1], 5 / 304.8);
+                }
+            }
+            if ((p.Kind == "floor" && p.CeilingArrow == null) || (p.Kind == "ceiling" && p.CeilingArrow == null))
                 numeric("reference_face_elevation", p.Level.ProjectElevation + p.Offset, () =>
                 {
                     var references = p.Kind == "floor" ? HostObjectUtils.GetTopFaces((HostObject)e) : HostObjectUtils.GetBottomFaces((HostObject)e);
@@ -985,8 +1253,9 @@ namespace Horizun.Revit.Commands
                     if (faces.Any(f => Math.Abs(f.Origin.Z - z) > GeometryInput.Tolerance)) throw new InvalidOperationException("Reference faces have different elevations.");
                     return z;
                 }, GeometryInput.Tolerance);
-            // A sloped glazing footprint roof has curtain panels rather than an upward
-            // solid face. Its edge slope parameters remain available for verification.
+            // MEASURED 2026-10-16: "Sloped Glazing" is a FootPrintRoof made of curtain panels - it has NO solid upward
+            // face, so the face checks read "unreadable" and a correct roof was refused. Its slopes are still verified
+            // per edge below (defines_slope_i / slope_i), which is the part that can be measured on a glazing.
             bool glazing = false;
             try { glazing = e is FootPrintRoof gr && gr.CurtainGrids != null && gr.CurtainGrids.Size > 0; } catch { }
             if (p.Kind == "roof" && glazing)
@@ -994,11 +1263,11 @@ namespace Horizun.Revit.Commands
                 for (int i = 0; i < p.Slopes.Length; i++)
                 {
                     int edge = i;
-                    ModelCurve ReadEdge() => ((FootPrintRoof)e).GetProfiles().Cast<ModelCurveArray>()
-                        .SelectMany(a => a.Cast<ModelCurve>()).Single(c => MatchEdge(p, c.GeometryCurve) == edge);
+                    ModelCurve ReadEdge() => ((FootPrintRoof)e).GetProfiles().Cast<ModelCurveArray>().SelectMany(a => a.Cast<ModelCurve>()).Single(c => MatchEdge(p, c.GeometryCurve) == edge);
                     exact("defines_slope_" + edge, p.DefinesSlope[edge], () => ((FootPrintRoof)e).get_DefinesSlope(ReadEdge()));
-                    if (p.DefinesSlope[edge]) numeric("slope_" + edge, p.Slopes[edge],
-                        () => ((FootPrintRoof)e).get_SlopeAngle(ReadEdge()), 1e-8);
+                    if (p.DefinesSlope[edge]) numeric("slope_" + edge, p.Slopes[edge], () => ((FootPrintRoof)e).get_SlopeAngle(ReadEdge()), 1e-8);
+                    if (p.Overhangs[edge].HasValue) numeric("overhang_" + edge, p.Overhangs[edge].Value, () => ((FootPrintRoof)e).get_Overhang(ReadEdge()), 1e-8);
+                    if (p.EdgeOffsets[edge].HasValue) numeric("edge_offset_" + edge, p.EdgeOffsets[edge].Value, () => ((FootPrintRoof)e).get_Offset(ReadEdge()), 1e-8);
                 }
             }
             else if (p.Kind == "roof")
@@ -1010,16 +1279,21 @@ namespace Horizun.Revit.Commands
                     var desired = p.Slopes.Where((s, i) => p.DefinesSlope[i]).ToList(); if (desired.Count == 0) desired.Add(0);
                     return desired.All(s => observed.Any(a => Math.Abs(a - s) <= 1e-8)) && observed.All(a => desired.Any(s => Math.Abs(a - s) <= 1e-8));
                 });
-                double footprintArea = Math.Abs(p.Loops[0].Sum(c =>
-                    c.GetEndPoint(0).X * c.GetEndPoint(1).Y - c.GetEndPoint(1).X * c.GetEndPoint(0).Y)) / 2;
-                numeric("roof_projected_area", footprintArea,
-                    () => RoofPhysicalTopFaces(e).Sum(f => f.Area * f.FaceNormal.Z), Math.Max(1e-6, footprintArea * 1e-8));
+                // Perimeter minus holes. An OVERHANG makes the roof larger than its footprint by construction, so with
+                // any overhang the area check does not apply (the per-edge overhang readback below holds it instead).
+                double footprintArea = RoofFootprintRules.NetFootprintArea(p.Loops.Select(loop => loop.Sum(c =>
+                    c.GetEndPoint(0).X * c.GetEndPoint(1).Y - c.GetEndPoint(1).X * c.GetEndPoint(0).Y) / 2).ToList());
+                if (RoofFootprintRules.ProjectedAreaCheckApplies(p.Overhangs.Where(o => o.HasValue).Select(o => o.Value)))
+                    numeric("roof_projected_area", footprintArea,
+                        () => RoofPhysicalTopFaces(e).Sum(f => f.Area * f.FaceNormal.Z), Math.Max(1e-6, footprintArea * 1e-8));
                 for (int i = 0; i < p.Slopes.Length; i++)
                 {
                     int edge = i;
                     ModelCurve ReadEdge() => ((FootPrintRoof)e).GetProfiles().Cast<ModelCurveArray>().SelectMany(a => a.Cast<ModelCurve>()).Single(c => MatchEdge(p, c.GeometryCurve) == edge);
                     exact("defines_slope_" + edge, p.DefinesSlope[edge], () => ((FootPrintRoof)e).get_DefinesSlope(ReadEdge()));
                     if (p.DefinesSlope[edge]) numeric("slope_" + edge, p.Slopes[edge], () => ((FootPrintRoof)e).get_SlopeAngle(ReadEdge()), 1e-8);
+                    if (p.Overhangs[edge].HasValue) numeric("overhang_" + edge, p.Overhangs[edge].Value, () => ((FootPrintRoof)e).get_Overhang(ReadEdge()), 1e-8);
+                    if (p.EdgeOffsets[edge].HasValue) numeric("edge_offset_" + edge, p.EdgeOffsets[edge].Value, () => ((FootPrintRoof)e).get_Offset(ReadEdge()), 1e-8);
                 }
             }
         }

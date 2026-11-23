@@ -24,12 +24,11 @@ LABEL = {
     "verify-registry-contract.ps1": "registry <-> contract",
     "verify-doctor-corrections.ps1": "Model Doctor corrections",
     "verify-prevention-gate.ps1": "pre-delivery gate",
-    "verify-dwg-incremental.ps1": "DWG incremental",
     "verify-quantities-budget.ps1": "quantities / budget",
     "verify-worksharing-fixtures.ps1": "worksharing fixtures",
 }
 ORDER = ["verify-registry-contract.ps1", "verify-doctor-corrections.ps1", "verify-prevention-gate.ps1",
-         "verify-dwg-incremental.ps1", "verify-quantities-budget.ps1", "verify-worksharing-fixtures.ps1"]
+         "verify-quantities-budget.ps1", "verify-worksharing-fixtures.ps1"]
 YEARS = ["2023", "2024", "2025", "2026", "2027"]
 
 BLOCKER_TITLE = {

@@ -36,11 +36,51 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Linq;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
     public static class DimensionPlanRules
     {
+        internal static long? TemporaryLinkedDimensionView(bool keepActiveView, long? activeViewId,
+            IEnumerable<long> linkedDimensionViewIds)
+        {
+            if (keepActiveView || !activeViewId.HasValue) return null;
+            // One Revit transaction can have only one active view. Leave the
+            // existing multi-view batch path intact.
+            long[] views = linkedDimensionViewIds.Distinct().Take(2).ToArray();
+            return views.Length == 1 && views[0] != activeViewId.Value ? views[0] : (long?)null;
+        }
+        internal static JObject RestoreTemporaryView(long originalViewId, long targetViewId, bool activated,
+            Func<bool> isOriginalActive, Action restore, Action requestRestore)
+        {
+            var evidence = new JObject
+            {
+                ["original_view_id"] = originalViewId, ["target_view_id"] = targetViewId,
+                ["target_active_verified"] = activated, ["restored"] = false
+            };
+            try
+            {
+                if (activated || !isOriginalActive()) restore();
+                evidence["restored"] = isOriginalActive();
+                if (evidence.Value<bool>("restored")) return evidence;
+            }
+            catch (Exception ex) { evidence["reason"] = ex.Message; }
+
+            try
+            {
+                requestRestore();
+                evidence["restore_requested"] = true;
+            }
+            catch (Exception ex)
+            {
+                evidence["restore_requested"] = false;
+                evidence["request_reason"] = ex.Message;
+            }
+            return evidence;
+        }
+
         // ---- the operations, spelled once -----------------------------------
         public const string OpText = "text";
         public const string OpTag = "tag";
@@ -52,6 +92,12 @@ namespace Horizun.Revit.Core
         public const string OpSpotElevation = "spot_elevation";
         public const string OpSpotCoordinate = "spot_coordinate";
         public const string OpSpotSlope = "spot_slope";
+
+        public static ActionOutcome SpotSlopeRefusal(string operation, int index)
+        {
+            if (!string.Equals(operation, OpSpotSlope, StringComparison.OrdinalIgnoreCase)) return null;
+            return new ActionOutcome { Index = index, Error = NoApiAnyYear(OpSpotSlope), FallbackDenialReason = "revit_api_unavailable" };
+        }
 
         /// <summary>
         /// The operations that produce a dimension element. spot_slope is deliberately
@@ -124,7 +170,8 @@ namespace Horizun.Revit.Core
         public static readonly string[] OptionFields =
         {
             "dimension_type_id", "prefix", "suffix", "above", "below", "value_override",
-            "eq", "lock", "leader", "bend", "end", "expected_value", "expected_tolerance"
+            "eq", "lock", "leader", "bend", "end", "expected_value", "expected_tolerance",
+            "allow_text_override", "allow_outside_crop", "require_printable", "pattern_points"
         };
 
         /// <summary>
@@ -136,13 +183,17 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static bool AllowsOption(string op, string option)
         {
+            // Every dimension shape can be asked whether it will print (P4, field 2026-11-17).
+            if (option == "require_printable") return IsDimensionOperation(op);
+            if (option == "pattern_points") return op == OpDimension;
             switch (op)
             {
                 case OpDimension:
                     return option == "dimension_type_id" || option == "prefix" || option == "suffix"
                         || option == "above" || option == "below" || option == "value_override"
                         || option == "eq" || option == "lock"
-                        || option == "expected_value" || option == "expected_tolerance";
+                        || option == "expected_value" || option == "expected_tolerance"
+                        || option == "allow_text_override" || option == "allow_outside_crop";
                 case OpAngular:
                     return option == "dimension_type_id"
                         || option == "expected_value" || option == "expected_tolerance";
@@ -445,9 +496,8 @@ namespace Horizun.Revit.Core
         /// reference on storage - a bare element reference to a grid handed to
         /// NewDimension reads back as 'uid:0:SURFACE' (measured live on 2025) - so a
         /// request-vs-read comparison of raw strings refuses correct dimensions. The
-        /// owner prefix (everything before the first ':') survives canonicalisation;
-        /// two references with the same owners in the same multiset are the same set
-        /// of elements being measured.
+        /// Only the observed bare-element suffix is normalised. All other tokens,
+        /// including the linked element and geometry, remain part of the key.
         /// </summary>
         public static List<string> ReferenceOwnerKeys(IEnumerable<string> stableRepresentations)
         {
@@ -456,9 +506,59 @@ namespace Horizun.Revit.Core
             foreach (string rep in stableRepresentations)
             {
                 if (rep == null) { keys.Add(""); continue; }
-                int colon = rep.IndexOf(':');
-                keys.Add(colon < 0 ? rep : rep.Substring(0, colon));
+                const string suffix = ":0:SURFACE";
+                string key = rep.EndsWith(suffix, StringComparison.Ordinal)
+                    ? rep.Substring(0, rep.Length - suffix.Length) : rep;
+                keys.Add(WithoutLinkTypeToken(key));
             }
+            keys.Sort(StringComparer.Ordinal);
+            return keys;
+        }
+
+        /// <summary>
+        /// A linked reference handed in as 'inst:0:RVTLINK/linkType:elem:geom:SURFACE' is
+        /// stored and read back as 'inst:0:RVTLINK:elem:geom:SURFACE' (MEASURED 2026-11-21 on
+        /// Revit 2024, 2025 and 2026: the token after the slash is the link TYPE's unique id,
+        /// which the link instance already determines). Only that token is dropped; the link
+        /// instance, the linked element and the geometry index stay in the key. A link token
+        /// with nothing after it ('inst:0:RVTLINK/grid') is left as written.
+        /// </summary>
+        public static string WithoutLinkTypeToken(string key)
+        {
+            if (key == null) return null;
+            const string marker = ":RVTLINK/";
+            int at = key.IndexOf(marker, StringComparison.Ordinal);
+            if (at < 0) return key;
+            int tokenStart = at + marker.Length;
+            int next = key.IndexOf(':', tokenStart);
+            if (next <= tokenStart) return key;
+            return key.Substring(0, at) + ":RVTLINK" + key.Substring(next);
+        }
+
+        /// <summary>
+        /// The reference type on the same footing as <see cref="ReferenceOwnerKeys"/>:
+        /// a bare element reference parses as REFERENCE_TYPE_NONE, and Revit stores it as
+        /// 'uid:0:SURFACE' with REFERENCE_TYPE_SURFACE (measured live on 2024 with two
+        /// grids). Both spellings are the whole element, so both key as ELEMENT. Every
+        /// other type - including a SURFACE reference with another index - is kept.
+        /// </summary>
+        public static string CanonicalReferenceType(string representation, string type)
+        {
+            const string suffix = ":0:SURFACE";
+            bool bare = representation != null && !representation.EndsWith(suffix, StringComparison.Ordinal)
+                        && (type == "REFERENCE_TYPE_NONE" || type == "NONE");
+            bool canonical = representation != null && representation.EndsWith(suffix, StringComparison.Ordinal)
+                             && (type == "REFERENCE_TYPE_SURFACE" || type == "SURFACE");
+            return bare || canonical ? "ELEMENT" : type;
+        }
+
+        public static List<string> ReferenceKeysWithTypes(IReadOnlyList<string> representations, IReadOnlyList<string> types)
+        {
+            if (representations == null || types == null || representations.Count != types.Count)
+                return new List<string> { "<unreadable>" };
+            var keys = new List<string>();
+            for (int i = 0; i < representations.Count; i++)
+                keys.Add(ReferenceOwnerKeys(new[] { representations[i] })[0] + "|" + CanonicalReferenceType(representations[i], types[i]));
             keys.Sort(StringComparer.Ordinal);
             return keys;
         }
@@ -468,8 +568,125 @@ namespace Horizun.Revit.Core
         public const string StateCommittedVerified = "committed_verified";
         public const string StateRolledBack = "rolled_back";
         public const string StateRefused = "refused";
+
+        // After commit an undisplayed view can yield false/zero even for an existing
+        // dimension. Demand independent numeric evidence when availability is absent.
+        // Spots have no scalar total in this verifier and rely on the availability flag.
+        public static bool InactiveViewMeasurementMissing(bool postCommit, bool targetIsActive, bool? referencesAvailable,
+                                                          bool isSpot, double? total)
+            => postCommit && !targetIsActive && referencesAvailable != true &&
+               (isSpot || !total.HasValue || double.IsNaN(total.Value) || double.IsInfinity(total.Value) || total.Value == 0);
         public const string StateStalePlan = "stale_plan";
         public const string StateUncertain = "uncertain";
+
+        internal enum VerifyStage { Rehearsal, InTransaction, PostCommit }
+
+        internal static JObject RehearseDimension(Func<VerifyStage, JObject> check, out bool constructible)
+        {
+            JObject verification = check(VerifyStage.Rehearsal);
+            constructible = verification.Value<bool>("all_match");
+            return verification;
+        }
+
+        internal static JObject FinishDimensionChecks(JArray checks, bool matches, VerifyStage stage,
+            long viewId, bool targetIsActive, bool? referencesAvailable, bool isSpot, double? total)
+        {
+            if (InactiveViewMeasurementMissing(stage == VerifyStage.PostCommit, targetIsActive,
+                    referencesAvailable, isSpot, total))
+            {
+                checks.Add(new JObject
+                {
+                    ["field"] = "inactive_view_measurement",
+                    ["requested"] = "materialised references or a finite, nonzero measured value",
+                    ["read"] = "Revit did not materialise the dimension in view " + viewId +
+                               ". Open it with horizun_navigate operation=open_view and rehearse again.",
+                    ["match"] = false
+                });
+                matches = false;
+            }
+
+            if (stage == VerifyStage.PostCommit)
+            {
+                bool flagTrue = referencesAvailable == true;
+                var availability = new JObject
+                {
+                    ["field"] = "references_available",
+                    ["requested"] = true,
+                    ["read"] = referencesAvailable.HasValue ? (JToken)referencesAvailable.Value : JValue.CreateNull(),
+                    ["match"] = flagTrue ? (JToken)true : (matches ? JValue.CreateNull() : (JToken)false),
+                    ["verified_by"] = flagTrue ? "flag" : (matches ? "substance" : "flag")
+                };
+                if (!flagTrue && matches)
+                    availability["note"] =
+                        "Revit computes this flag lazily and can read it false post-commit on a dimension whose " +
+                        "measured value is exactly right (measured live on instance-geometry references and on " +
+                        "reopened RFAs). Every substantive check in this row passed, and the verification stands " +
+                        "on that substance; the flag is reported as observed, not used as the verdict.";
+                checks.Add(availability);
+            }
+
+            return new JObject
+            {
+                ["comparison_tolerance_feet"] = CurveToleranceFeet,
+                ["all_match"] = matches,
+                ["checks"] = checks
+            };
+        }
+
+        internal delegate JObject ReadAnnotation<T>(T annotation, VerifyStage stage, out bool verified);
+
+        internal static JObject VerifyCommittedBatch<T>(IReadOnlyList<T> annotations, JArray rows,
+            ReadAnnotation<T> read, Action checkBudget, Func<string> rollBackGroup, out int verified,
+            IEnumerable<JObject> failedRows = null)
+        {
+            verified = 0;
+            foreach (T annotation in annotations)
+            {
+                JObject row = read(annotation, VerifyStage.PostCommit, out bool ok);
+                row["verified"] = ok;
+                if (failedRows != null) row["outcome"] = ok ? "created" : "failed";
+                rows.Add(row);
+                if (ok) verified++;
+            }
+            checkBudget?.Invoke();
+            if (failedRows != null)
+                foreach (JObject row in failedRows) rows.Add(row);
+            if (verified == annotations.Count) return null;
+            return RollBackUnverifiedBatch(failedRows == null ? rows : SortAnnotationRows(rows), rollBackGroup);
+        }
+
+        internal static JArray SortAnnotationRows(JArray rows) =>
+            new JArray(rows.OfType<JObject>().OrderBy(row => row.Value<int?>("index") ?? int.MaxValue));
+
+        // The inner transaction has committed, but the group can still undo the entire batch.
+        private static JObject RollBackUnverifiedBatch(JArray rows, Func<string> rollBackGroup)
+        {
+            string groupStatus = rollBackGroup();
+            return ApplyFailureDetail(FinalState(false, new[] { groupStatus }), "Committed", groupStatus, rows);
+        }
+
+        internal static JObject ApplyFailureDetail(string state, string txStatus, string groupStatus, JArray rows)
+        {
+            bool rolledBack = state == StateRolledBack;
+            rows = rows ?? new JArray();
+            foreach (JObject row in rows.OfType<JObject>())
+            {
+                if (row["verified"] == null) continue;
+                row["verified"] = false;
+                row["in_model"] = rolledBack ? new JValue(false) : JValue.CreateNull();
+                if (row.Value<string>("outcome") == "created")
+                    row["outcome"] = rolledBack ? "rolled_back" : "uncertain";
+            }
+            return new JObject
+            {
+                ["state"] = state,
+                ["transaction_status"] = txStatus,
+                ["transaction_group_status"] = groupStatus,
+                ["rollback_confirmed"] = rolledBack,
+                ["comparison_tolerance_feet"] = CurveToleranceFeet,
+                ["rows"] = rows
+            };
+        }
 
         /// <summary>
         /// The one word the response publishes about an apply, decided from what Revit
@@ -519,7 +736,7 @@ namespace Horizun.Revit.Core
             => "'" + operation + "' is not supported on any Revit this bridge runs on: no Revit API can " +
                "create a spot slope dimension (2023-2027 all lack a creation route). The Python fallback " +
                "cannot supply it either - a script would call the same absent API, so no fallback is " +
-               "offered. Nothing was written. Place spot slopes by hand in Revit.";
+               "offered. Nothing was written. " + SpotElevationRules.SlopeAlternative;
 
         /// <summary>
         /// Whether the text Revit stored IS the text the caller asked for, once Revit's own

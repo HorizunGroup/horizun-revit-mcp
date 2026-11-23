@@ -68,6 +68,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'integration-status.lib.ps1')   # Write-HorizunAtomicText
 
 $previous = $null
 if (Test-Path -LiteralPath $StatusPath) {
@@ -77,9 +78,8 @@ if (Test-Path -LiteralPath $StatusPath) {
 function Write-Status($Doc) {
     $dir = Split-Path -Parent $script:StatusPath
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $tmp = "$script:StatusPath.tmp-$([guid]::NewGuid().ToString('N'))"
-    [pscustomobject]$Doc | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $tmp -Encoding UTF8
-    Move-Item -LiteralPath $tmp -Destination $script:StatusPath -Force
+    Write-HorizunAtomicText -Path $script:StatusPath -Text ([pscustomobject]$Doc | ConvertTo-Json -Depth 20)
+    $null = Remove-HorizunOrphanTempFiles -Path $script:StatusPath
 }
 
 function New-StatusDoc([string]$State, [string]$Detail) {

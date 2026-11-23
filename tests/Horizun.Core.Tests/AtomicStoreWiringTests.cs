@@ -34,8 +34,6 @@ namespace Horizun.Core.Tests
 
         [Theory]
         [InlineData("src/Horizun.Revit/Core/RepairMemory.cs")]
-        [InlineData("src/Horizun.Revit/Core/CadUpdateOperations.cs")]
-        [InlineData("src/Horizun.Revit/Core/CadLinkLoads.cs")]
         [InlineData("src/Horizun.Server/PowerBiSelection.cs")]
         [InlineData("src/Horizun.Server/SharedRecordFile.cs")]
         public void The_store_never_writes_over_its_live_file_or_through_a_fixed_temporary(string file)

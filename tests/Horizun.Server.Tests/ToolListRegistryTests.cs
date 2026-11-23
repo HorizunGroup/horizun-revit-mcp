@@ -112,19 +112,19 @@ namespace Horizun.Server.Tests
         [Fact]
         public void The_published_list_omits_the_withheld_tool_and_keeps_the_rest()
         {
-            ToolDef victim = Def("horizun_clash");
+            ToolDef victim = Def("horizun_audit_model");
             Assert.NotNull(victim);
             var registered = Contract.PluginCommands.Where(c => c != victim.Command).ToList();
             Tools.LiveBridge = () => Bridge(registered);
 
             var names = Tools.List(false).OfType<JObject>().Select(o => (string)o["name"]).ToList();
-            Assert.DoesNotContain("horizun_clash", names);
+            Assert.DoesNotContain("horizun_audit_model", names);
             Assert.Contains("horizun_health", names);          // still there
             Assert.Contains("horizun_job_status", names);      // host-resident, untouched
 
             JArray withheld = Tools.Withheld();
             Assert.Single(withheld);
-            Assert.Equal("horizun_clash", (string)withheld[0]["name"]);
+            Assert.Equal("horizun_audit_model", (string)withheld[0]["name"]);
             Assert.Equal(victim.Command, (string)withheld[0]["command"]);
         }
 
@@ -134,7 +134,7 @@ namespace Horizun.Server.Tests
             Tools.LiveBridge = () => Bridge(Contract.PluginCommands.ToList());
             Assert.Empty(Tools.Withheld());
             var names = Tools.List(false).OfType<JObject>().Select(o => (string)o["name"]).ToList();
-            Assert.Contains("horizun_clash", names);
+            Assert.Contains("horizun_audit_model", names);
         }
 
         [Fact]
@@ -153,11 +153,11 @@ namespace Horizun.Server.Tests
             // registering a command is a tools/list_changed rather than a surprise.
             Tools.LiveBridge = () => Bridge(Contract.PluginCommands.ToList());
             string before = ToolListMonitor.Capture();
-            Tools.LiveBridge = () => Bridge(Contract.PluginCommands.Where(c => c != "horizun_clash").ToList());
+            Tools.LiveBridge = () => Bridge(Contract.PluginCommands.Where(c => c != Def("horizun_audit_model").Command).ToList());
             string after = ToolListMonitor.Capture();
             Assert.NotEqual(before, after);
-            Assert.Contains("horizun_clash", before);
-            Assert.DoesNotContain("horizun_clash", after);
+            Assert.Contains("horizun_audit_model", before);
+            Assert.DoesNotContain("horizun_audit_model", after);
         }
 
         // --------------------------------------------------- the diagnostic
@@ -165,14 +165,14 @@ namespace Horizun.Server.Tests
         [Fact]
         public void Build_identity_publishes_the_withheld_tools_and_why()
         {
-            ToolDef victim = Def("horizun_clash");
+            ToolDef victim = Def("horizun_audit_model");
             Tools.LiveBridge = () => Bridge(Contract.PluginCommands.Where(c => c != victim.Command).ToList());
 
             JObject read = McpResources.Read(new JObject { ["uri"] = "horizun://build/identity" });
             var body = JObject.Parse((string)read["contents"][0]["text"]);
             JObject registry = (JObject)body["registry"];
             Assert.Equal(1, (int)registry["withheld_count"]);
-            Assert.Equal("horizun_clash", (string)registry["withheld"][0]["name"]);
+            Assert.Equal("horizun_audit_model", (string)registry["withheld"][0]["name"]);
             Assert.Contains("NOT in tools/list", (string)registry["means"]);
         }
 

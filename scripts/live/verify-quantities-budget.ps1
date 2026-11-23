@@ -547,6 +547,30 @@ if ($linkSource) {
     $run.Fixture['link_is_a_copy_of_the_active_document'] = (-not $LinkFixture)
 }
 
+# THE LINK FIXTURE THROUGH execute_python: this edition has no typed command that
+# links, places, unloads or reloads a Revit link. That is set-up, self-reported;
+# every probe below judges the TAKEOFF, never this reply.
+function Invoke-HzLinkPy([string]$Label, [string]$Body) {
+    $py = @"
+from Autodesk.Revit.DB import (ElementId, FilteredElementCollector, ModelPathUtils, RevitLinkInstance,
+                               RevitLinkOptions, RevitLinkType, Transaction)
+def eid(x):
+    return None if x is None else (x.IntegerValue if hasattr(x, 'IntegerValue') else int(x.Value))
+out = {'status': 'failed'}
+try:
+$Body
+except Exception as ex:
+    out['why'] = str(ex)
+__output__ = out
+"@
+    $call = Invoke-HzTool -Run $run -Tool 'horizun_execute_python' -Label $Label -TimeoutSec 900 `
+        -Arguments @{ code = $py; target_document = $Document; idempotency_key = (New-HzKey $run $Label) }
+    $out = if ($call.Ok) { Get-HzProp $call.Result 'output' } else { $null }
+    if ($call.Ok -and -not $out) { $out = Get-HzProp $call.Result '__output__' }
+    [pscustomobject]@{ Ok = ($call.Ok -and [string](Get-HzProp $out 'status') -eq 'self_reported_verified')
+                       Result = $out; Text = $(if ($out -and (Get-HzProp $out 'why')) { [string](Get-HzProp $out 'why') } else { $call.Text }) }
+}
+
 $linkTypeId = $null
 $instanceA = $null
 $instanceB = $null
@@ -571,16 +595,23 @@ elseif (-not $linkPath) {
     }
 }
 else {
-    $add = Invoke-HzWrite -Run $run -Tool 'horizun_manage_links' -Label 'link-add' -AllowRefusal -Arguments @{
-        operation = 'add'; path = $linkPath; target_document = $Document
-    }
+    $add = Invoke-HzLinkPy 'link-add' @"
+    t = Transaction(doc, 'Horizun live: link the fixture')
+    t.Start()
+    res = RevitLinkType.Create(doc, ModelPathUtils.ConvertUserVisiblePathToModelPath(r'$linkPath'), RevitLinkOptions(False))
+    inst = RevitLinkInstance.Create(doc, res.ElementId)
+    t.Commit()
+    out['link_type_id'] = eid(res.ElementId)
+    out['link_instance_id'] = eid(inst.Id)
+    out['status'] = 'self_reported_verified'
+"@
     if ($add.Ok) {
-        $linkTypeId = [long](Get-HzProp $add.Apply.Result 'link_type_id')
-        $instanceA = [string](Get-HzProp $add.Apply.Result 'link_instance_id')
+        $linkTypeId = [long](Get-HzProp $add.Result 'link_type_id')
+        $instanceA = [string](Get-HzProp $add.Result 'link_instance_id')
     }
 
     if (-not $linkTypeId) {
-        $why = if ($add.Apply) { Limit-HzText $add.Apply.Text 300 } elseif ($add.Dry) { Limit-HzText $add.Dry.Text 300 } else { 'no reply' }
+        $why = Limit-HzText $add.Text 300
         foreach ($id in $linkProbeIds) {
             Add-HzProbe -Run $run -Id $id -Name 'quantities through a Revit link' `
                 -Expected 'a link this run created in the fixture' -Observed "the link could not be added: $why" `
@@ -641,20 +672,25 @@ else {
             -Status $(if ($null -ne $hostMeasured -and $requestedWithLink -gt $hostMeasured) { 'passed' } else { 'failed' })
 
         # ---- the SECOND placement of the SAME file. --------------------------
-        $addInstance = Invoke-HzWrite -Run $run -Tool 'horizun_manage_links' -Label 'link-add-instance' -AllowRefusal -Arguments @{
-            operation = 'add_instance'; link_type_id = $linkTypeId; target_document = $Document
-        }
-        if ($addInstance.Ok) { $instanceB = [string](Get-HzProp $addInstance.Apply.Result 'link_instance_id') }
+        $addInstance = Invoke-HzLinkPy 'link-add-instance' @"
+    t = Transaction(doc, 'Horizun live: a second placement')
+    t.Start()
+    inst = RevitLinkInstance.Create(doc, ElementId($linkTypeId))
+    t.Commit()
+    out['link_instance_id'] = eid(inst.Id)
+    out['instances_after'] = len([i for i in FilteredElementCollector(doc).OfClass(RevitLinkInstance).ToElements() if eid(i.GetTypeId()) == $linkTypeId])
+    out['status'] = 'self_reported_verified'
+"@
+        if ($addInstance.Ok) { $instanceB = [string](Get-HzProp $addInstance.Result 'link_instance_id') }
 
-        Add-HzProbe -Run $run -Id 'Q2.5' -Name 'a second instance of the SAME linked file can be placed, and is verified' `
-            -Expected 'add_instance returns a new link_instance_id, instances_after 2, verified by re-reading the instance and its type' `
+        Add-HzProbe -Run $run -Id 'Q2.5' -Name 'a second instance of the SAME linked file is placed' `
+            -Expected 'a new link_instance_id and instances_after 2 (fixture set-up through execute_python, self-reported)' `
             -Observed $(if ($instanceB) {
-                    "instance=$instanceB instances_after=$(Get-HzProp $addInstance.Apply.Result 'instances_after') verified=$(Get-HzProp $addInstance.Apply.Result 'verified_after_reread')"
-                } elseif ($addInstance.Apply) { Limit-HzText $addInstance.Apply.Text 260 } else { 'no reply' }) `
+                    "instance=$instanceB instances_after=$(Get-HzProp $addInstance.Result 'instances_after')"
+                } else { Limit-HzText $addInstance.Text 260 }) `
             -Status $(if ($instanceB -and $instanceB -ne $instanceA -and
-                          [int](Get-HzProp $addInstance.Apply.Result 'instances_after') -eq 2 -and
-                          $true -eq (Get-HzProp $addInstance.Apply.Result 'verified_after_reread')) { 'passed' } else { 'failed' }) `
-            -Because 'Revit holds one link type per path, so a file placed twice is one type with two instances - and until this operation existed the bridge could not create the second one.'
+                          [int](Get-HzProp $addInstance.Result 'instances_after') -eq 2) { 'passed' } else { 'failed' }) `
+            -Because 'Revit holds one link type per path, so a file placed twice is one type with two instances; the probes below need both.'
 
         if (-not $instanceB) {
             foreach ($id in @('Q2.6', 'Q2.7', 'Q2.8', 'Q2.9')) {
@@ -782,11 +818,15 @@ else {
 }
 
         # ---- the link UNLOADED. ---------------------------------------------
-        $unload = Invoke-HzWrite -Run $run -Tool 'horizun_manage_links' -Label 'link-unload' -AllowRefusal -Arguments @{
-            operation = 'unload'; link_type_id = $linkTypeId; target_document = $Document
-        }
+        $unload = Invoke-HzLinkPy 'link-unload' @"
+    lt = doc.GetElement(ElementId($linkTypeId))
+    lt.Unload(None)
+    out['link_status'] = str(lt.GetLinkedFileStatus())
+    if out['link_status'] in ('Unloaded', 'LocallyUnloaded'):
+        out['status'] = 'self_reported_verified'
+"@
         if (-not $unload.Ok) {
-            $why = if ($unload.Apply) { Limit-HzText $unload.Apply.Text 260 } else { Limit-HzText $unload.Dry.Text 260 }
+            $why = Limit-HzText $unload.Text 260
             foreach ($id in @('Q2.10', 'Q2.11')) {
                 Add-HzProbe -Run $run -Id $id -Name 'a link that is NOT loaded' -Expected 'the link unloaded' `
                     -Observed "the unload did not happen: $why" -Status 'unverified'
@@ -819,9 +859,12 @@ else {
 
             # Put it back, so the document this run was lent is left as it was
             # found. Nothing is saved either way; this is courtesy, not cleanup.
-            $null = Invoke-HzWrite -Run $run -Tool 'horizun_manage_links' -Label 'link-reload' -AllowRefusal -Arguments @{
-                operation = 'reload'; link_type_id = $linkTypeId; target_document = $Document
-            }
+            $null = Invoke-HzLinkPy 'link-reload' @"
+    lt = doc.GetElement(ElementId($linkTypeId))
+    lt.Reload()
+    out['link_status'] = str(lt.GetLinkedFileStatus())
+    out['status'] = 'self_reported_verified'
+"@
         }
 
         # And take the link back out. Best effort, and NOT a probe: the document is

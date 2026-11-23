@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // "Is anyone home, and WHICH Revit is it?" — the first call any workflow makes.
@@ -45,10 +45,12 @@ namespace Horizun.Revit.Commands
             // is to answer, and a bad JSON blob here just keeps the reply at its small
             // default shape instead of adding the optional catalog block.
             bool includeVerificationCatalog = false;
+            bool compact = true; // 4.2-N5 (LP-P3-12): the heavy diagnostics are opt-in via detail=full
             try
             {
                 JObject request = string.IsNullOrWhiteSpace(paramsJson) ? null : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
                 includeVerificationCatalog = request?.Value<bool?>("include_verification_catalog") ?? false;
+                compact = !string.Equals(request?.Value<string>("detail"), "full", StringComparison.OrdinalIgnoreCase);
             }
             catch { /* keep the default */ }
 
@@ -96,6 +98,7 @@ namespace Horizun.Revit.Commands
                     path = string.IsNullOrEmpty(d.PathName) ? null : d.PathName,
                     is_family_document = d.IsFamilyDocument,
                     is_workshared = d.IsWorkshared,
+                    is_modified = SafeModified(d),
                     // A LINKED model is listed among the open documents but cannot be closed
                     // on its own - it unloads with its host. Callers that close what they
                     // opened need to tell the two apart (measured 2026-09-24).
@@ -109,7 +112,7 @@ namespace Horizun.Revit.Commands
             int pid;
             try { pid = Process.GetCurrentProcess().Id; } catch { pid = -1; }
 
-            return CommandResult.Ok(new
+            var payload = JObject.FromObject(new
             {
                 status = "healthy",
                 // The two questions every support conversation starts with, answered before
@@ -117,6 +120,7 @@ namespace Horizun.Revit.Commands
                 horizun_version = Build.Version,
                 contract_hash = Horizun.Contracts.Contract.Hash,
                 python_runtime = PythonRuntimeHealth.Snapshot(Horizun.Revit.Core.Settings.ExecutePythonEnabled),
+                modal_dialog_policy = Horizun.Revit.Core.Settings.ModalDialogPolicy(),
                 // Where this bridge comes from, and where the layer above it lives.
                 // Stated here because the design property it names is real and a caller
                 // acts on it: nothing organisation-specific is compiled in, so a command
@@ -186,11 +190,15 @@ namespace Horizun.Revit.Commands
                     mcp_paused = Horizun.Revit.Core.Settings.McpPaused,
                     force_read_only_on_workshared = Horizun.Revit.Core.Settings.ForceReadOnlyOnWorkshared,
                     sync_with_central_owner_granted = Horizun.Revit.Core.Settings.SyncWithCentralOwnerEnabled,
+                    sync_only_grant_enabled = Horizun.Revit.Core.Settings.SyncOnlyGrantEnabled,
                     note = "These are local machine controls shared by the ribbon and MCP server. " +
                            "When MCP is paused only horizun_health remains callable; central protection " +
                            "refuses potential writes to a workshared active document. " +
                            "sync_with_central_owner_granted is the owner's grant for operation=sync_with_central; " +
-                           "that operation also needs permission_profile=full_write, and central protection wins over it."
+                           "through horizun_save_document it needs only safe_write plus that grant (horizun_document_session needs full_write), and central protection wins over it. " +
+                           "sync_only_grant_enabled is the owner's separate, stricter option (off by default): when on, safe_write may synchronize " +
+                           "through horizun_save_document only with a non-empty comment, a zero own diff, relinquish all or borrowed_only, " +
+                           "and a re-read afterwards."
                 },
                 current_action = Dispatcher.CurrentActivityDescription(),
                 // The startup comparison between Contract.PluginCommands and what
@@ -211,6 +219,8 @@ namespace Horizun.Revit.Commands
                 // transport records the pid of every pipe connection; this is that
                 // registry, read at answer time.
                 clients = ClientsBlock(),
+                // The one line of that block that survives detail=compact: a second MCP client on THIS Revit (null when alone).
+                other_client_warning = OtherClientWarning(),
                 // The point of the whole call: WHICH document your next command will hit.
                 no_active_document = active == null,
                 active_document = active == null ? null : new
@@ -219,10 +229,13 @@ namespace Horizun.Revit.Commands
                     path = string.IsNullOrEmpty(active.PathName) ? null : active.PathName,
                     is_family_document = active.IsFamilyDocument,
                     is_workshared = active.IsWorkshared,
+                    is_modified = SafeModified(active),
                     // A document never saved has no path. Say so rather than showing "".
-                    has_been_saved_to_disk = !string.IsNullOrEmpty(active.PathName)
+                    has_been_saved_to_disk = !string.IsNullOrEmpty(active.PathName),
+                    model_size = HealthModelSize.Measure(active)
                 },
                 open_document_count = open.Count,
+                open_documents_complete = listError == null,
                 open_documents = open,
                 // How the active document was identified among the open ones, so a null
                 // is_active above is explained rather than left to be interpreted.
@@ -235,6 +248,10 @@ namespace Horizun.Revit.Commands
                 // API does not expose to an add-in at all (see recent_horizun_writes.note).
                 workshare_status = active == null ? null : WorkshareBlock(active, rvt),
                 recent_horizun_writes = active == null ? null : RecentWritesBlock(active),
+                // Workshared: local work not yet synchronized with central (SyncLedgerRules.cs).
+                pending_sync = SyncReminder.ForHealth(active),
+                // A synchronize with central since element ids were last read: ids held from before may be renumbered.
+                id_freshness = SyncReminder.IdsMayHaveChanged(active),
                 // Compact on purpose (default false keeps health small): every writing
                 // tool's verification mechanism and how many residual gaps the catalog
                 // still names for it. The full text - evidence fields, source files, and
@@ -242,6 +259,7 @@ namespace Horizun.Revit.Commands
                 verification_catalog = includeVerificationCatalog ? VerificationCatalogBlock() : null,
                 note = Note(active, match, listError)
             });
+            return CommandResult.Ok(HealthDetailRules.Apply(payload, compact, includeVerificationCatalog));
         }
 
         private static object VerificationCatalogBlock()
@@ -315,40 +333,40 @@ namespace Horizun.Revit.Commands
                 catch (Exception ex) { worksetError = "user worksets could not be enumerated: " + ex.Message; }
 
                 const int BudgetMs = 500;
-                int scanned = 0, borrowedByMe = 0;
                 bool complete = false;
                 string scanNote;
+                long scanned = 0, borrowedByMe = 0, unreadableStatus = 0;
+                object lastComplete = null;
                 var sw = Stopwatch.StartNew();
                 try
                 {
-                    // NO FilteredElementCollector.GetElementCount() up front: that call is itself
-                    // an unbounded pass over the whole collection - on a large model it could take
-                    // far longer than BudgetMs all by itself, defeating the very budget it was
-                    // meant to inform. The only bounded work here is the foreach below; elements_checked
-                    // is reported as "at least this many", never alongside a total the code never
-                    // actually counted.
-                    var collector = new FilteredElementCollector(active).WhereElementIsNotElementType();
-                    string stopReason = null;
-                    foreach (Element e in collector)
-                    {
-                        if (sw.ElapsedMilliseconds > BudgetMs)
+                    // The ids are listed (cheap) and sorted, then the per-element GetCheckoutStatus reads
+                    // RESUME after the last element the previous call examined (Core/OwnershipPass.cs), so
+                    // repeated health calls converge on a COMPLETE count instead of re-reading the same first
+                    // 500 ms of a large model forever (CT-P1-1a).
+                    var ids = new List<long>();
+                    foreach (ElementId eid in new FilteredElementCollector(active).WhereElementIsNotElementType().ToElementIds())
+                        ids.Add(Rid.Value(eid));
+                    ids.Sort();
+                    string passKey = ChangeWatch.Key(active);
+                    OwnershipPass pass = OwnershipPassRules.Advance(OwnershipPassStore.Get(passKey), passKey, ids,
+                        id =>
                         {
-                            stopReason = "time budget of " + BudgetMs + "ms reached after checking at least " +
-                                         scanned + " candidate element(s)";
-                            break;
-                        }
-                        scanned++;
-                        CheckoutStatus status;
-                        try { status = WorksharingUtils.GetCheckoutStatus(active, e.Id); }
-                        catch { continue; }
-                        if (status == CheckoutStatus.OwnedByCurrentUser) borrowedByMe++;
-                    }
-                    complete = stopReason == null;
-                    scanNote = complete
-                        ? "Every non-type element candidate was checked with WorksharingUtils.GetCheckoutStatus."
-                        : stopReason + "; owned_by_current_user_count below is a LOWER BOUND, not the total. " +
-                          "elements_checked is 'at least N scanned', not the model's total candidate count - " +
-                          "counting that upfront would itself be another unbounded pass over the model.";
+                            try { return WorksharingUtils.GetCheckoutStatus(active, Rid.Make(id)) == CheckoutStatus.OwnedByCurrentUser ? 1 : 0; }
+                            catch { return -1; }
+                        },
+                        () => sw.ElapsedMilliseconds > BudgetMs, DateTime.UtcNow);
+                    OwnershipPassStore.Put(passKey, pass);
+                    complete = pass.Complete;
+                    scanned = pass.Examined; borrowedByMe = pass.Owned; unreadableStatus = pass.Unreadable;
+                    if (pass.LastComplete != null)
+                        lastComplete = new
+                        {
+                            owned_by_current_user_count = pass.LastComplete.Owned,
+                            elements_checked = pass.LastComplete.Examined,
+                            finished_utc = pass.LastComplete.FinishedUtc?.ToString("o")
+                        };
+                    scanNote = OwnershipPassRules.Note(pass);
                 }
                 catch (Exception ex)
                 {
@@ -370,12 +388,15 @@ namespace Horizun.Revit.Commands
                         complete,
                         elements_checked = scanned,
                         owned_by_current_user_count = borrowedByMe,
+                        elements_unreadable = unreadableStatus,
+                        last_complete = lastComplete,
                         elapsed_ms = sw.ElapsedMilliseconds,
                         note = scanNote
                     },
                     note = "The Revit API exposes no bulk 'elements checked out to me' query; this is a per-" +
-                           "element WorksharingUtils.GetCheckoutStatus scan bounded to " + BudgetMs + "ms so a " +
-                           "large model reports an honestly-partial count rather than slowing down every health call."
+                           "element WorksharingUtils.GetCheckoutStatus scan bounded to " + BudgetMs + "ms PER CALL and " +
+                           "resumed by the next call, so a large model answers an honestly-partial count now and a complete one after a few calls, " +
+                           "rather than slowing down every health call."
                 };
             }
             catch (Exception ex)
@@ -560,6 +581,31 @@ namespace Horizun.Revit.Commands
             }
         }
 
+        /// <summary>A second MCP client connected to this same Revit, as one sentence; null when none is alive (ConcurrentClientRule).</summary>
+        private static string OtherClientWarning()
+        {
+            try
+            {
+                PresenceSnapshot snap = ClientPresence.Default.Take(DateTime.UtcNow);
+                return ConcurrentClientRule.HealthWarning(snap, c =>
+                {
+                    // Still THAT process (a recycled pid is not the client that connected) and not an orphan whose parent is gone.
+                    try
+                    {
+                        using (var p = Process.GetProcessById((int)c.Pid))
+                        {
+                            DateTime? started = null;
+                            try { started = p.StartTime.ToUniversalTime(); } catch { }
+                            return ClientLiveness.Alive(true, started, c.Identity?.StartedUtc, c.Identity?.ParentAlive());
+                        }
+                    }
+                    catch (ArgumentException) { return false; }
+                    catch { return null; }
+                });
+            }
+            catch { return null; }
+        }
+
         private static object ClientsBlock()
         {
             try
@@ -568,6 +614,7 @@ namespace Horizun.Revit.Commands
                 PresenceSnapshot snap = ClientPresence.Default.Take(now);
 
                 var rows = new List<object>();
+                var others = new List<object>();
                 foreach (ClientSeen c in snap.Clients)
                 {
                     bool? alive;
@@ -587,6 +634,20 @@ namespace Horizun.Revit.Commands
                         seconds_since_last_request = (int)Math.Max(0, (now - c.LastSeenUtc).TotalSeconds),
                         process_alive = alive
                     });
+                    var identity = c.Identity;
+                    bool? parentAlive = identity?.ParentAlive();
+                    others.Add(new
+                        {
+                            pid = c.Pid,
+                            executable_name = identity?.ExecutableName,
+                            executable_path = identity?.ExecutablePath,
+                            started_utc = identity?.StartedUtc,
+                            parent_pid = identity?.ParentPid,
+                            parent_alive = parentAlive,
+                            last_request_utc = c.LastSeenUtc,
+                            orphan = ClientProcessIdentity.IsOrphan(parentAlive),
+                            orphan_reason = ClientProcessIdentity.OrphanReason(parentAlive)
+                        });
                 }
 
                 return new
@@ -596,6 +657,7 @@ namespace Horizun.Revit.Commands
                     unidentified_connections_in_window = snap.UnidentifiedInWindow,
                     window_seconds = (int)ClientPresence.Window.TotalSeconds,
                     clients_seen = rows,
+                    client_processes = others,
                     note = "APPROXIMATE by design: the transport is one connection per request, so 'connected' " +
                            "means 'sent at least one request in the last " + (int)ClientPresence.Window.TotalMinutes +
                            " minutes'. The count excludes this call's own client, whose connection was recorded " +
@@ -642,6 +704,11 @@ namespace Horizun.Revit.Commands
                     return p == null ? null : p.GetModelGUID().ToString();
                 })
             };
+        }
+
+        private static bool? SafeModified(Document d)
+        {
+            try { return d.IsModified; } catch { return null; }
         }
 
         private static bool? SafeIsLinked(Document d)

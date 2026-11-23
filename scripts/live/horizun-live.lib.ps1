@@ -285,7 +285,7 @@ function Get-HzPath {
 
 function Get-HzHealth {
     param([Parameter(Mandatory)]$Run)
-    $h = Invoke-HzToolStrict -Run $Run -Tool 'horizun_health' -Arguments @{} -Label 'health' -TimeoutSec 90
+    $h = Invoke-HzToolStrict -Run $Run -Tool 'horizun_health' -Arguments @{ detail = 'full' } -Label 'health' -TimeoutSec 90
     $Run.Health = $h.Result
     $h.Result
 }

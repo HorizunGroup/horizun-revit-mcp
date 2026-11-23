@@ -70,7 +70,7 @@ namespace Horizun.Revit.Commands
             builder.SetReadAccessLevel(AccessLevel.Public);
             builder.SetWriteAccessLevel(AccessLevel.Vendor);
             // The add-in's own vendor id (Horizun.addin), or every SetEntity throws.
-            builder.SetVendorId(CadProvenanceStore.VendorId);
+            builder.SetVendorId(HorizunVendor.Id);
             builder.SetDocumentation("Horizun framing: which wall or ceiling, under which spec, produced this member. " +
                                      "Written by horizun_framing; read/remove find members by it.");
             builder.AddSimpleField(FVersion, typeof(int));

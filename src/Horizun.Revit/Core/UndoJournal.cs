@@ -137,6 +137,22 @@ namespace Horizun.Revit.Core
             return last;
         }
 
+        /// <summary>
+        /// 5.0.4: tools whose model changes are not a write to reverse - horizun_undo applies an inverse, a save or a
+        /// sync is guarded by the save stamp. Every other committed write that records nothing leaves a blocking batch.
+        /// </summary>
+        public static bool UnrecordedWriteExempt(string tool) =>
+            string.Equals(tool, "horizun_undo", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(tool, "horizun_save_document", StringComparison.OrdinalIgnoreCase);
+
+        public static string UnrecordedWriteReason(string tool) =>
+            (tool ?? "this tool") + " does not record an inverse in the undo journal, so horizun_undo cannot reverse this write";
+
+        public const string UnrecordedWriteNote =
+            "horizun_undo operation=undo_last refuses while this is the last write, instead of reaching past it to an older batch. " +
+            "Reverse it with Revit's own Undo before saving, or with the tool's inverse operation (for example, delete what it duplicated " +
+            "with horizun_delete_verified).";
+
         /// <summary>The save stamp guard: a save or a sync since the batch refuses.</summary>
         public static bool SavedSince(string recorded, string current, out string reason)
         {

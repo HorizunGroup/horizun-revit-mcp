@@ -39,9 +39,14 @@ param(
     # Stable releases are permanently unsigned; this explicit acknowledgement
     # prevents absence of publisher identity from being mistaken for trust.
     [switch]$AllowUnsigned,
-    # A release from 4.0.1 on: every binary of the payload and Setup must be signed,
-    # own files by HORIZUN GROUP S.A.S. with Certum (issues #74, #75).
+    # The private Pro delivery (distributed through the Suite, never as a public
+    # GitHub release) is the one build that carries a publisher signature. This
+    # mode demands it instead: every own binary, every client-tools script and the
+    # installer Valid, timestamped and by ONE signer. Exclusive with -AllowUnsigned.
     [switch]$RequireSigned,
+    # With -RequireSigned: the expected signer thumbprint. Without it, the signer
+    # is still required to be the same certificate on every file.
+    [string]$ExpectedThumbprint,
     # The installer can write a per-run result file. CI must pass the exact file
     # it asked Setup to create instead of reading a global leftover in {app}.
     [string]$InstallResult,
@@ -56,6 +61,15 @@ $repo = Split-Path -Parent $PSScriptRoot
 # from the one that built it.
 . (Join-Path $PSScriptRoot 'horizun-deploy.lib.ps1')
 if (-not $Stage) { $Stage = Join-Path $repo 'dist\stage' }
+if ($AllowUnsigned -and $RequireSigned) {
+    Write-Error 'Pass -AllowUnsigned (public release) or -RequireSigned (private signed delivery), not both.'
+    exit 2
+}
+if ($ExpectedThumbprint -and -not $RequireSigned) {
+    Write-Error '-ExpectedThumbprint only applies with -RequireSigned.'
+    exit 2
+}
+$ExpectedThumbprint = ($ExpectedThumbprint -replace '\s', '').ToUpperInvariant()
 
 $problems = New-Object System.Collections.Generic.List[string]
 $checks   = New-Object System.Collections.Generic.List[object]
@@ -239,15 +253,28 @@ if ($mcpbFiles.Count -eq 1) {
 # Public releases deliberately carry no Authenticode publisher identity. The
 # switch is an acknowledgement, not a temporary compatibility exception.
 $own = @(Get-HorizunOwnBinaries $Stage)
+# One signer for the whole signed delivery; the first valid file fixes it when no
+# thumbprint was given, and every later file (installer included) must match.
+$signer = $ExpectedThumbprint
+function Test-SignedByOne([string]$path) {
+    $info = Get-HorizunSignatureInfo $path
+    if ($info.Status -ne 'Valid') { return "$(Split-Path $path -Leaf): $($info.Status)" }
+    if (-not $info.Timestamped) { return "$(Split-Path $path -Leaf): no timestamp" }
+    if (-not $script:signer) { $script:signer = $info.Thumbprint }
+    if ($info.Thumbprint -ne $script:signer) { return "$(Split-Path $path -Leaf): signer $($info.Thumbprint), expected $($script:signer)" }
+    $null
+}
 if ($RequireSigned) {
-    if ($AllowUnsigned) { Write-Error '-RequireSigned and -AllowUnsigned contradict each other'; exit 2 }
-    Check 'the manifest declares the package signed' ([bool]$doc.Signed) 'manifest.Signed is false'
-    $setupFiles = @()
-    if ($Installer) { $setupFiles = @($Installer) }
-    else { $setupFiles = @(Get-ChildItem (Join-Path $repo 'dist') -Filter '*setup.exe' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
-    $sigProblems = @(Get-HorizunReleaseSignatureProblems $Stage $setupFiles)
-    Check ('every payload binary and Setup is signed (' + (@(Get-HorizunSignableBinaries $Stage).Count + $setupFiles.Count) + ' checked)') `
-          ($sigProblems.Count -eq 0) (($sigProblems | Select-Object -First 8) -join '; ')
+    $scripts = @(Get-HorizunOwnScripts $Stage)
+    Check 'the manifest declares the package signed' ([bool]$doc.Signed) `
+          'manifest.Signed is false: run sign.ps1 on the stage (it recomputes the manifest) before packing'
+    $bad = @(@($own) + @($scripts) | ForEach-Object { Test-SignedByOne $_ } | Where-Object { $_ })
+    Check ('every staged own binary and script is signed, timestamped, by one signer (' + ($own.Count + $scripts.Count) + ' checked)') `
+          (($own.Count -gt 0) -and $bad.Count -eq 0) ('not signed as required: ' + ($bad -join ', '))
+    if ($ExpectedThumbprint -and $doc.Signature -and $doc.Signature.SignerThumbprint) {
+        Check 'the manifest names the expected signer' ($doc.Signature.SignerThumbprint -eq $ExpectedThumbprint) `
+              "manifest signer $($doc.Signature.SignerThumbprint), expected $ExpectedThumbprint"
+    }
 }
 elseif (-not $AllowUnsigned) {
     Check 'the caller explicitly acknowledges the unsigned release policy' $false `
@@ -286,8 +313,8 @@ if ($Installer -and (Test-Path $Installer)) {
     $installerSha = Sha $Installer
     $installerSignature = Get-HorizunSignatureInfo $Installer
     if ($RequireSigned) {
-        Check 'installer is signed by HORIZUN GROUP S.A.S. (Certum)' (Test-HorizunReleaseSignature $Installer) `
-              "Authenticode state $($installerSignature.Status)"
+        $why = Test-SignedByOne $Installer
+        Check 'installer is signed, timestamped, by the same signer as its payload' (-not $why) $why
     }
     else {
         Check 'installer is unsigned by public-release policy' ($installerSignature.Status -eq 'NotSigned') `
@@ -491,7 +518,8 @@ $report = [pscustomobject]@{
     stage             = $Stage
     installer         = $Installer
     installer_sha256  = $installerSha
-    signature_policy  = $(if ($RequireSigned) { 'signed_by_certum' } elseif ($AllowUnsigned) { 'unsigned_by_policy' } else { 'unsigned_unacknowledged' })
+    signature_policy  = $(if ($RequireSigned) { 'signed_private_delivery' } elseif ($AllowUnsigned) { 'unsigned_by_policy' } else { 'unsigned_unacknowledged' })
+    signer_thumbprint = $(if ($RequireSigned) { $signer } else { $null })
     install_result    = $InstallResult
     checked_installed = [bool]$Installed
     installed         = $installedReport

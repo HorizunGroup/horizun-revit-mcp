@@ -15,16 +15,6 @@ $fails = 0
 function Check($name, $ok) { if ($ok) { "  PASS  $name" } else { "  FAIL  $name"; $script:fails++ } }
 function Reply($data, $isError, $text) { @{ isError = $isError; data = $data; text = $text } }
 
-# The probe finds the member template under ProgramData; give it an empty stand-in.
-$fakeData = Join-Path ([IO.Path]::GetTempPath()) ('hz-framing-tests-' + [guid]::NewGuid().ToString('N'))
-$tplDir = Join-Path $fakeData 'Autodesk\RVT 2026\Family Templates\English'
-New-Item -ItemType Directory -Force -Path $tplDir | Out-Null
-Set-Content -LiteralPath (Join-Path $tplDir 'Metric Generic Model line based.rft') -Value ''
-Set-Content -LiteralPath (Join-Path $tplDir 'Metric Structural Column.rft') -Value ''
-Set-Content -LiteralPath (Join-Path $tplDir 'Metric Structural Framing - Beams and Braces.rft') -Value ''
-$realProgramData = $env:ProgramData
-$env:ProgramData = $fakeData
-
 function New-State {
     $script:readExtra = 0
     $script:nextId = 7000; $script:applies = 0; $script:removed = $false; $script:deleted = $null; $script:sent = @{}
@@ -70,8 +60,11 @@ $fakeCall = {
             'OST_Doors' { @(@{ element_id = 402; is_element_type = $true; family = 'M_Single-Flush'; type = '0915 x 2134mm' }) }
             'OST_Windows' { @(@{ element_id = 403; is_element_type = $true; family = 'M_Fixed'; type = '0915 x 1220mm' }) }
             'OST_Floors' { if ($script:noFloorType) { @() } else { @(@{ element_id = 404; is_element_type = $true; family = 'Floor'; type = 'Generic 300mm' }) } }
-            'OST_StructuralFraming' { if ($script:structuralTypes) { @(@{ element_id = 408; is_element_type = $true; family = 'M_HSS-Hollow Structural Section'; type = 'HSS152X152X6.4' }) } else { @() } }
-            'OST_StructuralColumns' { if ($script:structuralTypes) { @(@{ element_id = 409; is_element_type = $true; family = 'M_Concrete-Rectangular-Column'; type = '300 x 450mm' }) } else { @() } }
+            # The fixture's own framing types, by name: the line-based member 6001, the stud column
+            # 6002 and the HZ_FRB beam 6003; with structural types the HSS beam 408 comes first.
+            'OST_GenericModel' { @(@{ element_id = 6001; is_element_type = $true; family = 'HZ_STUD'; type = 'HZ_STUD_92' }) }
+            'OST_StructuralFraming' { if ($script:structuralTypes) { @(@{ element_id = 408; is_element_type = $true; family = 'M_HSS-Hollow Structural Section'; type = 'HSS152X152X6.4' }) } else { @(@{ element_id = 6003; is_element_type = $true; family = 'HZ_FRB'; type = 'HZ_FRB' }) } }
+            'OST_StructuralColumns' { @(@{ element_id = 6002; is_element_type = $true; family = 'HZ_STUDCOL'; type = 'HZ_STUDCOL_92' }) + $(if ($script:structuralTypes) { @(@{ element_id = 409; is_element_type = $true; family = 'M_Concrete-Rectangular-Column'; type = '300 x 450mm' }) } else { @() }) }
             'OST_Ceilings' { @(@{ element_id = 405; is_element_type = $true; family = 'Basic Ceiling'; type = 'Generic' }, @{ element_id = 406; is_element_type = $true; family = 'Compound Ceiling'; type = '600 x 600mm Grid' }) }
             default { @() }
         }
@@ -114,12 +107,6 @@ $fakeApply = {
     param($tool, $arguments, $key)
     $script:sent[$key] = $arguments
     switch ($tool) {
-        'horizun_create_family' {
-            # The REAL shape (MEASURED 2026-09-26): loaded_family.symbol_ids. The line-based member
-            # is 6001, the stud column 6002, the authored beam 6003.
-            $sym = if ($key -like '*-fr-studcol') { 6002 } elseif ($key -like '*-fr-beamfam') { 6003 } else { 6001 }
-            return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ loaded_family = [pscustomobject]@{ symbol_ids = @($sym) } }) $false '') }
-        }
         'horizun_create_elements' {
             $script:nextId++
             $kind = @($arguments.elements)[0].kind
@@ -152,7 +139,7 @@ function RunBy($ctx) { $by = @{}; foreach ($c in @(& $module.Run $ctx)) { $by[$c
 
 try {
     New-State
-    $ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $fakeData 'scratch'); RunId = 't1'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply }
+    $ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; RunId = 't1'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply }
     $cases = @(& $module.Run $ctx)
     $by = @{}; foreach ($c in $cases) { $by[$c.Name] = $c }
     $n = $module.Catalog | ForEach-Object { $_.Name }
@@ -162,7 +149,7 @@ try {
     Check 'the second apply is already_applied' ($by[$n[2]].Outcome -eq 'pass')
     Check 'read and remove pass' (($by[$n[3]].Outcome -eq 'pass') -and ($by[$n[4]].Outcome -eq 'pass'))
     $applySent = $script:sent['t1-fr-apply']   # not $sent: that IS $script:sent here
-    Check 'the apply names the wall and the authored member type everywhere' (($applySent.operation -eq 'wall') -and ($applySent.element_ids[0] -eq 7002) -and ($applySent.spec.wall.stud.type_id -eq 6002) -and ($applySent.spec.wall.track.bottom_type_id -eq 6001))
+    Check 'the apply names the wall and the member types found by name everywhere' (($applySent.operation -eq 'wall') -and ($applySent.element_ids[0] -eq 7002) -and ($applySent.spec.wall.stud.type_id -eq 6002) -and ($applySent.spec.wall.track.bottom_type_id -eq 6001))
     $hosted = @($script:sent.Values | Where-Object { $_.elements -and @($_.elements)[0].kind -eq 'family_instance' -and @($_.elements)[0].host_id -eq 7002 }).Count
     Check 'the door and the window are hosted on the staged wall' ($hosted -eq 2)
 
@@ -181,18 +168,18 @@ try {
     Check 'the compound ceiling type is preferred' (($script:sent['t1-fr-ceiling-a'].elements[0].type_id -eq 406) -and ($script:sent['t1-fr-ceiling-b'].elements[0].type_id -eq 406))
     Check 'cleanup removes the ceiling framing first, then the eight staged elements (the 45-degree wall included)' (($by[$n[8]].Outcome -eq 'pass') -and ($script:deleted.Count -eq 8) -and
         (@($script:removeTargets) -contains 7006) -and ($by[$n[8]].Detail -match '^ceiling framing removed'))
-    Check 'without structural types in the document the structural case stages its own column and beam and passes' (($by[$n[9]].Outcome -eq 'pass') -and ($by[$n[9]].Detail -match '6002/6003'))
+    Check 'without HSS types the structural case uses the HZ_STUDCOL_92 column and the HZ_FRB beam and passes' (($by[$n[9]].Outcome -eq 'pass') -and ($by[$n[9]].Detail -match '6002/6003'))
 
     # ---- structural types present: column studs and beam tracks on the 45-degree wall ----
     New-State; $script:structuralTypes = $true
-    $structBy = RunBy ([pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $fakeData 'scratch'); RunId = 't1s'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply })
+    $structBy = RunBy ([pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; RunId = 't1s'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply })
     $diagSent = $script:sent['t1s-fr-diag-wall'].elements[0]; $structSent = $script:sent['t1s-fr-struct']
     Check 'the structural case passes on its re-reads' (($structBy[$n[9]].Outcome -eq 'pass') -and ($structBy[$n[9]].Detail -match 'location_curve'))
     Check 'the structural wall runs at 45 degrees and is framed with the column and beam types' (([math]::Abs(($diagSent.end[0] - $diagSent.start[0]) - ($diagSent.end[1] - $diagSent.start[1])) -lt 0.1) -and
         ($structSent.spec.wall.stud.type_id -eq 6002) -and ($structSent.spec.wall.track.bottom_type_id -eq 408))
     Check 'the structural framing is removed and its wall deleted at cleanup' ((@($script:removeTargets) -contains [long]$structSent.element_ids[0]) -and ($script:deleted.Count -eq 8) -and ($structBy[$n[8]].Outcome -eq 'pass'))
     New-State; $script:structReads = @('column_constraints')
-    $noColBy = RunBy ([pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $fakeData 'scratch'); RunId = 't1t'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply })
+    $noColBy = RunBy ([pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; RunId = 't1t'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply })
     Check 'a structural apply whose tracks were not read from a location curve fails' (($noColBy[$n[9]].Outcome -eq 'fail') -and ($noColBy[$n[9]].Detail -match 'location curve'))
     $script:structuralTypes = $false; $script:structReads = @('column_constraints', 'location_curve')
 
@@ -277,9 +264,6 @@ try {
     Check 'a closed write tier names the delete tool on the cleanup case and only there' ((@($shut | Where-Object { $_.Name -like 'framing probes:*' -and $_.Tool -eq 'horizun_delete_verified' }).Count -eq 1) -and
         (@($shut | Where-Object { $_.Name -notlike 'framing probes:*' -and $_.Tool -ne 'horizun_framing' }).Count -eq 0))
 }
-finally {
-    $env:ProgramData = $realProgramData
-    Remove-Item -LiteralPath $fakeData -Recurse -Force -ErrorAction SilentlyContinue
-}
+finally { }
 
 if ($fails) { "framing tests: $fails FAILED"; exit 1 } else { 'framing tests: ALL PASS'; exit 0 }

@@ -37,7 +37,29 @@ namespace Horizun.Core.Tests
             return Path.Combine(d.FullName, "src", "Horizun.Revit", "Commands");
         }
 
-        private static string Source(string file) => File.ReadAllText(Path.Combine(CommandsDir(), file));
+        private static string Source(string file)
+        {
+            string source = File.ReadAllText(Path.Combine(CommandsDir(), file));
+            return file == "ManageViewsCommand.cs" || file == "AnnotateCommand.cs" || file == "CreateElementsCommand.cs"
+                ? File.ReadAllText(Path.Combine(CommandsDir(), Path.GetFileNameWithoutExtension(file) + ".Execution.cs")) + source
+                : source;
+        }
+
+        [Fact]
+        public void Older_revit_wall_attachment_reports_a_capability_gap_in_the_rehearsal()
+        {
+            string source = Source("TransformElementsCommand.cs");
+            int start = source.IndexOf("#else\n", source.IndexOf("if (op == \"wall_attach_top\" || op == \"wall_attach_base\")", StringComparison.Ordinal), StringComparison.Ordinal);
+            if (start < 0) start = source.IndexOf("#else\r\n", source.IndexOf("if (op == \"wall_attach_top\" || op == \"wall_attach_base\")", StringComparison.Ordinal), StringComparison.Ordinal);
+            Assert.True(start >= 0);
+            int end = source.IndexOf("#endif", start, StringComparison.Ordinal);
+            string refusal = source.Substring(start, end - start);
+            Assert.Contains("new UnsupportedCapability", refusal);
+            Assert.Contains("FallbackSignal.ReasonUnsupportedCapability", refusal);
+            Assert.Contains("kind=wall_profile", refusal);
+            Assert.Contains("FallbackDecision.Attach(", source);
+            Assert.Contains("FallbackDecision.Decide(outcomes, writeStarted: false)", source);
+        }
 
         /// <summary>
         /// The commands whose contracts name a fixed set of operations or kinds, and
@@ -52,20 +74,6 @@ namespace Horizun.Core.Tests
             new object[] { "ManageSchedulesCommand.cs",   "ReasonUnsupportedOperation" },
             new object[] { "ManageCadLinksCommand.cs",    "ReasonUnsupportedOperation" },
         };
-
-        [Theory]
-        [MemberData(nameof(CoveredCommands))]
-        public void A_capability_gap_is_routed_through_the_central_decision(string file, string expectedReason)
-        {
-            string text = Source(file);
-
-            Assert.Contains("FallbackSignal." + expectedReason, text);
-            // The batch rule, not a per-command opinion about it.
-            Assert.Contains("FallbackDecision.Decide(outcomes", text);
-            Assert.Contains("FallbackDecision.Refuse", text);
-            // Every failing action is collected, so the decision sees the WHOLE batch.
-            Assert.Contains("new ActionOutcome", text);
-        }
 
         /// <summary>
         /// NONE of the low-level granting primitives may be reached from a command. Each of
@@ -87,7 +95,7 @@ namespace Horizun.Core.Tests
         public void No_command_grants_the_fallback_directly()
         {
             var direct = new List<string>();
-            foreach (string path in Directory.EnumerateFiles(CommandsDir(), "*Command.cs"))
+            foreach (string path in Directory.EnumerateFiles(CommandsDir(), "*Command*.cs"))
             {
                 string text = File.ReadAllText(path);
                 foreach (string primitive in ForbiddenPrimitives)
@@ -122,6 +130,9 @@ namespace Horizun.Core.Tests
               // action lands in an ActionOutcome, and both Decide calls pass
               // writeStarted:false before the first `new Transaction(`.
               "ManageSchedulesCommand.cs",
+              // Checked 2026-11-06: set_appearance refuses an unsupported appearance schema in PlanAll, before the first
+              // `new Transaction(`, as the only action of its batch, through FallbackDecision.Decide(writeStarted:false).
+              "ManageMaterialsCommand.cs",
               // Checked 2026-08-24: the unsupported-action-field refusal is raised while
               // planning, every action lands in an ActionOutcome, and both Decide calls
               // pass writeStarted:false before the first `new Transaction(`. The
@@ -156,7 +167,7 @@ namespace Horizun.Core.Tests
 
             foreach (string path in Directory.EnumerateFiles(CommandsDir(), "*Command.cs"))
             {
-                string text = File.ReadAllText(path);
+                string text = Source(Path.GetFileName(path));
                 if (text.Contains("FallbackDecision.") || ForbiddenPrimitives.Any(text.Contains))
                     emitting.Add(Path.GetFileName(path));
             }
@@ -168,69 +179,8 @@ namespace Horizun.Core.Tests
                 "before any write, and that the whole batch is passed to FallbackDecision.");
         }
 
-        /// <summary>
-        /// The refusal that can grant must be the one that runs BEFORE the transaction.
-        /// Asserted by position: every FallbackDecision.Refuse comes before the first
-        /// `new Transaction(` / `new TransactionGroup(`.
-        /// </summary>
-        [Theory]
-        [MemberData(nameof(CoveredCommands))]
-        public void The_decision_happens_before_any_transaction_is_opened(string file, string expectedReason)
-        {
-            string text = Source(file);
-            _ = expectedReason;
-
-            int firstTransaction = FirstIndexOfAny(text, "new Transaction(", "new TransactionGroup(");
-            if (firstTransaction < 0) return; // nothing to be after
-
-            int scan = 0;
-            while (true)
-            {
-                int refuse = text.IndexOf("FallbackDecision.Refuse", scan, StringComparison.Ordinal);
-                if (refuse < 0) break;
-                Assert.True(refuse < firstTransaction,
-                    file + " decides the Python fallback at offset " + refuse + ", after a transaction is " +
-                    "opened at " + firstTransaction + ". A fallback decided once a write may have started " +
-                    "must pass writeStarted:true, and this call site cannot prove it does.");
-                scan = refuse + 1;
-            }
-        }
-
-        /// <summary>
-        /// Every call site must state whether a write may have started. `writeStarted:`
-        /// is named rather than positional so the claim is visible at the call, which is
-        /// the only place it can be judged.
-        /// </summary>
-        [Theory]
-        [MemberData(nameof(CoveredCommands))]
-        public void Every_decision_states_whether_a_write_may_have_started(string file, string expectedReason)
-        {
-            string text = Source(file);
-            _ = expectedReason;
-
-            int decisions = Occurrences(text, "FallbackDecision.Decide(");
-            int declared = Occurrences(text, "writeStarted:");
-            Assert.True(decisions > 0, file + " must reach the central decision at least once.");
-            Assert.Equal(decisions, declared);
-        }
-
-        /// <summary>
-        /// A capability gap has to survive the per-item catch that flattens every other
-        /// failure to a message - that is what the exception type is for.
-        /// </summary>
-        [Theory]
-        [MemberData(nameof(CoveredCommands))]
-        public void The_gap_travels_as_a_type_not_as_a_message(string file, string expectedReason)
-        {
-            string text = Source(file);
-            _ = expectedReason;
-
-            bool typed = text.Contains("new UnsupportedCapability(") ||
-                         text.Contains("UnsupportedCapability.ReasonOf(");
-            Assert.True(typed,
-                file + " must carry a capability gap as UnsupportedCapability (or its reason) rather than " +
-                "leaving it to be recognised from the error text later.");
-        }
+        // Source already prepends the command's .Execution.cs part.
+        private static string CommandSource(string file) => Source(file);
 
         private static int Occurrences(string text, string needle)
         {

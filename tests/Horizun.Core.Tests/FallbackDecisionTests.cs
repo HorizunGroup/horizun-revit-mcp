@@ -79,13 +79,14 @@ namespace Horizun.Core.Tests
         // ---- the refusing cases ------------------------------------------------
 
         [Fact]
-        public void Only_invalid_arguments_grants_nothing_and_attaches_nothing()
+        public void Only_invalid_arguments_explicitly_deny_fallback()
         {
             FallbackVerdict v = FallbackDecision.Decide(new[] { Ok(0), Invalid(1) }, writeStarted: false);
 
             Assert.False(v.GlobalGrant);
-            // Absence is the answer a client reads: no block at all.
-            Assert.Null(v.Signal);
+            Assert.False(v.Signal.IsAllowed);
+            Assert.Equal(ErrorCodes.EntradaInvalida, v.Signal.Reason);
+            Assert.False(v.Signal.WriteStarted);
             Assert.Null(v.CapabilityGaps);
         }
 
@@ -168,13 +169,14 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void Refuse_on_an_ordinary_failure_produces_a_plain_result()
+        public void Refuse_on_an_ordinary_failure_carries_the_denial()
         {
             CommandResult plain = FallbackDecision.Refuse(
                 "units must be mm, m or feet.",
                 FallbackDecision.Decide(new[] { Invalid(0) }, false));
 
-            Assert.Null(plain.Fallback);
+            Assert.False(plain.Fallback.IsAllowed);
+            Assert.Equal(ErrorCodes.EntradaInvalida, plain.Fallback.Reason);
             Assert.Null(plain.CapabilityGaps);
         }
 

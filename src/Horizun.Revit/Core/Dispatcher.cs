@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The UI-thread bridge and command registry.
@@ -25,7 +25,7 @@ using Horizun.Contracts;
 
 namespace Horizun.Revit.Core
 {
-    public sealed class Dispatcher : IExternalEventHandler
+    public sealed partial class Dispatcher : IExternalEventHandler
     {
         // A short, privacy-safe operational fact for the local Revit UI and
         // horizun_health. Parameters and model names never enter it: an operator
@@ -74,14 +74,10 @@ namespace Horizun.Revit.Core
         private readonly List<string> _registrationAttempts = new List<string>();
         private readonly HashSet<string> _registeredNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        private ExternalEvent _event;
-
         private readonly RequestGate _gate = new RequestGate();
         private readonly DurableCommandLedger _idempotency =
             new DurableCommandLedger(retentionLog: message => Log.Info(message));
         private bool _preferAsync;
-        private volatile bool _shuttingDown;
-        private int _backgroundRaiseScheduled;
         private volatile string _documentSnapshot;
         internal string DocumentSnapshot => _documentSnapshot;
         private void CaptureDocument(UIApplication app)
@@ -95,52 +91,6 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// The ExternalEvent behind IWorkRaiser, which is the ONLY Revit-dependent part
-        /// of deciding what a refused raise means.
-        ///
-        /// Denied needs a Revit that is shutting down, so that path was "reasoned and
-        /// compiled" and could not be exercised. Everything on the other side of this
-        /// interface is now an ordinary test case.
-        /// </summary>
-        private sealed class ExternalEventRaiser : IWorkRaiser
-        {
-            private readonly ExternalEvent _ev;
-            public ExternalEventRaiser(ExternalEvent ev) { _ev = ev; }
-
-            public RaiseOutcome Raise()
-            {
-                if (_ev == null) return RaiseOutcome.Unknown;
-                return Map(_ev.Raise());
-            }
-        }
-
-        /// <summary>
-        /// Revit's answer, in our terms. Anything unrecognised maps to Unknown and is
-        /// treated exactly like Denied - an answer this code does not understand is not
-        /// evidence that a callback is coming.
-        /// </summary>
-        internal static RaiseOutcome Map(ExternalEventRequest r)
-        {
-            switch (r)
-            {
-                case ExternalEventRequest.Accepted: return RaiseOutcome.Accepted;
-                case ExternalEventRequest.Pending: return RaiseOutcome.Pending;
-                case ExternalEventRequest.Denied: return RaiseOutcome.Denied;
-                default: return RaiseOutcome.Unknown;
-            }
-        }
-
-        private IWorkRaiser Raiser() => new ExternalEventRaiser(_event);
-
-        private RaiseAttemptResult RaiseWithBoundedRetry(string context)
-        {
-            return RaiseRetryPolicy.TrySchedule(
-                Raiser(),
-                milliseconds => Thread.Sleep(milliseconds),
-                warn: message => Log.Warn(context + ": " + message));
-        }
-
-        /// <summary>
         /// Register one command. A SECOND registration of the same name THROWS: this was
         /// an indexer assignment, so two classes sharing a Name kept whichever was
         /// registered last, silently, and the one that answered was not the one somebody
@@ -149,6 +99,9 @@ namespace Horizun.Revit.Core
         public void Register(ICommand command)
         {
             if (command == null) throw new ArgumentNullException("command");
+            // Community build: a Pro-only command is not registered at all, so it cannot run over the pipe even when
+            // asked for by name, and the registry still matches the (filtered) contract.
+            if (Edition.IsCommunity && Edition.ProOnlyTools.Contains(command.Name)) return;
             _registrationAttempts.Add(command.Name);
             RegistryContract.Admit(_registeredNames, command.Name);
             _commands[command.Name] = command;
@@ -171,36 +124,13 @@ namespace Horizun.Revit.Core
 
         public IEnumerable<string> CommandNames => _commands.Keys;
 
-        /// <summary>Create the ExternalEvent. Call once, from OnStartup, on the UI thread.</summary>
-        public void Initialize()
+        private CommandResult InvokeWork(string wireId, string name, string paramsJson, int timeoutMs)
         {
-            _event = ExternalEvent.Create(this);
-        }
-
-        /// <summary>
-        /// Called from the transport (background) thread. Blocks until the command has
-        /// run on the UI thread and returns its result. A timeout means Revit is busy
-        /// or stuck in a modal — we say so rather than hang the pipe forever, and the
-        /// abandoned request is marked so the next caller learns why the thread is not
-        /// free instead of meeting an unexplained refusal.
-        /// </summary>
-        public CommandResult Invoke(string name, string paramsJson, int timeoutMs)
-            => Invoke(null, name, paramsJson, timeoutMs);
-
-        public CommandResult Invoke(string wireId, string name, string paramsJson, int timeoutMs)
-        {
-            // The bridge is in use from the moment a request arrives until it returns:
-            // Revit's save reminder is answered only inside that window (SaveReminderPolicy).
-            SaveReminderPolicy.RequestBegun();
-            try { return InvokeQueued(wireId, name, paramsJson, timeoutMs); }
-            finally { SaveReminderPolicy.RequestDone(); }
-        }
-
-        private CommandResult InvokeQueued(string wireId, string name, string paramsJson, int timeoutMs)
-        {
+            timeoutMs = CommandDeadlinePolicy.DispatchWaitMs(name, timeoutMs);
             if (_shuttingDown)
                 return CommandResult.FailWithDetail("Revit is shutting down. '" + name +
-                    "' was not queued and NEVER RAN; nothing was executed or written.", RequestGate.NeverStartedDetail());
+                    "' was not queued and NEVER RAN; nothing was executed or written.",
+                    ErrorCodes.Detail(ErrorCodes.RevitNoDisponible, extra: RequestGate.NeverStartedDetail()));
 
             if (name == null || !_commands.ContainsKey(name))
             {
@@ -216,7 +146,7 @@ namespace Horizun.Revit.Core
                 return SubmitJobWithoutWaitingForUi(name, paramsJson);
 
             string refusal;
-            RequestGate.Request req = _gate.Begin(wireId, name, paramsJson, out refusal);
+            RequestGate.Request req = _gate.Begin(wireId, name, paramsJson, false, out refusal);
             if (req == null)
             {
                 Log.Warn($"'{name}' refused: {refusal}");
@@ -271,7 +201,11 @@ namespace Horizun.Revit.Core
                         ? "Repeated Denied usually means Revit is closing down or the bridge's external event has been " +
                           "disposed. If Revit is still open, restart it to reload the add-in."
                         : $"Raise() itself reported {raise.Outcome}."),
-                    new Newtonsoft.Json.Linq.JObject { ["never_started"] = true, ["transaction_status"] = "not_started" });
+                    new Newtonsoft.Json.Linq.JObject
+                    {
+                        ["error_code"] = ErrorCodes.RevitOcupado,
+                        ["never_started"] = true, ["transaction_status"] = "not_started"
+                    });
             }
 
             // The wait, in slices. One flat Wait(timeoutMs) used to be the whole story,
@@ -288,20 +222,96 @@ namespace Horizun.Revit.Core
             bool completed = false;
             string declaredModal = null;
             var sighting = new ModalSighting();
+            var dialogsClosed = new JArray();
+            var dialogAttempts = new JArray();
             int waitedSoFarMs = 0;
-            while (waitedSoFarMs < timeoutMs)
+            bool queueDeadlineReached = false;
+            int busyRetryAttempts = 0;
+            int busyRetryDelayTotalMs = 0;
+            int nextBusyRetryAtMs = BusyRetryPolicy.DelayForAttempt(1,
+                Settings.BusyRetryBaseDelayMs, Settings.BusyRetryMaxDelayMs);
+            // The wait is measured on a clock, never by adding up the slices asked for. Live 5.0.4
+            // (2026-11-12): once a request had started, a busy-retry instant already passed left
+            // untilRetryMs at 1, so the loop waited in 1 ms slices that each took longer than 1 ms
+            // of wall time; 44 s of real waiting counted as 31 s, a 60 s script finished before the
+            // 45 s Python handoff was ever reached, and every deadline ran late while the loop spun.
+            var waitClock = System.Diagnostics.Stopwatch.StartNew();
+            while (true)
             {
-                int slice = Math.Min(ModalSighting.ProbeSliceMs, timeoutMs - waitedSoFarMs);
+                int remainingMs = CommandDeadlinePolicy.RemainingMs(name, timeoutMs, waitedSoFarMs, req.Started);
+                if (remainingMs == 0)
+                {
+                    queueDeadlineReached = !req.Started && waitedSoFarMs < timeoutMs;
+                    break;
+                }
+                // Re-signalling is only for a request still in the queue; a started one waits its slice.
+                bool hasBusyRetry = BusyRetryPolicy.TryGetNextDelay(busyRetryAttempts,
+                    busyRetryDelayTotalMs, Settings.BusyRetryMaxAttempts,
+                    Settings.BusyRetryBaseDelayMs, Settings.BusyRetryMaxDelayMs,
+                    Settings.BusyRetryBudgetMs, out int nextBusyRetryDelayMs) && !req.Started;
+                int untilRetryMs = hasBusyRetry
+                    ? Math.Max(100, nextBusyRetryAtMs - waitedSoFarMs) : int.MaxValue;
+                int slice = Math.Min(ModalSighting.ProbeSliceMs, Math.Min(remainingMs, untilRetryMs));
                 if (req.Wait(slice)) { completed = true; break; }
-                waitedSoFarMs += slice;
+                waitedSoFarMs = (int)Math.Min(int.MaxValue, waitClock.ElapsedMilliseconds);
 
                 // Once the command is RUNNING the UI thread is doing the work it was
                 // asked to do; a dialog it raises is Interference's to record and this
                 // caller's only honest option is to keep waiting.
                 if (req.Started) continue;
 
-                declaredModal = sighting.Observe(ModalProbe.DescribeModal());
-                if (declaredModal != null) break;
+                string modalObservation = ModalProbe.DescribeModal();
+                declaredModal = sighting.Observe(modalObservation);
+                if (declaredModal == null)
+                {
+                    // Re-signal only the same queued RequestGate entry. Its one-shot
+                    // claim remains the sole authority that can execute the command,
+                    // so this is a scheduling retry, never a second write attempt.
+                    // Modal requests leave through the named-dialog path below.
+                    if (BusyRetryPolicy.CanResignal(req.Started, modalObservation != null) &&
+                        hasBusyRetry && waitedSoFarMs >= nextBusyRetryAtMs)
+                    {
+                        if (!req.Started)
+                        {
+                            busyRetryAttempts++;
+                            busyRetryDelayTotalMs += nextBusyRetryDelayMs;
+                            nextBusyRetryAtMs = waitedSoFarMs + nextBusyRetryDelayMs;
+                            try
+                            {
+                                RaiseOutcome outcome = Raiser().Raise();
+                                Log.Info($"'{name}' remains queued with no modal after {waitedSoFarMs} ms; " +
+                                    $"re-signalled its single request ({busyRetryAttempts}/{Settings.BusyRetryMaxAttempts}, " +
+                                    $"backoff {nextBusyRetryDelayMs} ms, outcome {outcome})");
+                            }
+                            catch (Exception ex)
+                            {
+                                Log.Warn($"'{name}' queued retry signal {busyRetryAttempts} failed: {ex.GetType().Name}");
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Owner decision 2026-10-27: two notices that change no model - the save
+                // reminder and External Tool Failure - are closed by the bridge while an
+                // MCP request waits on them, and only those two (Core/ModalAutoClose.cs).
+                // Logged and returned with the notice's name and the option chosen.
+                if (Settings.AutoCloseDialogs && dialogsClosed.Count < ModalAutoClose.MaxClosesPerRequest)
+                {
+                    ModalDialogInfo info = ModalProbe.DescribeModalDetail();
+                    ModalAutoClose.Decision close = ModalAutoClose.Decide(info, Settings.AutoCloseExternalToolFailure, Settings.AutoCloseSaveReminder);
+                    JObject attempt = ModalAutoClose.Attempt(info, close, name, () => req.Wait(250), dialogAttempts, dialogsClosed);
+                    if (attempt != null)
+                    {
+                        bool closed = attempt.Value<bool>("closed_verified");
+                        if (!closed) break;
+                        Log.Warn($"'{name}' waiting: dialog '{close.Title}' disappeared after a close attempt.");
+                        sighting = new ModalSighting();
+                        declaredModal = null;
+                        continue;
+                    }
+                }
+                break;
             }
 
             // The modal was declared from a read of Started taken BEFORE the removal; the
@@ -325,8 +335,21 @@ namespace Horizun.Revit.Core
                 // in every measured case; if it has already changed, detail.dialog_window
                 // reflects that rather than inventing continuity with 'declaredModal'.
                 JObject modalDetail = ModalProbe.DescribeModalDetail()?.ToJson();
-                JObject neverStartedDetail = new JObject { ["never_started"] = true, ["transaction_status"] = "not_started" };
-                if (modalDetail != null) neverStartedDetail["modal_dialog"] = modalDetail;
+                JObject neverStartedDetail = new JObject
+                {
+                    ["error_code"] = ErrorCodes.RevitOcupado,
+                    ["never_started"] = true, ["transaction_status"] = "not_started",
+                    ["busy_retry_attempts"] = busyRetryAttempts
+                };
+                if (dialogsClosed.Count > 0) neverStartedDetail["modal_dialogs_closed"] = dialogsClosed;
+                if (dialogAttempts.Count > 0) neverStartedDetail["modal_dialog_close_attempts"] = dialogAttempts;
+                if (modalDetail != null)
+                {
+                    neverStartedDetail["modal_dialog"] = modalDetail;
+                    ModalDialogKinds.Verdict kind = ModalDialogKinds.Classify(modalDetail);
+                    ModalDialogKinds.Stamp(neverStartedDetail, kind);
+                    if (kind != null) neverStartedDetail["que_hacer"] = kind.QueHacer;
+                }
                 return CommandResult.FailWithDetail(
                     "Revit has a MODAL DIALOG open: " + declaredModal + ". '" + name + "' was queued but Revit " +
                     "does not service the bridge until the dialog is answered by a human, so the request was " +
@@ -349,6 +372,20 @@ namespace Horizun.Revit.Core
                 if (!removedBeforeStart && req.Wait(0)) completed = true;
             }
 
+            // The caller gives up; the work does not. The call's ONE record (Core/CallProgress.cs)
+            // is obtained under the same lock the completion takes: the command's own if it has
+            // one (execute_python), else a new one with the in-memory checkpoints replayed, and
+            // the rest of the run plus its final result - success or the failure cause - land
+            // there for horizun_job_status. Field 2026-10-27: an 11-minute tail ended in "result
+            // discarded (it had failed)". If the call completed first, its real answer is about
+            // to be signalled and is returned instead of a job_id.
+            Job lateRecord = null;
+            if (!completed && !removedBeforeStart)
+            {
+                lateRecord = OpenLateRecord(req, name, out bool finishedFirst);
+                if (finishedFirst && req.Wait(name == "horizun_health" ? 500 : Math.Min(30000, timeoutMs))) completed = true;
+            }
+
             if (!completed)
             {
                 // The probe again, once, for the final message: a modal seen here could
@@ -356,20 +393,55 @@ namespace Horizun.Revit.Core
                 // but naming what is on screen right now beats "may be waiting".
                 ModalDialogInfo modalNowDetail = ModalProbe.DescribeModalDetail();
                 string modalNow = modalNowDetail?.ToSummaryLine();
+                // 5.0.4: a RUNNING Python script with a record is handed off, not timed out (5.0.6: an export too).
+                if (lateRecord != null && !removedBeforeStart && req.DetachedCancellation == null &&
+                    CommandDeadlinePolicy.HandsOff(name))
+                {
+                    Log.Info($"'{name}' handed off after {clock.ElapsedMilliseconds} ms: still running, job {lateRecord.Id}");
+                    return CommandResult.Ok(PythonHandoff.Payload(lateRecord.Id, clock.ElapsedMilliseconds,
+                        lateRecord.Checkpoints, lateRecord.LastCheckpoint,
+                        modalNowDetail?.ToJson(), name));
+                }
                 Log.Warn($"'{name}' TIMED OUT after {timeoutMs} ms - Revit busy or on a modal dialog" +
-                         (removedBeforeStart ? " (it never started)" : " (it is still running; its result will be discarded)"));
+                         (removedBeforeStart ? " (it never started)" : lateRecord != null
+                             ? " (it is still running; its progress and result go to job " + lateRecord.Id + ")"
+                             : " (it is still running; no record could be opened, its result will be discarded)"));
                 var timeoutDetail = new JObject
                 {
+                    // tiempo_agotado names the limit that was hit; a modal dialog seen at the
+                    // same moment is the better explanation, so revit_ocupado keeps the limit too.
+                    ["error_code"] = modalNowDetail != null || removedBeforeStart ? ErrorCodes.RevitOcupado : ErrorCodes.TiempoAgotado,
+                    ["limite_ms"] = queueDeadlineReached ? CommandDeadlinePolicy.OpenDocumentQueueMs : timeoutMs,
+                    ["timeout_phase"] = removedBeforeStart ? "queue" : "execution",
+                    ["execution_may_still_run"] = !removedBeforeStart,
+                    ["retryable"] = removedBeforeStart,
                     ["never_started"] = removedBeforeStart,
                     ["transaction_status"] = removedBeforeStart ? "not_started" : "unknown"
                 };
+                timeoutDetail["busy_retry_attempts"] = busyRetryAttempts;
                 if (modalNowDetail != null) timeoutDetail["modal_dialog"] = modalNowDetail.ToJson();
+                if (dialogsClosed.Count > 0) timeoutDetail["modal_dialogs_closed"] = dialogsClosed;
+                if (dialogAttempts.Count > 0) timeoutDetail["modal_dialog_close_attempts"] = dialogAttempts;
+                if (lateRecord != null)
+                {
+                    timeoutDetail["job_id"] = lateRecord.Id;
+                    timeoutDetail["checkpoints_so_far"] = lateRecord.Checkpoints;
+                    timeoutDetail["last_checkpoint"] = lateRecord.LastCheckpoint;
+                    timeoutDetail["follow_with"] = "horizun_job_status job_id=" + lateRecord.Id;
+                }
                 return CommandResult.FailWithDetail(
-                    $"'{name}' timed out after {timeoutMs} ms. Revit may be busy or waiting on a modal dialog. " +
+                    $"'{name}' reached its {(queueDeadlineReached ? "queue" : "response")} deadline after {waitedSoFarMs} ms. Revit may be busy or waiting on a modal dialog. " +
                     (removedBeforeStart
                         ? "It was removed from the FIFO queue before Revit started it, so nothing was done."
-                        : "The command is STILL RUNNING inside Revit - it cannot be cancelled from here, and whatever " +
-                          "it does will complete unseen. Nothing else can run until it returns.") +
+                        : (req.DetachedCancellation != null
+                            ? "The cooperative command has started and may continue between callbacks. "
+                            : "The command is STILL RUNNING inside Revit - it cannot be cancelled from here. ") +
+                          (lateRecord != null
+                              ? "Its progress and its final result (including the failure cause) are recorded as job " +
+                                lateRecord.Id + ": poll horizun_job_status job_id=" + lateRecord.Id + " - that does not need " +
+                                "Revit's UI thread. Do NOT retry the call meanwhile: health and every other Revit call queue " +
+                                "behind it until it returns. For work this long use horizun_submit_job."
+                              : "Whatever it does will complete unseen. Nothing else can run until it returns.")) +
                     (modalNow != null
                         ? " Revit is showing a modal dialog RIGHT NOW: " + modalNow + "."
                         : ""),
@@ -390,6 +462,16 @@ namespace Horizun.Revit.Core
                 Newtonsoft.Json.Linq.JToken token = Newtonsoft.Json.Linq.JToken.FromObject(result.Data);
                 data = token as Newtonsoft.Json.Linq.JObject;
                 if (data != null) result.ReplaceData(data);
+            }
+            if (dialogsClosed.Count > 0)
+            {
+                if (result.Success && data != null) data["modal_dialogs_closed"] = dialogsClosed;
+                else if (result.Detail != null) result.Detail["modal_dialogs_closed"] = dialogsClosed;
+            }
+            if (dialogAttempts.Count > 0)
+            {
+                if (result.Success && data != null) data["modal_dialog_close_attempts"] = dialogAttempts;
+                else if (result.Detail != null) result.Detail["modal_dialog_close_attempts"] = dialogAttempts;
             }
             if (result.Success && data != null && data["bridge_queue"] == null)
             {
@@ -538,8 +620,7 @@ namespace Horizun.Revit.Core
             return result;
         }
 
-        /// <summary>The ExternalEvent callback — runs on Revit's UI thread.</summary>
-        public void Execute(UIApplication app)
+        private void ExecuteWork(UIApplication app)
         {
             CaptureDocument(app);
             // Fairness between ordinary waiting callers and explicit run_async jobs.
@@ -565,8 +646,10 @@ namespace Horizun.Revit.Core
 
             BeginActivity(req.Name);
             DurableCommandDecision durableClaim = null;
+            string generatedPythonKey = null;
             try
             {
+                if (ExitPending.IsQueued) { req.Result = CommandResult.RefuseBeforeWrite("Revit is exiting"); return; }
                 ICommand cmd;
                 if (!_commands.TryGetValue(req.Name, out cmd))
                 {
@@ -579,6 +662,8 @@ namespace Horizun.Revit.Core
                 catch { request = null; } // the command owns its normal invalid-JSON error
 
                 CommandContract contract = Contract.Find(req.Name);
+                JObject originalPythonRequest = req.Name == "horizun_execute_python" && request != null
+                    ? (JObject)request.DeepClone() : null;
                 string permissionReason;
                 if (contract != null && !Settings.IsToolAllowed(contract, out permissionReason))
                 {
@@ -610,6 +695,15 @@ namespace Horizun.Revit.Core
                 if (request != null && RequiresIdempotency(contract, request))
                 {
                     string key = request.Value<string>("idempotency_key");
+                    // Never for run_async: the reply that would carry a generated key is the one that
+                    // gets lost, so a retry would mint a second key and queue the script twice.
+                    if (string.IsNullOrWhiteSpace(key) && PythonIdempotencyRules.GeneratesKey(req.Name) &&
+                        !PythonIdempotencyRules.IsAsyncPython(req.Name, request))
+                    {
+                        generatedPythonKey = PythonIdempotencyRules.EnsureKey(request);
+                        key = generatedPythonKey;
+                        req.ParamsJson = request.ToString(Newtonsoft.Json.Formatting.None);
+                    }
                     if (string.IsNullOrWhiteSpace(key))
                     {
                         req.Result = CommandResult.Fail(
@@ -639,7 +733,7 @@ namespace Horizun.Revit.Core
                     }
                     if (!durableClaim.IsFresh)
                     {
-                        req.Result = CommandResult.FailWithDetail(durableClaim.Message, new JObject
+                        var detail = new JObject
                         {
                             ["code"] = "idempotency_" + durableClaim.Outcome.ToString().ToLowerInvariant(),
                             ["previous_source_sha256"] = durableClaim.PreviousSourceSha256,
@@ -648,7 +742,10 @@ namespace Horizun.Revit.Core
                             ["previous_execution_sha256"] = durableClaim.PreviousSourceSha256,
                             ["submitted_execution_sha256"] = sourceSha,
                             ["write_started"] = false, ["changes_applied"] = false
-                        });
+                        };
+                        if (durableClaim.Outcome == DurableCommandOutcome.Conflict && originalPythonRequest != null)
+                            detail["suggested_call"] = PythonIdempotencyRules.SuggestedCall(originalPythonRequest);
+                        req.Result = CommandResult.FailWithDetail(durableClaim.Message, detail);
                         return;
                     }
                 }
@@ -668,15 +765,56 @@ namespace Horizun.Revit.Core
                         // Core/CooperativeRead.cs. A loop that never asks is unaffected,
                         // and a write is never allowed to ask at all.
                         CooperativeRead.Abandoned = () => req.Abandoned;
+                        CallProgress.Current = req.Progress;
+                        int undoRecordsBefore = Horizun.Revit.Commands.UndoCapture.RecordCount;
                         DocumentGate.ClearResolvedPlan();
-                        try { req.Result = cmd.Execute(app, req.ParamsJson); }
+                        bool? dirtyBefore = ActiveDocumentModified(app);
+                        try { req.Result = IdentityPrepass.Execute(app, cmd, req.ParamsJson, LargeModelDispatch.Execute); }
                         finally { DocumentGate.ClearResolvedPlan(); }
-                        // What the command left changed in the model gets the spatial
-                        // coherence check (Core/SpatialAfterWrite.cs); reads cost nothing.
-                        SpatialAfterWrite.Attach(req.Name, changes, req.Result);
-                        // response_mode=summary (create_elements, clash): shaped only after
-                        // the spatial check, so the rows it names stay whole.
-                        ResponseSummaryRules.ApplyToResult(req.Name, req.ParamsJson, req.Result);
+                        // AFTER THE COMMAND RETURNED, NOTHING MAY TURN ITS ANSWER INTO AN ERROR
+                        // (field report E1: a committed execute_plan answered an ArgumentException).
+                        // The command's own result is the truth about the model; a report stage
+                        // that throws is recorded inside that result (PostCommitReport), and
+                        // the outer catch - which answers a bare Fail - is left for a command
+                        // that threw itself.
+                        try
+                        {
+                            // What the command left changed in the model gets the spatial
+                            // coherence check (Core/SpatialAfterWrite.cs); reads cost nothing.
+                            SpatialAfterWrite.Attach(req.Name, changes, req.Result);
+                            // response_mode=summary (create_elements, clash): shaped only after
+                            // the spatial check, so the rows it names stay whole.
+                            ResponseSummaryRules.ApplyToResult(req.Name, req.ParamsJson, req.Result);
+                            // A rehearsal that turned a clean document dirty says so (Core/DryRunDirtyRules.cs).
+                            try
+                            {
+                                if (req.Result != null && req.Result.Success && req.Result.Data is JObject dryData &&
+                                    DryRunDirtyRules.IsDryRunReply(dryData))
+                                {
+                                    JObject dirty = DryRunDirtyRules.Evaluate(true, dirtyBefore, ActiveDocumentModified(app));
+                                    if (dirty != null) dryData["rehearsal_dirtied_document"] = dirty;
+                                }
+                            }
+                            catch { /* a probe never fails the call */ }
+                            // 4.2-N5 (CT-P1-5f): a real Python run leaves an undo batch for what it CREATED.
+                            // Before the ownership stamp, so the stamp's own transaction is not part of it.
+                            Horizun.Revit.Commands.PythonUndoRecord.AfterCommand(req.Name, request, changes, req.Result);
+                            // 5.0.4: a committed write that recorded no inverse blocks undo_last instead of being skipped.
+                            Horizun.Revit.Commands.UnrecordedWriteUndo.AfterCommand(req.Name, contract, request, changes, req.Result, undoRecordsBefore);
+                            // HRZ ownership mark (4.1): what the command ADDED gets stamped in one
+                            // short transaction of its own. Never fails the call - see HrzOwnership.cs.
+                            HrzOwnership.AfterCommand(req.Name, contract, changes, req.Result);
+                            // Workshared: record the write for the end-of-task sync, and remind (SyncReminder.cs).
+                            SyncReminder.AfterCommand(app, req.Name, req.ParamsJson, changes, req.Result);
+                            // A write while another MCP client is on this Revit (ClientPresence.cs).
+                            if (request != null && RequiresIdempotency(contract, request) &&
+                                !ConcurrentClientRule.RolledBackByContract(req.Name, request)) WarnConcurrentClients(req.Result);
+                        }
+                        catch (Exception reportError)
+                        {
+                            Log.Error($"'{req.Name}' returned, then its post-command report threw", reportError);
+                            PostCommitReport.Record(req.Result, "post_command_report", reportError);
+                        }
                     }
                     finally
                     {
@@ -684,6 +822,7 @@ namespace Horizun.Revit.Core
                         // command read the previous request's abandonment and stop for a
                         // caller who is still waiting.
                         CooperativeRead.Abandoned = null;
+                        CallProgress.Current = null;
                         object said = watch.Report();
                         if (said != null)
                         {
@@ -692,6 +831,25 @@ namespace Horizun.Revit.Core
                             Log.Warn($"{req.Name}: Revit raised {watch.WarningCount} warning(s), " +
                                      $"{watch.ErrorCount} error(s), {watch.DialogCount} dialog(s)");
                         }
+                    }
+                }
+                if (durableClaim != null && durableClaim.IsFresh && req.Result != null && req.Result.RejectedBeforeRun)
+                {
+                    // CT-P1-5b: refused before anything ran (validation, size, syntax,
+                    // compatibility). A key must identify work that was attempted, so the
+                    // claim is voided and the same key is usable after the caller fixes the call.
+                    try
+                    {
+                        if (_idempotency.Release(durableClaim, req.Result))
+                        {
+                            req.Result.NoteKeyReleased(durableClaim.Key);
+                            durableClaim = null;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Fail closed: keep the claim; the finally block records the refusal as usual.
+                        Log.Error("could not release the idempotency key of a call refused before it ran", ex);
                     }
                 }
                 if (durableClaim != null && durableClaim.IsFresh)
@@ -703,9 +861,11 @@ namespace Horizun.Revit.Core
                 // A command threw instead of returning Fail. Surface it; never let the
                 // UI-thread callback die with an unobserved exception.
                 Log.Error($"'{req.Name}' threw on the UI thread", ex);
-                req.Result = CommandResult.FailWithDetail(ex.GetType().Name + ": " + ex.Message, new JObject
+                string typeMismatch = ArgumentTypeMismatch.Explain(ex, req.Name);
+                req.Result = CommandResult.FailWithDetail(typeMismatch ?? (ex.GetType().Name + ": " + ex.Message), new JObject
                 {
-                    ["code"] = "unhandled_command_exception", ["tool"] = req.Name,
+                    ["code"] = typeMismatch != null ? "invalid_operation_arguments" : "unhandled_command_exception", ["tool"] = req.Name,
+                    [ErrorSignature.Field] = ErrorSignature.From(ex),
                     ["correlation_id"] = req.WireId, ["phase"] = "handler",
                     ["exception_type"] = ex.GetType().FullName, ["exception_message"] = ex.Message,
                     ["inner_exception_type"] = ex.InnerException?.GetType().FullName,
@@ -715,6 +875,16 @@ namespace Horizun.Revit.Core
             }
             finally
             {
+                if (generatedPythonKey != null && req.Result != null)
+                {
+                    JObject payload = req.Result.Success ? req.Result.Data as JObject : req.Result.Detail;
+                    if (payload == null && req.Result.Success && req.Result.Data != null)
+                        payload = JToken.FromObject(req.Result.Data) as JObject;
+                    if (payload == null) payload = new JObject();
+                    payload["idempotency_key_generated"] = generatedPythonKey;
+                    payload["idempotency_key_generated_note"] = "Reuse this key only to retry this same operation.";
+                    if (req.Result.Success) req.Result.ReplaceData(payload); else req.Result.ReplaceDetail(payload);
+                }
                 if (durableClaim != null && durableClaim.IsFresh)
                 {
                     try { _idempotency.Complete(durableClaim, req.Result); }
@@ -732,15 +902,134 @@ namespace Horizun.Revit.Core
                 CaptureDocument(app);
                 // A result nobody is waiting for is still worth a line in the log: it is
                 // the only record that the work Revit was holding the thread for is done.
+                // Handed to the call's progress unconditionally: it writes only into a record
+                // the timeout path attached (now, or a moment from now - the two threads may
+                // cross here), and costs nothing when the caller got its answer over the pipe.
+                CommandResult finalResult = req.Result;
+                // A record the COMMAND opened and handed over (execute_python's own, so its
+                // checkpoint() calls and the timeout's job_id are one record) is closed here:
+                // with the full result when the caller gave up, with the finish line alone when
+                // the answer went back over the pipe - what the command used to write itself.
+                req.Progress.Complete((record, callerGaveUp) =>
+                {
+                    if (callerGaveUp) WriteLateResult(record, finalResult);
+                    else record.Finish(PythonRunControl.TerminalStatus(finalResult != null && finalResult.Success, finalResult?.Detail), finalResult?.Success == true ? null : finalResult?.Error);
+                });
                 if (req.Abandoned)
-                    Log.Warn($"'{req.Name}' finished after its caller had given up; " +
-                             $"result discarded ({(req.Result != null && req.Result.Success ? "it had succeeded" : "it had failed")}). " +
+                    Log.Warn($"'{req.Name}' finished after its caller had given up; result " +
+                             (req.Progress.Record != null ? "recorded in job " + req.Progress.Record.Id : "discarded") +
+                             $" ({(req.Result != null && req.Result.Success ? "it had succeeded" : "it had failed")}). " +
                              "The UI thread is free again.");
                 _gate.Complete(req);
                 EndActivity(req.Name);
                 _preferAsync = AsyncQueue.Count > 0;
-                PumpNext();
+                if (!ExitPending.IsQueued) PumpNext();
             }
+        }
+
+        // A PID can be reused: cache only together with the process start time. The expensive
+        // module query runs off the Revit thread and is never awaited for more than 100 ms total.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Threading.Tasks.Task<string>> ClientPaths =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, System.Threading.Tasks.Task<string>>();
+
+        private static void WarnConcurrentClients(CommandResult result)
+        {
+            if (result == null) return;
+            PresenceSnapshot snapshot = ClientPresence.Default.Take(DateTime.UtcNow);
+            List<long> others = ConcurrentClientRule.OthersAlive(snapshot, pid =>
+            {
+                try { using (System.Diagnostics.Process.GetProcessById((int)pid)) return true; }
+                catch (ArgumentException) { return false; }
+                catch { return null; }
+            });
+            string warning = ConcurrentClientRule.Warning(others);
+            if (warning == null) return;
+            var processes = new JArray();
+            var descriptions = new List<string>();
+            var deadline = System.Diagnostics.Stopwatch.StartNew();
+            var keys = new HashSet<string>();
+            foreach (long pid in others)
+            {
+                string name = null, started = null, path = null;
+                try
+                {
+                    using (var process = System.Diagnostics.Process.GetProcessById((int)pid))
+                    {
+                        try { name = process.ProcessName; } catch { }
+                        try { started = process.StartTime.ToUniversalTime().ToString("o"); } catch { }
+                    }
+                    if (started != null)
+                    {
+                        string key = pid + ":" + started;
+                        keys.Add(key);
+                        var task = ClientPaths.GetOrAdd(key, _ => System.Threading.Tasks.Task.Run(() =>
+                        {
+                            try
+                            {
+                                using (var p = System.Diagnostics.Process.GetProcessById((int)pid))
+                                {
+                                    if (p.StartTime.ToUniversalTime().ToString("o") != started) return null;
+                                    return p.MainModule.FileName;
+                                }
+                            }
+                            catch { return null; }
+                        }));
+                        int remaining = Math.Max(0, 100 - (int)deadline.ElapsedMilliseconds);
+                        if (task.IsCompleted || (remaining > 0 && task.Wait(remaining))) path = task.Result;
+                    }
+                }
+                catch { }
+                processes.Add(new JObject { ["pid"] = pid, ["name"] = name, ["path"] = path, ["started_utc"] = started });
+                descriptions.Add((name ?? "unknown process") + " (pid " + pid + ", started " + (started ?? "unknown") + ")");
+            }
+            foreach (string key in ClientPaths.Keys)
+                if (!keys.Contains(key)) ClientPaths.TryRemove(key, out _);
+            ConcurrentClientRule.AddOrphanStates(processes, snapshot, c => c.Identity?.ParentAlive());
+            warning += " Other clients: " + string.Join(", ", descriptions) + ".";
+            var block = new JObject { ["other_client_pids"] = new JArray(others), ["other_clients"] = processes, ["warning"] = warning };
+            if (result.Success && result.Data is JObject data) data["concurrent_clients"] = block;
+            else if (!result.Success && result.Detail != null) result.Detail["concurrent_clients"] = block;
+        }
+
+        /// <summary>A durable record for a synchronous call whose caller timed out; null when the disk refuses.</summary>
+        private static Job OpenLateRecord(RequestGate.Request req, string name, out bool finishedFirst)
+        {
+            finishedFirst = false;
+            try
+            {
+                return req.Progress.OpenForTimeout(() =>
+                {
+                    Job record = Job.Start(name);
+                    record.MarkRunning();
+                    return record;
+                }, "caller timed out; the call keeps running in Revit and reports here", out finishedFirst);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("no late record for '" + name + "': " + ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>The result of a call nobody waited for, written the way an async job's is.</summary>
+        private static void WriteLateResult(Job record, CommandResult result)
+        {
+            if (result == null) result = CommandResult.Fail("the call produced no result.");
+            string payload = null;
+            if (result.Success)
+            {
+                try { payload = AsyncResultPayload.Serialize(result.Data, record.Id); }
+                catch (Exception ex) { result = CommandResult.Fail("The call succeeded but its result could not be recorded: " + ex.Message); }
+            }
+            string said = null;
+            if (result.RevitSaid != null)
+                try { said = JToken.FromObject(result.RevitSaid).ToString(Newtonsoft.Json.Formatting.None); } catch { }
+            record.Result(result.Success ? payload : null, said,
+                result.Fallback?.ToJson().ToString(Newtonsoft.Json.Formatting.None),
+                result.CapabilityGaps?.ToString(Newtonsoft.Json.Formatting.None),
+                result.Detail?.ToString(Newtonsoft.Json.Formatting.None));
+            record.Finish(PythonRunControl.TerminalStatus(result.Success, result.Detail),
+                result.Success ? "the caller had timed out; this is the call's own result" : result.Error);
         }
 
         /// <summary>
@@ -758,6 +1047,7 @@ namespace Horizun.Revit.Core
             if (!Settings.ForceReadOnlyOnWorkshared || contract == null ||
                 contract.Effect == ToolEffect.ReadOnly || contract.Effect == ToolEffect.HostState)
                 return false;
+            if (contract.Name == "horizun_view_visibility" && request?.Value<string>("operation") == "graphics_report") return false;
 
             // A declared dry run is the only safe exemption. An omitted dry_run on a
             // write-capable surface must not be treated as true by a generic gate: each
@@ -790,11 +1080,17 @@ namespace Horizun.Revit.Core
             switch (contract.Effect)
             {
                 case ToolEffect.Mutating:
+                    if (ToolInputRules.IsSaveDocumentRehearsal(contract.Name, request)) return false;
                     // A Python preflight validates and compiles but executes nothing, so
                     // like a dry run it never crosses the mutation boundary and needs no
                     // durable key. Only an explicit preflight=true is exempt.
                     if (contract.Name == "horizun_execute_python" &&
                         request.Value<bool?>("preflight") == true) return false;
+                    // read_only / rehearsal run inside a TransactionGroup that is always rolled
+                    // back and re-read: they cannot change the model, so a key would only be
+                    // friction (4.2-N5, CT-P1-5c).
+                    if (contract.Name == "horizun_execute_python" &&
+                        (request.Value<bool?>("read_only") == true || request.Value<bool?>("rehearsal") == true)) return false;
                     return true;
                 case ToolEffect.MutatingUnlessDryRun:
                     // All current plan/apply commands default to dry_run=true. Only an
@@ -808,6 +1104,8 @@ namespace Horizun.Revit.Core
                     if (operation == "sync_with_central" && request["dry_run"] == null) return false;
                     // new_project rehearses when dry_run is omitted, the same way.
                     if (operation == "new_project" && request["dry_run"] == null) return false;
+                    if (operation == "batch" && request["dry_run"] == null) return false;
+                    if (operation == "exit_application" && request["dry_run"] == null) return false;
                     return true;
                 default:
                     return false;
@@ -833,6 +1131,12 @@ namespace Horizun.Revit.Core
             catch { return "(active-document-unreadable)"; }
         }
 
+        /// <summary>Document.IsModified of the active document, or null when it cannot be read.</summary>
+        private static bool? ActiveDocumentModified(UIApplication app)
+        {
+            try { return app?.ActiveUIDocument?.Document?.IsModified; } catch { return null; }
+        }
+
         private static void StampIdempotency(CommandResult result, string key, string status, bool executed,
                                              string note)
         {
@@ -853,6 +1157,13 @@ namespace Horizun.Revit.Core
             };
         }
 
+        // Off the UI thread: a synchronous job opened its record without retention.
+        internal static void ScheduleJobRetention()
+        {
+            try { System.Threading.ThreadPool.QueueUserWorkItem(_ => Job.ApplyStoreRetention()); }
+            catch (Exception ex) { Log.Warn("job retention could not be scheduled (" + ex.Message + ")."); }
+        }
+
         /// <summary>
         /// One queued script, on the UI thread, with nobody waiting for the answer.
         ///
@@ -869,7 +1180,10 @@ namespace Horizun.Revit.Core
             // A SEQUENCE IS ITS OWN RUN. It writes its own steps and finishes its own
             // record, so the single-call path below is left exactly as it was rather
             // than growing a second meaning for every line in it.
-            if (work.Sequence != null && work.Sequence.Count > 0) { RunSequence(app, work); return; }
+            if (!ExitPending.IsQueued && work.Sequence != null && work.Sequence.Count > 0) { RunSequence(app, work); return; }
+
+            // Review M3 / m-2: from the moment the work is taken until the script registers its stop switch, a cancel must
+            // not be lost. AsyncQueue.Take claims the key under the same lock that dequeues it; Register applies it.
 
             var clock = System.Diagnostics.Stopwatch.StartNew();
             CommandResult result = null;
@@ -877,7 +1191,8 @@ namespace Horizun.Revit.Core
             try
             {
                 ICommand cmd;
-                if (!_commands.TryGetValue(work.Command, out cmd))
+                if (ExitPending.IsQueued) result = CommandResult.RefuseBeforeWrite("Revit is exiting");
+                else if (!_commands.TryGetValue(work.Command, out cmd))
                     result = CommandResult.Fail("Unknown command: '" + work.Command + "'.");
                 else
                 {
@@ -910,11 +1225,32 @@ namespace Horizun.Revit.Core
                         }
                         AsyncResumeGuard.Begin(work.Record);
                         began = true;
+                        work.HasStarted = true;
                         Job.Ambient = work.Record;
                         using (var changes = new ChangeWatch(app?.Application))
                         {
+                            int undoRecordsBefore = Horizun.Revit.Commands.UndoCapture.RecordCount;
                             DocumentGate.ClearResolvedPlan();
-                            try { result = cmd.Execute(app, work.ParamsJson); SpatialAfterWrite.Attach(work.Command, changes, result); ResponseSummaryRules.ApplyToResult(work.Command, work.ParamsJson, result); }
+                            try { result = IdentityPrepass.Execute(app, cmd, work.ParamsJson, LargeModelDispatch.Execute);
+                                try
+                                {
+                                    SpatialAfterWrite.Attach(work.Command, changes, result);
+                                    ResponseSummaryRules.ApplyToResult(work.Command, work.ParamsJson, result);
+                                    // Review m1: an async script leaves the same undo batch for what it CREATED as a
+                                    // synchronous one (4.2-N5). Before the ownership stamp, like the synchronous path.
+                                    JObject asyncRequest = null;
+                                    try { asyncRequest = string.IsNullOrWhiteSpace(work.ParamsJson) ? null : Horizun.Revit.Core.JsonText.ParseObject(work.ParamsJson); } catch { }
+                                    Horizun.Revit.Commands.PythonUndoRecord.AfterCommand(work.Command, asyncRequest, changes, result);
+                                    Horizun.Revit.Commands.UnrecordedWriteUndo.AfterCommand(work.Command, Contract.Find(work.Command), asyncRequest, changes, result, undoRecordsBefore);
+                                    HrzOwnership.AfterCommand(work.Command, Contract.Find(work.Command), changes, result);
+                                    SyncReminder.AfterCommand(app, work.Command, work.ParamsJson, changes, result);
+                                }
+                                catch (Exception reportError)
+                                {
+                                    Log.Error("'" + work.Command + "' returned, then its post-command report threw", reportError);
+                                    PostCommitReport.Record(result, "post_command_report", reportError);
+                                }
+                            }
                         finally
                         {
                             DocumentGate.ClearResolvedPlan();
@@ -934,7 +1270,13 @@ namespace Horizun.Revit.Core
             catch (Exception ex)
             {
                 Log.Error("async '" + work.Command + "' threw on the UI thread", ex);
-                result = CommandResult.Fail(ex.GetType().Name + ": " + ex.Message);
+                string typeMismatch = ArgumentTypeMismatch.Explain(ex, work.Command);
+                result = CommandResult.FailWithDetail(typeMismatch ?? (ex.GetType().Name + ": " + ex.Message),
+                    ErrorCodes.Detail(typeMismatch != null ? ErrorCodes.EsquemaInvalido
+                                      : ErrorCodes.IsRevitApiType(ex.GetType().FullName)
+                                          ? ErrorCodes.ApiRevitExcepcion : ErrorCodes.ErrorInterno,
+                                      ex.GetType().Name,
+                                      extra: new JObject { [ErrorSignature.Field] = ErrorSignature.From(ex) }));
             }
             finally
             {
@@ -980,19 +1322,23 @@ namespace Horizun.Revit.Core
                         result.Detail.ToString(Newtonsoft.Json.Formatting.None);
                     if (began)
                     {
-                        work.Record.Result(result.Success ? payloadJson : null,
+                        // A later slice can fail after earlier slices produced a
+                        // snapshot. Keep that snapshot with the failure details.
+                        work.Record.Result(result.Success ? payloadJson : work.PartialResultJson,
                                            revitSaidJson, fallbackJson, gapsJson, detailJson);
-                        work.Record.Finish(result.Success ? "ok" : "failed", result.Success ? null : result.Error);
+                        work.Record.Finish(PythonRunControl.TerminalStatus(result.Success, result.Detail), result.Success ? null : result.Error);
                     }
-                    else work.Record.Finish("not_started", result?.Error ?? "The command never started.");
+                    else work.FinishBeforeCallback(result?.Error ?? "The callback did not start.");
                 }
                 catch (Exception ex) { Log.Error("could not close the async job record", ex); }
+                if (PythonRunRegistry.ClaimsAtTake(work.Command) && !string.IsNullOrEmpty(work.JobId))
+                    PythonRunRegistry.Unregister(work.JobId);
 
                 Log.Warn("async " + work.Command + " (" + work.JobId + ") " +
                          (result != null && result.Success ? "ok" : "FAILED") + " in " + clock.ElapsedMilliseconds + " ms");
 
                 _preferAsync = false;
-                PumpNext();
+                if (!ExitPending.IsQueued) PumpNext();
             }
         }
 
@@ -1064,6 +1410,7 @@ namespace Horizun.Revit.Core
                     {
                         step.Status = StepStatus.Failed;
                         step.Error = r == null ? "the step produced no result." : r.Error;
+                        step.Detail = r?.Detail;
                         failure = "step " + step.Key + " (" + step.Tool + ") failed: " + step.Error;
                         stoppedAt = i;
                         stopped = true;
@@ -1202,7 +1549,7 @@ namespace Horizun.Revit.Core
             {
                 CommandResult r = null;
                 DocumentGate.ClearResolvedPlan();
-                try { r = cmd.Execute(app, step.Arguments.ToString(Newtonsoft.Json.Formatting.None)); }
+                try { r = IdentityPrepass.Execute(app, cmd, step.Arguments.ToString(Newtonsoft.Json.Formatting.None), LargeModelDispatch.Execute); }
                 catch (Exception ex) { r = CommandResult.Fail(ex.GetType().Name + ": " + ex.Message); }
                 finally
                 {
@@ -1218,51 +1565,10 @@ namespace Horizun.Revit.Core
             }
         }
 
-        /// <summary>
-        /// Schedule one more callback when either queue has work. This method is called
-        /// while Revit is still unwinding the current ExternalEvent callback, precisely
-        /// the window in which Revit 2026 was measured returning a transient Denied.
-        /// Raising is therefore deferred to a background worker; that worker exhausts
-        /// the bounded retry policy before a refusal is allowed to drain the queues.
-        /// </summary>
-        private void PumpNext()
-        {
-            if (!_gate.HasPending && AsyncQueue.Count == 0) return;
-            if (Interlocked.Exchange(ref _backgroundRaiseScheduled, 1) != 0) return;
-
-            ThreadPool.QueueUserWorkItem(_ =>
-            {
-                // Let the callback that called PumpNext return before the first raise.
-                Thread.Sleep(5);
-                Interlocked.Exchange(ref _backgroundRaiseScheduled, 0);
-                if (_shuttingDown || (!_gate.HasPending && AsyncQueue.Count == 0)) return;
-
-                RaiseAttemptResult raise = RaiseWithBoundedRetry("queued-work ExternalEvent raise");
-                if (raise.Scheduled || _shuttingDown) return;
-
-                string reason = "Revit refused to schedule queued work: Raise() returned " + raise.Outcome +
-                                " after " + raise.Attempts + " bounded attempt(s). It NEVER STARTED; nothing " +
-                                "was executed or written. Revit is closing or the ExternalEvent is no longer available.";
-                int sync = _gate.FailQueued(reason);
-                int async = AsyncPump.FailEverythingWaiting(reason, Log.Warn);
-                Log.Warn("queued work abandoned after Raise()=" + raise.Outcome + ": " + sync +
-                         " synchronous request(s), " + async + " async job(s)");
-            });
-        }
-
-        public bool CancelQueued(string wireId, out string detail)
-            => _gate.CancelQueued(wireId, out detail);
+        public bool CancelQueued(string wireId, out string detail, bool callerTimedOut = false)
+            => _gate.CancelQueued(wireId, out detail, callerTimedOut);
 
         public JObject ObserveRequest(string wireId) => _gate.Observe(wireId);
 
-        public int Shutdown()
-        {
-            _shuttingDown = true;
-            string reason = "Revit shut down before this queued command started. It NEVER RAN: nothing was " +
-                            "executed and nothing was written.";
-            return _gate.FailQueued(reason);
-        }
-
-        public string GetName() => "Horizun.Dispatcher";
     }
 }

@@ -53,6 +53,10 @@ namespace Horizun.Revit.Core
             // sync, and the postable Synchronize commands reach it without naming the method.
             (new Regex(@"\bSynchronizeWithCentral\b|\bSynchronize(?:Now|AndModifySettings)\b", RegexOptions.Compiled), "Document.SynchronizeWithCentral()"),
             (new Regex(@"\bRelinquishOwnership\s*\(", RegexOptions.Compiled), "WorksharingUtils.RelinquishOwnership()"),
+            // Taking ownership is the same server act in the other direction, and Revit answers
+            // "An internal error has occurred" when it runs inside a transaction group (MEASURED
+            // 2026-11-21, Revit 2025, release gate sync-central).
+            (new Regex(@"\bCheckout(?:Worksets|Elements)\s*\(", RegexOptions.Compiled), "WorksharingUtils.CheckoutWorksets()/CheckoutElements()"),
             (new Regex(@"\.\s*(Unload|Reload|LoadFrom|ReloadFrom)\s*\(", RegexOptions.Compiled), "RevitLinkType/CADLinkType load state"),
         };
 

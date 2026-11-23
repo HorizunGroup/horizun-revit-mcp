@@ -187,7 +187,7 @@ namespace Horizun.Core.Tests
         {
             ApplicationState state = ApplicationOutcome.Read(Rehearsal(requested: 10, unresolved: 3));
 
-            Assert.Equal(ApplicationState.Partial, state);
+            Assert.Equal(ApplicationState.Rejected, state);
             Assert.False(ApplicationOutcome.IsValidRehearsal(state));
         }
 

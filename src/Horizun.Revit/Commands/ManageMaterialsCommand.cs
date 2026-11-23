@@ -3,7 +3,7 @@
 //
 // G12 of the 2026-09-14 competitive inventory. Re-verified against 1.3.3 and the
 // gap was real and total: neither Material.Create nor AppearanceAssetElement
-// appeared anywhere in the source. horizun_manage_system_types builds compound
+// appeared anywhere in the source. horizun_manage_system_types (Pro edition) builds compound
 // structures whose layers REFERENCE materials; nothing could make one, rename
 // one, colour one, or give one an appearance.
 //
@@ -22,17 +22,13 @@
 //
 //   IDENTITY - class, category, and the identity parameters a schedule reads.
 //
-// WHAT IS NOT HERE. The contents of a rendering asset - its textures, its bitmap
-// paths, its procedural parameters - are edited through the Visual Materials API
-// (AssetEditScope), which is a different and much larger surface, and one whose
-// failure modes are silent. This command duplicates and assigns assets; it does
-// not claim to author them, and the reply says so rather than leaving a caller to
-// assume the texture changed.
+// set_appearance edits the generic appearance only when it is exclusively owned.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Visual;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
@@ -61,8 +57,16 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("actions must contain 1..200 entries.");
 
             string error;
-            List<Plan> plans = PlanAll(doc, raw, out error);
-            if (plans == null) return CommandResult.Fail(error + " Nothing was written.");
+            List<Plan> plans;
+            try { plans = PlanAll(doc, raw, out error); }
+            catch (UnsupportedCapability ex)
+            {
+                var verdict = FallbackDecision.Decide(new[] { new ActionOutcome { Index = 0, Error = ex.Message, UnsupportedReason = ex.Reason } }, false);
+                return CommandResult.FailWithDetail(ex.Message + " Nothing was written.",
+                    new JObject { ["error_code"] = "appearance_unsupported", ["state"] = "refused", ["write_started"] = false }, verdict.Signal, verdict.CapabilityGaps);
+            }
+            if (plans == null) return CommandResult.FailWithDetail(error + " Nothing was written.",
+                new JObject { ["error_code"] = "material_plan_invalid", ["state"] = "refused", ["write_started"] = false });
 
             string hash = DocumentGate.PlanHash(request, "actions");
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
@@ -216,8 +220,8 @@ namespace Horizun.Revit.Commands
                 { error = "actions[" + i + "].key is empty or duplicated."; return null; }
 
                 string op = (a.Value<string>("operation") ?? "").ToLowerInvariant();
-                if (op != "create" && op != "duplicate" && op != "update")
-                { error = "actions[" + i + "].operation must be create, duplicate or update."; return null; }
+                if (op != "create" && op != "duplicate" && op != "update" && op != "set_appearance")
+                { error = "actions[" + i + "].operation must be create, duplicate, update or set_appearance."; return null; }
 
                 var plan = new Plan { Index = i, Key = key, Operation = op, Input = a };
 
@@ -238,7 +242,7 @@ namespace Horizun.Revit.Commands
                     plan.NewName = name;
                 }
 
-                if (op == "duplicate" || op == "update")
+                if (op == "duplicate" || op == "update" || op == "set_appearance")
                 {
                     long id = a.Value<long?>("material_id") ?? -1;
                     Material source = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) as Material : null;
@@ -254,8 +258,57 @@ namespace Horizun.Revit.Commands
                     plan.Before = Snapshot(doc, source);
                 }
 
+                if (op == "set_appearance")
+                {
+                    if (raw.Count != 1)
+                    { error = "set_appearance must be the only action in its batch."; return null; }
+                    string validation = AppearanceInputRules.Validate(a);
+                    if (validation != null) { error = "actions[" + i + "]: " + validation; return null; }
+                    var appearance = doc.GetElement(plan.Source.AppearanceAssetId) as AppearanceAssetElement;
+                    bool replace = a.Value<bool?>("replace_with_generic") == true;
+                    if (replace)
+                    {
+                        plan.LibraryAsset = doc.Application.GetAssets(AssetType.Appearance)
+                            .FirstOrDefault(x => string.Equals(x.Name, "Generic", StringComparison.OrdinalIgnoreCase));
+                        if (plan.LibraryAsset == null)
+                            throw new UnsupportedCapability("Appearance edit unsupported here: the appearance library has no Generic asset.", FallbackSignal.ReasonUnsupportedCapability);
+                        string genericError;
+                        ReadAssetAppearance(plan.LibraryAsset, a, out genericError);
+                        if (genericError != null) throw new UnsupportedCapability(genericError, FallbackSignal.ReasonUnsupportedCapability);
+                    }
+                    if (appearance == null && !replace) { error = "actions[" + i + "]: material has no appearance asset."; return null; }
+                    var others = new FilteredElementCollector(doc).OfClass(typeof(Material)).Cast<Material>()
+                        .Where(m => Rid.Value(m.Id) != Rid.Value(plan.Source.Id) &&
+                                    appearance != null && Rid.Value(m.AppearanceAssetId) == Rid.Value(appearance.Id)).ToList();
+                    if (!replace && others.Count != 0)
+                    { error = "actions[" + i + "]: appearance is shared with " +
+                              string.Join(", ", others.Select(m => m.Name)) + "; duplicate the appearance first."; return null; }
+                    string appearanceError;
+                    appearanceError = null;
+                    JObject state = appearance == null ? null : ReadAppearance(appearance, replace ? new JObject() : a, out appearanceError);
+                    if (appearanceError != null) throw new UnsupportedCapability("actions[" + i + "]: " + appearanceError, FallbackSignal.ReasonUnsupportedCapability);
+                    plan.Before += "|appearance:" + (state == null ? "<none>" : state.ToString(Newtonsoft.Json.Formatting.None));
+                    plan.Asset = appearance;
+                    plan.WantedColour = a.Value<bool?>("match_shading_color") == true
+                        ? plan.Source.Color : ColourArray(a["generic_diffuse"] as JArray);
+                    if (plan.WantedColour != null && !plan.WantedColour.IsValid)
+                    { error = "actions[" + i + "]: shading color is invalid."; return null; }
+                    plans.Add(plan);
+                    continue;
+                }
+
                 string colourError = CheckColours(a);
                 if (colourError != null) { error = "actions[" + i + "]: " + colourError; return null; }
+
+                // Resolve the patterns in the REHEARSAL: measured 2026-11-09, a cut pattern Revit refuses passed the dry run
+                // and rolled the whole batch back at the apply.
+                foreach (string field in new[] { "surface_pattern", "cut_pattern" })
+                {
+                    string pattern = a.Value<string>(field);
+                    if (string.IsNullOrWhiteSpace(pattern)) continue;
+                    try { PatternId(doc, pattern, FillPatternTarget.Drafting, allowModel: field == "surface_pattern"); }
+                    catch (ArgumentException ex) { error = "actions[" + i + "]: " + field + ": " + ex.Message; return null; }
+                }
 
                 int? transparency = a.Value<int?>("transparency");
                 if (transparency != null && (transparency < 0 || transparency > 100))
@@ -362,6 +415,7 @@ namespace Horizun.Revit.Commands
             if (material == null)
                 throw new InvalidOperationException("the material could not be created or read back");
             p.Target = material;
+            if (p.Operation == "set_appearance") { ApplyAppearance(doc, p); return; }
 
             Color colour = ParseColour(p.Input.Value<string>("color"));
             if (colour != null) material.Color = colour;
@@ -403,7 +457,7 @@ namespace Horizun.Revit.Commands
 
             string cutPattern = p.Input.Value<string>("cut_pattern");
             if (!string.IsNullOrWhiteSpace(cutPattern))
-                material.CutForegroundPatternId = PatternId(doc, cutPattern, FillPatternTarget.Drafting);
+                material.CutForegroundPatternId = PatternId(doc, cutPattern, FillPatternTarget.Drafting, allowModel: false);
 
             int? transparency = p.Input.Value<int?>("transparency");
             if (transparency != null) material.Transparency = transparency.Value;
@@ -440,6 +494,96 @@ namespace Horizun.Revit.Commands
             }
         }
 
+        private static Color ColourArray(JArray values)
+        {
+            return values == null ? null : new Color((byte)(int)values[0], (byte)(int)values[1], (byte)(int)values[2]);
+        }
+
+        private static JObject ReadAppearance(AppearanceAssetElement element, JObject input, out string error)
+        {
+            JObject state = ReadAssetAppearance(element.GetRenderingAsset(), input, out error);
+            if (state != null) state["asset_unique_id"] = element.UniqueId;
+            return state;
+        }
+
+        private static string Schema(Asset asset)
+        {
+            return (asset.FindByName("BaseSchema") as AssetPropertyString)?.Value ?? asset.Name ?? "unknown";
+        }
+
+        private static AssetPropertyDoubleArray4d AppearanceColour(Asset asset)
+        {
+            foreach (string name in AppearanceColourRules.Candidates(Schema(asset)))
+            {
+                var p = asset.FindByName(name) as AssetPropertyDoubleArray4d;
+                if (p != null) return p;
+                for (int i = 0; i < asset.Size; i++)
+                    if (asset[i] is AssetPropertyDoubleArray4d c && string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)) return c;
+            }
+            return null;
+        }
+
+        private static JObject ReadAssetAppearance(Asset asset, JObject input, out string error)
+        {
+            error = null;
+            var colour = AppearanceColour(asset);
+            var transparency = asset.FindByName("generic_transparency") as AssetPropertyDouble;
+            if ((input["generic_diffuse"] != null || input.Value<bool?>("match_shading_color") == true ||
+                 input.Value<bool?>("remove_diffuse_texture") == true) && colour == null)
+            {
+                var names = new List<string>();
+                for (int i = 0; i < asset.Size; i++) if (asset[i] is AssetPropertyDoubleArray4d property) names.Add(property.Name);
+                error = "appearance schema '" + Schema(asset) + "' has no supported flat colour; colour properties: " + string.Join(", ", names) + ". Use replace_with_generic."; return null;
+            }
+            if (input["transparency"] != null && transparency == null)
+            { error = "appearance schema '" + Schema(asset) + "' has no compatible generic_transparency property; use replace_with_generic"; return null; }
+            Color c = colour == null ? null : colour.GetValueAsColor();
+            return new JObject {
+                ["schema"] = Schema(asset),
+                ["colour_property"] = colour?.Name,
+                ["generic_diffuse"] = c == null ? null : new JArray(c.Red, c.Green, c.Blue),
+                ["diffuse_texture_connected"] = colour == null ? (JToken)JValue.CreateNull() : new JValue(colour.NumberOfConnectedProperties > 0),
+                ["generic_transparency"] = transparency == null ? (JToken)JValue.CreateNull() : new JValue(transparency.Value)
+            };
+        }
+
+        private static void ApplyAppearance(Document doc, Plan p)
+        {
+            if (p.LibraryAsset != null)
+            {
+                p.Asset = AppearanceAssetElement.Create(doc, UniqueAssetName(doc, p.Source.Name + " Generic"), p.LibraryAsset);
+                p.Source.AppearanceAssetId = p.Asset.Id;
+                p.AppliedAssetId = p.Asset.Id;
+            }
+            using (var scope = new AppearanceAssetEditScope(doc))
+            {
+                Asset asset = scope.Start(p.Source.AppearanceAssetId);
+                var colour = AppearanceColour(asset);
+                var transparency = asset.FindByName("generic_transparency") as AssetPropertyDouble;
+                if (p.Input.Value<bool?>("remove_diffuse_texture") == true && colour.NumberOfConnectedProperties > 0)
+                    colour.RemoveConnectedAsset();
+                if (p.WantedColour != null) colour.SetValueAsColor(p.WantedColour);
+                if (p.Input["transparency"] != null) transparency.Value = p.Input.Value<double>("transparency");
+                scope.Commit(true);
+            }
+        }
+
+        private static bool VerifyAppearance(Document doc, Plan p, out string why)
+        {
+            var element = doc.GetElement(p.Target.AppearanceAssetId) as AppearanceAssetElement;
+            if (element == null || Rid.Value(element.Id) != Rid.Value(p.Asset.Id))
+            { why = "appearance asset changed or disappeared"; return false; }
+            JObject state = ReadAppearance(element, p.Input, out why);
+            if (state == null) return false;
+            if (p.WantedColour != null && !SameColour(ColourArray(state["generic_diffuse"] as JArray), p.WantedColour))
+            { why = "generic_diffuse did not stick"; return false; }
+            if (p.Input.Value<bool?>("remove_diffuse_texture") == true && state.Value<bool>("diffuse_texture_connected"))
+            { why = "generic_diffuse texture is still connected"; return false; }
+            if (p.Input["transparency"] != null && Math.Abs(state.Value<double>("generic_transparency") - p.Input.Value<double>("transparency")) > 1e-6)
+            { why = "generic_transparency did not stick"; return false; }
+            why = null; return true;
+        }
+
         private static string UniqueAssetName(Document doc, string wanted)
         {
             var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -457,21 +601,23 @@ namespace Horizun.Revit.Commands
             throw new InvalidOperationException("could not find an unused appearance asset name for " + wanted);
         }
 
-        private static ElementId PatternId(Document doc, string name, FillPatternTarget target)
+        /// <summary>A material's surface or cut pattern: drafting by name, then model by name, then id (MaterialPatternRules).</summary>
+        private static ElementId PatternId(Document doc, string name, FillPatternTarget target, bool allowModel = true)
         {
+            var found = new Dictionary<long, ElementId>();
+            var candidates = new List<MaterialPatternCandidate>();
             foreach (FillPatternElement f in new FilteredElementCollector(doc)
                          .OfClass(typeof(FillPatternElement)).Cast<FillPatternElement>())
             {
                 FillPattern pattern;
                 try { pattern = f.GetFillPattern(); } catch { continue; }
-                if (pattern == null || pattern.Target != target) continue;
-                if (string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase)) return f.Id;
-                if (string.Equals(name, "solid", StringComparison.OrdinalIgnoreCase) && pattern.IsSolidFill)
-                    return f.Id;
+                if (pattern == null) continue;
+                found[Rid.Value(f.Id)] = f.Id;
+                candidates.Add(new MaterialPatternCandidate(Rid.Value(f.Id), f.Name, pattern.Target == FillPatternTarget.Drafting, pattern.IsSolidFill));
             }
-            throw new ArgumentException(
-                "no fill pattern named '" + name + "' exists for " + target + ". Pass 'solid' for the solid " +
-                "fill, or load the pattern first.");
+            long? pick = MaterialPatternRules.Pick(candidates, name, allowModel);
+            if (pick.HasValue) return found[pick.Value];
+            throw new ArgumentException(MaterialPatternRules.NotFound(name, allowModel));
         }
 
         // =====================================================================
@@ -485,6 +631,7 @@ namespace Horizun.Revit.Commands
 
             var material = doc.GetElement(p.Target.Id) as Material;
             if (material == null) { why = "the material no longer exists"; return false; }
+            if (p.Operation == "set_appearance") return VerifyAppearance(doc, p, out why);
 
             string wantedName = p.Operation == "update"
                 ? p.Input.Value<string>("name")
@@ -543,7 +690,7 @@ namespace Horizun.Revit.Commands
             if (!string.IsNullOrWhiteSpace(cutPattern))
             {
                 ElementId wantedPattern;
-                try { wantedPattern = PatternId(doc, cutPattern, FillPatternTarget.Drafting); }
+                try { wantedPattern = PatternId(doc, cutPattern, FillPatternTarget.Drafting, allowModel: false); }
                 catch (Exception ex) { why = "the cut pattern could not be re-resolved: " + ex.Message; return false; }
                 if (Rid.Value(material.CutForegroundPatternId) != Rid.Value(wantedPattern))
                 { why = "the cut pattern did not stick"; return false; }
@@ -656,7 +803,7 @@ namespace Horizun.Revit.Commands
                 {
                     UniqueId = "material:" + p.Key,
                     Category = "material",
-                    Action = p.Operation == "update" ? PlannedAction.Modify : PlannedAction.Create,
+                    Action = p.Operation == "update" || p.Operation == "set_appearance" ? PlannedAction.Modify : PlannedAction.Create,
                     BeforeValues = before
                 });
             }
@@ -679,8 +826,10 @@ namespace Horizun.Revit.Commands
             public Material Source;
             public Material Target;
             public AppearanceAssetElement Asset;
+            public Asset LibraryAsset;
             public ElementId AppliedAssetId;
             public bool AssetDuplicated;
+            public Color WantedColour;
 
             /// <summary>Per-field outcomes of the structural and thermal writes, or empty.</summary>
             public readonly List<AssetFieldOutcome> StructuralOutcomes = new List<AssetFieldOutcome>();
@@ -707,9 +856,12 @@ namespace Horizun.Revit.Commands
                 row["appearance_asset_duplicated"] = AssetDuplicated;
                 row["applied_appearance_asset_id"] = AppliedAssetId == null
                     ? (JToken)JValue.CreateNull() : Rid.Value(AppliedAssetId);
-                row["means"] = "every value above was re-read from the material after the commit. The CONTENTS " +
-                               "of a rendering asset - its textures and procedural parameters - are not edited " +
-                               "by this command and are not reported as though they were.";
+                if (Operation == "set_appearance")
+                {
+                    string readError;
+                    var current = doc.GetElement(Target.AppearanceAssetId) as AppearanceAssetElement;
+                    row["appearance"] = current == null ? null : ReadAppearance(current, Input, out readError);
+                }
                 return row;
             }
         }

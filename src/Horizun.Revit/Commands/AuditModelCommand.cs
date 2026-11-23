@@ -137,6 +137,13 @@ namespace Horizun.Revit.Commands
             public string DocumentFingerprint;
             public string FindingSetFingerprint;
 
+            // Cooperative runs only. The checks this call did not run, why, and where a
+            // continuation would start (-1: nothing to resume).
+            public List<string> RanNames = new List<string>();
+            public List<string> NotRunNames = new List<string>();
+            public int TotalChecks;
+            public int ResumeAt = -1;
+
             public bool CoverageComplete
             {
                 get { return ChecksFailed.Count == 0 && IncompleteChecks.Count == 0 && Visibility.CoverageComplete; }
@@ -177,7 +184,8 @@ namespace Horizun.Revit.Commands
         /// keys on, folded with top and every finding id.
         /// </summary>
         internal static AuditRun RunChecks(UIApplication app, Document doc, int top, AuditOptions options,
-                                           ICollection<string> only)
+                                           ICollection<string> only, CooperativeRead.Scope coop = null,
+                                           int startAt = 0)
         {
             var run = new AuditRun { Top = top };
             AuditOptions o = options ?? new AuditOptions();
@@ -217,7 +225,19 @@ namespace Horizun.Revit.Commands
                 new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Readiness,
                     () => Readiness(doc, top, o.ReadinessRoles, parts)),
                 new KeyValuePair<string, Func<JObject>>(AuditCheckNames.WallSketchDrift,
-                    () => WallSketchDrift(doc, top, strandedWalls.Value))
+                    () => WallSketchDrift(doc, top, strandedWalls.Value)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.LevelSpan,
+                    () => LevelSpan(doc, top)),
+                // MODEL COHERENCE (AuditModelCommand.Coherence.cs): each on its own time budget.
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.DoorsToVoid, () => DoorsToVoid(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.BalconyWithoutAccess, () => BalconyWithoutAccess(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.RailingWithoutInfill, () => RailingWithoutInfill(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.RoomsWithoutDoor, () => RoomsWithoutDoor(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.RoomsWithoutFloorFinish, () => RoomsWithoutFloorFinish(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.DefaultMaterialFurniture, () => DefaultMaterialFurniture(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.FramingNotReachingSupport, () => FramingNotReachingSupport(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.FramingInconsistentSections, () => FramingInconsistentSections(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.StructuralOverlapUnjoined, () => StructuralOverlapUnjoined(doc, top))
             };
 
             // OPT-IN: opens a second document in the background. Every other finding here reads
@@ -227,11 +247,43 @@ namespace Horizun.Revit.Commands
                 checks.Add(new KeyValuePair<string, Func<JObject>>(AuditCheckNames.TemplateComparison,
                     () => TemplateComparison(app, doc, top, o.TemplatePath, o.SpfPath)));
 
-            foreach (KeyValuePair<string, Func<JObject>> check in checks)
+            run.TotalChecks = checks.Count;
+            // Skip-then-gate: positions before the cursor were run by an earlier page; the rest
+            // each ask the scope. After the first Stop every later check is also Stop.
+            var walk = new PositionWalk(coop, startAt, checks.Count);
+            for (int index = 0; index < checks.Count; index++)
             {
+                KeyValuePair<string, Func<JObject>> check = checks[index];
                 if (only != null && !only.Contains(check.Key)) continue;
+
+                // COOPERATIVE RUN ONLY (coop != null). A check is one native pass that cannot be
+                // stopped from inside, so the gate is BEFORE each check. A check this call did
+                // not run goes into checks_failed with state "not_run": every consumer below
+                // (the requirement gate, the prevention gate, the health index) already treats
+                // checks_failed as "unknown, not clean", so a partial audit can never be read as
+                // a pass by a path nobody remembered to update.
+                if (coop != null)
+                {
+                    WalkStep step = walk.Next();
+                    if (step != WalkStep.Go)
+                    {
+                        string notRunReason = step == WalkStep.Skip ? "measured_in_an_earlier_page" : coop.StoppedBecause;
+                        if (step == WalkStep.Stop && run.ResumeAt < 0) run.ResumeAt = index;
+                        run.NotRunNames.Add(check.Key);
+                        run.ChecksFailed.Add(new JObject
+                        {
+                            ["check"] = check.Key,
+                            ["state"] = "not_run",
+                            ["error"] = "not run: " + notRunReason,
+                            ["consequence"] = "'" + check.Key + "' was NOT audited in this reply (" + notRunReason +
+                                              "). Its findings are unknown, not clean."
+                        });
+                        continue;
+                    }
+                }
                 Func<JObject> body = check.Value;
                 Run(run.ChecksFailed, check.Key, () => run.Findings.Add(StampIdentity(body(), top)));
+                run.RanNames.Add(check.Key);
             }
 
             // A check that RAN but could not read everything it examined. Distinct from
@@ -364,17 +416,15 @@ namespace Horizun.Revit.Commands
             JObject preventionGate = null;
             bool storeSnapshot = false;
             JObject healthProfile = null;
+            CooperativeOptions cooperative = CooperativeOptions.None;
+            string coopFingerprint = null;
             try
             {
                 var request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
-
-                // THE SAME RULES THE SCAN READS, not a second copy of them. This had
-                // the identical defects: a misspelt option accepted in silence, and
-                // `top` CLAMPED with Math.Max(1, ...) rather than checked - so `top: 0`
-                // became 1 and a reply shaped by a number nobody chose came back
-                // looking like the reply that was asked for.
-                ScanRequestVerdict shape = ScanRequestRules.CheckAudit(request);
+                ScanRequestVerdict shape = ScanRequestRules.CheckAuditRequest(request, out var operation);
                 if (!shape.Ok) return CommandResult.Fail(Name + ": " + shape.Message);
+                if (operation == ScanRequestRules.AuditOperation.WallSlab) return WallSlab(doc, request);
+                if (operation == ScanRequestRules.AuditOperation.Warnings) return WarningDetails(doc, request);
 
                 JToken topToken = request["top"];
                 if (topToken != null && topToken.Type != JTokenType.Null) top = topToken.Value<int>();
@@ -392,6 +442,11 @@ namespace Horizun.Revit.Commands
                 // running on its default while the caller believes otherwise.
                 string optionsRefusal = AuditOptions.Read(request, out options);
                 if (optionsRefusal != null) return CommandResult.Fail(optionsRefusal);
+
+                // OPT-IN cooperative reading. Absent = today's audit, byte for byte.
+                coopFingerprint = CooperativeOptions.FingerprintOf(request, Name, doc);
+                cooperative = CooperativeOptions.Read(request, coopFingerprint);
+                if (cooperative.Refusal != null) return CommandResult.Fail("cooperative: " + cooperative.Refusal);
             }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
@@ -413,7 +468,13 @@ namespace Horizun.Revit.Commands
                     "This command acts on the active document and will NOT switch for you. Asked for '" +
                     targetDocument + "', active is '" + doc.Title + "'.");
 
-            AuditRun run = RunChecks(app, doc, top, options, null);
+            // The scope counts CHECKS (the unit this reader can stop between), so max_units here
+            // is a number of checks, and the account says so.
+            CooperativeRead.Scope coopScope = cooperative.Begin("audit_model", 0);
+            AuditRun run = RunChecks(app, doc, top, options, null, coopScope, cooperative.StartAt);
+            bool notAllChecksRan = coopScope != null && run.NotRunNames.Count > 0;
+            // A snapshot of a partial audit would enter the trend as if the model had improved.
+            if (notAllChecksRan) storeSnapshot = false;
             JArray findings = run.Findings;
             JArray checksFailed = run.ChecksFailed;
             JArray incompleteChecks = run.IncompleteChecks;
@@ -483,7 +544,7 @@ namespace Horizun.Revit.Commands
                 snapshotFileSize, elementCount, elementTypeCount, findings, checksFailed,
                 fullCoverage, elapsed.ElapsedMilliseconds, out snapshot, out trend);
 
-            return CommandResult.Ok(new JObject
+            var auditBody = new JObject
             {
                 ["model"] = SafeTitle(doc),
                 ["document_fingerprint"] = fingerprint,
@@ -523,7 +584,34 @@ namespace Horizun.Revit.Commands
                       (visibility.CoverageComplete ? "" : visibility.Note() + " ") +
                       "This audit is INCOMPLETE; do not read the absence of a finding as a pass."
                     : null
-            });
+            };
+
+            if (coopScope != null)
+            {
+                var ran = new JArray(run.RanNames.Select(n => (JToken)n));
+                var notRan = new JArray(run.NotRunNames.Select(n => (JToken)n));
+                JObject account = CooperativePartial.Account("checks", run.RanNames.Count, run.TotalChecks, ran, notRan,
+                    "between checks: each check is one native pass that runs to its end once started, so a stop is " +
+                    "bounded to within ONE check, not to the millisecond");
+                bool resumable = run.ResumeAt >= 0;
+                CooperativePartial.Apply(auditBody, cooperative, coopScope, coopFingerprint, account, resumable,
+                    resumable ? run.ResumeAt : 0,
+                    "the checks it did not run are named in measured_account.not_measured.");
+                if (notAllChecksRan && auditBody["partial"] != null && !(bool)auditBody["partial"])
+                {
+                    // A continuation page that finished its own checks: it is still not the whole audit.
+                    auditBody["partial"] = true;
+                    auditBody["coverage_complete"] = false;
+                    auditBody["partial_reason"] = "checks_of_other_pages_are_not_in_this_reply";
+                }
+                if (notAllChecksRan)
+                    auditBody["partial_note"] = "PARTIAL AUDIT: " + run.NotRunNames.Count + " of " + run.TotalChecks +
+                        " check(s) are not in this reply (see checks_failed entries with state 'not_run'). The " +
+                        "requirement gate, the prevention gate and the health index above treat them as unknown, " +
+                        "never as passed; no snapshot was stored. Send cooperative.cursor with the SAME request to " +
+                        "run the rest.";
+            }
+            return CommandResult.Ok(auditBody);
         }
 
 
@@ -1338,6 +1426,13 @@ namespace Horizun.Revit.Commands
 
             List<WarningGroup> groups = WarningRules.Group(facts);
             WarningRules.Triage(groups, profile);
+            // Keep occurrences separate for geometric classification. A failure definition
+            // can name thousands of distinct elements, although each warning concerns a
+            // pair. Classifying the union as one warning inevitably says unclassified.
+            var occurrencesByKey = facts.GroupBy(f => string.IsNullOrWhiteSpace(f.DefinitionGuid)
+                    ? "text:" + (f.Description ?? "(description unreadable)")
+                    : f.DefinitionGuid.Trim().ToLowerInvariant())
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
 
             var causeCounts = new Dictionary<string, int>(StringComparer.Ordinal);
             var items = new JArray(groups.Take(top).Select(g =>
@@ -1352,22 +1447,42 @@ namespace Horizun.Revit.Commands
                     ? (JToken)g.FailingElementIds.Count
                     : JValue.CreateNull();
 
-                // ROOT CAUSE, from the failing elements' own geometry - not from the warning's
-                // (localized, rewritten-between-versions) description text. Field session
-                // 2026-09-25: the same warning shape split into a duplicate, a containment, a
-                // measured vertical overlap and a stranded wall profile, and only the geometry
-                // told them apart.
-                List<ElementBoxFact> boxFacts = WarningBoxFacts(doc, g.FailingElementIds, strandedWalls);
-                WarningRootCause cause = WarningRootCauseRules.Classify(boxFacts);
+                // Classify each actual warning, then aggregate counts. The group's ID
+                // union is only an index for locating elements; it is not a geometric
+                // event and must never be handed to the pair classifier.
+                var distribution = new Dictionary<string, int>(StringComparer.Ordinal);
+                var samples = new JArray();
+                int incomplete = 0;
+                foreach (WarningFact occurrence in occurrencesByKey[g.Key])
+                {
+                    List<ElementBoxFact> boxFacts = WarningBoxFacts(doc, occurrence.FailingElementIds, strandedWalls);
+                    WarningRootCause individual = occurrence.IdsReadable && boxFacts.Count == occurrence.FailingElementIds.Count
+                        ? WarningRootCauseRules.Classify(boxFacts)
+                        : new WarningRootCause { Cause = WarningRootCauseCauses.Unclassified,
+                            Detail = "failing elements could not all be read" };
+                    if (boxFacts.Count != occurrence.FailingElementIds.Count || !occurrence.IdsReadable) incomplete++;
+                    distribution[individual.Cause] = distribution.TryGetValue(individual.Cause, out int count) ? count + 1 : 1;
+                    if (samples.Count < top)
+                        samples.Add(new JObject {
+                            ["failing_element_ids"] = new JArray(occurrence.FailingElementIds),
+                            ["cause"] = individual.Cause,
+                            ["overlap_mm"] = individual.OverlapMm.HasValue ? (JToken)Math.Round(individual.OverlapMm.Value, 1) : JValue.CreateNull(),
+                            ["detail"] = individual.Detail
+                        });
+                }
+                string causeName = distribution.Count == 1 ? distribution.Keys.First() : "mixed";
                 row["root_cause"] = new JObject
                 {
-                    ["cause"] = cause.Cause,
-                    ["overlap_mm"] = cause.OverlapMm.HasValue ? (JToken)Math.Round(cause.OverlapMm.Value, 1) : JValue.CreateNull(),
-                    ["detail"] = cause.Detail,
-                    ["elements_classified"] = boxFacts.Count,
+                    ["cause"] = causeName,
+                    ["occurrence_counts"] = new JObject(distribution.Select(kv => new JProperty(kv.Key, kv.Value))),
+                    ["occurrences_classified"] = occurrencesByKey[g.Key].Count,
+                    ["occurrences_with_unreadable_elements"] = incomplete,
+                    ["samples"] = samples,
+                    ["samples_truncated"] = occurrencesByKey[g.Key].Count > samples.Count,
+                    ["detail"] = "Each warning occurrence was classified from its own failing elements; a definition can contain several different causes.",
                     ["elements_named"] = g.FailingElementIds.Count
                 };
-                causeCounts[cause.Cause] = causeCounts.TryGetValue(cause.Cause, out int n) ? n + 1 : 1;
+                causeCounts[causeName] = causeCounts.TryGetValue(causeName, out int n) ? n + 1 : 1;
                 return (JToken)row;
             }));
 
@@ -1596,9 +1711,22 @@ namespace Horizun.Revit.Commands
         // census sweeps MEP curves AND connectable family instances - the same
         // reader query_model's include_mep uses - and counts what it could not
         // read instead of folding it into the total.
+        private static readonly HashSet<BuiltInCategory> RunPieces = new HashSet<BuiltInCategory>
+        {
+            BuiltInCategory.OST_PipeFitting, BuiltInCategory.OST_DuctFitting, BuiltInCategory.OST_PipeAccessory,
+            BuiltInCategory.OST_DuctAccessory, BuiltInCategory.OST_ConduitFitting, BuiltInCategory.OST_CableTrayFitting
+        };
+
+        // Review 2026-11-20 (I5): every free connector of every family instance used to count as "a run that
+        // stops mid-air", so a spare connector on a fixture, a luminaire without a circuit or a panel's unused
+        // way failed a threshold of 0 in any model with devices. Only the ends of RUNS count now: MEP curves,
+        // fittings and accessories. Free connectors on equipment, fixtures and devices are reported apart
+        // (open_on_equipment), and both by domain. A connector manager that throws is unreadable, not skipped.
         private static JObject OpenMepConnectors(Document doc, int top)
         {
-            int unreadable = 0, elementsWithConnectors = 0, openTotal = 0;
+            int unreadable = 0, elementsWithConnectors = 0, openTotal = 0, openEquipment = 0;
+            var byDomain = new Dictionary<string, int>(StringComparer.Ordinal);
+            var equipmentByDomain = new Dictionary<string, int>(StringComparer.Ordinal);
             var worst = new List<KeyValuePair<Element, int>>();
             var collectors = new List<FilteredElementCollector>
             {
@@ -1609,14 +1737,31 @@ namespace Horizun.Revit.Commands
                 foreach (Element element in collector)
                 {
                     ConnectorManager manager;
-                    try { manager = MepFacts.ManagerOf(element); }
+                    try
+                    {
+                        manager = element is MEPCurve curve ? curve.ConnectorManager
+                            : element is FamilyInstance instance ? instance.MEPModel?.ConnectorManager : null;
+                    }
                     catch { unreadable++; continue; }
                     if (manager == null) continue;
+                    bool runPiece = element is MEPCurve;
+                    if (!runPiece)
+                    {
+                        string key = CategoryKey.Of(element);
+                        runPiece = key != null && Enum.TryParse(key, out BuiltInCategory bic) && RunPieces.Contains(bic);
+                    }
                     int open = 0;
                     try
                     {
                         foreach (Connector connector in MepFacts.Ordered(manager))
-                            if (!connector.IsConnected) open++;
+                        {
+                            if (connector.IsConnected) continue;
+                            string domain = MepFacts.DomainName(connector);
+                            var tally = runPiece ? byDomain : equipmentByDomain;
+                            tally.TryGetValue(domain, out int n);
+                            tally[domain] = n + 1;
+                            if (runPiece) open++; else openEquipment++;
+                        }
                     }
                     catch { unreadable++; continue; }
                     elementsWithConnectors++;
@@ -1634,19 +1779,29 @@ namespace Horizun.Revit.Commands
                 {
                     ["element_id"] = pair.Key.Id.ToString(),
                     ["category"] = SafeCategoryName(pair.Key),
+                    ["built_in_category"] = CategoryKey.Of(pair.Key),
                     ["open_connectors"] = pair.Value
                 }));
 
-            return Finding(AuditCheckNames.OpenMepConnectors, openTotal > 0, openTotal,
+            JObject finding = Finding(AuditCheckNames.OpenMepConnectors, openTotal > 0, openTotal,
                 openTotal == 0
                     ? (unreadable == 0
-                        ? $"Every connector on {elementsWithConnectors} connectable element(s) is connected."
-                        : $"No open connectors among what could be read - but {unreadable} element(s) could NOT " +
+                        ? $"Every run end (pipes, ducts, conduits, trays, their fittings and accessories) on {elementsWithConnectors} connectable element(s) is connected."
+                        : $"No open run ends among what could be read - but {unreadable} element(s) could NOT " +
                           "be read, so this is not a clean bill.")
-                    : $"{openTotal} open connector(s) across {worst.Count} element(s) (of {elementsWithConnectors} " +
-                      "carrying connectors). An open connector is a run that stops mid-air: no flow calculation " +
+                    : $"{openTotal} open run end(s) across {worst.Count} element(s) (of {elementsWithConnectors} " +
+                      "carrying connectors). An open run end is a run that stops mid-air: no flow calculation " +
                       "crosses it and whoever coordinates against it meets a stub.",
                 items, worst.Count, unreadable);
+            finding["open_by_domain"] = JObject.FromObject(byDomain);
+            finding["open_on_equipment"] = new JObject
+            {
+                ["count"] = openEquipment,
+                ["by_domain"] = JObject.FromObject(equipmentByDomain),
+                ["means"] = "free connectors on equipment, fixtures and devices (a spare outlet, a device not yet on a " +
+                            "circuit). Not counted as open run ends; read them when a system should reach that element."
+            };
+            return finding;
         }
 
         // ---- Unpinned links: a link somebody can drag is a coordination accident
@@ -1665,17 +1820,7 @@ namespace Horizun.Revit.Commands
             var items = new JArray(unpinned.Take(top).Select(instance => (JToken)new JObject
             {
                 ["element_id"] = instance.Id.ToString(),
-                ["name"] = SafeName(instance),
-                ["correction"] = new JObject
-                {
-                    ["tool"] = "horizun_manage_links",
-                    ["arguments"] = new JObject
-                    {
-                        ["target_document"] = doc.Title,
-                        ["operation"] = "pin",
-                        ["link_instance_id"] = Rid.Value(instance.Id)
-                    }
-                }
+                ["name"] = SafeName(instance)
             }));
             return Finding(AuditCheckNames.UnpinnedLinks, unpinned.Count > 0, unpinned.Count,
                 unpinned.Count == 0
@@ -1882,8 +2027,12 @@ namespace Horizun.Revit.Commands
             {
                 try
                 {
-                    var area = r.get_Parameter(BuiltInParameter.ROOM_AREA)?.AsDouble() ?? 0.0;
+                    // An area that cannot be read is unreadable, not 0 (review 2026-11-20, M4): 0 reads as "not
+                    // enclosed" and sends a correction to a room that may be fine.
+                    Parameter areaParam = r.get_Parameter(BuiltInParameter.ROOM_AREA);
                     var loc = r.Location;
+                    if (loc != null && (areaParam == null || !areaParam.HasValue)) { unreadable++; continue; }
+                    double area = areaParam == null ? 0.0 : areaParam.AsDouble();
                     if (loc == null)
                         bad.Add((r, RoomProblemCode.Unplaced,
                                  "unplaced (no location — it exists in schedules but bounds nothing)"));

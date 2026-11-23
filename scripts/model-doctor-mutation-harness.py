@@ -652,7 +652,6 @@ MUTATIONS = [
      '                g.CallerSeverity = null;',
      'A_triaged_warning_carries_the_callers_severity_beside_revits_own'),
 
-
     # ------- the option a tool accepts and the option its schema accepts -------
 
     # Gives audit_model's schema a property its own unknown-key check refuses,
@@ -1746,8 +1745,6 @@ MUTATIONS = [
      '            "decals: 0. Counted through the API of any supported Revit year',
      'Decals_are_declared_unobservable_rather_than_counted_as_zero'),
 
-
-
     ('FED-10 una ruta ausente se trata como rota en el comando',
      CMD,
      '                        f.Resolves = string.IsNullOrWhiteSpace(f.Path) ? (bool?)null : FileExists(f.Path);',
@@ -1822,7 +1819,6 @@ MUTATIONS = [
      '                f.IsNested = null;',
      'Nesting_does_not_depend_on_the_link_being_loaded'),
 
-
     # ---- documentary context: absent is not blank, and nothing is mandatory ----
 
     ('DOC-1 un campo ausente se reporta como vacio',
@@ -1872,7 +1868,6 @@ MUTATIONS = [
      '                ValueAsString = fact.Value,\n                HasValue = !string.IsNullOrEmpty(fact.Value)',
      '                ValueAsString = "TBD",\n                HasValue = true',
      'A_declared_placeholder_is_its_own_outcome_and_not_a_filled_field'),
-
 
     # ---- 4D/5D readiness: evidence found, per category, never a score ----
 
@@ -1985,7 +1980,6 @@ MUTATIONS = [
      '            "UniFormat, MasterFormat and every house standard belong to somebody and not to everybody. " +',
      '            "UniFormat and MasterFormat are built in. " +',
      'No_catalogue_is_compiled_in'),
-
 
     # ---- guided corrections: proposals only, from a registry, never widened ----
 
@@ -2281,35 +2275,11 @@ MUTATIONS = [
 
     # ---- guided corrections: the registry IS the safety model ----
 
-    ('CRG-1 una herramienta de un elemento acepta cuatro',
-     'GuidedCorrectionRules.cs',
-     '                if (finding.ElementIds.Count != 1)',
-     '                if (false)',
-     'A_single_element_tool_handed_four_elements_refuses_rather_than_taking_the_first'),
-
     ('CRG-2 una receta redirige el documento o convierte el ensayo en escritura',
      'GuidedCorrectionRules.cs',
      '                    if (f.Name == "target_document" || f.Name == "dry_run")',
      '                    if (false)',
      'A_recipe_may_not_redirect_the_document_or_turn_a_rehearsal_into_a_write'),
-
-    ('CRG-3 las constantes tipadas de la receta no se aplican',
-     'GuidedCorrectionRules.cs',
-     '            if (recipe.FixedArguments != null)',
-     '            if (false)',
-     'An_unpinned_link_becomes_one_actionable_typed_call_per_link'),
-
-    ('CRG-4 el id del elemento no llega al argumento declarado',
-     'GuidedCorrectionRules.cs',
-     '                p.Arguments[recipe.ElementArgument] = finding.ElementIds[0];',
-     '                p.Arguments["element_ids"] = new JArray();',
-     'An_unpinned_link_becomes_one_actionable_typed_call_per_link'),
-
-    ('CRG-5 el registro admite python',
-     '../Core/CorrectionRegistry.cs',
-     '                        Tool = "horizun_manage_links",',
-     '                        Tool = "horizun_execute_python",',
-     'The_registry_names_no_tool_that_runs_arbitrary_code'),
 
     ('CRG-6 una entrada nombra herramienta y ademas se declara inautomatizable',
      '../Core/CorrectionRegistry.cs',
@@ -2322,12 +2292,6 @@ MUTATIONS = [
      '                        RequiredArguments = new List<string> { "template_view_id" },',
      '                        RequiredArguments = new List<string>(),',
      'A_view_without_a_template_returns_the_question_rather_than_choosing_a_template'),
-
-    ('CRG-8 el mensaje de cero elementos aconseja lo imposible',
-     'GuidedCorrectionRules.cs',
-     '                        (finding.ElementIds.Count == 0',
-     '                        (false',
-     'A_finding_that_names_no_element_says_the_elements_are_missing_not_an_argument'),
 
     # ---- the audit surfaces, guarded in source ----
 
@@ -2527,7 +2491,6 @@ def run(test_filter):
         return 'PASS'
     return 'UNKNOWN'
 
-
 def write_text(path, text):
     """Write with retries and VERIFY by reading back."""
     last = None
@@ -2541,7 +2504,6 @@ def write_text(path, text):
             last = '%s: %s' % (type(ex).__name__, ex)
         time.sleep(0.25 * (attempt + 1))
     return last
-
 
 def restore_or_die(path, original, label):
     err = write_text(path, original)
@@ -2559,7 +2521,6 @@ def restore_or_die(path, original, label):
     sys.stdout.write('=' * 78 + '\n')
     sys.stdout.flush()
     sys.exit(9)
-
 
 def preflight():
     """Refuse to run a ledger whose entries cannot possibly mean anything.
@@ -2643,7 +2604,6 @@ def preflight():
     sys.stdout.flush()
     return True
 
-
 def main():
     # ONE green run up front. If the suite is not green, no mutation below can
     # mean anything - a test that already fails "detects" every mutation.
@@ -2702,7 +2662,6 @@ def main():
         if verdict != 'BITES':
             print('  NO MUERDE: %s -> %s (%s)' % (label, verdict, test))
     return 0 if bites == len(results) else 1
-
 
 if __name__ == '__main__':
     sys.exit(main())

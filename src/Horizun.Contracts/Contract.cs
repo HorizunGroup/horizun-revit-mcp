@@ -172,7 +172,7 @@ namespace Horizun.Contracts
     /// Three memberships are guarded by tests because they are security-shaped, not
     /// organisational: core is exactly health/target/job_status/submit_job; the Python
     /// surface rides ONLY in unsafe_code; the document-session tools ride ONLY in
-    /// administration. A selection is visibility, never privilege.
+    /// administration (save_document also in documentation, for save_local). A selection is visibility, never privilege.
     /// </summary>
     public static class ToolsetCatalog
     {
@@ -182,33 +182,33 @@ namespace Horizun.Contracts
         private static readonly Dictionary<string, string> DescriptionMap =
             new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                [Core] = "Welded to every selection: health, target, job status, submit job - except when local is the whole selection, which keeps only health.",
+                [Core] = "Always on, welded to every selection: health, target, job status, submit job.",
                 ["read"] = "Read the model: document facts, element listing and queries, model scan, schedules " +
-                           "data, dimensions, 2D detail, planimetry, quantities, structure and CAD reading, capture.",
+                           "data, dimensions, 2D detail, planimetry, quantities, structure reading, capture.",
                 ["model"] = "Typed model writes: create/transform/delete elements, parameters, keynotes, shared " +
-                            "parameters, groups, materials, execute_plan, CAD plan apply.",
+                            "parameters, groups, materials, execute_plan.",
                 ["architecture"] = "Architectural operations: wall/floor decomposition, rectangularize walls, " +
                                    "toposolid grading.",
-                ["structure"] = "Structural modelling: slabs, structural planning, reinforcement (plan, apply, " +
-                                "audit, schedule sheets read) and structural connections.",
-                ["mep"] = "MEP modelling: system types, MEP planning and connection, networks read from CAD.",
-                ["cad"] = "DWG to BIM: CAD links, extraction, networks, symbols, units, review, plan/apply/update.",
-                ["documentation"] = "Views, dimensions, annotation, 2D detail, revisions, sheet packing.",
+                ["structure"] = "Structural modelling: slabs, framing, structural planning, schedule sheets read and " +
+                                "structural connections.",
+                ["mep"] = "MEP: the model reads and writes MEP work starts from (query, create, split by level, verify). " +
+                          "MEP routing, fittings and connection are in the Pro edition.",
+                ["cad"] = "DWG to BIM is in the Pro edition; in this edition the name selects only the model reading it needs.",
+                ["documentation"] = "Views, dimensions, annotation, 2D detail, revisions, sheet packing, PDF export, local save.",
                 ["planimetry"] = "Planimetry audit and fix, sheet packing, annotation planning, revisions.",
-                ["audit"] = "Model audits and corrections, model scan, clash, coordination, accessibility audit.",
-                ["coordination"] = "Coordination: clash, BCF coordination, links, file triage, ACC status, " +
-                                   "quantities, budget comparison.",
+                ["audit"] = "Model audits and corrections, model scan, planimetry audit, accessibility audit, code check.",
+                ["coordination"] = "Coordination data: model diff, file triage, ACC status, information containers, " +
+                                   "exchange manifests, quantities, budget comparison.",
                 ["schedules"] = "Create, manage and read schedules.",
-                ["family"] = "Family authoring and homologation: create_family, family_apply, keynotes, shared " +
-                             "parameters, catalog lookup.",
-                ["interoperability"] = "Exchange: export, Excel read/write, IFC plan/apply, IDS validation, " +
-                                       "links, catalog lookup, budget comparison, workflow procedures.",
+                ["family"] = "Family data: keynotes, shared parameters, classification tables, catalog lookup, " +
+                             "template kits.",
+                ["interoperability"] = "Exchange: export, Excel read/write, IDS validation, catalog lookup, " +
+                                       "budget comparison, workflow procedures.",
                 ["powerbi"] = "Power BI push and selection exchange, Excel read/write, budget comparison.",
                 ["administration"] = "Document session, open/save, relinquish, script promotion, repair memory.",
-                ["local"] = "For local or short-context models, eleven tools: horizun_health, document facts, element " +
-                            "listing and query, model scan, capture, and the typed writes (create, parameters, delete, transform, " +
-                            "undo). Selected ALONE it drops the core tools target, job_status and submit_job (add any " +
-                            "other toolset, or activate one, and the core returns). Never the Python surface.",
+                ["local"] = "For local or short-context models: reading (document facts, element listing and " +
+                            "queries, model scan, quantities, capture, navigation, model diff) and six typed writes (parameters, create, " +
+                            "transform, delete, views, undo). Never the Python surface. About a fifth of the full list.",
                 ["unsafe_code"] = "The Python surface: execute_python (still gated by the owner's grant) and the " +
                                   "access request."
             };
@@ -223,26 +223,7 @@ namespace Horizun.Contracts
             {
                 ["families"] = new[] { "family" },
                 ["data"] = new[] { "schedules", "interoperability", "powerbi" },
-                ["admin"] = new[] { "administration", "unsafe_code" },
-                // Spanish names for the existing toolsets (product owner, 2026-10). Keys are stored
-                // WITHOUT accents and lower-case: Normalize folds whatever a person types onto them
-                // (Documentación, DOCUMENTACION). They are aliases, never toolsets: nothing declares
-                // membership in one, so a membership guarded above cannot be widened through a name.
-                // "local" needs none - it is already its own name.
-                ["consulta"] = new[] { "read" },
-                ["lectura"] = new[] { "read" },
-                ["modelado"] = new[] { "model" },
-                ["modelo"] = new[] { "model" },
-                ["arquitectura"] = new[] { "architecture" },
-                ["estructura"] = new[] { "structure" },
-                ["documentacion"] = new[] { "documentation" },
-                ["planimetria"] = new[] { "planimetry" },
-                ["auditoria"] = new[] { "audit" },
-                ["coordinacion"] = new[] { "coordination" },
-                ["tablas"] = new[] { "schedules" },
-                ["familia"] = new[] { "family" },
-                ["interoperabilidad"] = new[] { "interoperability" },
-                ["administracion"] = new[] { "administration" }
+                ["admin"] = new[] { "administration", "unsafe_code" }
             };
 
         public static IReadOnlyDictionary<string, string> Descriptions => DescriptionMap;
@@ -251,55 +232,36 @@ namespace Horizun.Contracts
 
         public static IReadOnlyDictionary<string, string[]> Aliases => AliasMap;
 
-        /// <summary>
-        /// The spelling a toolset or alias name is compared in: trimmed, lower-case, accents
-        /// removed. "Documentación", " DOCUMENTACION " and "documentacion" are one name.
-        /// </summary>
-        public static string Normalize(string name)
-        {
-            string folded = (name ?? "").Trim().ToLowerInvariant().Normalize(System.Text.NormalizationForm.FormD);
-            var sb = new System.Text.StringBuilder(folded.Length);
-            foreach (char c in folded)
-                if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark)
-                    sb.Append(c);
-            return sb.ToString().Normalize(System.Text.NormalizationForm.FormC);
-        }
-
-        /// <summary>
-        /// The real toolsets a name stands for, or null when it is neither a toolset nor an
-        /// alias. A toolset answers itself; an alias answers what it expands to.
-        /// </summary>
-        public static string[] ExpandName(string name)
-        {
-            string n = Normalize(name);
-            if (DescriptionMap.ContainsKey(n)) return new[] { n };
-            return AliasMap.TryGetValue(n, out string[] targets) ? targets : null;
-        }
-
         // One row per tool, in contract order except core, whose four come first in the
         // order the core guard pins.
         private static readonly List<KeyValuePair<string, string[]>> Rows = new List<KeyValuePair<string, string[]>>
         {
             // ---- core: welded to every selection -----------------------------------
-            Row("horizun_health", Core, "local"),
+            Row("horizun_health", Core),
             Row("horizun_target", Core),
             Row("horizun_job_status", Core),
             Row("horizun_submit_job", Core),
 
             // ---- reading the model --------------------------------------------------
             Row("get_document_info", "read", "local"),
-            Row("horizun_navigate", "read"),
+            Row("horizun_navigate", "read", "local"),
             Row("horizun_list_elements", "read", "local"),
             Row("horizun_query_model", "read", "mep", "local"),
+            Row("horizun_measure_geometry", "read", "audit"),
+            Row("horizun_query_relations", "read", "audit"),
+            Row("horizun_selection_context", "read", "audit"),
+            Row("horizun_api_help", "read"),
+            Row("horizun_audit_support", "read", "audit", "coordination"),
             Row("horizun_model_scan", "read", "audit", "local"),
+            Row("horizun_room_boundaries", "read", "documentation", "planimetry"),
             Row("horizun_file_info", "read", "coordination"),
-            Row("horizun_model_diff", "audit", "coordination", "powerbi"),
-            Row("horizun_quantities", "read", "coordination"),
+            Row("horizun_model_diff", "audit", "coordination", "powerbi", "local"),
+            Row("horizun_quantities", "read", "coordination", "local"),
             Row("horizun_capture_view", "read", "documentation", "planimetry", "audit", "local"),
             Row("horizun_verify_changes", "read", "coordination", "audit", "mep"),
 
             // ---- document session and administration -----------------------------------
-            Row("horizun_save_document", "administration"),
+            Row("horizun_save_document", "administration", "documentation"),
             Row("horizun_open_document", "administration"),
             Row("horizun_relinquish_all", "administration"),
             Row("horizun_document_session", "administration"),
@@ -316,7 +278,6 @@ namespace Horizun.Contracts
             Row("horizun_write_params_verified", "model", "local"),
             Row("horizun_delete_verified", "model", "documentation", "local"),
             Row("horizun_execute_plan", "model"),
-            Row("horizun_copy_between_documents", "model"),
             Row("horizun_manage_materials", "model"),
             Row("horizun_manage_styles", "model", "documentation"),
             Row("horizun_manage_units", "model", "coordination"),
@@ -325,6 +286,7 @@ namespace Horizun.Contracts
             Row("horizun_manage_groups", "model"),
             Row("horizun_manage_worksets", "model", "administration"),
             Row("horizun_set_keynote", "model", "family"),
+            Row("horizun_manage_classification_table", "model", "family"),
             Row("horizun_bind_shared_param", "model", "family"),
             Row("horizun_manage_parameters", "model", "family"),
             Row("horizun_query_classification", "read", "audit"),
@@ -334,19 +296,22 @@ namespace Horizun.Contracts
             // ---- architecture -----------------------------------------------------------
             Row("horizun_split_floor_loops", "architecture"),
             Row("horizun_split_multilayer_walls", "architecture"),
+            Row("horizun_split_by_level", "architecture", "structure", "mep"),
             Row("horizun_embed_floors_in_toposolid", "architecture"),
             Row("horizun_grade_toposolid_around_floors", "architecture"),
             Row("horizun_rectangularize_walls", "architecture"),
             Row("horizun_manage_curtain", "architecture"),
             Row("horizun_slab_shape", "architecture", "structure"),
             Row("horizun_create_railing", "architecture"),
+            Row("horizun_wall_sweep", "architecture"),
+            Row("horizun_join_geometry", "model", "architecture", "structure"),
+            Row("horizun_room_finishes", "architecture"),
+            Row("horizun_wall_finish", "architecture", "coordination"),
+            Row("horizun_view_visibility", "documentation"),
             Row("horizun_framing", "architecture", "structure"),
 
             // ---- structure --------------------------------------------------------------
             Row("horizun_query_structure", "read", "structure"),
-            Row("horizun_plan_reinforcement", "read", "structure"),
-            Row("horizun_audit_reinforcement", "read", "structure", "audit"),
-            Row("horizun_apply_reinforcement", "structure"),
             Row("horizun_structural_connections", "structure"),
             // Reads schedule sheets (PDF, DWG entities) in the server; proposes a requirement set.
             Row("horizun_read_schedule", "structure", "interoperability"),
@@ -354,31 +319,10 @@ namespace Horizun.Contracts
             Row("horizun_split_multilayer_slabs", "structure"),
             Row("horizun_copy_slab_elevations", "structure"),
 
-            // ---- mep --------------------------------------------------------------------
-            Row("horizun_manage_system_types", "mep"),
-            Row("horizun_electrical", "mep"),
-            Row("horizun_plan_mep", "mep"),
-            Row("horizun_connect_mep", "mep"),
-            Row("horizun_mep_routing", "mep"),
-
-            // ---- cad (dwg -> bim) ---------------------------------------------------------
-            Row("horizun_plan_from_cad", "read", "cad"),
-            Row("horizun_plan_cad_update", "read", "cad"),
-            Row("horizun_audit_cad_model", "read", "cad"),
-            Row("horizun_query_cad", "read", "cad"),
-            Row("horizun_cad_extract", "read", "cad"),
-            Row("horizun_cad_symbols", "read", "cad"),
-            Row("horizun_cad_unit_instances", "read", "cad"),
-            Row("horizun_cad_review", "read", "mep", "cad"),
-            Row("horizun_cad_networks", "read", "mep", "cad"),
-            Row("horizun_cad_connect", "model", "mep", "cad"),
-            Row("horizun_manage_cad_links", "model", "cad"),
-            Row("horizun_apply_cad_update", "model", "cad"),
-            Row("horizun_apply_cad_plan", "model", "cad"),
-
             // ---- documentation and planimetry -------------------------------------------
-            Row("horizun_manage_views", "documentation"),
+            Row("horizun_manage_views", "documentation", "local"),
             Row("horizun_plan_views", "documentation"),
+            Row("horizun_planimetry_ops", "documentation", "planimetry"),
             Row("horizun_annotate", "documentation"),
             Row("horizun_edit_dimensions", "documentation"),
             Row("horizun_detail_2d", "documentation"),
@@ -388,6 +332,8 @@ namespace Horizun.Contracts
             Row("horizun_plan_annotations", "documentation", "planimetry"),
             Row("horizun_manage_revisions", "documentation", "planimetry"),
             Row("horizun_pack_sheets", "documentation", "planimetry"),
+            Row("horizun_view_crop", "documentation"),
+            Row("horizun_sheet_layout", "documentation"),
             Row("horizun_query_planimetry", "read", "planimetry", "audit"),
             Row("horizun_audit_planimetry", "planimetry", "audit"),
             Row("horizun_fix_planimetry", "planimetry"),
@@ -403,25 +349,17 @@ namespace Horizun.Contracts
             Row("horizun_apply_corrections", "audit"),
             Row("horizun_audit_access", "audit"),
             Row("horizun_code_check", "audit"),
-            Row("horizun_federation_check", "audit", "coordination"),
             Row("horizun_link_schedule", "coordination", "powerbi"),
-            Row("horizun_clash", "audit", "coordination"),
-            Row("horizun_coordination", "audit", "coordination", "interoperability"),
-            Row("horizun_resolve_clash", "coordination", "mep"),
             Row("horizun_undo", "model", "local"),
             Row("horizun_acc_upload_status", "coordination"),
-            Row("horizun_manage_links", "coordination", "interoperability"),
             Row("horizun_budget_compare", "coordination", "interoperability", "powerbi"),
 
             // ---- families ---------------------------------------------------------------
-            Row("horizun_create_family", "family"),
-            Row("horizun_family_apply", "family"),
             Row("horizun_catalog_lookup", "family", "interoperability"),
+            Row("horizun_template_kit", "read", "family"),
 
             // ---- interoperability and Power BI ------------------------------------------
-            Row("horizun_export", "interoperability"),
-            Row("horizun_plan_from_ifc", "interoperability"),
-            Row("horizun_apply_ifc_plan", "interoperability"),
+            Row("horizun_export", "interoperability", "documentation"),
             Row("horizun_validate_ids", "interoperability"),
             Row("horizun_run_procedure", "interoperability"),
             Row("horizun_excel_read_rows", "interoperability", "powerbi"),
@@ -432,7 +370,6 @@ namespace Horizun.Contracts
             // 3.0.0 interoperability: exchange manifests and the review -> correction cycle.
             Row("horizun_exchange", "coordination", "interoperability"),
             Row("horizun_cde_cloud", "coordination", "interoperability"),
-            Row("horizun_deliver_ifc", "coordination", "interoperability"),
             Row("horizun_excel_write_rows", "interoperability", "powerbi"),
             Row("horizun_power_bi_push", "powerbi"),
             Row("horizun_selection_exchange", "powerbi")
@@ -461,7 +398,7 @@ namespace Horizun.Contracts
 
         /// <summary>The tools declaring a toolset, in declaration order.</summary>
         public static string[] MembersOf(string toolset)
-            => Rows.Where(r => r.Value.Contains(toolset, StringComparer.Ordinal)).Select(r => r.Key).ToArray();
+            => Rows.Where(r => r.Value.Contains(toolset, StringComparer.Ordinal) && Edition.Ships(r.Key)).Select(r => r.Key).ToArray();
 
         /// <summary>
         /// Every problem with the map: a row naming a tool that does not exist (a rename
@@ -500,6 +437,368 @@ namespace Horizun.Contracts
         }
     }
 
+    /// <summary>
+    /// TOOL GROUPS (4.0.0): which tools a SESSION SEES, as opposed to which it may reach.
+    ///
+    /// The 3.x toolsets above overlap on purpose (capture_view is how documentation is
+    /// reviewed AND how an audit collects evidence), so selecting one saved little:
+    /// "architecture" alone dragged 80 tools in. Groups are the opposite: EVERY TOOL HAS
+    /// EXACTLY ONE GROUP, so a profile is a plain union and its size is the sum of its
+    /// groups. One table, tool -> group, below. A tool with no row fails
+    /// ToolGroupTests (Audit) - which is what forces a tool added on a parallel branch
+    /// into a group the day that branch is merged.
+    ///
+    /// A GROUP IS VISIBILITY, NEVER PRIVILEGE. Whether a call may run is still decided by
+    /// Settings.IsToolAllowed: denied/allowed tools, the permission profile, the Python
+    /// grant and the 3.x tool_packs/toolsets selection, which acts as the CEILING. A
+    /// group only decides whether a reachable tool is printed in tools/list. A reachable
+    /// tool in an inactive group is still callable - directly, or through
+    /// horizun_call_tool - under exactly the same gates.
+    ///
+    /// Group and profile identifiers are the ones the approved 4.0 proposal uses
+    /// (Spanish, lower case, ASCII). The 3.x toolset names and a few English words are
+    /// accepted as aliases wherever a client names a group.
+    /// </summary>
+    public static class ToolGroupCatalog
+    {
+        public const string Core = "nucleo";
+        public const string FullProfile = "completo";
+        public const string CoreProfile = "nucleo";
+
+        /// <summary>Every group, with the sentence a client reads to choose one. Order is display order.</summary>
+        private static readonly List<KeyValuePair<string, string>> GroupList = new List<KeyValuePair<string, string>>
+        {
+            G(Core, "Always on: health, target, jobs, query/list elements, navigate, capture, verified writes and " +
+                    "deletes, verify changes, undo, save/open, Python (still gated by the owner's grant), toolsets."),
+            G("lectura", "Read more of the model: document and file facts, model scan, room boundaries, geometry " +
+                         "measures, relations, classification, model diff, selection context, project context, API help."),
+            G("modelado", "Typed model writes: create and transform elements, execute_plan, styles, materials, units, " +
+                          "phases, worksets, groups, assemblies/parts, join geometry."),
+            G("arquitectura", "Architecture: railings, wall sweeps, finishes, curtain walls, slab shape, splitting " +
+                              "walls/floors, rectangularize walls, toposolid embedding and grading."),
+            G("estructura", "Structure: structural query and planning, schedule sheets read, connections, framing, " +
+                            "multilayer slabs, slab elevations."),
+            G("mep", "MEP tools are in the Pro edition; this group lists none in this edition."),
+            G("documentacion", "Documentation: views, sheets and layout, annotation and dimensions, 2D detail, " +
+                               "revisions, visibility, crop, sheet packing, PDF/DWG export."),
+            G("cad_ifc", "IDS validation. DWG and IFC to BIM are in the Pro edition."),
+            G("auditoria", "Audits: model audit and corrections, planimetry query/audit/fix, accessibility, code " +
+                           "check, audit support."),
+            G("coordinacion", "Coordination: exchange manifests. Clash, links and BCF coordination are in the Pro edition."),
+            G("nube_cde", "Cloud CDE: ACC/CDE folders, upload status, ISO 19650 information containers."),
+            G("familias", "Family data: parameters, shared parameters, keynotes, classification table, catalog " +
+                          "lookup, template kit."),
+            G("datos", "Data: quantities, schedules (create, manage, list, read), Excel read/write, budget " +
+                       "comparison, Power BI push and selection, link schedule, procedures."),
+            G("admin", "Administration: document session, relinquish all, promote script, repair memory.")
+        };
+
+        private static KeyValuePair<string, string> G(string id, string text) => new KeyValuePair<string, string>(id, text);
+
+        // ---- THE ONE TABLE: tool -> group --------------------------------------------------
+        // As in the proposal's annex A1. Membership follows what a session doing that kind
+        // of work calls (measured usage), never a name prefix. EXACTLY ONE ROW PER TOOL.
+        private static readonly List<KeyValuePair<string, string>> Rows = new List<KeyValuePair<string, string>>
+        {
+            // nucleo (16 contract tools; the server's own controls are ServerCoreTools)
+            R("horizun_health", Core), R("horizun_target", Core), R("horizun_job_status", Core),
+            R("horizun_submit_job", Core), R("horizun_query_model", Core), R("horizun_list_elements", Core),
+            R("horizun_navigate", Core), R("horizun_capture_view", Core), R("horizun_write_params_verified", Core),
+            R("horizun_delete_verified", Core), R("horizun_verify_changes", Core), R("horizun_undo", Core),
+            R("horizun_execute_python", Core), R("horizun_request_python_access", Core),
+            R("horizun_save_document", Core), R("horizun_open_document", Core),
+
+            // lectura
+            R("horizun_file_info", "lectura"), R("get_document_info", "lectura"), R("horizun_room_boundaries", "lectura"),
+            R("horizun_model_scan", "lectura"), R("horizun_measure_geometry", "lectura"),
+            R("horizun_query_relations", "lectura"), R("horizun_project_context", "lectura"),
+            R("horizun_selection_context", "lectura"), R("horizun_api_help", "lectura"),
+            R("horizun_query_classification", "lectura"), R("horizun_model_diff", "lectura"),
+
+            // modelado
+            R("horizun_create_elements", "modelado"), R("horizun_transform_elements", "modelado"),
+            R("horizun_execute_plan", "modelado"), R("horizun_manage_styles", "modelado"),
+            R("horizun_manage_materials", "modelado"),
+            R("horizun_manage_units", "modelado"), R("horizun_ungroup_and_mark", "modelado"),
+            R("horizun_manage_phases", "modelado"), R("horizun_manage_worksets", "modelado"),
+            R("horizun_manage_groups", "modelado"), R("horizun_regroup_by_param", "modelado"),
+            R("horizun_manage_assemblies_parts", "modelado"), R("horizun_join_geometry", "modelado"),
+
+            // arquitectura
+            R("horizun_create_railing", "arquitectura"), R("horizun_split_multilayer_walls", "arquitectura"),
+            R("horizun_wall_sweep", "arquitectura"), R("horizun_split_floor_loops", "arquitectura"),
+            R("horizun_split_by_level", "arquitectura"), R("horizun_embed_floors_in_toposolid", "arquitectura"),
+            R("horizun_grade_toposolid_around_floors", "arquitectura"), R("horizun_rectangularize_walls", "arquitectura"),
+            R("horizun_manage_curtain", "arquitectura"), R("horizun_slab_shape", "arquitectura"),
+            R("horizun_room_finishes", "arquitectura"), R("horizun_wall_finish", "arquitectura"),
+
+            // estructura
+            R("horizun_query_structure", "estructura"),
+            R("horizun_read_schedule", "estructura"), R("horizun_structural_connections", "estructura"),
+            R("horizun_plan_structure", "estructura"), R("horizun_split_multilayer_slabs", "estructura"),
+            R("horizun_copy_slab_elevations", "estructura"), R("horizun_framing", "estructura"),
+
+            // mep
+
+            // documentacion
+            R("horizun_manage_views", "documentacion"), R("horizun_export", "documentacion"),
+            R("horizun_annotate", "documentacion"), R("horizun_sheet_layout", "documentacion"),
+            R("horizun_get_dimension_references", "documentacion"), R("horizun_query_dimensions", "documentacion"),
+            R("horizun_pack_sheets", "documentacion"), R("horizun_view_visibility", "documentacion"),
+            R("horizun_edit_dimensions", "documentacion"), R("horizun_view_crop", "documentacion"),
+            R("horizun_manage_revisions", "documentacion"), R("horizun_plan_annotations", "documentacion"),
+            R("horizun_query_detail_2d", "documentacion"), R("horizun_plan_views", "documentacion"),
+            R("horizun_planimetry_ops", "documentacion"),
+            R("horizun_detail_2d", "documentacion"),
+
+            // cad_ifc
+            R("horizun_validate_ids", "cad_ifc"),
+
+            // auditoria
+            R("horizun_query_planimetry", "auditoria"), R("horizun_audit_model", "auditoria"),
+            R("horizun_audit_planimetry", "auditoria"), R("horizun_fix_planimetry", "auditoria"),
+            R("horizun_apply_corrections", "auditoria"), R("horizun_audit_access", "auditoria"),
+            R("horizun_code_check", "auditoria"), R("horizun_audit_support", "auditoria"),
+
+            // coordinacion
+            R("horizun_exchange", "coordinacion"),
+
+            // nube_cde
+            R("horizun_cde_cloud", "nube_cde"), R("horizun_acc_upload_status", "nube_cde"),
+            R("horizun_information_container", "nube_cde"),
+
+            // familias
+            R("horizun_manage_parameters", "familias"),
+            R("horizun_bind_shared_param", "familias"),
+            R("horizun_template_kit", "familias"),
+            R("horizun_catalog_lookup", "familias"), R("horizun_set_keynote", "familias"),
+            R("horizun_manage_classification_table", "familias"),
+
+            // datos
+            R("horizun_quantities", "datos"), R("horizun_manage_schedules", "datos"),
+            R("horizun_create_schedule", "datos"), R("horizun_get_schedule_data", "datos"),
+            R("horizun_excel_write_rows", "datos"), R("horizun_excel_read_rows", "datos"),
+            R("horizun_list_schedules", "datos"), R("horizun_budget_compare", "datos"),
+            R("horizun_power_bi_push", "datos"), R("horizun_selection_exchange", "datos"),
+            R("horizun_link_schedule", "datos"), R("horizun_run_procedure", "datos"),
+
+            // admin
+            R("horizun_document_session", "admin"), R("horizun_relinquish_all", "admin"),
+            R("horizun_promote_script", "admin"), R("horizun_repair_memory", "admin")
+        };
+
+        private static KeyValuePair<string, string> R(string tool, string group) => new KeyValuePair<string, string>(tool, group);
+
+        /// <summary>
+        /// Server-only tools that ride in the core group. They are not contract rows (the
+        /// add-in never sees them, Contract.Hash does not move): the session's own controls.
+        /// horizun_toolsets is the core's seventeenth tool; describe/call are the two meta tools.
+        /// </summary>
+        public static readonly string[] ServerCoreTools = { "horizun_toolsets", "horizun_describe_tool", "horizun_call_tool" };
+
+        // ---- profiles: core + groups ---------------------------------------------------------
+        private static readonly List<KeyValuePair<string, string[]>> ProfileList = new List<KeyValuePair<string, string[]>>
+        {
+            P(CoreProfile),
+            P("auditor", "lectura", "auditoria", "documentacion"),
+            P("modelador_arquitectura", "lectura", "modelado", "arquitectura"),
+            P("modelador_estructura", "lectura", "modelado", "estructura"),
+            P("modelador_mep", "lectura", "modelado", "mep"),
+            P("modelador", "lectura", "modelado", "arquitectura", "estructura", "mep", "cad_ifc", "familias"),
+            P("documentador", "lectura", "documentacion", "datos"),
+            P("coordinador", "lectura", "coordinacion", "nube_cde", "cad_ifc", "documentacion"),
+            P("analista_datos", "lectura", "datos", "familias"),
+            P(FullProfile, "lectura", "modelado", "arquitectura", "estructura", "mep", "documentacion", "cad_ifc",
+              "auditoria", "coordinacion", "nube_cde", "familias", "datos", "admin")
+        };
+
+        private static KeyValuePair<string, string[]> P(string id, params string[] groups) =>
+            new KeyValuePair<string, string[]>(id, groups);
+
+        private static readonly Dictionary<string, string> ProfileTextMap = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [CoreProfile] = "Core only; every other group on demand with horizun_toolsets.",
+            ["auditor"] = "Model audits, planimetry and documentation review.",
+            ["modelador_arquitectura"] = "Architectural modelling.",
+            ["modelador_estructura"] = "Structural modelling.",
+            ["modelador_mep"] = "The model work MEP starts from (MEP routing and connection are in the Pro edition).",
+            ["modelador"] = "Complete modeller: architecture, structure, MEP basics, IDS and family data.",
+            ["documentador"] = "Views, sheets, annotation, export and schedules.",
+            ["coordinador"] = "Coordination data, CDE, IDS and documentation.",
+            ["analista_datos"] = "Quantities, schedules, Excel, Power BI and family data.",
+            [FullProfile] = "Every group: the 3.x list, unchanged."
+        };
+
+        /// <summary>
+        /// Other names a client may use for a group: the 3.x toolset names (curated, not
+        /// derived from their overlapping membership) and English words. A name that is
+        /// itself a group (mep, admin) always means the group.
+        /// </summary>
+        private static readonly Dictionary<string, string[]> GroupAliasMap = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["core"] = new[] { Core },
+            ["unsafe_code"] = new[] { Core },
+            ["read"] = new[] { "lectura" },
+            ["reading"] = new[] { "lectura" },
+            ["local"] = new[] { "lectura" },
+            ["model"] = new[] { "modelado" },
+            ["modeling"] = new[] { "modelado" },
+            ["architecture"] = new[] { "arquitectura" },
+            ["structure"] = new[] { "estructura" },
+            ["documentation"] = new[] { "documentacion" },
+            ["cad"] = new[] { "cad_ifc" },
+            ["ifc"] = new[] { "cad_ifc" },
+            ["interoperability"] = new[] { "cad_ifc", "datos" },
+            ["audit"] = new[] { "auditoria" },
+            ["planimetry"] = new[] { "auditoria", "documentacion" },
+            ["coordination"] = new[] { "coordinacion" },
+            ["cloud"] = new[] { "nube_cde" },
+            ["cde"] = new[] { "nube_cde" },
+            ["family"] = new[] { "familias" },
+            ["families"] = new[] { "familias" },
+            ["schedules"] = new[] { "datos" },
+            ["powerbi"] = new[] { "datos" },
+            ["data"] = new[] { "datos" },
+            ["administration"] = new[] { "admin" }
+        };
+
+        private static readonly Dictionary<string, string> ProfileAliasMap = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["core"] = CoreProfile,
+            ["full"] = FullProfile,
+            ["all"] = FullProfile,
+            ["complete"] = FullProfile,
+            ["modeler"] = "modelador",
+            ["modelador_completo"] = "modelador",
+            ["modelador_arq"] = "modelador_arquitectura",
+            ["modelador_est"] = "modelador_estructura",
+            ["documenter"] = "documentador",
+            ["coordinator"] = "coordinador",
+            ["analista"] = "analista_datos",
+            ["data_analyst"] = "analista_datos"
+        };
+
+        private static readonly Dictionary<string, string> ByTool = BuildByTool();
+
+        private static Dictionary<string, string> BuildByTool()
+        {
+            var d = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (KeyValuePair<string, string> row in Rows)
+            {
+                if (d.ContainsKey(row.Key))
+                    throw new InvalidOperationException("ToolGroupCatalog declares '" + row.Key + "' twice.");
+                d[row.Key] = row.Value;
+            }
+            foreach (string t in ServerCoreTools) d[t] = Core;
+            return d;
+        }
+
+        /// <summary>Group ids in display order, core first.</summary>
+        public static IReadOnlyList<string> Groups { get; } = GroupList.Select(g => g.Key).ToList();
+
+        /// <summary>The groups a profile may switch: every group but core.</summary>
+        public static IReadOnlyList<string> OptionalGroups { get; } = GroupList.Select(g => g.Key).Where(g => g != Core).ToList();
+
+        public static IReadOnlyList<string> Profiles { get; } = ProfileList.Select(p => p.Key).ToList();
+
+        public static IReadOnlyDictionary<string, string[]> GroupAliases => GroupAliasMap;
+
+        public static IReadOnlyDictionary<string, string> ProfileAliases => ProfileAliasMap;
+
+        public static string DescriptionOf(string group) =>
+            GroupList.Where(g => g.Key == group).Select(g => g.Value).FirstOrDefault();
+
+        public static string ProfileDescription(string profile) =>
+            profile != null && ProfileTextMap.TryGetValue(profile, out string d) ? d : null;
+
+        /// <summary>The group a tool belongs to, or null when the table has no row for it.</summary>
+        public static string GroupOf(string tool) =>
+            tool != null && ByTool.TryGetValue(tool, out string g) ? g : null;
+
+        /// <summary>The contract tools of a group, in table order (server tools excluded).</summary>
+        public static string[] MembersOf(string group) =>
+            Rows.Where(r => r.Value == group && Edition.Ships(r.Key)).Select(r => r.Key).ToArray();
+
+        /// <summary>The optional groups a profile switches on (core is implied), or null for an unknown profile.</summary>
+        public static string[] GroupsOfProfile(string profile)
+        {
+            string id = CanonicalProfile(profile);
+            return id == null ? null : ProfileList.First(p => p.Key == id).Value;
+        }
+
+        /// <summary>The profile id a name means (id or alias, any case), or null.</summary>
+        public static string CanonicalProfile(string name)
+        {
+            string n = Normal(name);
+            if (n.Length == 0) return null;
+            if (ProfileList.Any(p => p.Key == n)) return n;
+            return ProfileAliasMap.TryGetValue(n, out string id) ? id : null;
+        }
+
+        /// <summary>
+        /// The groups a name stands for: a group id or a group alias (3.x toolset or English),
+        /// or null when it means nothing. Profiles are NOT accepted here; see GroupsOfProfile.
+        /// </summary>
+        public static string[] ResolveGroupName(string name)
+        {
+            string n = Normal(name);
+            if (n.Length == 0) return null;
+            if (Groups.Contains(n)) return new[] { n };
+            return GroupAliasMap.TryGetValue(n, out string[] targets) ? targets : null;
+        }
+
+        private static string Normal(string name)
+        {
+            string n = (name ?? "").Trim().ToLowerInvariant().Replace('-', '_').Replace(' ', '_');
+            // The proposal writes them with accents; a client may too.
+            return n.Replace("\u00f3", "o").Replace("\u00ed", "i").Replace("\u00e1", "a").Replace("\u00e9", "e").Replace("\u00fa", "u").Replace("\u00e3\u00b3", "o").Replace("\u00e3\u00ad", "i").Replace("\u00e3\u00a1", "a").Replace("\u00e3\u00a9", "e").Replace("\u00e3\u00ba", "u");
+        }
+
+        /// <summary>
+        /// Every problem with the map: a row naming a tool that does not exist, a row naming
+        /// an unknown group, a profile or alias naming an unknown group and - given the
+        /// contract names - every tool with NO row. Tests fail on all of them.
+        /// </summary>
+        public static List<string> Audit(IEnumerable<string> contractNames)
+        {
+            var problems = new List<string>();
+            var names = new HashSet<string>(contractNames ?? new string[0], StringComparer.Ordinal);
+            var groups = new HashSet<string>(Groups, StringComparer.Ordinal);
+            foreach (KeyValuePair<string, string> row in Rows)
+            {
+                if (!names.Contains(row.Key))
+                    problems.Add("group row names a tool that does not exist: '" + row.Key + "'");
+                if (!groups.Contains(row.Value))
+                    problems.Add("'" + row.Key + "' names unknown group '" + row.Value + "'");
+            }
+            foreach (string name in names)
+                if (!ByTool.ContainsKey(name))
+                    problems.Add("'" + name + "' has no group: add exactly one row to ToolGroupCatalog.Rows");
+            foreach (string t in ServerCoreTools)
+                if (names.Contains(t)) problems.Add("server tool '" + t + "' collides with a contract tool");
+            foreach (KeyValuePair<string, string[]> p in ProfileList)
+            {
+                if (!ProfileTextMap.ContainsKey(p.Key)) problems.Add("profile '" + p.Key + "' has no description");
+                foreach (string g in p.Value)
+                    if (!groups.Contains(g) || g == Core)
+                        problems.Add("profile '" + p.Key + "' names unknown or core group '" + g + "'");
+            }
+            foreach (KeyValuePair<string, string[]> a in GroupAliasMap)
+            {
+                if (groups.Contains(a.Key)) problems.Add("group alias '" + a.Key + "' shadows a group");
+                foreach (string g in a.Value)
+                    if (!groups.Contains(g)) problems.Add("group alias '" + a.Key + "' names unknown group '" + g + "'");
+            }
+            foreach (KeyValuePair<string, string> a in ProfileAliasMap)
+                if (!ProfileList.Any(p => p.Key == a.Value))
+                    problems.Add("profile alias '" + a.Key + "' names unknown profile '" + a.Value + "'");
+            string[] full = GroupsOfProfile(FullProfile);
+            foreach (string g in OptionalGroups)
+                if (!full.Contains(g)) problems.Add("the full profile leaves out group '" + g + "'");
+            return problems;
+        }
+    }
+
     public static class Contract
     {
         /// <summary>
@@ -513,7 +812,10 @@ namespace Horizun.Contracts
         // v3 adds the authenticated __horizun_cancel_job control message: tasks/cancel asks
         // the add-in to take a DURABLE job out of AsyncQueue before it starts, and the
         // job record gains the terminal status "cancelled" (audit 2026-10-08).
-        public const int ProtocolVersion = 3;
+        // v4: __horizun_cancel_queued carries `intent` ("cancel" | "timeout"). A caller whose WAIT expired no longer cancels a
+        // running cooperative job (review M5); an add-in that predates it would, so the halves must match.
+        public const int ProtocolVersion = 4;
+        public const int CreateElementsBatchLimit = 2000;
 
         /// <summary>
         /// HOW BIG ANYTHING ON THE WIRE MAY GET. Shared, and part of the hash below, for
@@ -579,16 +881,56 @@ namespace Horizun.Contracts
           }, ""additionalProperties"": false }
       }, ""additionalProperties"": false }";
 
-        public static readonly List<CommandContract> All = Annotate(new List<CommandContract>{
+        /// <summary>The element selector shared by horizun_measure_geometry and horizun_delete_verified mode=query.</summary>
+        // The identity fields a declaring writer accepts (ElementIdentityGuard): verified before anything is written.
+        // `bare` says, in a few words, which id key a bare unique_id is compared with (the long form is docs/IDENTITY-GUARD.md).
+        private const string IdentityMapSchema = @"{ ""type"": ""object"", ""description"": ""{id_key: unique_id|{unique_id,expected_*}}"" }";
+        // `map`: false where the tool has a single id key per action, so identity{} would only repeat the bare fields
+        // (it is still accepted; the list has no room to declare it everywhere).
+        private static string IdentityFields(string bare, bool map = true) =>
+            @"""unique_id"": { ""type"": ""string"", ""description"": ""Checks " + bare + @"."" }, ""unique_ids"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } }, ""expected_category"": { ""type"": ""string"" }, ""expected_type"": { ""type"": ""string"" }, " + (map ? @"""identity"": " + IdentityMapSchema + ", " : "");
+        /// <summary>The opt-in cooperative-reading argument, word for word what model_scan, query_model and
+        /// list_elements publish (Tools.cs holds one short form for all of them).</summary>
+        private const string CooperativeReadSchema = @"{
+      ""type"": ""object"",
+      ""additionalProperties"": false,
+      ""description"": ""OPT-IN cooperative reading. OMIT IT AND NOTHING CHANGES: this reader behaves exactly as it always has, and the reply carries no extra field. Send it when a PARTIAL answer that arrives is worth more to you than a complete one nobody waited for - a scan of a large model holds Revit's UI thread for as long as it runs, and the person whose Revit it is cannot click anything meanwhile. With it, the read asks BETWEEN elements whether to carry on: it stops if you have gone away, and it stops at your budget. A result that stopped early says PARTIAL and never passes itself off as clean. WHAT THIS DOES NOT PROVE: ui_budget_ms bounds how long the command SPENDS, not that Revit's interface stayed responsive - the command holds the UI thread for its whole duration, the reply still travels back through the pipe, and Revit's own event queue decides when the window repaints. Stopping work and releasing the interface are different events, and only a sampler watching from outside can measure the second."",
+      ""properties"": {
+        ""ui_budget_ms"": {
+          ""type"": ""integer"",
+          ""minimum"": 1000,
+          ""maximum"": 600000,
+          ""default"": 20000,
+          ""description"": ""How long this read may hold Revit's UI thread before it stops and says so. Twenty seconds by default, chosen against what a person does: below about that a frozen window reads as 'it is working'; past it people start clicking, then killing Revit.""
+        },
+        ""max_units"": {
+          ""type"": ""integer"",
+          ""minimum"": 1,
+          ""description"": ""A hard bound on elements EXAMINED, independent of the clock. Separate from the budget on purpose: a bound in units is reproducible across machines and a bound in milliseconds is not.""
+        },
+        ""cursor"": {
+          ""type"": ""string"",
+          ""description"": ""Continue a previous partial read. Opaque, and REFUSED against a different request: resuming one query at another query's position produces a page of the wrong elements with nothing to show that anything went wrong. Where this command already pages with its own cursor or offset, the reply says so and issues none here - two continuation tokens over different things is worse than either.""
+        }
+      }
+    }";
+
+        private const string ElementSelectorSchema = @"{ ""type"": ""object"", ""additionalProperties"": false, ""description"": ""Narrows (AND); at least one key. Never implies everything."", ""properties"": { ""category"": { ""type"": ""string"" }, ""family"": { ""type"": ""string"" }, ""prefix"": { ""type"": ""string"", ""description"": ""Case-insensitive start of the family, type or element name."" }, ""parameter"": { ""type"": ""object"", ""required"": [""name"", ""value""], ""properties"": { ""name"": { ""type"": ""string"" }, ""value"": { ""type"": ""string"" } } }, ""created_since"": { ""type"": ""string"", ""description"": ""ISO 8601 UTC. Only elements with the HRZ mark can be dated."" } } }";
+        public static readonly List<CommandContract> All = Edition.Filter(Annotate(new List<CommandContract>{
             new CommandContract
             {
                 Name = "get_document_info",
                 Command = "get_document_info",
-                Description = "Active document facts and model_identity (strong GUID evidence; Project Information alone is insufficient). Read-only.",
+                Description = "Active document facts and model_identity. operation=context lists levels (id,name,elevation_m) and non-template views (id,name,type,level_id,level_name), paginated with offset/max_rows. Query these IDs before capture, sheets or creation. Read-only.",
                 InputSchema = new JObject
                 {
                     ["type"] = "object",
-                    ["properties"] = new JObject(),
+                    ["properties"] = new JObject
+                    {
+                        ["operation"] = new JObject { ["type"] = "string", ["enum"] = new JArray("info", "context"), ["default"] = "info" },
+                        ["offset"] = new JObject { ["type"] = "integer", ["minimum"] = 0, ["default"] = 0, ["description"] = "context: offset in each population." },
+                        ["max_rows"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 500, ["default"] = 100, ["description"] = "context: rows per population; follow next_offset until null." }
+                    },
                     ["additionalProperties"] = false
                 }
             },
@@ -601,12 +943,20 @@ namespace Horizun.Contracts
                     "the process id, every open document and the one that is ACTIVE right now (an explicit null " +
                     "when none is, never an empty title). Call it before anything that reads or writes a model: " +
                     "with two Revit versions open, the expensive failure is not a dead bridge, it is a healthy " +
-                    "one attached to the wrong instance.",
+                    "one attached to the wrong instance. Always reports modal_dialog_policy, including owner and session controls for automatic notice closure.",
                 InputSchema = new JObject
                 {
                     ["type"] = "object",
                     ["properties"] = new JObject
                     {
+                        ["detail"] = new JObject
+                        {
+                            ["type"] = "string", ["enum"] = new JArray("compact", "full"), ["default"] = "compact",
+                            ["description"] = "compact (default) answers who/where/what is active - version, commit, add-in assembly, " +
+                                "Python runtime, controls, active document, open documents, pending sync - and leaves out the heavy " +
+                                "diagnostics (data paths, registry, jobs, timings, clients, recent writes, the Hub block); it names what it left out. " +
+                                "full returns everything."
+                        },
                         ["include_verification_catalog"] = new JObject
                         {
                             ["type"] = "boolean", ["default"] = false,
@@ -630,14 +980,26 @@ namespace Horizun.Contracts
                     "the LOCAL file only - it is NOT a synchronize with central, and the response says so. " +
                     "Optional require_gate: the model is re-audited against a declared profile before the save " +
                     "and a blocked or not-assessable decision refuses with the file untouched; Revit's own Save " +
-                    "and Synchronize with Central are not intercepted, and the reply says so.",
+                    "and Synchronize with Central are not intercepted, and the reply says so. " +
+                    "operation: save_local (default); relinquish_own (frees only what this user owns, measured " +
+                    "before/after); sync_with_central (full_write/unsafe_code, or safe_write with the owner's sync grant or sync-only option; comment required). " +
+                    "Both rehearse by default and apply with the confirmation_token. Sync refused on failed session checks.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
     ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED. Title or full path of the document to change. It must be the document ACTIVE in Revit; this never switches documents for you. Aliases accepted for compatibility: expected_document, target_document_title."" },
-    ""expected_document"": { ""type"": ""string"", ""description"": ""GUARD. If given, the save is refused unless the ACTIVE document's title matches it. Cheap insurance against saving the wrong open model."" },
+    ""expected_document"": { ""type"": ""string"", ""description"": ""GUARD: refused unless the ACTIVE document's title matches."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""save_local"", ""sync_with_central"", ""relinquish_own""], ""default"": ""save_local"" },
+    ""comment"": { ""type"": ""string"", ""description"": ""sync: required, non-empty."" },
+    ""relinquish"": { ""type"": ""string"", ""enum"": [""all"", ""keep_borrowed"", ""borrowed_only"", ""none""], ""default"": ""all"" },
+    ""compact"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Compact a local save or central sync."" },
+    ""accept_findings"": { ""type"": ""boolean"", ""description"": ""sync: accepts unverified_python only."" },
+    ""accept_findings_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""sync: accepts failed_check rows; name EVERY element id. Bound to token."" },
+    ""dry_run"": { ""type"": ""boolean"", ""description"": ""sync/relinquish_own only; defaults to true for those operations. Omit for save_local."" },
+    ""confirmation_token"": { ""type"": ""string"" },
     ""require_gate"": " + RequireGateSchema + @"
   },
+  ""allOf"": [{ ""if"": { ""required"": [""operation""], ""properties"": { ""operation"": { ""const"": ""relinquish_own"" } } }, ""then"": { ""not"": { ""required"": [""compact""] } } }],
   ""additionalProperties"": false
 }")
             },
@@ -667,7 +1029,7 @@ namespace Horizun.Contracts
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""path"": { ""type"": ""string"", ""description"": ""Full path of the .rvt or .rfa to open. Mutually exclusive with the cloud_* GUIDs - naming a model two ways is refused, not guessed."" },
+    ""path"": { ""type"": ""string"", ""description"": ""Full path of the .rvt or .rfa to open. Mutually exclusive with the cloud_* GUIDs - naming a model two ways is refused, not guessed. Send a new idempotency_key (UUID) for this open; keep it only when retrying the same call."" },
     ""expected_version"": { ""type"": ""string"", ""description"": ""OPTIONAL here, REQUIRED by horizun_document_session, and the same check either way: the Revit year you believe this bridge is, e.g. '2026'. Checked against the HOST before anything is touched - the file and the host can both be 2025 and you can still be talking to the Revit next door. For a cloud model this is the only version check that CAN run."" },
     ""cloud_project_guid"": { ""type"": ""string"", ""description"": ""ACC / BIM 360 PROJECT GUID as Revit knows it. NOT the project id in the ACC web URL, which is a different identifier for the same project. An all-zero GUID is refused: Revit would build a path that looks valid and resolves to nothing."" },
     ""cloud_model_guid"": { ""type"": ""string"", ""description"": ""ACC / BIM 360 MODEL GUID as Revit knows it. NOT the 'urn:adsk.wipprod:dm.lineage:...' from the web UI - that decodes to a valid-looking GUID from the document manager, and opening it answers 'the central model is missing'. These GUIDs can be read off Revit's own CollaborationCache on disk."" },
@@ -677,8 +1039,9 @@ namespace Horizun.Contracts
     ""open_central"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Permit opening the CENTRAL model directly - working in the file everyone else synchronizes to. REQUIRED for a cloud model unless you pass detach: a model in ACC / BIM 360 is the central, and living in the cloud rather than on a server share does not make it less shared. Prefer detach."" },
     ""open_all_worksets"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Open every workset. Needed when something downstream MEASURES worksets, because a closed workset is indistinguishable from an empty one - a scan over a partly loaded model quietly scores the parts it cannot see. IT CAN ALSO KILL REVIT, and that is measured, not feared: on 2026-07-30, 2 of 24 ACC models took Revit 2025.4 down with an access violation (0xc0000005) inside SelectedPartitionsForEdit/decommitDocument on open, identical signature both times, with 30 GB of RAM free - and both opened and read fine with this left false. So it is off by default, and if a specific model dies on open this is the first thing to drop. The cost of dropping it is that whatever measures worksets is then measuring what got loaded, not what is there."" },
     ""audit"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Run Revit's audit while opening. Slow, and it can modify the model to repair it."" },
-    ""on_open_dialog"": { ""type"": ""string"", ""enum"": [""cancel"", ""dismiss""], ""default"": ""cancel"", ""description"": ""How a modal dialog raised WHILE opening is answered when nobody is at the keyboard. 'cancel' (default) presses Cancel - the safe answer, and a model that will not open unattended is a finding. 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort: a dialog whose continue button is not the default is recorded as answered in revit_said rather than silently proceeding. Scoped to the open call only; every other dialog still cancels."" }
+    ""on_open_dialog"": { ""type"": ""string"", ""enum"": [""cancel"", ""dismiss"", ""resolve_in_memory""], ""default"": ""cancel"", ""description"": ""How a modal dialog raised WHILE opening is answered when nobody is at the keyboard. 'cancel' (default) presses Cancel; 'dismiss' acknowledges and continues. 'resolve_in_memory' requires detach=true and requests default error resolutions; after opening, each requested deletion ID is reported as verified_deleted, still_present or unverified. The recovered document is protected from overwriting the source. Scoped to the open call only; every other dialog still cancels."" }
   },
+  ""required"": [""idempotency_key""],
   ""additionalProperties"": false
 }")
             },
@@ -688,17 +1051,16 @@ namespace Horizun.Contracts
                 Command = "horizun_relinquish_all",
                 Description =
                     "Relinquish every workset and element this user owns in the ACTIVE workshared document, then " +
-                    "MEASURE it at both levels: workset owners and every collectable element's checkout status are " +
-                    "read before and after; unreadable element ownership makes the result unknown, never complete. " +
-                    "The element/workset ids returned by Revit are call telemetry, not a substitute for the " +
-                    "postcondition census, so a partial relinquish cannot pass as complete. Refuses a document that is " +
-                    "not workshared rather than reporting a cheerful no-op - that request means the caller " +
-                    "believes something false about the model. Does not synchronize and does not save.",
+                    "MEASURE both levels before and after (workset owners, every element's checkout status); " +
+                    "unreadable ownership makes the result unknown, never complete, and Revit's returned ids are not " +
+                    "the census. Refuses a non-workshared document. Does not synchronize or save.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
     ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED. Title or full path of the document to change. It must be the document ACTIVE in Revit; this never switches documents for you. Aliases accepted for compatibility: expected_document, target_document_title."" },
-    ""expected_document"": { ""type"": ""string"", ""description"": ""GUARD. If given, the relinquish is refused unless the ACTIVE document's title matches it."" }
+    ""expected_document"": { ""type"": ""string"", ""description"": ""GUARD. If given, the relinquish is refused unless the ACTIVE document's title matches it."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Default TRUE: reports what this user owns and returns a confirmation_token; nothing is relinquished."" },
+    ""confirmation_token"": { ""type"": ""string"", ""description"": ""The token from the dry run; required with dry_run=false."" }
   },
   ""additionalProperties"": false
 }")
@@ -708,13 +1070,10 @@ namespace Horizun.Contracts
                 Name = "horizun_capture_view",
                 Command = "horizun_capture_view",
                 Description =
-                    "Export a view as a PNG and hand the IMAGE back, so you can actually look at the model rather " +
-                    "than only read its parameters. Reports the file Revit really produced: ExportImage treats the " +
-                    "path you give it as a stem and appends the view type and name, so the requested path is not " +
-                    "the resulting one, and a handler that echoes the request is naming a file that does not exist. " +
-                    "Pixel dimensions are read out of the PNG header - what the file IS, not what was asked for. " +
-                    "Refuses schedules, which Revit cannot raster-export, instead of reporting a capture that is " +
-                    "not there.",
+                    "Capture a view image: First query view_id with get_document_info operation=context (or query_planimetry mode=views). " +
+                    "Exports the view as a PNG and returns the IMAGE. Reports the file Revit really produced " +
+                    "(ExportImage appends view type and name to the path given) and the pixel size read from the " +
+                    "PNG header. Schedules cannot be raster-exported and are refused.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -756,7 +1115,11 @@ namespace Horizun.Contracts
     ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1, ""maxItems"": 50, ""description"": ""Views to check with include_annotation=true. Each id must resolve to a view in this document."" },
     ""clearance_rules"": { ""type"": ""array"", ""items"": { ""type"": ""object"" }, ""description"": ""Equipment clearance zones [{category OST_*, face front|all|top, depth_mm, width_extra_mm?, height_mm?}]; TOOLS-EXTENDED."" },
     ""target_document"": { ""type"": ""string"", ""description"": ""Title or full path of the ACTIVE document; required when capture=true or operation != check."" },
-    ""operation"": { ""type"": ""string"", ""enum"": [""check"", ""snapshot"", ""compare_to""], ""default"": ""check"", ""description"": ""snapshot: save a named baseline image+camera (framed on element_ids or view_id). compare_to: pixel-diff against it."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""check"", ""snapshot"", ""compare_to"", ""what_if""], ""default"": ""check"", ""description"": ""snapshot: save a named baseline image+camera (framed on element_ids or view_id). compare_to: pixel-diff against it. what_if: apply what_if, measure element_ids (default its ids) before and after, ALWAYS roll back and prove it (rolled_back_verified); refused on workshared models."" },
+    ""what_if"": { ""type"": ""object"", ""required"": [""action"", ""ids""], ""additionalProperties"": false,
+      ""properties"": { ""action"": { ""type"": ""string"", ""enum"": [""delete"", ""join"", ""unjoin"", ""move""] }, ""ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": { ""type"": ""integer"" } }, ""vector"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""move: [x,y,z] in unit."" } } },
+    ""measures"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""what_if: horizun_measure_geometry measures; default bounding_box, solid_volume."" },
+    ""unit"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""snapshot_name"": { ""type"": ""string"", ""description"": ""Baseline name for snapshot/compare_to; kept per document."" },
     ""view_id"": { ""type"": ""integer"", ""description"": ""3D view whose camera and crop/section box snapshot reuses when element_ids is omitted."" }
   },
@@ -789,6 +1152,7 @@ namespace Horizun.Contracts
     ""confirmation_token"": { ""type"": ""string"", ""description"": ""Required when dry_run=false; returned by the exact dry run."" },
     ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED. Title or full path of the ACTIVE document to change."" }
   },
+  ""allOf"": [{ ""if"": { ""required"": [""dry_run""], ""properties"": { ""dry_run"": { ""const"": false } } }, ""then"": { ""required"": [""idempotency_key""] } }],
   ""additionalProperties"": false
 }")
             },
@@ -860,41 +1224,31 @@ namespace Horizun.Contracts
                 Name = "horizun_create_elements",
                 Command = "horizun_create_elements",
                 Description =
-                    "Create a heterogeneous batch of architectural, structural and MEP elements in one atomic transaction: " +
-                    "levels, grids, walls, floors, ceilings, footprint roofs, rooms, family instances, structural framing, " +
-                    "structural columns, ducts, pipes, conduits, cable trays, rectangular wall openings (structural walls " +
-                    "require an explicit opt-in and the host is re-read after commit), and MEP fittings (elbow/union/transition/tee) " +
-                    "joining OPEN connectors that meet - the connector pair is chosen deterministically or refused with the " +
-                    "measured reason, and each approved connector is re-read as CONNECTED after commit. tabular_source " +
-                    "turns a CSV into the batch instead of elements: one family_instance per row (declared decimal " +
-                    "separator, internal or shared coordinates - shared undoes the active project position), expanded on " +
-                    "every call so a file edited between rehearsal and apply resolves a different plan and refuses stale. Geometry enters in explicit " +
-                    "mm/m/feet units; every referenced type and level resolves before a transaction opens. Dry-run " +
-                    "is the default, apply requires confirmation and idempotency, and every created id is re-read " +
-                    "after commit against every supported requested property. Inapplicable fields are refused. " +
-                    "For a same-batch elbow, run endpoints name nominal junctions: verification intersects " +
-                    "committed connector axes and checks attachment; physical_start_feet/physical_end_feet " +
-                    "report the trimmed run separately. " +
-                    "XYZ coordinates use the internal origin; point families require coordinate_mode. Horizontal " +
-                    "profiles carry absolute Z, and an explicit offset must agree with that plane and level. " +
-                    "A validation dry run opens no transaction and is not an API construction rehearsal.",
+                    "Create an atomic batch of architectural, structural or MEP elements, including door, window and wall_chain. " +
+                    "tabular_source takes CSV family_instance rows; edits invalidate rehearsal. " +
+                    "XYZ coordinates use the internal origin; point families require coordinate_mode. " +
+                    "Inapplicable fields are refused. Dry run defaults to validation; apply needs confirmation and idempotency. " +
+                    "Re-reads requested properties and fitting connections. Same-batch elbows verify nominal junctions; " +
+                    "physical_start_feet/physical_end_feet report trims.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document""],
   ""properties"": {
+    ""level_span_exception"": { ""type"": ""string"", ""description"": ""Why rows may cross a level; no model parameter."" },
     ""tabular_source"": { ""type"": ""object"", ""description"": ""INSTEAD of elements: a CSV whose rows become family_instance entries. Columns x,y[,z][,rotation] under the DECLARED decimal_separator; explicit z is absolute internal or shared (undoing the active project position). Without a Z column, place on level_id. A missing cell in a declared Z column is refused. The reply carries path/sha256/data_rows and each entry its source_row."", ""properties"": { ""path"": { ""type"": ""string"" }, ""type_id"": { ""type"": ""integer"" }, ""level_id"": { ""type"": ""integer"" }, ""coordinates"": { ""type"": ""string"", ""enum"": [""internal"", ""shared""], ""default"": ""internal"" }, ""decimal_separator"": { ""type"": ""string"", ""enum"": [""."", "",""], ""default"": ""."" }, ""x_column"": { ""type"": ""string"" }, ""y_column"": { ""type"": ""string"" }, ""z_column"": { ""type"": ""string"" }, ""rotation_column"": { ""type"": ""string"" } }, ""required"": [""path"", ""type_id"", ""level_id""] },
     ""target_document"": { ""type"": ""string"" },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
-    ""elements"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": {
+    ""elements"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": " + CreateElementsBatchLimit + @", ""items"": {
       ""type"": ""object"", ""required"": [""kind""], ""properties"": {
-        ""kind"": { ""type"": ""string"", ""enum"": [""level"", ""grid"", ""wall"", ""floor"", ""ceiling"", ""roof"", ""room"", ""family_instance"", ""sprinkler"", ""structural_framing"", ""structural_column"", ""duct"", ""pipe"", ""conduit"", ""cable_tray"", ""flex_pipe"", ""flex_duct"", ""fitting"", ""wall_opening"", ""slab_opening"", ""beam_system"", ""wall_foundation"", ""accessory_inline"", ""mep_system"", ""shaft"", ""room_separator"", ""space"", ""area"", ""area_boundary""] },
+        ""kind"": { ""type"": ""string"", ""enum"": [""level"", ""grid"", ""wall"", ""floor"", ""ceiling"", ""roof"", ""room"", ""family_instance"", ""sprinkler"", ""structural_framing"", ""structural_column"", ""duct"", ""pipe"", ""conduit"", ""cable_tray"", ""flex_pipe"", ""flex_duct"", ""fitting"", ""wall_opening"", ""slab_opening"", ""beam_system"", ""wall_foundation"", ""accessory_inline"", ""mep_system"", ""shaft"", ""room_separator"", ""space"", ""area"", ""area_boundary"", ""reference_plane""] },
         ""name"": { ""type"": ""string"", ""description"": ""Level/grid name where supported. REQUIRED for kind=mep_system: an unnamed system is indistinguishable from the ones Revit invents from connectivity."" },
         ""elevation"": { ""type"": ""number"" },
-        ""placement"": { ""type"": ""string"", ""enum"": [""all_enclosed""], ""description"": ""room/space: one per empty region of level_id+phase_id; no point"" },
-        ""phase_id"": { ""type"": ""integer"" }, ""min_area_m2"": { ""type"": ""number"", ""description"": ""all_enclosed: skip smaller regions"" },
+        ""placement"": { ""type"": ""string"", ""enum"": [""point"", ""all_enclosed""], ""description"": ""room/space: point uses level_id+point; all_enclosed fills empty regions of level_id+phase_id."" },
+        ""phase_id"": { ""type"": ""integer"", ""description"": ""Required only with placement=all_enclosed. For level_id+point omit phase_id: Revit assigns the phase; the reply reports it."" }, ""min_area_m2"": { ""type"": ""number"", ""description"": ""all_enclosed: skip smaller regions"" },
+        ""closed"": { ""type"": ""boolean"", ""default"": false, ""description"": ""room_separator: close each profile chain with an edge to its first point; at least three corners. Otherwise preserve open runs."" },
         ""number"": { ""type"": ""string"", ""description"": ""kind='room': the room NUMBER, which is separate from its name and is the identity Revit requires to be unique. Set inside the creating transaction and re-read from the model afterwards."" },
         ""base_level_id"": { ""type"": ""integer"", ""description"": ""kind='shaft': the storey the shaft starts at. A shaft cuts every floor, roof and ceiling between its two levels - that is what separates it from a hole in one slab - and a drawing carries neither, so both are required and neither is defaulted."" },
         ""top_level_id"": { ""type"": ""integer"", ""description"": ""kind='shaft': the storey it stops at. Must sit above base_level_id. Columns (structural_column, or a two-level family_instance such as an architectural column): the top level, with top_offset; or give height instead. Set and read back."" },
-        ""view_id"": { ""type"": ""integer"", ""description"": ""kind='room_separator': the PLAN VIEW of the storey the separator sits on. Revit takes room boundary lines through a view and does not check it: a view of another storey ENDS THE PROCESS rather than raising, so this is validated in the rehearsal. Omit it and horizun_plan_from_cad finds a plan of that storey, or refuses."" },
+        ""view_id"": { ""type"": ""integer"", ""description"": ""kind='room_separator': the PLAN VIEW of the storey the separator sits on. Revit takes room boundary lines through a view and does not check it: a view of another storey ENDS THE PROCESS rather than raising, so this is validated in the rehearsal. Omit it and horizun_plan_from_cad (Pro edition) finds a plan of that storey, or refuses."" },
         ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""arc"": { ""type"": ""object"", ""required"": [""centre"", ""radius""],
           ""description"": ""kind='wall': make it CURVED. start, end, centre and radius over-determine the arc on purpose - the command checks the declaration against itself before writing and refuses arc_does_not_close when the centre is not equidistant from both ends, naming both measured distances. After the commit the built curve is re-read and its centre and radius compared with what was asked for, because 'e is Wall' proves nothing about curvature. Without this a curved DWG wall becomes one straight wall PER CHORD, and no audit can match those back to the single entity the drawing shows."",
@@ -905,36 +1259,44 @@ namespace Horizun.Contracts
           }, ""additionalProperties"": false },
         ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""profile"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 128, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 2000, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } }, ""description"": ""Contours -> XYZ points -> coordinates. Perimeter first, holes after it. Implicit closure; one repeated closing point is accepted. Horizontal, coplanar, disjoint non-touching holes strictly inside the perimeter. Z is absolute from internal origin. Maximum 4000 points total. Roof accepts one contour."" },
+        ""profile"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 128, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 2000, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } }, ""description"": ""Contours -> XYZ points -> coordinates. Perimeter first, holes after it. Implicit closure; one repeated closing point is accepted. Horizontal, coplanar, disjoint non-touching holes strictly inside the perimeter. Z is absolute from internal origin. Maximum 4000 points total."" },
         ""level_id"": { ""type"": ""integer"" }, ""type_id"": { ""type"": ""integer"" },
         ""system_type_id"": { ""type"": ""integer"", ""description"": ""Required for duct and pipe. For kind=mep_system it is the PipingSystemType or MechanicalSystemType the new system is created from - the two domains Revit can create a system in."" },
         ""height"": { ""type"": ""number"" }, ""offset"": { ""type"": ""number"", ""description"": ""Vertical offset from level; if supplied must agree with absolute geometry Z. Otherwise derived from geometry, never from a type default."" },
         ""base_offset"": { ""type"": ""number"", ""description"": ""Wall alias for offset; do not send both."" },
         ""top_offset"": { ""type"": ""number"" },
-        ""coordinate_mode"": { ""type"": ""string"", ""enum"": [""absolute"", ""level_offset""], ""description"": ""Required for point families. absolute: internal-origin XYZ. level_offset: XY internal, Z offset from level_id."" },
+        ""coordinate_mode"": { ""type"": ""string"", ""enum"": [""absolute"", ""level_offset""], ""description"": ""Point families require this; door/window default to level_offset (SUPUESTO). absolute: internal-origin XYZ. level_offset: XY internal, Z offset from level_id."" },
         ""parameters"": { ""type"": ""object"", ""description"": ""Instance parameter map: exact name, BuiltInParameter or GUID. Strings, integers, booleans, ElementIds; double values are Revit internal units, or explicit unit-bearing strings."" },
         ""slope_degrees"": { ""type"": ""number"", ""minimum"": 0, ""exclusiveMaximum"": 90, ""default"": 0, ""description"": ""Uniform slope on all footprint-roof edges."" },
         ""slope_ratio"": { ""type"": ""number"", ""minimum"": 0, ""description"": ""Uniform rise/run, mutually exclusive with slope_degrees and edge_slopes. 8:12 = 0.6666666666666666."" },
-        ""edge_slopes"": { ""type"": ""array"", ""description"": ""One entry per perimeter edge, in input order. Mutually exclusive with uniform slopes."", ""items"": { ""type"": ""object"", ""required"": [""defines_slope""], ""properties"": { ""defines_slope"": { ""type"": ""boolean"" }, ""slope_ratio"": { ""type"": ""number"", ""minimum"": 0 }, ""slope_degrees"": { ""type"": ""number"", ""minimum"": 0, ""exclusiveMaximum"": 90 } }, ""additionalProperties"": false } },
+        ""slope_arrow_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""Sloped ceiling: low point [x,y,z] of the horizontal slope arrow, on the profile datum plane, in the request units."" },
+        ""slope_arrow_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""Sloped ceiling: high point [x,y,z] of the horizontal slope arrow. Slope rises from start to end."" },
+        ""expected_arrow_elevations"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" }, ""description"": ""Sloped ceiling: optional absolute underside Z at arrow start/end. Checked against the committed planar underside within 5 mm; their rise must agree with the requested slope within 1 mm."" },
+        ""edge_slopes"": { ""type"": ""array"", ""description"": ""One entry per edge across ALL contours (perimeter first, then holes). Mutually exclusive with uniform slopes; uniform slopes tilt the perimeter only."", ""items"": { ""type"": ""object"", ""required"": [""defines_slope""], ""properties"": { ""defines_slope"": { ""type"": ""boolean"" }, ""slope_ratio"": { ""type"": ""number"", ""minimum"": 0 }, ""slope_degrees"": { ""type"": ""number"", ""minimum"": 0, ""exclusiveMaximum"": 90 }, ""overhang"": { ""type"": ""number"" }, ""offset"": { ""type"": ""number"" } }, ""additionalProperties"": false } },
         ""flip"": { ""type"": ""boolean"", ""default"": false }, ""structural"": { ""type"": ""boolean"", ""default"": false },
         ""structural_type"": { ""type"": ""string"", ""enum"": [""NonStructural"", ""Beam"", ""Brace"", ""Column"", ""Footing""] },
-        ""fitting"": { ""type"": ""string"", ""enum"": [""elbow"", ""union"", ""transition"", ""tee"", ""takeoff"", ""cross""], ""description"": ""Required for kind=fitting. A tee lists the two through-run elements first, then the branch. A CROSS lists four: the first through pair, then the second - Revit's own argument order, and a four-way junction built as two tees is a different piece of pipework. A takeoff lists the branch (whose open connector taps in) first, then the MAIN curve - the branch connector must TOUCH the main."" },
+        ""fitting"": { ""type"": ""string"", ""enum"": [""elbow"", ""union"", ""transition"", ""tee"", ""takeoff"", ""takeoff_or_tee"", ""cross"", ""cap""], ""description"": ""Required for kind=fitting. cap closes one existing pipe/duct end with a user-supplied type_id; connector from connect_mep open_ends; connection and size re-read after commit. takeoff_or_tee: without a Tap rule, split the main and place a tee. A tee lists the two through-run elements first, then the branch. A CROSS lists four: the first through pair, then the second - Revit's own argument order, and a four-way junction built as two tees is a different piece of pipework. A takeoff lists the branch (whose open connector taps in) first, then the MAIN curve - the branch connector must TOUCH the main."" },
         ""host_id"": { ""type"": ""integer"", ""description"": ""kind=wall_opening: the wall the opening is cut into. kind=family_instance: the HOST element for a hosted placement (wall/floor/face-based family) - the created instance's Host is re-read after commit (host_verified)."" },
+        ""find_host"": { ""type"": ""object"", ""description"": ""kind=family_instance without host_id: take the nearest host of this category - walls by distance to their location line (walls on level_id preferred; keep the point on the ROOM side of the wall - the wall-based route projects it onto the line and faces the device to the side it was drawn on; snap=true moves it onto the line first and loses that side), ceilings/floors/roofs whose plan box contains the point. The choice is echoed in the plan row as host_found and re-read after commit (host_verified)."",
+          ""properties"": { ""category"": { ""type"": ""string"", ""enum"": [""wall"", ""ceiling"", ""floor"", ""roof""] }, ""max_distance_mm"": { ""type"": ""number"", ""default"": 600 }, ""snap"": { ""type"": ""boolean"", ""default"": false } },
+          ""required"": [""category""], ""additionalProperties"": false },
         ""corner_1"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""kind=wall_opening: one diagonal corner, world coordinates."" },
         ""corner_2"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""kind=wall_opening: the opposite diagonal corner."" },
         ""allow_structural"": { ""type"": ""boolean"", ""default"": false, ""description"": ""kind=wall_opening/slab_opening: required true to cut a STRUCTURAL host - the record that a person approved the cut."" },
         ""shape"": { ""type"": ""string"", ""enum"": [""rectangular"", ""circular""], ""default"": ""rectangular"", ""description"": ""kind=slab_opening: the cut's shape."" },
         ""center"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""kind=slab_opening: the opening's centre."" },
         ""diameter"": { ""type"": ""number"", ""description"": ""kind=slab_opening, shape=circular."" },
-        ""width"": { ""type"": ""number"", ""description"": ""kind=slab_opening, shape=rectangular; kind=duct on a RECTANGULAR duct type, with height (the horizontal side of the section; never with diameter)."" },
+        ""width"": { ""type"": ""number"", ""description"": ""kind=slab_opening, shape=rectangular; kind=duct on a RECTANGULAR duct type, with height; kind=wall_foundation: requested physical solid width in request units, verified from the provisional solid without changing the shared type (requires a straight host wall)."" },
         ""rotation_degrees"": { ""type"": ""number"", ""default"": 0, ""description"": ""kind=family_instance: rotate the placed instance about Z at its point; the rotation is applied inside the same transaction."" },
         ""direction"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" }, ""description"": ""kind=beam_system: the axis the beams run along."" },
         ""spacing"": { ""type"": ""number"", ""description"": ""kind=beam_system: fixed member spacing; omit for the type's default layout."" },
         ""beam_type_id"": { ""type"": ""integer"", ""description"": ""kind=beam_system: the structural-framing FamilySymbol the members use."" },
         ""wall_id"": { ""type"": ""integer"", ""description"": ""kind=wall_foundation: the bearing wall the footing runs under."" },
+        ""top_elevation"": { ""type"": ""number"", ""description"": ""kind=wall_foundation: requested absolute top Z from the internal origin, in request units. A wall foundation follows its host wall base; the provisional solid must reach this Z or the row refuses without changing the wall."" },
+        ""thickness"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""description"": ""kind=wall_foundation: requested physical solid thickness in request units. The selected type must produce it; a mismatch refuses without changing a shared type."" },
         ""member_element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""kind=mep_system: the elements that BELONG to the new system. Each must expose a connector in the system type's own domain - piping members for a PipingSystemType, HVAC members for a MechanicalSystemType - or the row refuses by name rather than build a system that is quietly wrong. One connector per member is added (the lowest-id one of that domain), because adding both ends of a curve would add the element twice. Omit for a named EMPTY system. After the commit the system is re-read: its name, the type it was created from, and WHICH member ids it actually carries (never the count of Add calls that did not throw)."" },
         ""pipe_id"": { ""type"": ""integer"", ""description"": ""kind=accessory_inline: the Pipe the accessory sits in. The run is BROKEN at the point, the symbol placed and rotated onto the axis, and BOTH freshly opened ends connected - verified inside the transaction, the whole batch rolling back on any failure. Refuses a point off the axis (measured mm) or within 300 mm of a pipe end."" },
-        ""elements"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""description"": ""kind=fitting only: the members whose OPEN connectors the fitting joins. The open pair is chosen by smallest coincident distance; a tie, a domain mismatch or a gap refuses with the measured reason. Name 'connector' (Revit connector id, from query_model include_mep) to decide an ambiguity."", ""items"": {
+        ""elements"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 4, ""description"": ""kind=fitting: cap takes one existing pipe/duct and type_id of a user-supplied cap; choose connector with connect_mep open_ends. Other fittings join 2–4 open members. Ambiguous ends require connector ids."", ""items"": {
           ""type"": ""object"", ""properties"": {
             ""element_id"": { ""type"": ""integer"" },
             ""batch_index"": { ""type"": ""integer"", ""description"": ""Instead of element_id: an EARLIER entry of this same batch (0-based). Its geometry does not exist at plan time, so the connector pair is selected inside the atomic transaction - a refusal there rolls the whole batch back."" },
@@ -951,205 +1313,24 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
-                Name = "horizun_create_family",
-                Command = "horizun_create_family",
-                Description =
-                    "Compile a loadable parametric RFA from an absolute Revit family-template (.rft) path. The typed " +
-                    "specification covers family parameters (length/area/volume/angle/number/integer/yes-no/text/material), " +
-                    "formulas, named types with per-type values, solid or void extrusions/blends/revolutions/sweeps/swept " +
-                    "blends, reference planes, labeled dimensions, symbolic/model lines and point-placed nested RFA " +
-                    "instances with outer-parameter associations, association " +
-                    "of form depth/offset/angle/material/visibility to family parameters, and pipe/duct/electrical/conduit/" +
-                    "cable-tray connectors hosted on a planar face selected by normal with optional size-parameter " +
-                    "associations. Dimensions take an optional family view, an explicit linear DimensionType, lock and " +
-                    "EQ, and are verified against the reference planes they measure. Dry-run opens no document. Apply " +
-                    "creates one family transaction, re-reads forms, connectors, parameters and types, saves the RFA, " +
-                    "then CLOSES and REOPENS the saved file and re-reads every dimension from the bytes on disk - " +
-                    "references available, label, measured value - because a non-empty SaveAs is not verification. " +
-                    "Only the reopened, verified file is loaded into the guarded project, where the Family is re-read " +
-                    "again. System-family types are not RFA files and belong to " +
-                    "horizun_manage_system_types; general in-place-family creation is not exposed by the public Revit API. " +
-                    "Requires full_write because it creates an external file. "  +
-                    "Pass source_path instead of template_path/output_path to LOAD an .rfa that already exists, "  +
-                    "re-reading the family and its types from the project afterwards.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""target_document""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"" },
-    ""source_path"": { ""type"": ""string"", ""description"": ""Absolute existing .rfa to LOAD into the target project instead of authoring one. Mutually exclusive with template_path, which it replaces along with output_path. Use it for anything authoring cannot reach - the public Revit API cannot create a LABEL in an annotation family, so a usable tag family has to come from a file. The family and its requested types are re-read from the project after the commit; a load Revit declined is a refusal, and a family that arrives with no type is refused too."" },
-    ""template_path"": { ""type"": ""string"", ""description"": ""Absolute existing .rft path. The template determines category and hosting behavior. Required unless source_path is given."" },
-    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute .rfa destination in an existing directory."" },
-    ""recipe"": { ""type"": ""object"", ""additionalProperties"": false, ""required"": [""name"", ""width"", ""depth"", ""height_parameter"", ""types""],
-      ""properties"": {
-        ""name"": { ""type"": ""string"", ""enum"": [""rectangular_prism"", ""rectangular_tube""] },
-        ""width"": { ""type"": ""number"", ""exclusiveMinimum"": 0 }, ""depth"": { ""type"": ""number"", ""exclusiveMinimum"": 0 },
-        ""wall"": { ""type"": ""number"", ""exclusiveMinimum"": 0 }, ""height_parameter"": { ""type"": ""string"", ""minLength"": 1 },
-        ""types"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 50, ""items"": { ""type"": ""object"", ""additionalProperties"": false, ""required"": [""name"", ""height""],
-          ""properties"": { ""name"": { ""type"": ""string"", ""minLength"": 1 }, ""height"": { ""type"": ""number"", ""exclusiveMinimum"": 0 } } } }
-      }, ""description"": ""Fixed XY footprint; only height flexes. Tube requires wall. At least two type heights must differ. Cannot mix with raw geometry/parameters. Forces flex and PNG export; review both before accepting."" },
-    ""flex"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Activate every type in turn, regenerate, and MEASURE the solid extents: the reply says whether geometry moves between types, with the numbers. A measurement, rolled back - the family keeps its state."" },
-    ""emit_thumbnail"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Export a PNG of the family beside the RFA, verified from disk (bytes, sha256, PNG signature)."" },
-    ""emit_type_catalog"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Write the Revit type catalog (.txt) beside the RFA, built from the spec's parameters and types: columns are decided and exclusions NAMED (formula-driven and material parameters cannot be catalog columns), the file is re-read from disk (bytes, sha256, rows), and an empty cell keeps the type's own value at load time."" },
-    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
-    ""parameters"": { ""type"": ""array"", ""items"": {
-      ""type"": ""object"", ""required"": [""name""], ""properties"": {
-        ""name"": { ""type"": ""string"" },
-        ""data_type"": { ""type"": ""string"", ""enum"": [""length"", ""area"", ""volume"", ""angle"", ""number"", ""integer"", ""yesno"", ""text"", ""material""], ""default"": ""text"" },
-        ""group"": { ""type"": ""string"", ""enum"": [""data"", ""identity_data"", ""geometry"", ""materials"", ""general""], ""default"": ""data"" },
-        ""instance"": { ""type"": ""boolean"", ""default"": false },
-        ""formula"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""Optional Revit family formula. Omit to preserve an existing template formula."" }
-      }, ""additionalProperties"": false
-    }},
-    ""types"": { ""type"": ""array"", ""items"": {
-      ""type"": ""object"", ""required"": [""name""], ""properties"": {
-        ""name"": { ""type"": ""string"" },
-        ""values"": { ""type"": ""object"", ""additionalProperties"": { ""type"": [""string"", ""number"", ""boolean"", ""null""] } }
-      }, ""additionalProperties"": false
-    }},
-    ""forms"": { ""type"": ""array"", ""items"": {
-      ""type"": ""object"", ""required"": [""kind"", ""profile""], ""properties"": {
-        ""key"": { ""type"": ""string"" },
-        ""kind"": { ""type"": ""string"", ""enum"": [""extrusion"", ""blend"", ""revolution"", ""sweep"", ""swept_blend""] },
-        ""solid"": { ""type"": ""boolean"", ""default"": true },
-        ""plane"": { ""type"": ""string"", ""enum"": [""xy"", ""xz"", ""yz""] },
-        ""profile"": { ""type"": ""array"", ""description"": ""One or more closed loops; each loop has at least three XYZ points."" },
-        ""top_profile"": { ""type"": ""array"", ""description"": ""Required for blend; currently exactly one loop."" },
-        ""depth"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 1000 },
-        ""bottom_offset"": { ""type"": ""number"", ""default"": 0 }, ""top_offset"": { ""type"": ""number"", ""default"": 1000 },
-        ""axis_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""axis_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""path"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 100, ""description"": ""Sweep polyline or single swept-blend segment as XYZ points."" },
-        ""path_plane"": { ""type"": ""string"", ""enum"": [""xy"", ""xz"", ""yz""], ""default"": ""xz"" },
-        ""profile_location_curve_index"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
-        ""profile_plane_location"": { ""type"": ""string"", ""enum"": [""Start"", ""MidPoint"", ""End""], ""default"": ""Start"" },
-        ""start_angle_degrees"": { ""type"": ""number"", ""default"": 0 }, ""end_angle_degrees"": { ""type"": ""number"", ""default"": 360 },
-        ""start_parameter"": { ""type"": ""string"" }, ""end_parameter"": { ""type"": ""string"" },
-        ""material_parameter"": { ""type"": ""string"" }, ""visibility_parameter"": { ""type"": ""string"" }
-      }, ""additionalProperties"": false
-    }},
-    ""connectors"": { ""type"": ""array"", ""items"": {
-      ""type"": ""object"", ""required"": [""host_form_key"", ""kind"", ""face_normal""], ""properties"": {
-        ""key"": { ""type"": ""string"" }, ""host_form_key"": { ""type"": ""string"" },
-        ""kind"": { ""type"": ""string"", ""enum"": [""pipe"", ""duct"", ""electrical"", ""conduit"", ""cable_tray""] },
-        ""face_normal"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""system_type"": { ""type"": ""string"" }, ""profile"": { ""type"": ""string"", ""enum"": [""Round"", ""Rectangular"", ""Oval""] },
-        ""primary"": { ""type"": ""boolean"", ""default"": false },
-        ""diameter_parameter"": { ""type"": ""string"" }, ""width_parameter"": { ""type"": ""string"" }, ""height_parameter"": { ""type"": ""string"" }
-      }, ""additionalProperties"": false
-    }},
-    ""reference_planes"": { ""type"": ""array"", ""items"": {
-      ""type"": ""object"", ""required"": [""bubble_end"", ""free_end"", ""cut_vector""], ""properties"": {
-        ""key"": { ""type"": ""string"" }, ""name"": { ""type"": ""string"" },
-        ""bubble_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""free_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""cut_vector"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }
-      }, ""additionalProperties"": false
-    }},
-    ""dimensions"": { ""type"": ""array"", ""items"": {
-      ""type"": ""object"", ""required"": [""reference_plane_keys"", ""line_start"", ""line_end""], ""properties"": {
-        ""key"": { ""type"": ""string"" },
-        ""reference_plane_keys"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 20, ""items"": { ""type"": ""string"" } },
-        ""line_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""line_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""label_parameter"": { ""type"": ""string"", ""description"": ""Optional declared length parameter used as the family dimension label."" },
-        ""view_name"": { ""type"": ""string"", ""description"": ""Family-document view to create this dimension in. Omitted: the command's default view. Resolved against the OPEN family document, so a wrong name is refused at apply before the transaction, naming the views that exist."" },
-        ""dimension_type_name"": { ""type"": ""string"", ""description"": ""A LINEAR DimensionType existing in the family document. Unknown names are refused naming the available ones."" },
-        ""lock"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Lock the created dimension (IsLocked), read back in verification and again after the saved RFA is reopened. Two references only, and not combinable with label_parameter - a labeled dimension is already constrained by its parameter."" },
-        ""eq"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Set the EQ constraint (AreSegmentsEqual). Requires at least three reference planes."" }
-      }, ""additionalProperties"": false
-    }},
-    ""family_lines"": { ""type"": ""array"", ""items"": {
-      ""type"": ""object"", ""required"": [""start"", ""end""], ""properties"": {
-        ""key"": { ""type"": ""string"" }, ""kind"": { ""type"": ""string"", ""enum"": [""symbolic"", ""model""], ""default"": ""symbolic"" },
-        ""plane"": { ""type"": ""string"", ""enum"": [""xy"", ""xz"", ""yz""], ""default"": ""xy"" },
-        ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }
-      }, ""additionalProperties"": false
-    }},
-    ""nested_instances"": { ""type"": ""array"", ""maxItems"": 100, ""items"": {
-      ""type"": ""object"", ""required"": [""family_path"", ""type_name"", ""point""], ""properties"": {
-        ""key"": { ""type"": ""string"" },
-        ""family_path"": { ""type"": ""string"", ""description"": ""Absolute existing nested .rfa path."" },
-        ""type_name"": { ""type"": ""string"" },
-        ""point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""placement"": { ""type"": ""string"", ""enum"": [""model_point"", ""view_point""], ""default"": ""model_point"" },
-        ""rotation_degrees"": { ""type"": ""number"", ""default"": 0 },
-        ""associations"": { ""type"": ""object"", ""description"": ""Nested instance parameter name to declared outer family parameter name."", ""additionalProperties"": { ""type"": ""string"" } }
-      }, ""additionalProperties"": false
-    }},
-    ""overwrite"": { ""type"": ""boolean"", ""default"": false },
-    ""load_into_project"": { ""type"": ""boolean"", ""default"": true },
-    ""overwrite_parameter_values"": { ""type"": ""boolean"", ""default"": false },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
-    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: create parametric family"" }
-  }, ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_manage_system_types",
-                Command = "horizun_manage_system_types",
-                Description =
-                    "Create project-resident system-family types by duplicating explicit source ElementType ids in one " +
-                    "atomic transaction. This covers wall/floor/roof/ceiling and MEP system types as well as other " +
-                    "ElementTypes and loadable FamilySymbols (door/window type dimensions included). Symbol names are scoped " +
-                    "to their owning family. Source parameters are checked unchanged. Host types can replace their complete homogeneous compound structure with typed exterior-to-" +
-                    "interior layers: function, material, width, wrapping, shell/core boundaries, structural/variable layer " +
-                    "and structural-deck metadata. Parameter keys resolve by BuiltInParameter, shared GUID or one unambiguous exact display " +
-                    "name. Apply re-reads each duplicate's runtime class, name and raw stored values after commit; unit-aware " +
-                    "strings are marked as parsed by Revit rather than falsely claimed as literal-intent verification.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""target_document"", ""actions""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"" },
-    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"", ""description"": ""Units for compound layer widths."" },
-    ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
-      ""type"": ""object"", ""required"": [""source_type_id"", ""new_name""], ""properties"": {
-        ""source_type_id"": { ""type"": ""integer"", ""description"": ""A project-resident ElementType, including a loadable FamilySymbol."" },
-        ""new_name"": { ""type"": ""string"" },
-        ""values"": { ""type"": ""object"", ""description"": ""Parameter spec to value. Numbers are raw Revit storage; strings use unit-aware SetValueString where applicable."", ""additionalProperties"": { ""type"": [""string"", ""number"", ""boolean"", ""null""] } },
-        ""compound_structure"": { ""type"": ""object"", ""description"": ""Optional complete vertically-homogeneous composition for HostObjAttributes types. Layers are ordered exterior to interior."", ""required"": [""layers""], ""properties"": {
-          ""layers"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""function"", ""width""], ""properties"": {
-            ""function"": { ""type"": ""string"", ""enum"": [""Structure"", ""Substrate"", ""Insulation"", ""Finish1"", ""Finish2"", ""Membrane"", ""StructuralDeck""] },
-            ""width"": { ""type"": ""number"", ""minimum"": 0 },
-            ""material_id"": { ""type"": ""integer"", ""default"": -1 },
-            ""wraps"": { ""type"": ""boolean"", ""default"": false },
-            ""deck_profile_id"": { ""type"": ""integer"", ""default"": -1 },
-            ""deck_embedding"": { ""type"": ""string"", ""enum"": [""MergeWithLayerAbove"", ""Standalone""], ""default"": ""Standalone"" }
-          }, ""additionalProperties"": false } },
-          ""exterior_shell_layers"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
-          ""interior_shell_layers"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
-          ""structural_layer_index"": { ""type"": ""integer"", ""minimum"": -1, ""default"": -1 },
-          ""variable_layer_index"": { ""type"": ""integer"", ""minimum"": -1, ""default"": -1 },
-          ""end_cap"": { ""type"": ""string"", ""enum"": [""None"", ""Exterior"", ""Interior"", ""NoEndCap""], ""default"": ""None"" },
-          ""opening_wrapping"": { ""type"": ""string"", ""enum"": [""None"", ""Exterior"", ""Interior"", ""ExteriorAndInterior""], ""default"": ""None"" }
-        }, ""additionalProperties"": false }
-      }, ""additionalProperties"": false
-    }},
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
-    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: manage system family types"" }
-  }, ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
                 Name = "horizun_list_elements",
                 Command = "horizun_list_elements",
                 Description =
-                    "List elements of one category in the active model and loaded RVT links. Totals are exact and independent " +
-                    "of max_rows; every row names its source model and link instance. Unloaded links and read failures are " +
-                    "reported, and host/link workset coverage travels with the result, so an empty result is never presented " +
-                    "as complete when part of the federation was unavailable.",
+                    "List elements of one category in the active model and loaded RVT links. Totals are exact, whatever " +
+                    "max_rows; rows name source model and link instance. Unloaded links, failures and workset gaps are " +
+                    "reported; empty never means complete.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [
     ""category""
   ],
   ""properties"": {
+    ""confirm_large_operation"": { ""type"": ""boolean"", ""description"": ""Explicitly confirm execution when the conservative scope estimate exceeds the large-model threshold."" },
     ""category"": {
       ""type"": ""string"",
-      ""description"": ""BuiltInCategory token such as OST_Walls, or the Revit display name.""
+      ""description"": ""BuiltInCategory (OST_Walls) or display name. Family or ids: query_model.""
     },
+    ""target_document"": { ""type"": ""string"", ""description"": ""Optional guard: title of the ACTIVE document this read is about (.rvt suffix optional). A mismatch refuses before collecting any elements. Aliases: expected_document, target_document_title."" },
     ""include_links"": {
       ""type"": ""boolean"",
       ""default"": true
@@ -1165,6 +1346,7 @@ namespace Horizun.Contracts
       ""maximum"": 1000,
       ""default"": 200
     },
+    ""return_parameters"": { ""type"": ""array"", ""maxItems"": 30, ""items"": { ""type"": ""string"" }, ""description"": ""Per row: instance parameter, else type's. No '*'."" },
     ""cooperative"": {
       ""type"": ""object"",
       ""additionalProperties"": false,
@@ -1194,21 +1376,134 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_measure_geometry",
+                Command = "horizun_measure_geometry",
+                Description =
+                    "Read-only measures of ids, a selector or selection=true (Revit's current selection): solid_volume (m3), " +
+                    "summary (paged, mm/mm2/mm3; linked elements through current selection, coordinates in host), section_profile, bounding_box, end_points, face_normals, faces, edges, location. A value that cannot be read " +
+                    "is null and named in unreadable with its reason, never 0; coverage_complete says whether all were read. " +
+                    "To rehearse a change and measure it: horizun_verify_changes operation=what_if.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""measures""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""ids"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
+    ""selector"": " + ElementSelectorSchema + @",
+    ""selection"": { ""type"": ""boolean"", ""description"": ""true: measure the current selection. One source: ids, selector or selection."" },
+    ""measures"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""summary"", ""solid_volume"", ""section_profile"", ""bounding_box"", ""end_points"", ""face_normals"", ""faces"", ""edges"", ""location""] } },
+    ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0, ""description"": ""summary: use page.next_offset; keep the selection and model unchanged between calls."" },
+    ""page_size"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 100, ""default"": 100, ""description"": ""summary: maximum elements per page."" },
+    ""unit"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_query_relations",
+                Command = "horizun_query_relations",
+                Description =
+                    "Read-only relations per element id: joined, cut_by, cutting, host, hosted, neighbors (within radius_mm) " +
+                    "and type_info. Each related item carries id, category and relation type. unreadable names what could " +
+                    "not be read; an empty list was read and is empty.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""ids"", ""relations""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": { ""type"": ""integer"" } },
+    ""relations"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""joined"", ""cut_by"", ""cutting"", ""host"", ""hosted"", ""neighbors"", ""type_info""] } },
+    ""radius_mm"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 5000, ""default"": 100, ""description"": ""neighbors only: box-to-box distance."" },
+    ""unit"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_selection_context",
+                Command = "horizun_selection_context",
+                Description =
+                    "Read-only. context: selection (also in links) or ids: type, level, parameters, geometry, faces, joins, host/hosted, " +
+                    "neighbours. snapshot: named photo. diff: photo vs model or vs against. validate_ids: ids read earlier, " +
+                    "coincide, cambio or no_existe (after a synchronize). " +
+                    "view_contents: per category, what a view draws (groups, links); room_id/region: real outline.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""context"", ""snapshot"", ""diff"", ""validate_ids"", ""view_contents""], ""default"": ""context"" },
+    ""view_id"": { ""type"": ""integer"" },
+    ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } },
+    ""max_rows"": { ""type"": ""integer"" },
+    ""room_id"": { ""type"": ""integer"" },
+    ""region"": { ""type"": ""object"" },
+    ""include_links"": { ""type"": ""boolean"" },
+    ""checks"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""object"", ""properties"": {
+      ""id"": { ""type"": ""integer"" }, ""unique_id"": { ""type"": ""string"", ""minLength"": 1 },
+      ""expected_category"": { ""type"": ""string"" }, ""expected_type"": { ""type"": ""string"", ""description"": ""'Family: Type'"" } },
+      ""anyOf"": [ { ""required"": [""id""] }, { ""required"": [""unique_id""] } ], ""additionalProperties"": false },
+      ""description"": ""validate_ids only."" },
+    ""ids"": { ""type"": ""array"", ""maxItems"": 5000, ""items"": { ""type"": ""integer"" } },
+    ""selector"": " + ElementSelectorSchema + @",
+    ""selection"": { ""type"": ""boolean"" },
+    ""include"": { ""type"": ""array"", ""items"": { ""type"": ""string"", ""enum"": [""geometry"", ""relations"", ""neighbors"", ""parameters""] } },
+    ""radius_mm"": { ""type"": ""number"" },
+    ""parameters"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } },
+    ""max_faces"": { ""type"": ""integer"" },
+    ""snapshot_name"": { ""type"": ""string"" },
+    ""against"": { ""type"": ""string"" },
+    ""tolerance_mm"": { ""type"": ""number"" },
+    ""unit"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""] }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_api_help",
+                Command = "horizun_api_help",
+                Description = "Read-only reflection over this Revit's loaded API. describe (default) lists members unchanged. " +
+                    "check_signature compares declared CLR argument_types with every overload of the exact member_filter (.ctor for constructors), " +
+                    "reporting exact/implicit matches, conversions, rejected overloads and IronPython type suggestions. " +
+                    "Never invokes a member, converts values or writes. Type compatibility does not prove that concrete values or IronPython binding will succeed.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""type_name""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""describe"", ""check_signature""], ""default"": ""describe"" },
+    ""type_name"": { ""type"": ""string"", ""description"": ""Public type in the already loaded RevitAPI, RevitAPIUI or RevitAPIIFC assemblies. Example: Autodesk.Revit.DB.ElementId."" },
+    ""member_filter"": { ""type"": ""string"", ""description"": ""describe: case-insensitive substring, as before. check_signature: required exact method name or .ctor (case-sensitive)."" },
+    ""argument_types"": { ""type"": ""array"", ""minItems"": 0, ""maxItems"": 32, ""items"": { ""type"": ""string"", ""minLength"": 1, ""maxLength"": 512 }, ""description"": ""Required for check_signature, including [] for zero arguments. CLR names only, no expressions, values or implicit null. Example: [System.Int64]; generic example: System.Collections.Generic.List[Autodesk.Revit.DB.ElementId]. Unresolved or ambiguous types keep coverage_complete=false; no assembly is loaded by name."" },
+    ""include_inherited"": { ""type"": ""boolean"", ""description"": ""Default true for describe (legacy behavior), false for check_signature. Constructors are never inherited."" },
+    ""max_members"": { ""type"": ""integer"", ""description"": ""describe result cap, unchanged. check_signature always examines every overload and does not truncate."" }
+  }, ""additionalProperties"": false,
+  ""allOf"": [{ ""if"": { ""required"": [""operation""], ""properties"": { ""operation"": { ""const"": ""check_signature"" } } },
+    ""then"": { ""required"": [""member_filter"", ""argument_types""], ""properties"": { ""member_filter"": { ""type"": ""string"", ""pattern"": ""^(\\.ctor|[A-Za-z_][A-Za-z0-9_]*)$"" } } } }]
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_room_boundaries",
+                Command = "horizun_room_boundaries",
+                Description = "Read the effective boundary loops of explicit Rooms, their wall/separation-line ids, closure gaps and Revit's native redundant-room warnings. Unreadable boundaries and warnings leave coverage incomplete; duplicate detection covers only effective boundary segments.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""room_ids""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""room_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": { ""type"": ""integer"" }, ""description"": ""Explicit Rooms in the active model. Each row lists the effective boundary loops, source ids/kinds, closure, redundant warning state and measured area."" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_query_model",
                 Command = "horizun_query_model",
                 Description =
-                    "Composable, read-only model query across the host and loaded RVT links: filter by categories, " +
-                    "family, type, name, level, parameter predicates and an optional 3D bounding box; choose the " +
-                    "fields returned and receive counts grouped by category, level and source. Results use a " +
-                    "stale-detecting cursor rather than a naked offset, and every unreadable element, unloaded link " +
-                    "or closed workset keeps coverage from being called complete. For histograms, pass group_by " +
-                    "(with optional sum_parameters) and receive aggregated groups computed server-side over the " +
-                    "whole matched set in ONE call - no rows, no paging, and every sum reports how many elements " +
-                    "actually contributed to it. response_mode=summary returns whole-set counts without rows; " +
-                    "response_mode=compact presets lean fields and compact parameters (numbers in display units, named in parameter_units) while retaining source identity and coverage. source_models / link_instance_ids read only the models named.",
+                    "Read host and loaded links with category, family, type, name, level, parameter and bounding-box filters. " +
+                    "Pages use a stale-detecting cursor. Coverage identifies unreadable elements, links and worksets. " +
+                    "group_by counts the whole matched set without rows; sum_parameters reports contributors. " +
+                    "summary returns counts without rows; compact uses lean fields and display units. " +
+                    "source_models / link_instance_ids restrict sources.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
+    ""confirm_large_operation"": { ""type"": ""boolean"", ""description"": ""Required for a non-summary query when the conservative scope exceeds 50000 elements or is unknown, regardless of max_rows. A refusal suggests the same call with confirmation."" },
     ""element_ids"": {
       ""type"": ""array"",
       ""items"": {
@@ -1226,7 +1521,7 @@ namespace Horizun.Contracts
         ""summary""
       ],
       ""default"": ""full"",
-      ""description"": ""summary accumulates whole-set counts without row JSON or pagination (MEP detail uses the detailed collector); cannot combine with cursor, group_by, row projections or include_bounding_box. compact presets lean fields and compact parameters (measurable numbers in display units, named in parameter_units); explicit projections override its defaults. Coverage findings remain in every mode.""
+      ""description"": ""summary returns counts, including group_by, without rows; removed row options appear in normalized. compact presets fields and parameters in display units. Coverage is retained.""
     },
     ""cache_mode"": {
       ""type"": ""string"",
@@ -1347,11 +1642,11 @@ namespace Horizun.Contracts
     },
     ""view_id"": {
       ""type"": ""integer"",
-      ""description"": ""Required for scope=view. View scope is host-only; combine links with model scope.""
+      ""description"": ""Required for scope=view. View scope is host-only; combine links with model scope. Example: {scope: 'view', view_id: 123}; use an id read from this document.""
     },
     ""include_links"": {
       ""type"": ""boolean"",
-      ""default"": true
+      ""description"": ""Omitted: true for scope=model (the default), false for scope=view/current_view. Explicit true with a view scope is refused: a host ViewId cannot establish visibility in a linked document.""
     },
     ""source_models"": {
       ""type"": ""array"",
@@ -1370,24 +1665,29 @@ namespace Horizun.Contracts
       ""items"": {
         ""type"": ""string""
       },
-      ""description"": ""Specific parameters to project into each row.""
+      ""description"": ""Specific parameters to project into each row. '*' lists every instance and type parameter (keys instance:Name / type:Name); needs parameter_format=full, no group_by or sum_parameters. Only the requested page is projected, with a 512 KiB row budget; an oversized single row requires named parameters.""
     },
     ""include_bounding_box"": {
       ""type"": ""boolean"",
       ""default"": false,
-      ""description"": ""Attach each row's model bounding box in host coordinates (coordinate_units). Grids and levels have no model box in Revit, so their rows also carry a datum block: a grid's start/end, plan angle and length (its bounding_box is the box of its curve, bounding_box_source=grid_curve); a level's elevation (no box - a level is a plane). Comparable across links.""
-    },
-    ""include_cad_provenance"": {
-      ""type"": ""boolean"",
-      ""default"": false,
-      ""description"": ""Attach the CAD provenance record an element carries (v1, v2 or v3), as stored: drawing, rules, placement, as-built geometry and - from v3 - the reading and the drawing entities it used. Null when the element carries none.""
+      ""description"": ""Host bounds (coordinate_units). Grid rows use axis bounds or extents; spatial filters prefer the model box. datum gives grid geometry or level elevation.""
     },
     ""include_room"": { ""type"": ""boolean"", ""description"": ""Room/space of each row in phase (required); misses are unassigned. Rules: TOOLS-EXTENDED."" },
     ""phase"": { ""type"": ""string"", ""description"": ""include_room: the phase name (no default)."" },
+    ""include_compound_structure"": {
+      ""type"": ""boolean"",
+      ""default"": false,
+      ""description"": ""Attach the layers of a wall/floor/roof/ceiling type (or of an instance's type) in millimetres, exterior to interior, in the shape horizun_manage_system_types (Pro edition) takes as compound_structure: read it, change the core width, duplicate. A type with no compound structure says so.""
+    },
     ""include_orientation"": {
       ""type"": ""boolean"",
       ""default"": false,
       ""description"": ""Attach a placement block as Revit stores it: for a family instance its point, rotation, facing and hand vectors, total transform (a face-based family looks out of its face along basis_z), reflection flags and the stable reference of its host face; for a wall its location line, width, exterior normal and flip. Nothing is derived - for checks that must not borrow a placing tool's reasoning.""
+    },
+    ""exclude_nested"": {
+      ""type"": ""boolean"",
+      ""default"": false,
+      ""description"": ""Drop family instances nested in another (SuperComponent set); unreadable nesting is reported in unreadable.""
     },
     ""include_mep"": {
       ""type"": ""boolean"",
@@ -1411,6 +1711,7 @@ namespace Horizun.Contracts
       ""type"": ""string"",
       ""description"": ""next_cursor from the previous page. It is refused if the query or result set changed.""
     },
+    ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""description"": ""Matched rows to skip (a start position). Not with cursor or group_by."" },
     ""max_rows"": {
       ""type"": ""integer"",
       ""minimum"": 1,
@@ -1422,16 +1723,9 @@ namespace Horizun.Contracts
       ""minItems"": 1,
       ""items"": {
         ""type"": ""string"",
-        ""enum"": [
-          ""category"",
-          ""level"",
-          ""type"",
-          ""family"",
-          ""source_model"",
-          ""source_kind""
-        ]
+        ""pattern"": ""^(category|level|type|family|source_model|source_kind|parameter:.+)$""
       },
-      ""description"": ""Aggregate instead of listing: returns groups with counts over the WHOLE matched set in one call, no rows and no cursor. 'how many wall types per floor' is group_by:[type,level].""
+      ""description"": ""Aggregate instead of listing: returns groups with counts over the WHOLE matched set in one call, no rows and no cursor. 'how many wall types per floor' is group_by:[type,level]. parameter:<name> groups by that parameter's displayed value.""
     },
     ""parameter_format"": {
       ""type"": ""string"",
@@ -1448,9 +1742,11 @@ namespace Horizun.Contracts
       ""items"": {
         ""type"": ""string"",
         ""enum"": [
+          ""element_id"",
           ""source_reference"",
           ""unique_id"",
           ""category"",
+          ""built_in_category"",
           ""name"",
           ""family"",
           ""type"",
@@ -1460,12 +1756,16 @@ namespace Horizun.Contracts
           ""source_kind"",
           ""source_model"",
           ""link_instance_id"",
+          ""host_id"",
+          ""host_category"",
           ""is_view_template"",
           ""view_template_id"",
-          ""view_type""
+          ""view_type"",
+          ""view_range"",
+          ""sketch""
         ]
       },
-      ""description"": ""Row fields to include besides element_id, which is always present. View metadata is opt-in and null on other elements; use it to discover compatible templates. The identity and federation fields repeat identically down a page and are most of the payload; name only what you will read.""
+      ""description"": ""Row fields besides element_id (always present). View fields, view_range (plans) and sketch (its loops in mm) are opt-in and null elsewhere. Identity and federation fields repeat down a page; name only what you will read.""
     },
     ""sum_parameters"": {
       ""type"": ""array"",
@@ -1507,8 +1807,9 @@ namespace Horizun.Contracts
                 Command = "horizun_transform_elements",
                 Description =
                     "Apply an atomic batch of move, copy, rotate, mirror, pin, unpin, type-change (fixed or a " +
-                    "per-instance rule) operations to explicit host ElementIds, or realign a wall's edited elevation " +
-                    "profile onto its current location line. Dry-run resolves every target and refuses duplicate " +
+                    "per-instance rule) operations to explicit host ElementIds, attach wall tops/bases to a roof, " +
+                    "floor or ceiling, or realign a wall's edited elevation " +
+                    "profile onto its current location line. move_preserve_pin moves pinned elements and restores pin state atomically. Dry-run resolves every target and refuses duplicate " +
                     "targets across operations. Move/rotate are accepted only for elements whose Location can be " +
                     "sampled and are verified from fresh post-commit location points; copies, pin state and type ids " +
                     "are likewise re-read. A rotate also verifies that each family instance's axes turned. A move or " +
@@ -1521,16 +1822,20 @@ namespace Horizun.Contracts
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""tolerance_mm"": { ""type"": ""number"", ""minimum"": 0, ""description"": ""realign_wall_sketch only: how far a wall's location line may already sit from its sketch's plane/footprint before it counts as aligned (default 2mm) - the same tolerance horizun_audit_model's wall_sketch_drift finding uses, so a wall it reports correctable resolves the same way here."" },
     ""operations"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
-      ""type"": ""object"", ""required"": [""operation"", ""element_ids""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""wall_join"", ""move"", ""copy"", ""rotate"", ""mirror"", ""pin"", ""unpin"", ""change_type"", ""change_type_by_rule"", ""realign_wall_sketch"", ""set_curve"", ""move_tag_head"", ""set_tag_leader"", ""array_linear"", ""array_radial"", ""rename_level"", ""edit_sketch""],
-          ""description"": ""array_linear/array_radial: count members incl. the original, along vector or about axis_start-axis_end by angle_degrees; each copy re-read at k*step. move_tag_head sets an IndependentTag's head (point: absolute, one tag; or vector: a displacement for every tag listed) and re-reads TagHeadPosition within 1e-5 ft; set_tag_leader edits the leader of an IndependentTag with exactly ONE tagged reference (has_leader, leader_end_condition attached|free, leader_end for a FREE end, leader_elbow, leader_visible), refusing what Revit reports it cannot assign (CanLeaderEndConditionBeAssigned), a free end on an attached leader, a leader edit on a tag without a leader, a pinned tag and a multi-reference tag; every requested property is re-read after commit. Room/space/area tags are NOT covered by these two operations. set_curve replaces ONE element's location line with the line given by start and end - what an incremental DWG update needs when a drawing moves a wall and the element must keep its id, its parameters and everything hosted on it. It is verified by re-reading the curve and checking the endpoints lie ON the line that was set, because Revit trims a wall back to where the centrelines of the walls it meets cross, and demanding the exact endpoints would report every joined corner as a failure. change_type_by_rule resolves EACH instance's own type from `rule`: an ordered [{when:{measure:{op:value}},type_id}] list, first match wins, plus an optional {else:true,type_id} last; measures are short_side_mm/long_side_mm/area_m2, read from the instance's own top face (Floor/RoofBase/Ceiling) or exterior side face (Wall) - an instance with no such face, or that matches no rule and no else, refuses the whole batch naming it. realign_wall_sketch (its own element_ids array, no other fields on the item) translates a wall's edited profile (Wall.SketchId) back onto its CURRENT location line inside a SketchEditScope; dry_run actually rehearses the move and Cancels the scope rather than reading geometry only. Refused per wall when it is already aligned, or when it moved OFF its sketch's own plane (needs redrawing, not translation) - see horizun_audit_model wall_sketch_drift. rename_level (one element_id, the level; must be the sole operation in its batch) renames a Level with name: Revit also SOLELY renames any plan view whose name exactly matched the level's, and may raise Copy/Monitor alerts - the dry run lists both (views_expected_to_rename is a read; the Copy/Monitor alerts come from an actual rename rehearsed in a rolled-back transaction), and the applied reply reports views renamed before/after plus copy_monitor_alerts captured from the real commit. edit_sketch (one Floor/Ceiling/Opening, sent alone): loop+loop_index replaces a loop, start->end moves a vertex; id kept."" },
+      ""type"": ""object"", ""required"": [""operation""], ""anyOf"": [ { ""required"": [""element_ids""] }, { ""required"": [""unique_ids""] } ], ""properties"": {
+        ""operation"": { ""type"": ""string"", ""enum"": [""wall_join"", ""wall_attach_top"", ""wall_attach_base"", ""move"", ""move_preserve_pin"", ""copy"", ""rotate"", ""mirror"", ""pin"", ""unpin"", ""change_type"", ""change_type_by_rule"", ""realign_wall_sketch"", ""set_curve"", ""move_tag_head"", ""set_tag_leader"", ""array_linear"", ""array_radial"", ""rename_level"", ""edit_sketch"", ""column_attach"", ""column_detach""],
+          ""description"": ""column_attach/column_detach (alone in the call, really rehearsed) join or release a column end and a beam, brace, floor, roof or ceiling; re-read after commit. wall_attach_top/base attaches straight walls to an approved host and verifies both end elevations; dry_run reports predicted_end_elevations_feet from the target faces. Revit 2023/2024 cannot attach via this API; for a new wall use horizun_create_elements kind=wall_profile with an explicit profile. NOT undoable by horizun_undo. Re-sending for a wall already attached to that target only re-verifies. array_linear/array_radial: count members incl. the original, along vector or about axis_start-axis_end by angle_degrees; each copy re-read at k*step. move_tag_head sets an IndependentTag's head (point: absolute, one tag; or vector: a displacement for every tag listed) and re-reads TagHeadPosition within 1e-5 ft; set_tag_leader edits the leader of an IndependentTag with exactly ONE tagged reference (has_leader, leader_end_condition attached|free, leader_end for a FREE end, leader_elbow, leader_visible), refusing what Revit reports it cannot assign (CanLeaderEndConditionBeAssigned), a free end on an attached leader, a leader edit on a tag without a leader, a pinned tag and a multi-reference tag; every requested property is re-read after commit. Room/space/area tags are NOT covered by these two operations. set_curve replaces ONE element's location line with the line given by start and end - what an incremental DWG update needs when a drawing moves a wall and the element must keep its id, its parameters and everything hosted on it. It is verified by re-reading the curve and checking the endpoints lie ON the line that was set, because Revit trims a wall back to where the centrelines of the walls it meets cross, and demanding the exact endpoints would report every joined corner as a failure. change_type_by_rule resolves EACH instance's own type from `rule`: an ordered [{when:{measure:{op:value}},type_id}] list, first match wins, plus an optional {else:true,type_id} last; measures are short_side_mm/long_side_mm/area_m2, read from the instance's own top face (Floor/RoofBase/Ceiling) or exterior side face (Wall) - an instance with no such face, or that matches no rule and no else, refuses the whole batch naming it. realign_wall_sketch (its own element_ids array, no other fields on the item) translates a wall's edited profile (Wall.SketchId) back onto its CURRENT location line inside a SketchEditScope; dry_run actually rehearses the move and Cancels the scope rather than reading geometry only. Refused per wall when it is already aligned, or when it moved OFF its sketch's own plane (needs redrawing, not translation) - see horizun_audit_model wall_sketch_drift. rename_level (one element_id, the level; must be the sole operation in its batch) renames a Level with name: Revit also SOLELY renames any plan view whose name exactly matched the level's, and may raise Copy/Monitor alerts - the dry run lists both (views_expected_to_rename is a read; the Copy/Monitor alerts come from an actual rename rehearsed in a rolled-back transaction), and the applied reply reports views renamed before/after plus copy_monitor_alerts captured from the real commit. edit_sketch (one Floor/Ceiling/profiled Wall/Opening, sent alone): loop+loop_index replaces a loop, start->end moves a vertex; id kept."" },
         ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" } },
-        ""loop"": { ""type"": ""array"", ""items"": { ""type"": ""array"" }, ""description"": ""edit_sketch: new loop points [x,y,z] on the sketch plane."" },
+        ""unique_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""string"", ""minLength"": 1 }, ""description"": ""Aligned with element_ids; mismatch refuses the batch."" },
+        ""expected_category"": { ""type"": ""string"", ""description"": ""Category (name or OST_*) when read. Not enough alone: send unique_ids."" },
+        ""expected_type"": { ""type"": ""string"", ""description"": ""Type (name or 'Family: Type') when read. Not enough alone: send unique_ids."" },
+        ""identity"": " + IdentityMapSchema + @",
+        ""loop"": { ""type"": ""array"", ""items"": { ""type"": ""array"" }, ""description"": ""edit_sketch: new loop points [x,y,z] on the sketch plane; a profiled Wall has a vertical sketch plane."" },
         ""loop_index"": { ""type"": ""integer"", ""minimum"": 0 },
         ""rule"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""object"" },
           ""description"": ""change_type_by_rule only: [{when:{measure_name:{lt|lte|gt|gte|eq: number}}, type_id}, ..., {else:true, type_id}]. See operation's own description."" },
         ""name"": { ""type"": ""string"", ""description"": ""rename_level: the level's new name."" },
-        ""vector"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""move/copy: the translation. move_tag_head: the head displacement, in units."" },
+        ""vector"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""move/move_preserve_pin/copy: the translation. move_tag_head: the head displacement, in units."" },
         ""point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""move_tag_head: the absolute head position, in units; exactly one element_id."" },
         ""has_leader"": { ""type"": ""boolean"", ""description"": ""set_tag_leader: IndependentTag.HasLeader."" },
         ""leader_end_condition"": { ""type"": ""string"", ""enum"": [""attached"", ""free""], ""description"": ""set_tag_leader: refused when CanLeaderEndConditionBeAssigned is false for the tag."" },
@@ -1548,7 +1853,12 @@ namespace Horizun.Contracts
           ""description"": ""set_curve: one end of the new location line, in the units this call declares."" },
         ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" },
           ""description"": ""set_curve: the other end. A zero-length line is refused."" },
+        ""release_end_joins"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Walls: release and recheck joins."" },
         ""join_end"": { ""type"": ""integer"", ""enum"": [0,1], ""description"": ""wall_join: wall end index."" },
+        ""attachment_target_id"": { ""type"": ""integer"", ""description"": ""wall_attach_top/base: roof, floor, ceiling, toposolid or wall target accepted by Revit's IsValidTargetAttachment. column_attach: beam, brace, floor, roof or ceiling."" },
+        ""column_end"": { ""type"": ""string"", ""enum"": [""base"", ""top""], ""description"": ""column_attach/detach. Attach cuts the column at the target's minimum intersection."" },
+        ""expected_end_elevations"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" }, ""description"": ""wall_attach_top/base: absolute world Z at location-line start and end, in request units. Required; measured from the committed wall side profile."" },
+        ""elevation_tolerance_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""maximum"": 100, ""default"": 5, ""description"": ""wall_attach_top/base: tolerance for each committed end elevation."" },
         ""count"": { ""type"": ""integer"", ""minimum"": 2, ""maximum"": 200 },
         ""anchor"": { ""type"": ""string"", ""enum"": [""second"", ""last""], ""description"": ""array: vector/angle reaches the 2nd or the last member."" },
         ""group"": { ""type"": ""boolean"", ""default"": false, ""description"": ""array: keep the associated Revit array."" },
@@ -1597,9 +1907,9 @@ namespace Horizun.Contracts
                 Name = "horizun_slab_shape",
                 Command = "horizun_slab_shape",
                 Description =
-                    "Floor/roof shape editing: read (vertices, creases), add_point, add_split_line, modify_subelement " +
+                    "Floor/roof shape editing: read (vertices, creases, flat contour), add_point, add_split_line, modify_subelement " +
                     "(vertex points or one crease by start/end) and reset_shape (erases the shape points). Every " +
-                    "touched vertex elevation is re-read after commit; a disagreement rolls back.",
+                    "touched vertex elevation is re-read after commit. Splits verify crease coverage, including edge-to-edge on a flat floor.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""operation"", ""element_id""],
   ""properties"": {
@@ -1624,14 +1934,13 @@ namespace Horizun.Contracts
                     "Project parameter bindings and Global Parameters. list_bindings and global_list read. create_shared " +
                     "writes the definition to an SPF and binds it; rebind changes categories, Instance/Type or group; " +
                     "remove_binding and global_delete report the values lost. global_create/global_set take a value in " +
-                    "display units, a formula, or element parameters to associate. create_project is refused: no Revit " +
-                    "2023-2027 API creates a non-shared project parameter. Writes rehearse (dry_run default), need the " +
-                    "token, and re-read the model and the SPF file.",
+                    "display units, a formula, or element parameters to associate. create_project is refused (no API). " +
+                    "purge_legacy_marks deletes old v2 ownership marks (personal data). Writes rehearse, need the token, are re-read.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""operation"": { ""type"": ""string"", ""enum"": [""list_bindings"", ""create_shared"", ""create_project"", ""rebind"", ""remove_binding"", ""global_list"", ""global_create"", ""global_set"", ""global_delete""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list_bindings"", ""create_shared"", ""create_project"", ""rebind"", ""remove_binding"", ""global_list"", ""global_create"", ""global_set"", ""global_delete"", ""purge_legacy_marks""] },
     ""name"": { ""type"": ""string"" },
     ""guid"": { ""type"": ""string"", ""description"": ""rebind/remove_binding: wins over name."" },
     ""spf_path"": { ""type"": ""string"", ""description"": ""Absolute; created if missing."" },
@@ -1697,7 +2006,7 @@ namespace Horizun.Contracts
                 Command = "horizun_create_railing",
                 Description =
                     "Create a railing on a stair/ramp (host_id; one per side Revit places) or along a sketched open " +
-                    "path on a level. Type, host, path and base_offset are re-read after commit; height is the type's.",
+                    "path on a level. Type, host, path and base_offset are re-read after commit; height is the type's. infill: new type with balusters.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""type_id""],
   ""properties"": {
@@ -1709,6 +2018,310 @@ namespace Horizun.Contracts
     ""path"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 200, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } },
     ""level_id"": { ""type"": ""integer"" },
     ""base_offset"": { ""type"": ""number"" },
+    ""infill"": { ""type"": ""object"", ""properties"": {
+      ""new_type_name"": { ""type"": ""string"" }, ""baluster_type_id"": { ""type"": ""integer"" },
+      ""spacing"": { ""type"": ""number"" }, ""post_type_id"": { ""type"": ""integer"" } } },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_view_crop",
+                Command = "horizun_view_crop",
+                Description =
+                    "Crop min/max mm (plan model XY; sections view axes), elements/room, paper offsets, switches. " +
+                    "3D read: crop and effective_crop. Section box: model XYZ mm; keep_transform keeps frame. " +
+                    "Re-read after commit. HRZ or allow_unmarked_view; templates and controlled crops refused.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation"", ""view_id""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_crop_box"", ""set_crop_shape"", ""reset_crop_shape"", ""set_crop_from_elements"", ""set_crop_from_room"", ""set_annotation_crop_offsets"", ""crop_active"", ""crop_visible"", ""read_section_box"", ""section_box_active"", ""set_section_box""] },
+    ""view_id"": { ""type"": ""integer"" },
+    ""min"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } }, ""max"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } },
+    ""points"": { ""type"": ""array"", ""items"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } }, ""description"": ""set_crop_shape: 3-200 [right,up] mm vertices from view origin; repeat first point. reset_crop_shape removes sketch."" },
+    ""depth"": { ""type"": ""number"" },
+    ""keep_transform"": { ""type"": ""boolean"", ""default"": false },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""room_id"": { ""type"": ""integer"" },
+    ""margin"": { ""type"": ""number"", ""default"": 0 },
+    ""offsets"": { ""type"": ""array"", ""items"": { ""type"": ""number"" }, ""minItems"": 4, ""maxItems"": 4 },
+    ""value"": { ""type"": ""boolean"" },
+    ""allow_unmarked_view"": { ""type"": ""boolean"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_sheet_layout",
+                Command = "horizun_sheet_layout",
+                Description =
+                    "First query view_id (get_document_info context), sheet IDs (horizun_query_planimetry). Paper mm. " +
+                    "get_viewport_box: box/title/crop, label_offset_mm/label_offset, outside check. move_viewport: center/corner by crop, box or ink. Token binds anchor/delta. " +
+                    "auto_layout: rows, margins [l,r,t,b], notes_width; refused if they do not fit. repair_outside: only outside viewports, minimum translation or refusal. layout_grid: columns/title_gap. " +
+                    "set_view_scale: keep_viewport_center; omitted scale retains current (SUPUESTO). rename: views/sheets, require_title_fit. set_title: viewport_id or viewport_ids, title_gap/label_offset/line_length; warns off sheet or over a datum. " +
+                    "HRZ unless allow_unmarked. Token, re-read, rollback.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""get_viewport_box"", ""move_viewport"", ""auto_layout"", ""layout_grid"", ""set_view_scale"", ""rename"", ""set_title""] },
+    ""ink_box"": { ""type"": ""array"", ""minItems"": 4, ""maxItems"": 4, ""items"": { ""type"": ""number"" }, ""description"": ""anchor=ink: pdf_qa ink_from_box_center_mm."" },
+    ""label_offset"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" }, ""description"": ""set_title: Viewport.LabelOffset, mm."" },
+    ""sheet_id"": { ""type"": ""integer"" }, ""viewport_id"": { ""type"": ""integer"" },
+    ""viewport_ids"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""integer"" }, ""description"": ""layout_grid: the grid's order (default: the sheet's viewports by id)."" },
+    ""columns"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 12, ""description"": ""layout_grid: columns, filled row by row."" },
+    ""gap_x"": { ""type"": ""number"", ""minimum"": 0, ""default"": 10 }, ""gap_y"": { ""type"": ""number"", ""minimum"": 0, ""default"": 10 },
+    ""title_gap"": { ""type"": ""number"", ""minimum"": 0, ""default"": 5 },
+    ""scale"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 24000, ""description"": ""set_view_scale: N of 1:N. Omit to keep current scale (SUPUESTO)."" },
+    ""repair_outside"": { ""type"": ""boolean"", ""description"": ""Move outside viewports. Refuse new or worse overlaps. Default false."" },
+    ""line_length"": { ""type"": ""number"", ""minimum"": 0 },
+    ""keep_viewport_center"": { ""type"": ""boolean"", ""default"": true },
+    ""items"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": { ""type"": ""object"", ""additionalProperties"": false, ""properties"": {
+        ""view_id"": { ""type"": ""integer"" }, ""sheet_id"": { ""type"": ""integer"" }, ""name"": { ""type"": ""string"" }, ""sheet_number"": { ""type"": ""string"" } } } },
+    ""require_title_fit"": { ""type"": ""boolean"", ""default"": true },
+    ""center"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } }, ""corner"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } },
+    ""anchor"": { ""type"": ""string"", ""enum"": [""crop"", ""box"", ""ink""], ""default"": ""crop"" },
+    ""margins"": { ""type"": ""array"", ""items"": { ""type"": ""number"" }, ""minItems"": 4, ""maxItems"": 4 },
+    ""notes_width"": { ""type"": ""number"", ""default"": 0 }, ""gap"": { ""type"": ""number"", ""default"": 10 },
+    ""allow_unmarked"": { ""type"": ""boolean"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_view_visibility",
+                Command = "horizun_view_visibility",
+                Description =
+                    "OWN views only (foreign refused). hide/unhide, set/clear_overrides (element_ids, categories, family_names/type_names) " +
+                    "in view_id; set_overrides predicts printing. datum_cleanup (host), link_datum_cleanup (linked grids/levels, hidden filter). " +
+                    "Reads: read, explain_overrides, override_report, graphics_report (view_ids). copy_view_graphics copies filters/categories/elements. Re-read after commit.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""hide"", ""unhide"", ""set_overrides"", ""clear_overrides"", ""hide_foreign_markers"", ""marker_scale"", ""copy_link_overrides"", ""datum_cleanup"", ""set_scale"", ""explain_overrides"", ""override_report"", ""link_datum_cleanup"", ""graphics_report"", ""copy_view_graphics""] },
+    ""include"": { ""type"": ""array"", ""minItems"": 1, ""uniqueItems"": true, ""items"": { ""type"": ""string"", ""enum"": [""filters"", ""categories"", ""elements""] }, ""description"": ""copy_view_graphics groups."" },
+    ""view_id"": { ""type"": ""integer"" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""OST_ names."" },
+    ""family_names"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50, ""items"": { ""type"": ""string"" }, ""description"": ""With type_names: ONE family."" },
+    ""type_names"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50, ""items"": { ""type"": ""string"" }, ""description"": ""Types in view_id."" },
+    ""overrides"": { ""type"": ""object"", ""description"": ""As horizun_manage_views."" },
+    ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""coarser_than"": { ""type"": ""integer"" },
+    ""datum_kinds"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""grid"", ""level""] }, ""description"": ""Default both."" },
+    ""template_mode"": { ""type"": ""string"", ""enum"": [""refuse"", ""duplicate_view"", ""edit_template""], ""default"": ""refuse"", ""description"": ""link_datum_cleanup under a template: copy or own template."" },
+    ""name_separator"": { ""type"": ""boolean"", ""description"": ""link_datum_cleanup: also by datum Name."" },
+    ""criteria"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""outside_crop"", ""foreign""] }, ""description"": ""datum_cleanup: any of (default outside_crop; foreign = not ours)."" },
+    ""keep_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""maxItems"": 2000, ""description"": ""datum_cleanup: never hidden."" },
+    ""scale"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 24000, ""description"": ""set_scale: 50 = 1:50."" },
+    ""rehide_foreign_markers"": { ""type"": ""boolean"", ""default"": true, ""description"": ""set_scale: re-hide foreign marks."" },
+    ""unprinted"": { ""type"": ""string"", ""enum"": [""refuse"", ""skip"", ""write""], ""default"": ""refuse"", ""description"": ""set_overrides: predicted unprinted."" },
+    ""clear_category_overrides"": { ""type"": ""boolean"", ""description"": ""WHOLE category row."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_wall_sweep",
+                Command = "horizun_wall_sweep",
+                Description =
+                    "Wall sweeps and reveals: read lists types, profiles and (element_id) a wall's sweeps; create_type duplicates a type with " +
+                    "a profile; place puts type_id sweeps on walls at height from base or top. Slab edges, fascias, gutters: read with host_id " +
+                    "lists a floor's or roof's edges and faces as stable references and the types; place_edge makes kind of type_id on edges " +
+                    "or faces named. Re-read after commit; a disagreement rolls back.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"", ""description"": ""Required for create_type and place."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""create_type"", ""place"", ""place_edge""] },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""element_id"": { ""type"": ""integer"", ""description"": ""read: a wall."" },
+    ""host_id"": { ""type"": ""integer"", ""description"": ""read/place_edge: the floor or roof."" },
+    ""kind"": { ""type"": ""string"", ""enum"": [""slab_edge"", ""fascia"", ""gutter""], ""description"": ""place_edge: floors host slab edges; roofs fascias and gutters."" },
+    ""edge_references"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": { ""type"": ""string"" }, ""description"": ""place_edge: edge_key values from read (contiguous)."" },
+    ""face_references"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50, ""items"": { ""type"": ""string"" }, ""description"": ""place_edge: face_key values; all their edges."" },
+    ""source_type_id"": { ""type"": ""integer"", ""description"": ""create_type: sweep/reveal TYPE to duplicate."" },
+    ""new_name"": { ""type"": ""string"", ""description"": ""create_type: new type name."" },
+    ""profile_id"": { ""type"": ""integer"", ""description"": ""create_type: loaded Profile type."" },
+    ""material_id"": { ""type"": ""integer"", ""description"": ""create_type: material."" },
+    ""type_id"": { ""type"": ""integer"", ""description"": ""place: sweep/reveal type. place_edge: edge type of the kind."" },
+    ""wall_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": { ""type"": ""integer"" }, ""description"": ""place: one sweep per wall (not curtain or stack main)."" },
+    ""height"": { ""type"": ""number"", ""description"": ""place: distance from base (or top), in units."" },
+    ""measured_from"": { ""type"": ""string"", ""enum"": [""base"", ""top""], ""default"": ""base"" },
+    ""side"": { ""type"": ""string"", ""enum"": [""exterior"", ""interior""], ""description"": ""place: required."" },
+    ""wall_offset"": { ""type"": ""number"", ""description"": ""place: offset from the wall face, in units."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_join_geometry",
+                Command = "horizun_join_geometry",
+                Description =
+                    "Join geometry with a stated cut priority, so shared concrete is not counted twice: walls, floors, roofs, structural " +
+                    "framing, columns and foundations. read: per pair joined, who cuts and the shared volume (m3). join: " +
+                    "cut_order first_cuts (pair [cutting, cut]), priority (column > framing > structural wall > structural floor > " +
+                    "foundation > wall > floor > roof; a tie keeps Revit's order) or keep_revit. unjoin, switch_order. With element_ids " +
+                    "the pairs are those already joined or sharing volume. Re-read after commit: joined, who cuts, shared volume 0; " +
+                    "groups, nested and non-touching pairs are refused. corners: open L/T wall corners within tolerance; " +
+                    "fix_corners allows the join and moves the end to the crossing, re-read joined. auto_priority: a whole level, volume before/after. " +
+                    "excavate/unexcavate: a toposolid cut by an element (Revit 2025+), really rehearsed.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"", ""description"": ""Required except for read."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""join"", ""unjoin"", ""switch_order"", ""corners"", ""fix_corners"", ""auto_priority"", ""excavate"", ""unexcavate""] },
+    ""level_id"": { ""type"": ""integer"", ""minimum"": 1, ""description"": ""auto_priority: join every overlapping pair of this level by priority."" },
+    ""tolerance"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""description"": ""corners: max gap, in units (50 mm)."" },
+    ""pairs"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""integer"" } }, ""description"": ""[[a, b], ...]; with first_cuts a cuts b; excavate: [toposolid, excavator]."" },
+    ""element_ids"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 300, ""items"": { ""type"": ""integer"" }, ""description"": ""read/join: find the pairs among these; corners: the walls."" },
+    ""cut_order"": { ""type"": ""string"", ""enum"": [""first_cuts"", ""priority"", ""keep_revit""], ""description"": ""join: default first_cuts with pairs, priority with element_ids."" },
+    ""priority"": { ""type"": ""array"", ""items"": { ""type"": ""string"", ""enum"": [""structural_column"", ""structural_framing"", ""wall_structural"", ""floor_structural"", ""structural_foundation"", ""wall"", ""floor"", ""roof""] }, ""description"": ""Required for auto_priority: highest first; explicitly rank every class on the level. join with cut_order=priority completes omitted classes in default order."" },
+    ""verification_mode"": { ""type"": ""string"", ""enum"": [""atomic"", ""per_pair""], ""default"": ""atomic"", ""description"": ""join/auto_priority: per_pair retains verified pairs when another pair cannot be measured; overall result is partial."" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
+  }, ""allOf"": [
+    { ""if"": { ""properties"": { ""operation"": { ""enum"": [""read"", ""join""] } }, ""required"": [""operation""] }, ""then"": { ""oneOf"": [{ ""required"": [""pairs""] }, { ""required"": [""element_ids""] }] } },
+    { ""if"": { ""properties"": { ""operation"": { ""enum"": [""unjoin"", ""switch_order"", ""excavate"", ""unexcavate""] } }, ""required"": [""operation""] }, ""then"": { ""required"": [""pairs""] } },
+    { ""if"": { ""properties"": { ""operation"": { ""enum"": [""auto_priority""] } }, ""required"": [""operation""] }, ""then"": { ""required"": [""level_id"", ""priority""], ""properties"": { ""priority"": { ""minItems"": 1 } } } },
+    { ""if"": { ""properties"": { ""operation"": { ""enum"": [""corners"", ""fix_corners""] } }, ""required"": [""operation""] }, ""then"": { ""required"": [""element_ids""] } },
+    { ""if"": { ""properties"": { ""operation"": { ""enum"": [""join"", ""unjoin"", ""switch_order"", ""fix_corners"", ""auto_priority"", ""excavate"", ""unexcavate""] } }, ""required"": [""operation""] }, ""then"": { ""required"": [""target_document""] } }
+  ], ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_room_finishes",
+                Command = "horizun_room_finishes",
+                Description =
+                    "Finishes by room. floors: one floor per room, contour = the room's boundary at the wall FINISH faces (holes " +
+                    "kept), type from the room's use (type_by_use) or default_type_id, copy_parameters room to floor. baseboards: a " +
+                    "sweep of type_id on each wall face bounding the room, on the room's side, once per face. Re-read: type, area " +
+                    "vs the loops (0.5 %), no volume shared with the walls, host and side of each sweep.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""operation"", ""room_ids""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""floors"", ""baseboards""] },
+    ""room_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": { ""type"": ""integer"" } },
+    ""type_by_use"": { ""type"": ""object"", ""properties"": { ""parameter"": { ""type"": ""string"" }, ""map"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""integer"" } } }, ""description"": ""floors: {parameter: room parameter, map: {value: floor_type_id}}."" },
+    ""default_type_id"": { ""type"": ""integer"", ""description"": ""floors: for rooms whose use is not in the map."" },
+    ""offset_mm"": { ""type"": ""number"", ""description"": ""floors: height offset from the room's level."" },
+    ""boundary_gap_tolerance_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 1, ""description"": ""floors: order boundary segments and snap endpoint gaps up to this tolerance. Larger measured gaps reject that room; other rooms continue."" },
+    ""copy_parameters"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""string"" }, ""description"": ""floors: {room parameter: floor text parameter}."" },
+    ""type_id"": { ""type"": ""integer"", ""description"": ""baseboards: the wall sweep type."" },
+    ""height_mm"": { ""type"": ""number"", ""default"": 0, ""description"": ""baseboards: from the wall's base."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_wall_finish",
+                Command = "horizun_wall_finish",
+                Description =
+                    "ARQ walls as finish layers on the EST core of link_instance_id, with no overlap. match_core (read-only): the core " +
+                    "each ARQ wall stands on (parallel 1 deg, within max_offset_mm, overlap >= min_overlap) or why none. " +
+                    "create_finish_layers: finish walls of exterior_type_id / interior_type_id on the core faces over the overlap; " +
+                    "original_wall keep | delete_if_unhosted (said); walls hosting doors are skipped. Re-read: type, offset, " +
+                    "length, no volume shared with the core. convert_to_finish: change the EXISTING wall to finish_type_id of thickness_mm, " +
+                    "on side exterior/interior of the linked core; preserve IDs/hosts, verify sampled aperture clearance and volume; incompatible walls skipped.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"", ""description"": ""Required for writes."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""match_core"", ""create_finish_layers"", ""convert_to_finish"", ""paint_faces""] },
+    ""pairs"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""description"": ""paint_faces: stable face references from selection_context; paint/remove re-read after commit."", ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""face_reference"", ""action""], ""properties"": {
+      ""element_id"": { ""type"": ""integer"", ""minimum"": 1 }, ""face_reference"": { ""type"": ""string"", ""minLength"": 1 }, ""action"": { ""type"": ""string"", ""enum"": [""paint"", ""remove""] }, ""material_id"": { ""type"": ""integer"", ""minimum"": 1 }
+    }, ""additionalProperties"": false } },
+    ""wall_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 300, ""items"": { ""type"": ""integer"" }, ""description"": ""ARQ walls of this document."" },
+    ""link_instance_id"": { ""type"": ""integer"", ""description"": ""The EST link holding the cores."" },
+    ""max_offset_mm"": { ""type"": ""number"", ""default"": 150 },
+    ""min_overlap"": { ""type"": ""number"", ""default"": 0.6, ""description"": ""Share of the ARQ wall's length the core must cover."" },
+    ""exterior_type_id"": { ""type"": ""integer"" }, ""interior_type_id"": { ""type"": ""integer"" },
+    ""finish_type_id"": { ""type"": ""integer"", ""minimum"": 1 },
+    ""thickness_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""maximum"": 100, ""description"": ""convert_to_finish: existing single-layer type width; tolerance 0.1 mm."" },
+    ""side"": { ""type"": ""string"", ""enum"": [""exterior"", ""interior""] },
+    ""original_wall"": { ""type"": ""string"", ""enum"": [""keep"", ""delete_if_unhosted""] },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
+  }, ""allOf"": [{ ""if"": { ""properties"": { ""operation"": { ""const"": ""paint_faces"" } } }, ""then"": { ""required"": [""target_document"", ""pairs""] }, ""else"": { ""required"": [""wall_ids"", ""link_instance_id""] } },
+    { ""if"": { ""properties"": { ""operation"": { ""const"": ""convert_to_finish"" } } }, ""then"": { ""required"": [""target_document"", ""finish_type_id"", ""thickness_mm"", ""side""] } }], ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_audit_support",
+                Command = "horizun_audit_support",
+                Description =
+                    "Read-only. mode floating: elements of categories with nothing under them (box-level, host and links); " +
+                    "loose_beam_ends: framing ends in no column/wall/beam/foundation; coverage_gaps: rooms not covered by a floor " +
+                    "top face (sampled); model_offset: same-named grids against a link - offsets, p95, rotation, translation. " +
+                    "slab_supports: structural elements with no wall, beam, column or slab below within tolerance. What cannot be read is in unreadable.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""mode""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""mode"": { ""type"": ""string"", ""enum"": [""floating"", ""slab_supports"", ""loose_beam_ends"", ""coverage_gaps"", ""model_offset""] },
+    ""categories"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 10, ""items"": { ""type"": ""string"" }, ""description"": ""floating: OST_ names."" },
+    ""level_id"": { ""type"": ""integer"" }, ""room_ids"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""integer"" } },
+    ""tolerance_mm"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 5000 }, ""above_tolerance_mm"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 5000, ""description"": ""floating: count support hanging above within this."" },
+    ""grid_mm"": { ""type"": ""number"", ""minimum"": 100, ""maximum"": 5000, ""default"": 500 }, ""include_links"": { ""type"": ""boolean"", ""default"": true },
+    ""link_instance_id"": { ""type"": ""integer"", ""description"": ""model_offset."" }
+  }, ""allOf"": [
+    { ""if"": { ""properties"": { ""mode"": { ""enum"": [""floating""] } }, ""required"": [""mode""] }, ""then"": { ""required"": [""categories""] } },
+    { ""if"": { ""properties"": { ""mode"": { ""enum"": [""coverage_gaps""] } }, ""required"": [""mode""] }, ""then"": { ""anyOf"": [{ ""required"": [""level_id""] }, { ""required"": [""room_ids""] }] } },
+    { ""if"": { ""properties"": { ""mode"": { ""enum"": [""model_offset""] } }, ""required"": [""mode""] }, ""then"": { ""required"": [""link_instance_id""] } }
+  ], ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_planimetry_ops",
+                Command = "horizun_planimetry_ops",
+                Description =
+                    "Edit datum extents, viewports, overlaps, grid bubbles, legends and notes. " +
+                    "Bubbles use declared circular envelopes; oversized viewports are refused. " +
+                    "Notes and leaders: see docs/NOTES-LEADERS.md. Re-read after commit.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""datum_extents"", ""fit_viewport"", ""resolve_overlaps"", ""legend_from_families"", ""stagger_grid_bubbles"", ""move_note"", ""note_from_model"", ""clone_tag"", ""arrange_column"", ""set_leader_end"", ""reseat_leaders"", ""required_notes"", ""replace_text"", ""sync_sheet_references""] },
+    ""leader_index"": { ""type"": ""integer"" }, ""end_mm"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } }, ""max_shift_mm"": { ""type"": ""number"" },
+    ""old"": { ""type"": ""string"" }, ""new"": { ""type"": ""string"" }, ""pattern"": { ""type"": ""string"" }, ""map"": { ""type"": ""object"" },
+    ""note_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": { ""type"": ""integer"" } },
+    ""delta_mm"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" } },
+    ""frame"": { ""type"": ""string"", ""enum"": [""view"", ""sheet""] },
+    ""keep_leader_ends"": { ""type"": ""boolean"" },
+    ""elbow"": { ""type"": ""string"", ""enum"": [""keep"", ""horizontal"", ""L""] },
+    ""side"": { ""type"": ""string"", ""enum"": [""keep"", ""auto"", ""left"", ""right""] },
+    ""width_mm"": { ""type"": ""number"" },
+    ""text"": { ""type"": ""string"" },
+    ""fit_crop_margin_mm"": { ""type"": ""number"" },
+    ""notes"": { ""type"": ""array"", ""maxItems"": 200, ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""end_mm"", ""note_mm""], ""properties"": { ""element_id"": { ""type"": ""integer"" }, ""link_instance_id"": { ""type"": ""integer"" }, ""end_mm"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } }, ""note_mm"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } } }, ""additionalProperties"": false } },
+    ""source"": { ""type"": ""string"", ""enum"": [""layers"", ""material"", ""type_name"", ""schedule""] },
+    ""schedule_id"": { ""type"": ""integer"", ""description"": ""Native schedule whose complete body supplies the note text."" },
+    ""text_note_type_id"": { ""type"": ""integer"" },
+    ""model_tag_id"": { ""type"": ""integer"" },
+    ""targets"": { ""type"": ""array"", ""maxItems"": 200, ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""head_mm""], ""properties"": { ""element_id"": { ""type"": ""integer"" }, ""head_mm"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } } }, ""additionalProperties"": false } },
+    ""sheet_horizontal"": { ""type"": ""boolean"" },
+    ""grid_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
+    ""ends"": { ""type"": ""string"", ""enum"": [""end0"", ""end1"", ""both""], ""default"": ""both"" },
+    ""bubble_diameter_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""maximum"": 200, ""default"": 8, ""description"": ""Declared printed diameter; circular envelope measurement, not rendered glyph size."" },
+    ""max_offset_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""maximum"": 200, ""default"": 200 },
+    ""view_ids"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""integer"" } }, ""datum_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""bubbles"": { ""type"": ""string"", ""enum"": [""end0"", ""end1"", ""both"", ""none""] },
+    ""viewport_ids"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""integer"" } }, ""view_id"": { ""type"": ""integer"" },
+    ""margin_mm"": { ""type"": ""number"" }, ""gap_mm"": { ""type"": ""number"" }, ""spacing_mm"": { ""type"": ""number"" },
+    ""source_legend_id"": { ""type"": ""integer"" }, ""name"": { ""type"": ""string"" }, ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } },
+    ""label"": { ""type"": ""string"", ""enum"": [""family_and_type"", ""type_name"", ""type_mark""] },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")
@@ -1717,7 +2330,7 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_list_schedules",
                 Command = "horizun_list_schedules",
-                Description = "List native schedules with their real fields, linked-file setting, itemization, body dimensions and host/link coverage. Read-only. Titleblock revision schedules (one per titleblock family - they can be over half the list) are labelled per row and excludable; the document's revision-schedule count is reported either way.",
+                Description = "List native schedules with fields, linked-file setting, itemization, dimensions and host/link coverage. Read-only. Titleblock revision schedules are labelled and excludable; their count is always reported.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -1732,58 +2345,45 @@ namespace Horizun.Contracts
                 Name = "horizun_manage_views",
                 Command = "horizun_manage_views",
                 Description =
-                    "Create and compose documentation in one atomic batch: floor/ceiling/structural/area plans, " +
-                    "sections, elevations, callouts, drafting and isometric 3D views, view duplicates (including " +
-                    "dependents via AsDependent), template assignment, phases, scope boxes, view ranges, " +
-                    "rectangular and annotation crops, sheets, placeholder sheets and their conversion, sheet " +
-                    "duplication with or without content, viewports and schedule instances, viewport type changes " +
-                    "and cross-sheet viewport alignment against a still anchor. ALSO GRAPHIC CONTROL: create and apply " +
-                    "view filters with typed rules, override lines/surfaces/transparency/halftone, colour every " +
-                    "element by a parameter value with a deterministic palette and a returned legend, hide or " +
-                    "isolate elements (temporary view mode by default, and the reply says which), reset the " +
-                    "temporary mode, category/subcategory visibility and overrides; edit filter rules, reorder and " +
-                    "enable filters, explain which override wins for an element, create templates and set what they " +
-                    "govern; list/create/update/delete named PrintManager sheet sets (view_ids replaces membership " +
-                    "on update), restoring the print manager's own current selection afterward. A view whose TEMPLATE governs V/G is REFUSED " +
-                    "with the template named rather than accepted and silently ignored, which is what Revit does. " +
-                    "Sheet numbers are checked unique " +
-                    "against the document AND the batch before anything runs. Actions may assign a key and later " +
-                    "actions can reference that created object in the same transaction. Dry-run validates the " +
-                    "dependency graph; apply re-reads every created or changed object after commit - view ranges, " +
-                    "crops, phases and alignments are verified by re-reading the exact values requested.",
+                    "Create and manage views, sheets, filters and graphics in a verified batch. First query view_id and level_id with get_document_info operation=context. Template-controlled graphics are refused.",
                 InputSchema = JObject.Parse(@"{
+  ""description"": ""Full details. Create sheets and place views: First query view_id and level_id with get_document_info operation=context; never invent IDs. Create and compose documentation in one atomic batch: floor/ceiling/structural/area plans, sections, elevations, callouts, drafting and isometric 3D views, view duplicates (including dependents via AsDependent), template assignment, phases, scope boxes, view ranges, rectangular and annotation crops, sheets, placeholder sheets and their conversion, sheet duplication with or without content, viewports and schedule instances, viewport type changes and cross-sheet viewport alignment against a still anchor. ALSO GRAPHIC CONTROL: create and apply view filters with typed rules, override lines/surfaces/transparency/halftone, colour every element by a parameter value with a deterministic palette and a returned legend, hide or isolate elements (temporary view mode by default, and the reply says which), reset the temporary mode, category/subcategory visibility and overrides; edit filter rules, reorder and enable filters, explain which override wins for an element, create templates and set what they govern; list/create/update/delete named PrintManager sheet sets (view_ids replaces membership on update), restoring the print manager's own current selection afterward. A view whose TEMPLATE governs V/G is REFUSED with the template named rather than accepted and silently ignored, which is what Revit does. Sheet numbers are checked unique against the document AND the batch before anything runs. Actions may assign a key and later actions can reference that created object in the same transaction. Dry-run validates the dependency graph; apply re-reads every created or changed object after commit - view ranges, crops, phases and alignments are verified by re-reading the exact values requested. up: create_perspective/create_3d: eye=start, target=end (in units); up defaults to Z; fan=N (perspective only) views turned 360/N about Z. create_3d refuses eye/target/perspective spellings; camera and style are re-read. display: set_graphic_display: style, shadows, ambient_shadows, smooth_edges and background (type sky|gradient|none; gradient colors #RRGGBB). Unavailable options are refused in the rehearsal. move_filter_ids: order_filters, instead of filter_ids: only these filters, in this order, rearranged among the slots they already hold; every other filter on the view (e.g. ones a duplicated view inherited) keeps its place. hide_marker_coarser_than: create_section: Hide at scales coarser than; default 1 in a workshared model (mark kept out of others' views), 0 = Revit default. A callout's mark shows only in its parent. Reply detail_view: crop, marker_ids. set_view_properties: view_scale, detail_level, discipline, display_style, phase_id of existing views (view_id, view_key or view_ids); a template that controls one refuses naming it; allow_unmarked_view lifts the ownership gate. create_selection_filter: name + element_ids, optionally on view_id with overrides/visible. Both rehearsed in Revit."",
   ""type"": ""object"", ""required"": [""target_document"", ""actions""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" }, ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
       ""type"": ""object"", ""required"": [""operation""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_ceiling_plan"", ""create_structural_plan"", ""create_area_plan"", ""create_3d"", ""create_drafting"", ""create_section"", ""create_elevation"", ""create_callout"", ""duplicate_view"", ""apply_template"", ""set_phase"", ""assign_scope_box"", ""set_view_range"", ""set_crop"", ""set_annotation_crop"", ""create_sheet"", ""create_placeholder_sheet"", ""convert_placeholder_sheet"", ""duplicate_sheet"", ""place_view"", ""place_schedule"", ""set_viewport_type"", ""align_viewports"", ""create_filter"", ""apply_filter"", ""color_by_value"", ""set_element_overrides"", ""hide_elements"", ""isolate_elements"", ""reset_temporary"", ""set_category_visibility"", ""create_legend"", ""place_legend_component"", ""edit_filter"", ""order_filters"", ""explain_graphics"", ""create_template"", ""set_template_controls"", ""sheet_set_list"", ""sheet_set_create"", ""sheet_set_update"", ""sheet_set_delete"", ""renumber_sheets"", ""create_perspective"", ""set_sun_study""],
+        " + IdentityFields("first of view_id, sheet_id, viewport_id") + @"""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_ceiling_plan"", ""create_structural_plan"", ""create_area_plan"", ""create_3d"", ""create_drafting"", ""create_section"", ""create_elevation"", ""create_callout"", ""duplicate_view"", ""apply_template"", ""set_phase"", ""assign_scope_box"", ""set_view_range"", ""set_crop"", ""set_annotation_crop"", ""create_sheet"", ""create_placeholder_sheet"", ""convert_placeholder_sheet"", ""duplicate_sheet"", ""place_view"", ""place_schedule"", ""set_viewport_type"", ""align_viewports"", ""create_filter"", ""apply_filter"", ""color_by_value"", ""set_element_overrides"", ""hide_elements"", ""isolate_elements"", ""reset_temporary"", ""set_category_visibility"", ""create_legend"", ""place_legend_component"", ""edit_filter"", ""order_filters"", ""explain_graphics"", ""create_template"", ""set_template_controls"", ""sheet_set_list"", ""sheet_set_create"", ""sheet_set_update"", ""sheet_set_delete"", ""renumber_sheets"", ""create_perspective"", ""set_sun_study"", ""set_graphic_display"", ""hide_outside_crop"", ""set_starting_view"", ""extend_grids_3d"", ""create_room_isometric"", ""set_view_properties"", ""create_selection_filter""],
           ""description"": ""sheet_set_list reads every PrintManager.ViewSheetSetting sheet set (id, name, is_automatic, member views/sheets); sheet_set_create needs name and view_ids; sheet_set_update needs sheet_set_id and name and/or view_ids (view_ids REPLACES membership); sheet_set_delete needs sheet_set_id. The print manager's own current selection is saved and restored around each call."" },
         ""key"": { ""type"": ""string"", ""description"": ""Unique alias for an object this action creates."" },
         ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""GRAPHIC CONTROL. Categories a filter applies to. Prefer the BuiltInCategory name (OST_Walls): a display name depends on the Revit language and would break on another machine."" },
         ""rules"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""object"", ""required"": [""parameter""], ""properties"": {
           ""parameter"": { ""type"": ""string"", ""description"": ""BuiltInParameter name or parameter label. It must be FILTERABLE for these categories; the refusal lists the ones that are."" },
           ""operator"": { ""type"": ""string"", ""enum"": [""equals"", ""not_equals"", ""contains"", ""not_contains"", ""begins_with"", ""ends_with"", ""greater"", ""greater_or_equal"", ""less"", ""less_or_equal"", ""has_value"", ""has_no_value""], ""default"": ""equals"" },
-          ""value_type"": { ""type"": ""string"", ""enum"": [""string"", ""number"", ""integer""], ""default"": ""string"", ""description"": ""REQUIRED TO BE RIGHT, not guessed: comparing a numeric parameter against a string is a legal call that matches nothing, and the result is an empty view rather than an error."" },
-          ""value"": {}, ""tolerance"": { ""type"": ""number"", ""description"": ""number comparisons only. Defaults to one millimetre in internal feet, because an exact double equality fails on a value Revit stores as 2.9999999."" }
+          ""value_type"": { ""type"": ""string"", ""enum"": [""string"", ""number"", ""integer""], ""default"": ""string"", ""description"": ""Match the parameter: a number against a string matches nothing, with no error."" },
+          ""value"": {}, ""tolerance"": { ""type"": ""number"", ""description"": ""number comparisons only. Default: one millimetre in internal feet."" }
         } } },
         ""match"": { ""type"": ""string"", ""enum"": [""all"", ""any""], ""default"": ""all"", ""description"": ""How several rules combine."" },
         ""filter_id"": { ""type"": ""integer"" }, ""filter_key"": { ""type"": ""string"" }, ""filter_name"": { ""type"": ""string"" },
-        ""filter_prefix"": { ""type"": ""string"", ""description"": ""color_by_value: the name every generated filter starts with."" },
-        ""parameter"": { ""type"": ""string"", ""description"": ""color_by_value: the parameter whose distinct values become colours."" },
-        ""max_values"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 60, ""default"": 24, ""description"": ""color_by_value: how many distinct values get a colour. Beyond twelve the palette repeats and the reply says so."" },
+        ""filter_prefix"": { ""type"": ""string"", ""description"": ""color_by_value: prefix of the generated filter names."" },
+        ""parameter"": { ""type"": ""string"", ""description"": ""color_by_value: parameter whose values become colours."" },
+        ""max_values"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 60, ""default"": 24, ""description"": ""color_by_value: how many values get a colour."" },
+        ""empty_color"": { ""type"": ""string"", ""description"": ""color_by_value: no-value #RRGGBB, default #AAAAAA."" },
         ""overrides"": { ""type"": ""object"", ""properties"": {
           ""line_color"": { ""type"": ""string"", ""description"": ""#RRGGBB. Sets both projection and cut line colour."" },
+          ""projection_line_color"": { ""type"": ""string"", ""description"": ""#RRGGBB. Sets projection line colour."" },
           ""cut_line_color"": { ""type"": ""string"" }, ""surface_color"": { ""type"": ""string"" }, ""cut_color"": { ""type"": ""string"" },
+          ""surface_pattern"": { ""type"": ""string"", ""description"": ""Fill pattern of surface_color: solid (default), exact name or id. No solid drafting fill in the document: refused, not a colour on nothing. Pattern and visibility re-read."" },
+          ""cut_pattern"": { ""type"": ""string"", ""description"": ""Same for cut_color."" },
           ""transparency"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 100 },
           ""halftone"": { ""type"": ""boolean"" },
           ""line_weight"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 16 },
           ""line_pattern"": { ""type"": ""string"", ""description"": ""Line pattern name, or Solid."" }
         }, ""description"": ""Only the fields you set are written, and only those are re-read afterwards."" },
-        ""visible"": { ""type"": ""boolean"", ""description"": ""apply_filter: whether elements matching the filter are shown at all."" },
+        ""visible"": { ""type"": ""boolean"", ""description"": ""apply_filter/create_selection_filter: show or hide the matching elements."" },
         ""enabled"": { ""type"": ""boolean"", ""description"": ""apply_filter: the filter's Enable Filter flag."" },
         ""filter_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""order_filters: ALL the view's filters, top first."" },
-        ""move_filter_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""order_filters, instead of filter_ids: only these filters, in this order, rearranged among the slots they already hold; every other filter on the view (e.g. ones a duplicated view inherited) keeps its place."" },
+        ""move_filter_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""order_filters: reorder these filters within their existing slots."" },
         ""subcategory"": { ""type"": ""string"" },
         ""parameters"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""set_template_controls: BuiltInParameter names or labels."" },
         ""controlled"": { ""type"": ""boolean"" },
@@ -1791,38 +2391,49 @@ namespace Horizun.Contracts
         ""permanent"": { ""type"": ""boolean"", ""default"": false, ""description"": ""hide_elements: false is the TEMPORARY view mode, which does not survive closing the document and is not what a sheet prints. true stores the hide on the view."" },
         ""category"": { ""type"": ""string"", ""description"": ""set_category_visibility: BuiltInCategory name."" },
         ""component_type_id"": { ""type"": ""integer"", ""description"": ""place_legend_component: the TYPE the component draws (a wall type, a door type). A legend component draws a type, never an instance."" },
-        ""detail_level"": { ""type"": ""string"", ""enum"": [""coarse"", ""medium"", ""fine""], ""description"": ""place_legend_component: how the component is drawn."" },
+        ""detail_level"": { ""type"": ""string"", ""enum"": [""coarse"", ""medium"", ""fine""], ""description"": ""place_legend_component: how the component is drawn; set_view_properties: the views' detail level."" },
         ""hidden"": { ""type"": ""boolean"", ""description"": ""set_category_visibility: true hides it."" },
         ""name"": { ""type"": ""string"" }, ""number"": { ""type"": ""string"" },
         ""renumber"": { ""type"": ""object"", ""description"": ""renumber_sheets: old sheet number -> new. Swaps allowed; any collision refused before writing."" },
-        ""up"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""create_perspective: eye=start, target=end (in units); up defaults to Z; fan=N views turned 360/N about Z."" },
+        ""up"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""create_perspective/create_3d: eye=start, target=end; up defaults to Z."" },
+        ""room_id"": { ""type"": ""integer"", ""description"": ""create_room_isometric: a placed, enclosed Room. The 3D view is named name (default: ISO number name), its section box is the room plus margin, and it is re-read after the commit."" },
+        ""direction"": { ""type"": ""string"", ""enum"": [""ne"", ""nw"", ""se"", ""sw""], ""default"": ""se"", ""description"": ""create_room_isometric: the corner the viewer stands in."" },
+        ""display_style"": { ""type"": ""string"", ""description"": ""create_3d/create_perspective/set_view_properties: shaded, shaded_with_edges, hlr, wireframe, consistent_colors, realistic. Re-read; a template-controlled view refuses."" },
         ""fan"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 36 },
+        ""display"": { ""type"": ""object"", ""description"": ""set_graphic_display: style, shadows, edges and background."" },
+        ""discipline"": { ""type"": ""string"", ""enum"": [""architectural"", ""structural"", ""mechanical"", ""electrical"", ""plumbing"", ""coordination""] },
+        ""allow_unmarked_view"": { ""type"": ""boolean"" },
         ""sun"": { ""type"": ""object"", ""description"": ""set_sun_study: {type:still|single_day|multi_day, start, end: ISO-8601+offset, lat, lon: project site, degrees}"" },
         ""sheet_set_id"": { ""type"": ""integer"", ""description"": ""sheet_set_update/sheet_set_delete: an existing saved sheet set."" },
-        ""view_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" }, ""description"": ""sheet_set_create/sheet_set_update: the views/sheets the set holds. On update this REPLACES the whole membership."" },
+        ""grid_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" }, ""description"": ""extend_grids_3d: grids to make span every level (Maximize 3D Extents); omitted: all grids. Extent re-read against the levels."" },
+        ""view_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" }, ""description"": ""sheet_set_create/sheet_set_update: the views/sheets the set holds. On update this REPLACES the whole membership. set_view_properties: the views to change."" },
         ""level_id"": { ""type"": ""integer"" }, ""view_family_type_id"": { ""type"": ""integer"" }, ""plan_view_id"": { ""type"": ""integer"" },
         ""source_view_id"": { ""type"": ""integer"" }, ""source_view_key"": { ""type"": ""string"" },
         ""duplicate_option"": { ""type"": ""string"", ""enum"": [""Duplicate"", ""WithDetailing"", ""AsDependent""], ""default"": ""Duplicate"" },
-        ""view_id"": { ""type"": ""integer"" }, ""view_key"": { ""type"": ""string"" },
-        ""template_view_id"": { ""type"": ""integer"", ""description"": ""-1 removes the template."" }, ""title_block_type_id"": { ""type"": ""integer"" },
+        ""view_id"": { ""type"": ""integer"", ""description"": ""set_starting_view: the view or sheet the document opens on (Manage > Starting View); the rehearsal reads the current one, apply re-reads it."" }, ""view_key"": { ""type"": ""string"" },
+        ""template_view_id"": { ""type"": ""integer"", ""description"": ""-1 removes the template; also applied by create_callout/create_section."" }, ""title_block_type_id"": { ""type"": ""integer"", ""description"": ""create_sheet: omit for no title block. Rehearsed and re-read."" },
+        ""hide_marker_coarser_than"": { ""type"": ""integer"", ""description"": ""create_section: hide marker at coarser scales; see full contract."" },
         ""sheet_id"": { ""type"": ""integer"" }, ""sheet_key"": { ""type"": ""string"" },
         ""schedule_id"": { ""type"": ""integer"" }, ""schedule_key"": { ""type"": ""string"" },
         ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""segment_index"": { ""type"": ""integer"", ""minimum"": 0, ""description"": ""place_schedule: segment of a split schedule."" },
+        ""detail_number"": { ""type"": ""string"", ""description"": ""place_view: refused if used on the sheet."" },
         ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""area_scheme_id"": { ""type"": ""integer"", ""description"": ""create_area_plan: the AreaScheme the plan belongs to."" },
         ""area_scheme_name"": { ""type"": ""string"", ""description"": ""create_area_plan: scheme by name; a refusal lists them."" },
         ""parent_view_id"": { ""type"": ""integer"", ""description"": ""create_callout: the view the callout is drawn in."" },
         ""parent_view_key"": { ""type"": ""string"" },
-        ""phase_id"": { ""type"": ""integer"", ""description"": ""set_phase: the Phase the view shows."" },
-        ""scope_box_id"": { ""type"": ""integer"", ""description"": ""assign_scope_box: a Volume of Interest element."" },
+        ""phase_id"": { ""type"": ""integer"", ""description"": ""set_phase/set_view_properties: the Phase the view shows."" },
+        ""scope_box_id"": { ""type"": ""integer"", ""description"": ""assign_scope_box: a Volume of Interest element; -1 clears it."" },
+        ""margin"": { ""type"": ""number"", ""minimum"": 0, ""description"": ""hide_outside_crop: permanently hide markers, base points and scope boxes lying entirely outside the crop grown by this, in units."" },
         ""cut_level_id"": { ""type"": ""integer"" }, ""cut_offset"": { ""type"": ""number"" },
         ""top_level_id"": { ""type"": ""integer"" }, ""top_offset"": { ""type"": ""number"" },
         ""bottom_level_id"": { ""type"": ""integer"" }, ""bottom_offset"": { ""type"": ""number"" },
         ""view_depth_level_id"": { ""type"": ""integer"" }, ""view_depth_offset"": { ""type"": ""number"" },
         ""box"": { ""type"": ""array"", ""minItems"": 4, ""maxItems"": 4, ""items"": { ""type"": ""number"" }, ""description"": ""set_crop: [min_x, min_y, max_x, max_y] in the view's own plane, in units."" },
         ""active"": { ""type"": ""boolean"", ""description"": ""set_annotation_crop: on or off."" },
-        ""annotation_offset"": { ""type"": ""number"", ""minimum"": 0, ""description"": ""set_annotation_crop: uniform offset applied to all four annotation crop edges, in units."" },
+        ""annotation_offset"": { ""type"": ""number"", ""minimum"": 0, ""description"": ""set_annotation_crop: uniform offset applied to all four annotation crop edges, in units MEASURED ON PAPER (Revit's convention): 5 mm is 5 mm on the sheet at any scale, not 5 mm of model."" },
         ""source_sheet_id"": { ""type"": ""integer"", ""description"": ""duplicate_sheet: the sheet to copy."" },
         ""with_content"": { ""type"": ""boolean"", ""default"": false, ""description"": ""duplicate_sheet: also duplicate every placed view WithDetailing and place each copy at the same paper position with the same viewport type. Refused when the source carries placed schedules - one schedule cannot live on two sheets."" },
         ""viewport_id"": { ""type"": ""integer"", ""description"": ""set_viewport_type: the viewport to retype."" },
@@ -1831,11 +2442,11 @@ namespace Horizun.Contracts
         ""anchor_viewport_id"": { ""type"": ""integer"", ""description"": ""align_viewports: the viewport that holds still; must not appear in viewport_ids."" },
         ""mode"": { ""type"": ""string"", ""enum"": [""center"", ""center_x"", ""center_y"", ""left"", ""right"", ""top"", ""bottom""], ""description"": ""align_viewports: which edge or center aligns to the anchor."" },
         ""bottom_offset"": { ""type"": ""number"", ""default"": -1000 }, ""top_offset"": { ""type"": ""number"", ""default"": 3000 },
-        ""depth"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 5000 },
+        ""depth"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 5000, ""description"": ""create_section box depth; create_elevation: Far Clip Offset, re-read (omitted: Revit's 3048 mm)."" },
         ""elevation_index"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 3, ""default"": 0 },
         ""rotation"": { ""type"": ""number"", ""exclusiveMinimum"": -360, ""exclusiveMaximum"": 360, ""description"": ""create_elevation: rotate the elevation marker about the vertical axis through its point, in degrees CCW - how a room elevation faces its principal wall. Verified by re-reading the view direction after commit."" },
         ""marker_scale"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 24000, ""default"": 100 },
-        ""view_scale"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 24000, ""description"": ""Explicit scale for every operation whose result has a drawing scale: create_floor_plan, create_ceiling_plan, create_structural_plan, create_area_plan, create_drafting, create_3d (isometric), create_callout, create_section, create_elevation, duplicate_view and apply_template. The value is checked with View.IsValidViewScale before any transaction opens. A view whose template controls View Scale refuses the batch by name instead of letting the template silently win; a sheet, schedule or perspective refuses because it has no scale. The scale is re-read after commit and reported per row as view_scale / view_scale_verified; on any other operation the argument is refused rather than ignored."" }
+        ""view_scale"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 24000, ""description"": ""Explicit scale for every operation whose result has a drawing scale: create_floor_plan, create_ceiling_plan, create_structural_plan, create_area_plan, create_drafting, create_3d (isometric), create_callout, create_section, create_elevation, duplicate_view, apply_template and set_view_properties. The value is checked with View.IsValidViewScale before any transaction opens. A view whose template controls View Scale refuses the batch by name instead of letting the template silently win; a sheet, schedule or perspective refuses because it has no scale. The scale is re-read after commit and reported per row as view_scale / view_scale_verified; on any other operation the argument is refused rather than ignored."" }
       }, ""additionalProperties"": false
     }},
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
@@ -1866,21 +2477,40 @@ namespace Horizun.Contracts
                 Name = "horizun_export",
                 Command = "horizun_export",
                 Description =
-                    "Export verified deliverables from the active document: combined PDF, DWG/DGN/DWFX view sets, gbXML, family .rfa, configurable " +
-                    "IFC, model/view Navisworks NWC, one or more 3D views to FBX, one-view image, one native schedule " +
-                    "as delimited text/CSV, or a COBie 2.4 workbook (.xlsx) whose gaps are reported as findings. Dry-run validates paths, exporters, " +
-                    "views and overwrite policy without writing; apply requires confirmation and idempotency, then " +
-                    "discovers and re-reads the files actually produced instead of echoing the requested path.",
+                    "Export verified deliverables from the active document: combined PDF, DWG/DGN/DWFX view sets, gbXML, family .rfa, IFC, " +
+                    "Navisworks NWC, FBX of 3D views, one-view image, a schedule as CSV, or a COBie 2.4 workbook (gaps as findings). " +
+                    "Dry-run validates paths, exporters, views and overwrite policy; apply needs confirmation and idempotency, then " +
+                    "re-reads the files actually produced. pdf_qa reads a PDF back: fonts, ink per viewport, printed gray, lines per note, before/after. " +
+                    "DWG evidence lists xref and raster companions with header checks; it does not prove dimensions, annotations or layouts inside a DWG. " +
+                    "read_only, documentation and safe_write export pdf and one-view image only. mesh_json exports model triangles.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""format"", ""output_path""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""dgn"", ""dwfx"", ""ifc"", ""nwc"", ""fbx"", ""image"", ""schedule_csv"", ""dwg_layers"", ""gbxml"", ""rfa"", ""cobie""] },
-    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file with an extension matching format (.pdf/.dwg/.dgn/.dwfx/.ifc/.nwc/.fbx/.xml; an image extension; .csv/.txt; cobie .xlsx); rfa: a folder. Image export may create a family of names, all of which are reported."" },
+    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""pdf_qa"", ""dwg"", ""dgn"", ""dwfx"", ""ifc"", ""nwc"", ""fbx"", ""image"", ""schedule_csv"", ""dwg_layers"", ""ifc_setup"", ""gbxml"", ""rfa"", ""cobie"", ""mesh_json""] },
+    ""categories"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""uniqueItems"": true, ""items"": { ""type"": ""string"" }, ""description"": ""mesh_json categories."" },
+    ""skip_directshape"": { ""type"": ""boolean"", ""default"": true },
+    ""include_links"": { ""type"": ""boolean"", ""default"": false, ""description"": ""mesh_json links."" },
+    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file with an extension matching format (.pdf/.dwg/.dgn/.dwfx/.ifc/.nwc/.fbx/.xml; an image extension; .csv/.txt; cobie .xlsx); rfa: a folder; pdf with pdf_combine=false: a folder (files take its name as stem unless pdf_name_pattern; see require_existing_folder); pdf_qa: an existing .pdf, read and never written. Image export may create a family of names, all of which are reported."" },
+    ""require_existing_folder"": { ""type"": ""boolean"", ""default"": false, ""description"": ""PDF/image/DWG/IFC/FBX only. Confirmed apply creates missing local parent directories unless true."" },
     ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""PDF, DWG/DGN/DWFX (a file each): one or more printable views/sheets. Image: exactly one. FBX: one or more 3D views. NWC view scope: exactly one."" },
     ""schedule_id"": { ""type"": ""integer"" },
     ""image_pixels"": { ""type"": ""integer"", ""minimum"": 128, ""maximum"": 8192, ""default"": 2048 },
     ""pdf_combine"": { ""type"": ""boolean"", ""default"": true, ""description"": ""PDF: true produces one combined file; false produces deterministic stem-ordinal-viewId.pdf files. All PDFs are reopened and page counts checked."" },
+    ""pdf_name_pattern"": { ""type"": ""string"", ""description"": ""PDF: name files from {sheet_number} {sheet_name} {view_name} {date} {version} {index}; folder from output_path."" },
+    ""dialog_policy"": { ""type"": ""string"", ""enum"": [""cancel"", ""continue_known""], ""default"": ""cancel"", ""description"": ""How the export answers modal dialogs Revit raises while it runs, single-file formats only. cancel (default): nobody is at the keyboard, so the dialog is cancelled - and now NAMED in the reply and in the failure. continue_known: dialogs in a CLOSED catalog (today: Update Resources, e.g. an out-of-date cloud keynote file) are acknowledged and the export continues WITHOUT reloading; any other dialog, and anything that offers a reload, is still cancelled. Reload is never automatic. The reply carries dialog_policy.decisions (dialog id, message, action, result code, reason, whether the button was verified in Revit)."" },
+    ""pdf_version"": { ""anyOf"": [{ ""type"": ""integer"", ""minimum"": 0 }, { ""type"": ""string"", ""enum"": [""auto""] }], ""default"": 1, ""description"": ""{version} of pdf_name_pattern. \""auto\"" = one more than the highest version of the pattern already in the folder."" },
+    ""pdf_parts"": { ""type"": ""integer"", ""minimum"": 2, ""maximum"": 50, ""description"": ""PDF, combined only: split the set into N contiguous parts (stem-parte-i-de-N.pdf), each re-read for its page count."" },
+    ""pdf_also_per_sheet"": { ""type"": ""boolean"", ""default"": false, ""description"": ""PDF, combined only: ALSO write one file per sheet; the combined set is then stem-set.pdf."" },
+    ""pdf_archive_previous"": { ""type"": ""boolean"", ""default"": false, ""description"": ""PDF: after the new version is verified, MOVE (never delete) the older versions of pdf_name_pattern into pdf_archive_folder and re-read both ends. The pattern needs {version}."" },
+    ""pdf_archive_folder"": { ""type"": ""string"", ""maxLength"": 60, ""default"": ""_anteriores"", ""description"": ""A plain folder name inside the output folder."" },
+    ""pdf_qa"": { ""type"": ""object"", ""additionalProperties"": false, ""description"": ""PDF (and format=pdf_qa): read every produced file back for the fonts used (a missing one installed for this user only is advised to be installed for all users), blank pages, text over text, text outside the frame and, on request, the ink of each viewport against its reported box, the printed gray of a box, the printed lines of each note and a comparison with an earlier PDF. Findings are reported, not fatal; no picture is rendered (gray is a coarse raster of the vector drawing). Detail: docs/PDF-QA.md."", ""properties"": {
+        ""expected_fonts"": { ""type"": ""array"", ""maxItems"": 20, ""items"": { ""type"": ""string"" }, ""description"": ""Font families the set must use (\""Arial Narrow\""); a missing one with another in its place is reported as substituted."" },
+        ""frame_margin_mm"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 100, ""default"": 0, ""description"": ""Text must stay this far inside the page edge."" },
+        ""regions"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""object"", ""required"": [""name""], ""properties"": { ""name"": { ""type"": ""string"" }, ""rect_mm"": { ""type"": ""array"", ""minItems"": 4, ""maxItems"": 4, ""items"": { ""type"": ""number"" } }, ""page"": { ""type"": ""integer"" }, ""viewport_id"": { ""type"": ""integer"" }, ""element_id"": { ""type"": ""integer"" } } }, ""description"": ""Boxes: rect_mm (page mm) or viewport_id (+element_id); ink box and printed gray. Detail: docs/PDF-QA.md."" },
+        ""viewports"": { ""type"": ""boolean"", ""description"": ""Each viewport's printed ink vs its box (view_ids=sheets)."" },
+        ""notes"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""object"", ""properties"": { ""text"": { ""type"": ""string"" }, ""note_id"": { ""type"": ""integer"" }, ""page"": { ""type"": ""integer"" }, ""expected_lines"": { ""type"": ""integer"" } } } },
+        ""compare_to"": { ""type"": ""string"" } } },
     ""emit_manifest"": { ""type"": ""boolean"", ""default"": false, ""description"": ""PDF only: write output_path.manifest.json with SHA256, page counts, source views and revision IDs. Same overwrite policy as PDFs. Visual approval is separate."" },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"", ""description"": ""Units of pdf_print.origin_offset_x/y. Nothing else in this tool carries a length."" },
     ""delivery_id"": { ""type"": ""string"", ""minLength"": 1, ""maxLength"": 120, ""description"": ""PDF only: publish as the publish stage of a ledgered delivery (horizun_plan_views delivery_open). Before any file is touched, every recorded scope is re-read and the publish gate must be open - every stage completed, the audit without blocking findings, every sheet approval current; otherwise the export refuses naming the reasons. On success the publish stage is recorded with the produced files and hashes."" },
@@ -1908,7 +2538,7 @@ namespace Horizun.Contracts
     } },
     ""preset"": { ""type"": ""object"", ""description"": ""A NAMED, HASHED option bundle handed in as an argument (organisation-neutral: nothing ships compiled in). Its options override the loose arguments, its sha256 joins the plan hash - an edited preset is a different plan and the token refuses - and after the export each option is either PROVED from the produced file (ifc_version via FILE_SCHEMA, acad_version via the DWG signature, pixel_size via the PNG IHDR, combine by counting files) or reported requested_unverifiable by name. Unknown options and out-of-list values refuse the whole call."", ""properties"": { ""name"": { ""type"": ""string"" }, ""schema_version"": { ""type"": ""integer"", ""default"": 1 }, ""overwrite_policy"": { ""type"": ""string"", ""enum"": [""refuse"", ""replace""], ""default"": ""refuse"" }, ""options"": { ""type"": ""object"" } }, ""required"": [""name""] },
     ""file_naming"": { ""type"": ""string"", ""enum"": [""ordinal"", ""view_name"", ""sheet_number""], ""description"": ""dwg/dgn/dwfx sets: stem-<ordinal-id|view name|sheet number-name>."" },
-    ""dwg_xrefs"": { ""type"": ""string"", ""enum"": [""linked"", ""bound""], ""description"": ""dwg: a sheet's views and links as xref files beside it, or bound into it."" },
+    ""dwg_xrefs"": { ""type"": ""string"", ""enum"": [""linked"", ""bound""], ""description"": ""dwg: a sheet's views and links as xref files beside it, or bound into it. Export view sets report xref and same-stem raster reference_files separately; the produced DWG header proves format, not annotation contents or layout count."" },
     ""family_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""rfa: loadable Family ids."" },
     ""category"": { ""type"": ""string"", ""description"": ""rfa: every loadable family of this category (OST_ token or name)."" },
     ""acad_version"": { ""type"": ""string"", ""enum"": [""2013"", ""2018""], ""description"": ""dwg: the file version; verified from the produced file's signature."" },
@@ -1923,6 +2553,12 @@ namespace Horizun.Contracts
         ""cut_color"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 255 } } } } } },
     ""ifc_version"": { ""type"": ""string"", ""enum"": [""Default"", ""IFC2x2"", ""IFC2x3"", ""IFC2x3CV2"", ""IFC2x3BFM"", ""IFC2x3FM"", ""IFCBCA"", ""IFCCOBIE"", ""IFC4"", ""IFC4DTV"", ""IFC4RV""], ""default"": ""Default"" },
     ""ifc_filter_view_id"": { ""type"": ""integer"", ""description"": ""Optional non-template view whose visibility filters the IFC export."" },
+    ""ifc_setup"": { ""type"": ""object"", ""required"": [""name""], ""additionalProperties"": false, ""description"": ""format ifc_setup (.json output): save a NAMED IFC export setup in the document where Export IFC lists it (ifc_version required; the ifc_* options apply), write IfcExportAs/IfcExportType per type, re-read both; exporter_readback = the installed exporter UI loading it back."", ""properties"": {
+      ""name"": { ""type"": ""string"" },
+      ""options"": { ""type"": ""object"", ""description"": ""Exporter keys, e.g. ExportIFCCommonPropertySets, ExportInternalRevitPropertySets, ExportSchedulesAsPsets, ExportUserDefinedPsets(+FileName), StoreIFCGUID. An unknown key is refused with the list."" },
+      ""classification"": { ""type"": ""object"", ""description"": ""ClassificationName, ClassificationEdition, ClassificationSource, ClassificationLocation, ClassificationFieldName."" },
+      ""type_mappings"": { ""type"": ""array"", ""maxItems"": 2000, ""items"": { ""type"": ""object"", ""required"": [""type_id"", ""export_as""], ""additionalProperties"": false, ""properties"": {
+        ""type_id"": { ""type"": ""integer"" }, ""export_as"": { ""type"": ""string"", ""description"": ""e.g. IfcFooting"" }, ""predefined_type"": { ""type"": ""string"", ""description"": ""e.g. PAD_FOOTING"" } } } } } },
     ""ifc_export_base_quantities"": { ""type"": ""boolean"", ""default"": false },
     ""ifc_split_walls_and_columns"": { ""type"": ""boolean"", ""default"": false },
     ""ifc_space_boundary_level"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 2, ""default"": 1 },
@@ -1963,68 +2599,9 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
-                Name = "horizun_deliver_ifc",
-                Command = "horizun_deliver_ifc",
-                Description =
-                    "Verified IFC delivery in one call: optional IDS precheck on the live model (advisory), IFC export with " +
-                    "explicit options (version, filter view, base quantities, splitting, space boundaries, the exporter's " +
-                    "user-defined property-set file, coordinate basis) beside the model's current georeference, then the " +
-                    "IDS validated on the EXPORTED FILE, every mapped property looked for in the file with n-of-m coverage " +
-                    "and missing GlobalIds, and an optional BCF of IDS failures re-read like the ledger's. Dry-run returns " +
-                    "the plan; apply needs confirmation and idempotency and reports gates precheck/export/schema_header/" +
-                    "ids_validate/pset_mapping/bcf. deliverable_ready is the file's verdict: true only when every requested " +
-                    "non-advisory gate passed, all re-read from disk.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""target_document"", ""output_folder"", ""ifc_version""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"" },
-    ""output_folder"": { ""type"": ""string"", ""description"": ""Absolute existing folder. The IFC is written as <name>.ifc and the optional BCF as <name>.ids-issues.bcf beside it. Nothing is created implicitly."" },
-    ""output_name"": { ""type"": ""string"", ""description"": ""File name stem (.ifc optional). Required unless information_container is given; if both are given they must agree."" },
-    ""information_container"": { ""type"": ""object"", ""description"": ""ISO 19650 information container, the same object horizun_export and horizun_information_container take: fields, field_order (optional only for the seven ISO fields), separator, field_patterns, status and revision (both required: a delivery is sealed). The file stem is validated by the one InformationContainer implementation; after every other gate, a <file>.container.json sidecar (SHA-256 of the delivered IFC) is written and re-read as gate information_container. An existing sidecar refuses the delivery before export."" },
-    ""ifc_version"": { ""type"": ""string"", ""enum"": [""IFC2x3"", ""IFC2x3CV2"", ""IFC2x3BFM"", ""IFC2x3FM"", ""IFCCOBIE"", ""IFC4"", ""IFC4RV"", ""IFC4DTV"", ""IFC4x3""], ""description"": ""Required: a delivery never takes the exporter default. Proved afterwards from FILE_SCHEMA (IFC2X3, IFC4 or IFC4X3 family). IFC4x3 needs Revit 2024+ and is refused by name where the enum lacks it."" },
-    ""ifc_filter_view_id"": { ""type"": ""integer"", ""description"": ""Optional non-template view whose visibility filters the export."" },
-    ""export_base_quantities"": { ""type"": ""boolean"", ""default"": false },
-    ""split_walls_and_columns"": { ""type"": ""boolean"", ""default"": false },
-    ""space_boundary_level"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 2, ""default"": 1 },
-    ""site_placement"": { ""type"": ""string"", ""enum"": [""shared"", ""survey_point"", ""project_base_point"", ""internal""], ""description"": ""Coordinate basis handed to the exporter (option SitePlacement = Shared/Site/Project/Internal). Omit for the exporter default. The reply shows the model's survey point, project base point, angle to true north and site location, and what the file wrote (IfcSite placement, IfcMapConversion) - observed, not judged."" },
-    ""pset_mapping_path"": { ""type"": ""string"", ""description"": ""Absolute path to the exporter's user-defined property-set file ('PropertySet:<TAB>name<TAB>I|T<TAB>IfcClass,...' then '<TAB>Property<TAB>DataType[<TAB>RevitParameter]'). Parsed strictly before export (a line the exporter would not split on TAB refuses by line number), passed via ExportUserDefinedPsets, then every declared property is looked for in the exported file."" },
-    ""pset_min_coverage"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 1, ""default"": 1, ""description"": ""Share of the expected entities that must carry each mapped property for the pset_mapping gate to pass. The exporter omits a property whose Revit parameter is empty."" },
-    ""export_ifc_common_property_sets"": { ""type"": ""boolean"", ""description"": ""Optional; omit for the exporter default. Passed by name, reported requested_unverifiable."" },
-    ""export_internal_revit_property_sets"": { ""type"": ""boolean"", ""description"": ""Optional; omit for the exporter default. Passed by name, reported requested_unverifiable."" },
-    ""ids_path"": { ""type"": ""string"", ""description"": ""Optional .ids file. Enables ids_validate on the exported file (the delivery verdict) and, by default, the advisory model precheck."" },
-    ""precheck"": { ""type"": ""boolean"", ""description"": ""Run the horizun_validate_ids precheck on the live model first. Default true when ids_path is given. Advisory: it never decides readiness."" },
-    ""bcf"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Needs ids_path. Write one BCF 2.1 topic per failed specification with the failing GlobalIds, then re-read it structurally. No failure, no file."" },
-    ""max_findings"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 5000, ""default"": 100 },
-    ""overwrite"": { ""type"": ""boolean"", ""default"": false },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
-  }, ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
                 Name = "horizun_get_dimension_references",
                 Command = "horizun_get_dimension_references",
-                Description =
-                    "Discover DIMENSIONABLE references without guessing faces from element ids: for explicit " +
-                    "elements or a reproducible filter, in ONE named view, produce Revit stable references " +
-                    "selected semantically - a wall's exterior/interior face (HostObjectUtils, never a pick), " +
-                    "its centerline, grids, levels, reference planes, edges, curve endpoints, nearest/farthest " +
-                    "planar face from an explicit probe point. Read-only: ComputeReferences geometry, no " +
-                    "transaction. Every candidate carries its stable representation, owner identity, reference " +
-                    "type, the geometry that justified it, a fingerprint that changes when that geometry moves, " +
-                    "and compatible_with_dimension with a STRUCTURED reason when false. Two equivalent " +
-                    "candidates are BOTH returned marked ambiguous - choosing one silently is the mistake this " +
-                    "tool exists to remove. Results are deterministically ordered and paginated with exact " +
-                    "totals; elements that could not be inspected are named in coverage rather than skipped. " +
-                    "References INTO a loaded RVT link are produced too, via linked_targets: each entry names one " +
-                    "link INSTANCE and the ids of elements inside its document, so two placements of the same file " +
-                    "are two entries and never an ambiguity. A linked row reports the link instance, the link type, " +
-                    "the linked document and the linked element as four separate ids, geometry in host coordinates, " +
-                    "and the instance transform with its fingerprint. Linked GEOMETRY references (faces, edges) " +
-                    "are consumable by dimension creation; linked DATUM references are real but marked " +
-                    "compatible_with_dimension=false with code linked_datum_rejected_by_dimension_api - measured " +
-                    "live, Revit refuses them at creation. Unloaded links, missing linked elements and " +
-                    "nested links are named in coverage with structured codes, never silently skipped.",
+                Description = "Discover stable dimension references in one view for explicit elements or a filter, with semantic selection, compatibility, ambiguity, geometry fingerprint and coverage. Read-only.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""view_id""],
   ""properties"": {
@@ -2041,12 +2618,15 @@ namespace Horizun.Contracts
       ""family"": { ""type"": ""string"" }, ""type"": { ""type"": ""string"" },
       ""name"": { ""type"": ""string"" }, ""level"": { ""type"": ""string"" }
     }, ""additionalProperties"": false },
-    ""selectors"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""centerline"", ""grid"", ""level"", ""reference_plane"", ""exterior_face"", ""interior_face"", ""nearest_face"", ""farthest_face"", ""edge"", ""endpoint""] }, ""description"": ""Semantic selection. Omit for every selector applicable to each element's class except nearest/farthest_face, which must be asked for by name because they require probe_point. A selector that does not apply to an element produces a structured warning for it, never a guess. An element's 'axis' in the linear sense IS centerline."" },
+    ""selectors"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""centerline"", ""grid"", ""level"", ""reference_plane"", ""exterior_face"", ""interior_face"", ""top_face"", ""bottom_face"", ""nearest_face"", ""farthest_face"", ""edge"", ""endpoint"", ""opening_left"", ""opening_right"", ""opening_center"", ""opening_head"", ""opening_sill"", ""opening_front_back_center"", ""family_named_reference"", ""core_exterior_face"", ""core_interior_face"", ""layer_face""] }, ""description"": ""Semantic selection. Opening selectors use FamilyInstance.GetReferences. family_named_reference uses GetReferenceByName and requires reference_name. Family reference positions are estimates until dimension rehearsal."" },
+    ""reference_name"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""Required for family_named_reference; exact family reference-plane name."" },
     ""probe_point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""REQUIRED when selectors include nearest_face/farthest_face: nearest to WHAT is not a guessable fact. In 'units'."" },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""max_results"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 },
     ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
-    ""include_incompatible"": { ""type"": ""boolean"", ""default"": true, ""description"": ""false hides candidates whose compatible_with_dimension is false; totals still count them and the reply says how many were excluded."" }
+    ""include_incompatible"": { ""type"": ""boolean"", ""default"": true, ""description"": ""false hides candidates whose compatible_with_dimension is false; totals still count them and the reply says how many were excluded."" },
+    ""explain_references"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50, ""items"": { ""type"": ""string"" }, ""description"": ""EXPLAIN MODE: stable-reference strings to diagnose in view_id. Replaces the candidate search (do not combine with element_ids, filter, linked_targets, selectors). Per reference: usable_in_dimension plus reasons[] with code, cause and next_step; per consecutive pair: parallelism. A linked grid or level answers linked_datum_rejected_by_dimension_api."" },
+    ""dimension_id"": { ""type"": ""integer"", ""description"": ""EXPLAIN MODE: an existing dimension whose own references to diagnose in view_id (why a dimension is broken or cannot be recreated). Not with explain_references."" }
   },
   ""additionalProperties"": false
 }")
@@ -2079,6 +2659,7 @@ namespace Horizun.Contracts
     ""view_id"": { ""type"": ""integer"", ""description"": ""Only dimensions OWNED by this view."" },
     ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" }, ""description"": ""Specific dimension ids; ids that matched nothing are listed back."" },
     ""dimension_type_id"": { ""type"": ""integer"" },
+    ""references_to_import"": { ""type"": ""boolean"", ""description"": ""Require a confirmed CAD reference. Rows give import_reference_indices; undecidable matches count as unreadable."" },
     ""shapes"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""linear"", ""angular"", ""radial"", ""diameter"", ""arc_length"", ""spot_elevation"", ""spot_coordinate"", ""spot_slope""] } },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 },
@@ -2113,8 +2694,9 @@ namespace Horizun.Contracts
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"", ""description"": ""Units of move_by, text_position, text_offset and leader_end."" },
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": {
       ""type"": ""object"", ""required"": [""element_id""], ""properties"": {
-        ""element_id"": { ""type"": ""integer"", ""description"": ""A Dimension in the active document. The same id twice in one batch is refused."" },
+        " + IdentityFields("element_id", false) + @"""element_id"": { ""type"": ""integer"", ""description"": ""A Dimension in the active document. The same id twice in one batch is refused."" },
         ""set_type_id"": { ""type"": ""integer"", ""description"": ""A DimensionType of the SAME DimensionStyleType as the dimension's current type."" },
+        ""move_by_sheet"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" } },
         ""move_by"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""Translation vector in 'units'. Verified against re-read geometry under a declared tolerance; a component Revit rederives away (along the dimension's own line) fails verification and rolls the batch back."" },
         ""prefix"": { ""type"": ""string"" }, ""suffix"": { ""type"": ""string"" },
         ""above"": { ""type"": ""string"" }, ""below"": { ""type"": ""string"" },
@@ -2142,706 +2724,6 @@ namespace Horizun.Contracts
     ""dry_run"": { ""type"": ""boolean"", ""default"": true },
     ""confirmation_token"": { ""type"": ""string"" },
     ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: edit dimensions"" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_plan_from_cad",
-                Command = "horizun_plan_from_cad",
-                Description =
-                    "Read a linked or imported DWG through a VERSIONED REQUIREMENT SET and return an ordered BIM " +
-                    "plan without building anything. No layer name, family or standard is compiled into this " +
-                    "bridge: the mapping arrives as the caller's artefact, is refused WHOLE when malformed, and " +
-                    "stamps its id, version and SHA-256 on everything produced from it. The reply carries the " +
-                    "staged typed actions in dependency order (a door cannot be hosted by a wall that does not " +
-                    "exist yet), EVERY deferred candidate with its reason, its rival readings and the facts the " +
-                    "drawing did not carry, the fraction of the drawn geometry the reading accounts for, the " +
-                    "layer map, and a plan fingerprint bound to the drawing's bytes, the link's transform and the " +
-                    "requirement set's hash. It also refuses a UNIT MISMATCH between what the CAD link declares " +
-                    "and what the requirement set declares, because a drawing read at the wrong scale produces a " +
-                    "building at the wrong scale. NAME THE OUTFALL and the planned runs carry the FALL the " +
-                    "drawing's declared slopes imply, measured along the network from that point: each run gets " +
-                    "two different end heights, oriented by the network and not by which point the drawing " +
-                    "listed first, at the computed invert plus half the declared bore because a run is placed " +
-                    "on its centreline. Omit it and every run is planned FLAT - a slope declared per layer says " +
-                    "how steep and not which way - and a drainage layout built flat is connected, drains " +
-                    "nowhere, and passes every other check this bridge has. Read-only: no transaction is opened.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""requirement_set""],
-  ""properties"": {
-    ""instance_id"": { ""type"": ""integer"",
-      ""description"": ""CAD instance from horizun_query_cad."" },
-    ""requirement_set"": { ""type"": ""object"",
-      ""description"": ""The versioned DWG-to-BIM mapping. Refused WHOLE when malformed - a typo in one rule means its author believed something this bridge cannot confirm."" },
-    ""target_document"": { ""type"": ""string"",
-      ""description"": ""Where the plan would be built. Defaults to the active document."" },
-    ""include_candidates_needing_review"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""false (the default) plans only what nobody has to argue about. true plans the ambiguous ones too, and CHANGES THE PLAN FINGERPRINT so an apply cannot silently inherit a review that never happened."" },
-    ""accept_unit_mismatch"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""Say the LINK's declared unit is wrong and the requirement set is right. A claim about the drawing, so it is made explicitly."" },
-    ""level_name"": { ""type"": ""string"",
-      ""description"": ""The storey to build on, for rules that do not declare one. A 2D drawing carries no level, so without this - or a 'level' on the rule - the plan REFUSES rather than choosing a storey for somebody's building. The chosen level is resolved to an id here and bound into the apply."" },
-    ""level_id"": { ""type"": ""integer"",
-      ""description"": ""The same choice by element id, for callers that already resolved it. level_name wins if both are given."" },
-    ""dwg_path"": { ""type"": ""string"",
-      ""description"": ""The DWG on disk, for rules with geometry.from = blocks ONLY. MEASURED in Revit 2026: a CAD link created through the API is not an ExternalFileReference - IsLinked is true and the type's GetExternalFileReference throws - so the file a link points at cannot be recovered from the link. A block NAME is not reachable through Revit's import either, so the blocks branch reads the DWG ITSELF and this is how it is told which. NOT TRUSTED: the drawing's own name must match the link's or the path is refused, and a link that does resolve its own path keeps it."" },
-    ""dwg_read_timeout_seconds"": { ""type"": ""integer"", ""minimum"": 30, ""maximum"": 3600, ""default"": 900,
-      ""description"": ""How long the blocks branch waits for the headless AutoCAD. MEASURED on a 536 KB electrical permit drawing with external references: the read takes minutes, not seconds, and the first cap of 300 s refused a drawing that was being read correctly. A timeout says how long it waited AND how long it measured, so the two are never confused."" },
-    ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 },
-    ""max_per_batch"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200, ""default"": 100,
-      ""description"": ""How many elements per create_elements call in the emitted request."" },
-    ""catalog_check_only"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""Check EVERY rule of the requirement set against this model at once - type loaded, family placement compatible with the rule's hosting, storey present, category, mounting height declared or not, listed wall types present and distinct - and return that table. No drawing is read and nothing is written; instance_id is not needed."" },
-    ""alternative_wall_types"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""maxItems"": 50,
-      ""description"": ""Wall type names to MEASURE against every interpreted thickness in catalog_preflight, and never to use: a type that would fit a withdrawn wall is a proposal for a person, not a choice this call makes."" },
-    ""withdrawn_walls"": { ""type"": ""array"", ""items"": { ""type"": ""object"" }, ""maxItems"": 2000,
-      ""description"": ""The withdrawn wall rows of an earlier walls plan (its report.withdrawn.rows). A symbol this plan withdraws because the wall it is drawn against is not in the model is tied to the withdrawn wall it stands on, in catalog_preflight.affected_symbols."" },
-    ""outfall"": { ""type"": ""array"", ""items"": { ""type"": ""number"" }, ""minItems"": 2, ""maxItems"": 3,
-      ""description"": ""[x, y] in MILLIMETRES in the drawing's own coordinates: the point this network drains to. Give it and the planned runs take the heights the declared slopes imply, measured along the network from here; omit it and every run is planned FLAT, because a slope declared per layer says how steep and not which way. A drainage layout built flat is connected, drains nowhere, and passes every other check this bridge has. The same three inputs horizun_cad_networks takes."" },
-    ""outfall_tolerance_mm"": { ""type"": ""number"", ""minimum"": 0, ""default"": 50.0,
-      ""description"": ""How close a junction must be to the outfall point to BE it. Nothing within this distance is a REFUSAL, not a reason to take the nearest node: an outfall on the wrong node inverts an entire layout while looking plausible."" },
-    ""outfall_invert_mm"": { ""type"": ""number"", ""default"": 0,
-      ""description"": ""The INVERT - inside bottom - at the outfall, in millimetres, in the same datum the requirement set's elevations use. Every other invert is this plus the fall along the network. Each planned run is then placed on its CENTRELINE, at the invert plus half its declared bore, and a run with no declared bore takes no fall at all rather than being placed half a diameter wrong."" },
-    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""summary""], ""default"": ""full"",
-      ""description"": ""summary keeps counts, coverage, warnings, coherence and apply_binding whole and cuts each row list to a sample, named in response_omissions. The whole plan is kept under plan_id for horizun_apply_cad_plan."" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_manage_cad_links",
-                Command = "horizun_manage_cad_links",
-                Description =
-                    "List, add, reload and repoint CAD (DWG/DXF) links - the typed first step of a DWG-to-BIM " +
-                    "conversion, which until now was the ONE step that had to go through " +
-                    "horizun_execute_python and therefore had no rehearsal, no confirmation token and no " +
-                    "post-commit re-read. A CAD link is NOT an RVT link and this is a separate tool for three " +
-                    "measured reasons: REVIT HAS NO CAD UNLOAD (CADLinkType declares only Reload and LoadFrom, " +
-                    "in every version 2023-2027 - reflected, not assumed), so 'unload' is refused by name with " +
-                    "what to do instead rather than made to mean something else; the arguments are disjoint " +
-                    "(Document.Link takes a VIEW and nine DWG options, and there is no view-free overload); and " +
-                    "the verification diverges - an RVT reload is proved by a status that changes, a CAD reload " +
-                    "is not, so this verifies by CONTENT: the SHA-256 of the file the link resolves to and a " +
-                    "fingerprint over the geometry Revit hands back. add refuses a file that is missing, empty, " +
-                    "wrongly extensioned, whose first bytes are not a DWG marker, or already linked. " +
-                    "geometry_changed=false after a reload is a real answer, not a failure.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""operation""],
-  ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""add"", ""reload"", ""repoint""],
-      ""description"": ""list is read-only. add links a drawing into ONE view. reload re-reads the file the link already points at. repoint aims the link at a DIFFERENT file, keeping the element id. There is no unload: Revit's API has none for a CAD link, and asking for one is refused by name."" },
-    ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED for add, reload and repoint. Must be the ACTIVE document."" },
-    ""file_path"": { ""type"": ""string"", ""description"": ""add: the DWG/DXF to link. repoint: the file to aim the link at. Read on the machine RUNNING REVIT, which is where its bytes are hashed."" },
-    ""instance_id"": { ""type"": ""integer"", ""description"": ""reload/repoint: the ImportInstance. List them with operation='list' or horizun_query_cad mode='instances'."" },
-    ""view_id"": { ""type"": ""integer"", ""description"": ""add: REQUIRED. Revit's only Link overload takes a view, in every supported version - there is no view-free form. Which view, together with current_view_only, decides whether the drawing appears once or everywhere."" },
-    ""units"": { ""type"": ""string"", ""default"": ""default"",
-      ""description"": ""The unit the DWG's numbers are in: default, millimeter, centimeter, decimeter, meter, inch, foot, custom - and ussurveyfoot from Revit 2024. Resolved against the enum THIS build was compiled with, so an unknown name is refused rather than silently falling back to foot, which is 2 ppm and metres across a site."" },
-    ""placement"": { ""type"": ""string"", ""enum"": [""site"", ""origin"", ""centered"", ""shared""], ""default"": ""origin"" },
-    ""colors"": { ""type"": ""string"", ""enum"": [""preserved"", ""inverted"", ""black_and_white""], ""default"": ""preserved"" },
-    ""current_view_only"": { ""type"": ""boolean"", ""default"": true,
-      ""description"": ""true places the drawing in view_id ALONE. A view-specific CAD returns no geometry to a reader that does not pass that view, which is the commonest reason a linked drawing reads as empty."" },
-    ""orient_to_view"": { ""type"": ""boolean"", ""default"": false },
-    ""visible_layers_only"": { ""type"": ""boolean"", ""default"": false },
-    ""auto_correct_almost_vertical"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""Revit's AutoCorrectAlmostVHLines: nudge nearly-vertical and nearly-horizontal lines onto the axis. Off by default - it CHANGES the drawing's coordinates, and a wall built from a corrected line is not where the DWG put it."" },
-    ""custom_scale"": { ""type"": ""number"", ""description"": ""Only meaningful with units='custom'."" },
-    ""visible_layers"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""maxItems"": 512,
-      ""description"": ""Restrict the import to these DWG layers."" },
-    ""allow_duplicate"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""add: link a drawing this document already has. Off by default, because two ImportInstances of one file make every downstream rule guess which one was meant."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
-      ""description"": ""Default TRUE. Linking cannot rehearse provisionally - a provisional link IS a link - so the rehearsal is a MEASURED preview and the token binds the file's bytes, the view and the options."" },
-    ""confirmation_token"": { ""type"": ""string"" },
-    ""idempotency_key"": { ""type"": ""string"" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_apply_cad_update",
-                Command = "horizun_apply_cad_update",
-                Description =
-                    "Carry out a horizun_plan_cad_update plan through the typed commands that already rehearse, " +
-                    "confirm and re-read their own work - horizun_create_elements for what revision B adds, " +
-                    "horizun_transform_elements set_curve for a moved wall whose pairing you accepted - AND " +
-                    "STAMP WHAT IT TOUCHED. That stamp is the whole reason this exists rather than sending the " +
-                    "actions to horizun_execute_plan: elements created that way remember nothing, so the NEXT " +
-                    "update reads them as things the drawing asks for and nothing has built, and creates them " +
-                    "again. Measured live: two walls where the drawing shows one. Actions commit separately and " +
-                    "the run STOPS at the first failure rather than carrying on into a model that matches " +
-                    "neither revision. IT WRITES GEOMETRY AND NOT A NETWORK: joining is horizun_cad_connect's consented " +
-                    "step, the reply's verdict says `network: not_asserted`, and a plan that releases fittings " +
-                    "is refused unless the caller accepts that those junctions will not be rebuilt.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""target_document"", ""actions"", ""provenance"", ""apply_binding""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED. Must be the ACTIVE document."" },
-    ""actions"": { ""type"": ""array"", ""description"": ""The actions horizun_plan_cad_update emitted, unchanged. May be EMPTY when the plan still carries re-stamps in candidate_index - a revision with no geometry change still carries every verified element to the new drawing; an apply with neither is refused."" },
-    ""apply_binding"": { ""type"": ""object"",
-      ""description"": ""REQUIRED. The apply_binding block from the horizun_plan_cad_update reply, copied VERBATIM. It is the world the plan was made against - the drawing, its references, the link's geometry, the rules, the reading, the target document, the Revit build and a print of every element the actions touch - and this command re-measures all of it before writing. Anything that moved is named and NOTHING is written. Before 2.0 this argument was neither declared nor read, so an apply could carry out a plan aimed at a drawing that had since changed."" },
-    ""provenance"": { ""type"": ""object"", ""description"": ""The provenance block from the same reply: which drawing, which rules, which plan. Without it the elements this creates remember nothing."" },
-    ""candidate_index"": { ""type"": ""array"", ""description"": ""The candidate_index from the same reply: WHICH drawing entity each element stands for. An action with no entry leaves its elements ANONYMOUS, and the reply says so per element."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Default TRUE. Rehearses every action, writes nothing, and returns a token per action key."" },
-    ""accept_placement_move"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""Required TRUE when the plan was re-derived under a placement that MOVED (its provenance.placement_move_accepted is true): applying it re-shapes elements to follow the drawing, and the write is where that consent is said again."" },
-    ""idempotency_key"": { ""type"": ""string"",
-      ""description"": ""The same key with the SAME actions replays the recorded reply (replayed: true) and runs nothing; the same key with different actions is refused. Per Revit session, bounded."" },
-    ""accept_connections_not_rebuilt"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""Required TRUE when the plan RELEASES fittings. This command writes GEOMETRY: it does not build or restore a network, and a junction whose fitting is released to let a run be re-shaped does not come back. MEASURED: one of four declared joins survived such an update, open ends went from six to eleven, and every count of elements, sizes and positions reported the model as correct. Consenting to lose a FITTING - release_fittings, on the plan - is not consenting to lose the JUNCTION it served, so the second consequence needs its own word. Without it the whole plan is refused BEFORE anything is written. Say it only if you will run horizun_cad_connect over the result and accept ITS verdict."" },
-    ""continue_operation"": { ""type"": ""string"",
-      ""description"": ""CARRY OUT WHAT AN EARLIER CALL LEFT PENDING - the operation_id from its reply. Three different things get called a retry and this names the middle one: the SAME key over FINISHED work replays that reply and runs nothing; THIS continues work that stopped part-way, running only the actions still pending and skipping the ones already confirmed; and when the drawing or the model has MOVED since, neither applies - the guard refuses and you plan again, because the decisions in that plan were answers to a question that has changed. The record is durable on this machine, so save, close, open a NEW session and continue is a case this supports; an id this machine does not hold is refused rather than guessed."" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_plan_cad_update",
-                Command = "horizun_plan_cad_update",
-                Description =
-                    "Revision A is in the model, revision B is on screen: plan the difference. READ-ONLY, and it " +
-                    "emits ready calls to commands that rehearse, confirm and re-read their own work - " +
-                    "horizun_create_elements for what is new, horizun_transform_elements set_curve for what the " +
-                    "DRAWING moved, so an updated element keeps its id, its parameters and everything hosted on " +
-                    "it. THE DISTINCTION THAT MATTERS: when an element and the new drawing disagree there are two " +
-                    "reasons and they need opposite treatment - the drawing moved, which is the point of the run, " +
-                    "or a PERSON moved it, in which case updating would silently destroy their work. Telling them " +
-                    "apart needs the geometry the element was BUILT with, which provenance records; where that " +
-                    "record is missing the answer is review, not a guess. Nothing a person must decide appears in " +
-                    "the actions: not what somebody moved, not both-moved, and never a deletion - an entity that " +
-                    "moved far enough reads as a new one, so a deletion and a relocation look identical from here.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""instance_id"", ""requirement_set""],
-  ""properties"": {
-    ""dwg_path"": { ""type"": ""string"",
-      ""description"": ""The DWG on disk, for a requirement set with blocks rules - the same argument horizun_plan_from_cad takes, for the same measured reason: Revit's import cannot see a block name and a CAD link created through the API is not an ExternalFileReference. An update computed without the symbols would propose deleting every device built from one."" },
-    ""dwg_read_timeout_seconds"": { ""type"": ""integer"", ""minimum"": 30, ""maximum"": 3600, ""default"": 900 },
-    ""instance_id"": { ""type"": ""integer"",
-      ""description"": ""The CAD instance holding the NEW revision."" },
-    ""requirement_set"": { ""type"": ""object"",
-      ""description"": ""The SAME set the model was built under - provenance records its hash, and an update planned under different rules is a second conversion wearing an update's clothes."" },
-    ""target_document"": { ""type"": ""string"",
-      ""description"": ""Guard: refuses when the active document is a different one."" },
-    ""level_name"": { ""type"": ""string"",
-      ""description"": ""The storey for elements revision B ADDS. Pass the one the first conversion used, or the new walls land on a different floor from the old ones."" },
-    ""level_id"": { ""type"": ""integer"", ""description"": ""The same choice by element id."" },
-    ""supersedes_sha256"": { ""type"": ""array"", ""maxItems"": 32, ""items"": { ""type"": ""string"" },
-      ""description"": ""The SHA-256 of the drawing file(s) this revision replaces - read them from the audit or from an earlier plan's source.file_sha256. A new revision is a DIFFERENT FILE, so the current hash alone cannot say which elements belong to this conversion; without this the command REFUSES rather than reporting your whole existing model as untouched and this drawing as new work. Nothing in a DWG says one file is a re-issue of another: it is a statement you make. A file placed more than once cannot be named by its hash - use supersedes_placement_ids."" },
-    ""supersedes_requirement_set_sha256"": { ""type"": ""array"", ""maxItems"": 16, ""items"": { ""type"": ""string"" },
-      ""description"": ""The hash(es) of an EARLIER VERSION of this same requirement set (same requirement_set.id) that the model was built under - read them from an earlier plan's provenance.requirement_set_sha256. Without it, elements built under other rules are not this update's to claim. With it, they are compared against the new rules: a change the new rules cause is attributed to rules, kept elements are re-stamped to the new version only when every action applied, and a record of a DIFFERENT set id is refused. It is a statement you make: nothing in the rules says one version replaces another."" },
-    ""supersedes_placement_ids"": { ""type"": ""array"", ""maxItems"": 32, ""items"": { ""type"": ""string"" },
-      ""description"": ""The placement id(s) - ImportInstance UniqueIds, reported as placement.id by an earlier plan - this revision replaces. Scope is per PLACEMENT: two links of one file share a hash and nothing else, and an update for one never claims, orphans or re-stamps the other's elements."" },
-    ""accept_placement_move"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""When the placement no longer sits where it sat when its elements were built, the plan REFUSES with placement_moved and the delta. Send true only if the move was deliberate: the plan is then re-derived under the new transform - elements still on their built line follow the drawing (set_curve), elements a person also moved are conflict."" },
-    ""release_protected_fittings"": { ""type"": ""array"", ""maxItems"": 200, ""items"": { ""type"": ""integer"" },
-      ""description"": ""The second consent, for fittings whose loss costs somebody's work: one this bridge never placed, or one it placed and somebody has changed since (divisions[].fittings_affected[].origin says which). release_fittings means 'I accept losing the fittings this operation costs'; it cannot also mean 'and I accept losing the work somebody did to one of them', because the caller who wrote the first list had no way of knowing the second existed. Having placed a fitting is not permission to delete it."" },
-    ""release_fittings"": { ""type"": ""array"", ""maxItems"": 200, ""items"": { ""type"": ""integer"" },
-      ""description"": ""Fittings you agree to lose, by element id, from this plan's divisions[].id_substitutions. Revit will not re-shape a run whose ends are in a network, and a fitting cannot be released and put back - re-connecting builds a new one where the new ends meet, with a new id. So a re-shape blocked by fittings is HELD until the exact ids are named here; then they are deleted, verified, BEFORE the re-shape, and horizun_cad_connect rebuilds the junctions from the drawing afterwards. Nothing else is ever released: a fitting may be one somebody placed and tuned, and nothing stamps a fitting."" },
-    ""reject_pairings"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""string"" },
-      ""description"": ""candidate_ids you have decided are genuinely NEW, not an existing element moved. A candidate with an offered pairing is HELD out of the actions by default, because building it unattended puts a second wall beside the first; rejecting the pairing releases it."" },
-    ""accept_pairings"": { ""type"": ""array"", ""maxItems"": 500,
-      ""description"": ""The moved-wall pairings YOU have decided are the same wall, from this plan's pairings_offered. Each accepted pairing turns a create plus an orphan into ONE set_curve: the element is re-shaped in place and keeps its id, its parameters and everything hosted on it. A malformed entry is refused rather than skipped, because a skipped pairing silently builds a duplicate instead."",
-      ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""candidate_id""], ""properties"": {
-        ""element_id"": { ""type"": ""integer"" }, ""candidate_id"": { ""type"": ""string"" }
-      }, ""additionalProperties"": false } },
-    ""dependent_decisions"": { ""type"": ""array"", ""maxItems"": 500,
-      ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""decision"", ""decision_key""],
-        ""properties"": {
-          ""element_id"": { ""type"": ""integer"" },
-          ""decision"": { ""type"": ""string"", ""enum"": [""stay"", ""move_to"", ""delete""] },
-          ""piece"": { ""type"": ""string"", ""description"": ""move_to: the piece (candidate id) of the split to put it on."" },
-          ""decision_key"": { ""type"": ""string"", ""description"": ""The decision_key the proposal gave this dependent (splits[].held / split_dependents). A key from another plan, document, drawing set or set of pieces is refused."" } },
-        ""additionalProperties"": false },
-      ""description"": ""Decisions on the DEPENDENTS a split held (in a gap, across two pieces, not re-creatable): stay on the kept piece, move_to a piece (slid onto it as little as needed and re-created there, carrying identity and parameters), or delete (a verified delete). Every entry must be used; one that is stale or names a dependent not held refuses the plan."" },
-    ""fitting_policy"": { ""type"": ""string"", ""enum"": [""keep"", ""rebuild_where_viable""], ""default"": ""keep"",
-      ""description"": ""What happens to the fittings on the ends of ducts a resolved section resize changes. keep: the fitting stays at its size and Revit is expected to insert a transition on each resized run (measured; re-read after the apply). rebuild_where_viable: a fitting whose every run takes the same new section is replaced (new element id) through horizun_cad_connect's refit, kept only whole. fittings_plan in the reply says, per fitting, which applies and why - before anything is written."" },
-    ""resolve"": { ""type"": ""array"", ""maxItems"": 500,
-      ""description"": ""Decisions on changes this plan HOLDS for a person, by element: retype (resized/retyped: change_type to the type the drawing now asks for - by thickness from wall_types for a wall), rotate_in_face (reoriented: a turn about the element's own face normal to the hand the drawing implies), keep (the element stays as it stands and its record is re-stamped so the next plan does not ask again), replace (a MIGRATION PLAN only - what placing it again would cost; never an automatic action, because moving a face-hosted element to another face cannot be done in place), delete (an ORPHAN only - removed, or removed and moved by hand - deleted through horizun_delete_verified; nothing is ever deleted without this decision). A decision the change does not admit, or on an element not held, refuses the whole plan."",
-      ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""decision""], ""properties"": {
-        ""element_id"": { ""type"": ""integer"" },
-        ""decision"": { ""type"": ""string"", ""enum"": [""retype"", ""rotate_in_face"", ""keep"", ""replace"", ""delete""] }
-      }, ""additionalProperties"": false } },
-    ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_audit_cad_model",
-                Command = "horizun_audit_cad_model",
-                Description =
-                    "Does this model still agree with this drawing? Reads the DWG exactly as horizun_plan_from_cad " +
-                    "does - same harvest, same requirement set, same interpretation - then compares it against " +
-                    "what the model holds, and reports where the two disagree. READ-ONLY, and that is the point " +
-                    "rather than a limitation: an audit that could change what it measures cannot be used as " +
-                    "evidence, and deleting an element because a DWG stopped showing it is a decision about " +
-                    "somebody's deliverable, not a tidy-up. Matching is a LADDER and which rung a pair matched on " +
-                    "is part of the answer: revision (same entity, same issue of the file), semantic (same entity, " +
-                    "DIFFERENT issue - the file was re-cut, the building was not), geometry (same shape, different " +
-                    "layer, which usually means a change of meaning), position (no provenance at all, something " +
-                    "merely standing there - counted as built, but an incremental update will not recognise it). " +
-                    "A drawing that could not be fully read REFUSES rather than reporting every element in the " +
-                    "model as deleted from the DWG.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""instance_id"", ""requirement_set""],
-  ""properties"": {
-    ""dwg_path"": { ""type"": ""string"",
-      ""description"": ""The DWG on disk, for a requirement set with blocks rules. The audit must read the drawing exactly as the plan did - Revit's import cannot see a block NAME - and a CAD link created through the API is not an ExternalFileReference, so the file is named here. Checked against the link's own name."" },
-    ""dwg_read_timeout_seconds"": { ""type"": ""integer"", ""minimum"": 30, ""maximum"": 3600, ""default"": 900,
-      ""description"": ""How long to wait for the headless AutoCAD when the set has blocks rules."" },
-    ""instance_id"": { ""type"": ""integer"",
-      ""description"": ""Which CAD instance this model is supposed to agree with. List them with horizun_query_cad mode='instances'."" },
-    ""requirement_set"": { ""type"": ""object"",
-      ""description"": ""The rules the model was built under. Without them the audit would be comparing the drawing against an interpretation nobody declared."" },
-    ""target_document"": { ""type"": ""string"",
-      ""description"": ""Guard: refuses when the active document is a different one. An audit of the wrong model is worse than no audit, because it reads as evidence."" },
-    ""include_anonymous"": { ""type"": ""boolean"", ""default"": true,
-      ""description"": ""true (the default) also sweeps the categories the rules produce, so an element built by hand on the drawing's line is SEEN rather than reported missing. false looks only at elements carrying Horizun provenance."" },
-    ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 },
-    ""max_findings"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 2000, ""default"": 500,
-      ""description"": ""Findings are ordered blocking first; the reply says whether it truncated and how many there were in total."" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_apply_cad_plan",
-                Command = "horizun_apply_cad_plan",
-                Description =
-                    "Build a plan from horizun_plan_from_cad THROUGH the same typed horizun_create_elements this " +
-                    "bridge already rehearses, confirms and re-reads after commit - this command creates nothing " +
-                    "itself. It adds the three things only it can. (1) THE BINDING: it re-measures the drawing, " +
-                    "its transform and the requirement set hash, and refuses stale_plan naming which one moved, " +
-                    "because between a plan and its apply somebody can reload the link, receive a new issue of " +
-                    "the DWG, nudge the import or edit a rule, and all four are silent. (2) THE ORDER: stages run " +
-                    "in dependency order and a failed stage stops the ones that depend on it. (3) THE " +
-                    "PROVENANCE: every created element is stamped in Extensible Storage with the CAD entity, the " +
-                    "rule, the requirement set and the plan fingerprint - invisible in the UI, and the reason an " +
-                    "incremental update and an audit are possible at all. Stages commit SEPARATELY, so the reply " +
-                    "reports a partial honestly and never claims an atomicity it does not have.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""target_document"", ""instance_id"", ""requirement_set""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"" },
-    ""plan_id"": { ""type"": ""string"",
-      ""description"": ""The plan_id horizun_plan_from_cad returned: apply_binding, actions and candidate_index are read from the plan kept on this machine. Without it, send apply_binding and actions."" },
-    ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD instance the plan was read from."" },
-    ""requirement_set"": { ""type"": ""object"", ""description"": ""The SAME artefact the plan was made from; its hash is re-checked."" },
-    ""apply_binding"": { ""type"": ""object"", ""description"": ""Copied verbatim from the plan reply: plan_fingerprint, source_fingerprint, requirement_set_sha256."",
-      ""properties"": {
-        ""plan_fingerprint"": { ""type"": ""string"" },
-        ""source_fingerprint"": { ""type"": ""string"" },
-        ""requirement_set_sha256"": { ""type"": ""string"" }
-      } },
-    ""confirmation_tokens"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""string"" },
-      ""description"": ""The rehearsal's tokens_by_key, whole: each action takes the token under its own key unless it carries confirmation_token itself."" },
-    ""actions"": { ""type"": ""array"", ""minItems"": 0, ""maxItems"": 200,
-      ""description"": ""execute_plan_request.actions from the plan reply, unchanged."" },
-    ""candidate_index"": { ""type"": ""array"",
-      ""description"": ""Which CAD entity each created row came from, so provenance can be stamped. Without it elements are created but ANONYMOUS, and the reply says so rather than pretending provenance was written."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
-    ""confirmation_token"": { ""type"": ""string"" },
-    ""idempotency_key"": { ""type"": ""string"" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_query_cad",
-                Command = "horizun_query_cad",
-                Description =
-                    "Read the CAD (DWG) surface of the ACTIVE document, read-only, in four modes. mode=instances " +
-                    "lists every ImportInstance: linked or imported (a throw becomes a named unreadable, never a " +
-                    "defaulted false), the resolved external path, the link's load status, the total transform with " +
-                    "a fingerprint, the units DECLARED on the CAD link type, and the SHA-256 of the file when this " +
-                    "machine can read it. mode=layers reports the DWG layers - reached the only way Revit exposes " +
-                    "them, through each curve's graphics style category - with a primitive census per layer and per " +
-                    "class. mode=geometry returns the curves in MILLIMETRES with a stable surrogate id per segment " +
-                    "and the curve it is a piece of (source_curve; a closed polyline is named ring:N), " +
-                    "bounded and paginated, plus a set fingerprint over everything that matched. mode=coverage " +
-                    "answers only what this bridge CANNOT read. Every reply carries a provenance block classifying " +
-                    "each fact as native, derived, approximate or unavailable, and three of those are measured " +
-                      "limits rather than caveats: DWG TEXT IS UNREADABLE THROUGH REVIT'S GEOMETRY (it arrives as " +
-                      "curves). For TEXT and MTEXT strings in the source file, call horizun_cad_extract with " +
-                      "read_dwg_text=true; its AutoCAD reader reports a named refusal if unavailable. BLOCK NAMES AND ATTRIBUTES " +
-                    "are not exposed, and HATCHES arrive as zero-volume solids that are reported rather than " +
-                    "counted. Entity identity is DERIVED because there is no DWG handle anywhere in the Revit API " +
-                    "and GeometryObject.Id collides.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""mode"": { ""type"": ""string"", ""enum"": [""instances"", ""layers"", ""geometry"", ""coverage"", ""profile"", ""blocks""], ""default"": ""instances"",
-      ""description"": ""instances: what CAD is here and where it came from. layers: how the drawing is organised, with a census. geometry: the curves in millimetres, paginated. coverage: what cannot be read at all. profile: for each layer, what each geometry source WOULD find on it - measured by running the same reader the conversion runs, not estimated - plus the thickness, area and length ranges it observed, and a requirement-set skeleton with every 'produces' left null. It REFUSES to say what a layer means: no organisation's layer convention is compiled in, and one that was would convert the next organisation's drawing wrong into a model that looked plausible."" },
-    ""max_layers"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200, ""default"": 40,
-      ""description"": ""profile mode: how many layers to measure, busiest first. What is left out is NAMED in the reply rather than silently trimmed."" },
-    ""instance_id"": { ""type"": ""integer"",
-      ""description"": ""Required for layers and geometry. There is no default CAD instance; list them with mode=instances first."" },
-    ""layer"": { ""type"": ""string"",
-      ""description"": ""geometry and profile modes: a GLOB over layer names (A-WALL*, *-DEMO). Globs, not regex - a stray bracket in a layer filter should be a character, not a crash."" },
-    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""compact""], ""default"": ""full"",
-      ""description"": ""profile mode only: compact keeps every count, chosen reading, range and skeleton rule and drops the per-layer prose (a 27-layer profile goes from ~78 kB to well under 20 kB); omitted names what was left out. Other modes refuse compact."" },
-    ""arc_sagitta_mm"": { ""type"": ""number"", ""default"": 5.0, ""minimum"": 0.001,
-      ""description"": ""How far a chord may depart from the arc it replaces. Arcs and splines are APPROXIMATED and every segment from one says so."" },
-    ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000,
-      ""description"": ""A STATED bound on the geometry walk. Hitting it sets truncated=true; a partial reading is never allowed to look complete."" },
-    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 5000, ""default"": 500,
-      ""description"": ""geometry mode: segments per page. blocks mode: placements per page. A site plan is millions of vertices and no reply carries them all."" },
-    ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
-    ""requirement_set"": { ""type"": ""object"",
-      ""description"": ""blocks mode, REQUIRED: the zone and the rules every placement is classified against - the same set the plan uses, so the two reconcile."" },
-    ""dwg_path"": { ""type"": ""string"",
-      ""description"": ""blocks mode: the DWG file, when the link cannot name it. A path naming a different drawing than the link is refused."" },
-    ""dwg_read_timeout_seconds"": { ""type"": ""integer"", ""minimum"": 30, ""maximum"": 3600, ""default"": 900 },
-    ""outcome"": { ""type"": ""string"", ""enum"": [""claimed"", ""unclaimed"", ""tie"", ""coincident_duplicate"", ""outside_extent"", ""paper_space"", ""space_unknown"", ""not_classified""],
-      ""description"": ""blocks mode: only placements with this outcome. The totals still describe every placement."" },
-    ""block"": { ""type"": ""string"", ""description"": ""blocks mode: a GLOB over block names, with or without their external-reference prefix."" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_cad_connect",
-                Command = "horizun_cad_connect",
-                Description =
-                    "Carry out the junctions horizun_cad_networks found, on elements that already exist. This " +
-                    "is the step that turns pipes which touch into a network: until it is done nothing flows, " +
-                    "no system spans the run, and a schedule counts fourteen pieces where the drawing showed " +
-                    "one. IT WRITES NOTHING ITSELF - a DIRECT junction goes to horizun_connect_mep and an " +
-                    "ELBOW, TEE or CROSS to horizun_create_elements, each of which measures its own " +
-                    "preconditions, rehearses, and re-reads the result from the model. What this adds is the " +
-                    "step neither of them can do: a drawing names a junction by a POINT and both of those " +
-                    "take an element and a CONNECTOR INDEX. It REFUSES rather than guessing when two of an " +
-                    "element's connectors are almost equally near the point - on a fitting that is the run " +
-                    "outlet and the branch outlet, and the wrong one flows wrong while looking right. " +
-                    "Junctions the reading marked for review are skipped with its own reason; junctions " +
-                    "whose runs the conversion never built are skipped as unresolved rather than refusing " +
-                    "the whole call, because a reading covers the whole drawing while a conversion builds " +
-                    "only what nobody had to argue about. A MALFORMED junction still refuses everything. " +
-                    "dry_run resolves every connector for real and rehearses each row through the command " +
-                    "that would carry it out.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""target_document"", ""junctions""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"",
-      ""description"": ""The model to write to. Required: a command that CHANGES a model must name it."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
-      ""description"": ""true resolves the connectors and measures compatibility without joining anything."" },
-    ""junctions"": { ""type"": ""array"", ""minItems"": 1,
-      ""description"": ""The junctions to make. horizun_cad_networks' `connections` array is already in this shape and can be sent unchanged, provided that reading reported run_identity.matches_the_conversion - each entry carries its point, its fitting, and its members named by semantic id."",
-      ""items"": { ""type"": ""object"", ""required"": [""at"", ""elements""], ""properties"": {
-        ""id"": { ""type"": ""string"", ""description"": ""The junction node key, so the reply can be matched back to the reading."" },
-        ""fitting"": { ""type"": ""string"", ""enum"": [""direct"", ""elbow"", ""tee"", ""cross"", ""transition"", ""none""], ""default"": ""none"",
-          ""description"": ""direct joins two collinear ends with NO fitting. transition joins two collinear runs of different section; with `drawn` it is a transition the drawing draws, measured against that space after it is built and undone when it does not fit. elbow, tee and cross are delegated to horizun_create_elements in Revit's own argument order: a tee lists the two through-run elements then the branch, a cross the first through pair then the second."" },
-        ""at"": { ""type"": ""array"", ""minItems"": 2, ""items"": { ""type"": ""number"" },
-          ""description"": ""[x, y] or [x, y, z] in millimetres - the point the drawing put this junction at. Without it the connector to join cannot be told from the one at the other end of the same pipe."" },
-        ""elements"": { ""type"": ""array"", ""minItems"": 2,
-          ""description"": ""What meets here, in the fitting's own order. An integer or {element_id}; or {semantic_id} - what the thing IS and on which layer, which is the id horizun_cad_networks gives every run AND the id horizun_apply_cad_plan stamps on what it builds, so the connections array of a network reading can be sent here UNCHANGED; or {candidate_id}, that entity in that issue of the drawing. An id that resolves to nothing, or to two elements, SKIPS that junction with the reason - it does not refuse the call, because in a real route the reading covers the whole drawing while the conversion builds only what nobody had to argue about."",
-          ""items"": { ""type"": [""integer"", ""object""] } },
-        ""automatic"": { ""type"": ""boolean"", ""default"": false,
-          ""description"": ""What the network reading concluded. false means a person has to look, and the junction is SKIPPED unless include_needs_review says otherwise."" },
-        ""says"": { ""type"": ""string"", ""description"": ""The reading's own sentence, carried through to the reply verbatim."" },
-        ""drawn"": { ""type"": ""object"", ""description"": ""For a transition the drawing draws (horizun_cad_networks emits it): from_mm, to_mm and length_mm of the drawn piece. The built fitting's ends are compared with these."" }
-      }, ""additionalProperties"": false } },
-    ""refit"": { ""type"": ""array"",
-      ""description"": ""Instead of junctions: fittings to rebuild at a new section. Each {fitting_id, runs: [every run the fitting joins], width_mm, height_mm}. The fitting is deleted, the runs resized and a fitting of the same kind placed between them - each step by its typed command - inside one group kept only when the new fitting joins every run at the new section and every other connection is unchanged; otherwise rolled back, naming the step."" },
-    ""transition_types"": { ""type"": ""array"", ""maxItems"": 12, ""items"": { ""type"": [""string"", ""integer""] },
-      ""description"": ""Declared duct-fitting types to TRY on a drawn transition, in order, when the one Revit's routing preference builds does not fill the drawn piece. Each is applied to the fitting and MEASURED against the drawing; the first whose ends land within transition_fit_tolerance_mm is kept, every attempt is reported with the length it produced, and a name that names no loaded type is reported with the loaded ones rather than substituted. Nothing is invented: the types are the caller's."" },
-    ""transition_fit_tolerance_mm"": { ""type"": ""number"", ""default"": 25.4, ""minimum"": 0.001,
-      ""description"": ""How far a drawn transition's built ends may sit from the drawn piece's ends. Beyond it the fitting is undone and reported with its length and offsets - the network is never moved to make it fit."" },
-    ""connector_tolerance_mm"": { ""type"": ""number"", ""default"": 25.0, ""minimum"": 0.001,
-      ""description"": ""How far a connector may sit from the junction point and still be the one meant. A second connector within half of this makes the pick AMBIGUOUS and the junction is refused rather than guessed."" },
-    ""rehearsal"": { ""type"": ""string"", ""enum"": [""sequential"", ""isolated""], ""default"": ""sequential"",
-      ""description"": ""With dry_run: sequential (default) carries every junction out IN ORDER inside a transaction group that is rolled back, so each one meets the geometry the earlier ones left; isolated rehearses each alone and proves arguments and references only. The reply's rehearsal_scope says which was done."" },
-    ""include_needs_review"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""true carries out junctions the reading marked automatic=false. Send it only when somebody has looked: the reason they need a person does not stop being true when the call is made again."" },
-    ""idempotency_key"": { ""type"": ""string"",
-      ""description"": ""Passed through to the delegated fitting creation, suffixed per junction, so a resumed run does not build a second elbow at the same corner."" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_cad_review",
-                Command = "horizun_cad_review",
-                Description =
-                    "Ask the MODEL whether it agrees with the drawing's network. For every junction the " +
-                    "drawing shows, this reports whether the elements meeting there are JOINED; whether they " +
-                    "meet and their connectors are OPEN, which is the finding a conversion report never " +
-                    "surfaces because the conversion built the runs and nobody connected them; whether " +
-                    "nothing was built there at all; or whether the network reading itself REFUSED that " +
-                    "junction - a crossing, a riser, a degree no fitting covers - in which case an open " +
-                    "connector is correct. That last category is why this is not a count: '72 of 412 " +
-                    "connectors are open' sounds like a defect and is usually half terminals at fixtures and " +
-                    "crossings refused on purpose. It also lists open connectors on elements THIS drawing " +
-                    "built that sit nowhere near anything it shows, and reports how many elements in the " +
-                    "model still carry this drawing's provenance - none means the conversion was applied " +
-                    "through a route that records nothing, and attribution is impossible even though the " +
-                    "geometric review still works. Every match publishes its distance rather than hiding it " +
-                    "in a boolean. NAME THE OUTFALL and it also compares the INVERT each junction should be " +
-                    "at - from the slope each layer declares, measured along the network - against the " +
-                    "invert the model actually has, taken from each connector's origin down to the bottom " +
-                    "of its own profile. Both sides are inside-bottom heights on purpose: a connector sits " +
-                    "on the centreline, and comparing a centreline against an invert is wrong by half a " +
-                    "diameter on every pipe, in the direction that passes one laid too low. A network built " +
-                    "perfectly level is connected, flows nowhere and passes every other check here; that " +
-                    "comparison is the only one that catches it, and it is reported as a comparison, never " +
-                    "as a verdict. Read-only: no transaction is opened.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""instance_id""],
-  ""properties"": {
-    ""instance_id"": { ""type"": ""integer"",
-      ""description"": ""The CAD instance the model is supposed to agree with. List them with horizun_query_cad mode='instances'."" },
-    ""view_id"": { ""type"": ""integer"", ""description"": ""The view to read through, for a CAD placed in one view only."" },
-    ""requirement_set"": { ""type"": ""object"",
-      ""description"": ""The mapping the conversion used. It supplies each layer's system, bore and elevation, so the junctions reviewed here are the ones the conversion was planned against. Refused WHOLE when malformed."" },
-    ""layers"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
-      ""description"": ""GLOBS limiting which layers the network is read from. Reviewing over the title block produces junctions nobody drew."" },
-    ""layer"": { ""type"": ""string"" },
-    ""match_tolerance_mm"": { ""type"": ""number"", ""default"": 25.0, ""minimum"": 0.001,
-      ""description"": ""How far a connector may sit IN PLAN from where the drawing put the junction and still be the one meant. In plan, because the drawing IS a plan: its junctions carry the drawing's own Z and the elements built from it sit at whatever height the rules gave them, so a three-dimensional match would report a perfectly converted run at +2400 as nothing built. Every row reports its plan distance AND the height spread of the connectors it found, so a tolerance that is too generous is visible rather than silent, and two elements meeting on the page and metres apart in the building show up as what they are."" },
-    ""outfall"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" },
-      ""description"": ""[x, y] in millimetres: the point this network drains to. Given it, the review ALSO compares the height each junction should be at - from the slope each layer declares, measured along the network from the outfall - against the height the model actually has. That is the half that catches a drain built FLAT, which is connected, flows nowhere, and passes every other check here."" },
-    ""outfall_invert_mm"": { ""type"": ""number"", ""default"": 0.0, ""description"": ""The invert AT the outfall; every other height is relative to the network."" },
-    ""outfall_tolerance_mm"": { ""type"": ""number"", ""default"": 50.0, ""minimum"": 0.001, ""description"": ""How near the outfall point must be to a junction. A point out of tolerance is REFUSED, not snapped: an outfall on the wrong node inverts an entire layout while looking plausible."" },
-    ""height_tolerance_mm"": { ""type"": ""number"", ""default"": 25.0, ""minimum"": 0.001,
-      ""description"": ""How far the model may sit from the INVERT the drawing's slopes imply before the junction is reported as disagreeing. Both sides are inside-bottom heights - the model's is its connector origin taken down to the bottom of that connector's profile - so this tolerance is a real construction tolerance and not somewhere half a pipe diameter has to fit. The difference is reported either way: this is a COMPARISON, not a verdict."" },
-    ""connect_tolerance_mm"": { ""type"": ""number"", ""default"": 1.0, ""minimum"": 0.001 },
-    ""gap_review_distance_mm"": { ""type"": ""number"", ""default"": 50.0, ""minimum"": 0 },
-    ""collinear_tolerance_degrees"": { ""type"": ""number"", ""default"": 2.0, ""minimum"": 0 },
-    ""through_tolerance_degrees"": { ""type"": ""number"", ""default"": 15.0, ""minimum"": 0 },
-    ""crossing_check_limit"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 4000 },
-    ""arc_sagitta_mm"": { ""type"": ""number"", ""default"": 5.0, ""minimum"": 0.001 },
-    ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_cad_extract",
-                Command = "horizun_cad_extract",
-                Description =
-                    "Read linked/imported DWG geometry as versioned IR with a fingerprint, layer census and " +
-                    "per-axis supplied/absent/unavailable evidence. read_dwg_text=true reads source DWG TEXT/MTEXT " +
-                    "through AutoCAD, or names the missing file/engine. detail_plan=true pages native curves " +
-                    "with per-entity coverage for horizun_detail_2d. Read-only.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""instance_id""],
-  ""properties"": {
-    ""instance_id"": { ""type"": ""integer"",
-      ""description"": ""Which CAD instance to read. List them with horizun_query_cad mode='instances'; there is no default drawing."" },
-    ""view_id"": { ""type"": ""integer"",
-      ""description"": ""View for a view-specific CAD import and detail plan."" },
-    ""arc_sagitta_mm"": { ""type"": ""number"", ""default"": 5.0, ""minimum"": 0.001,
-      ""description"": ""Maximum arc-to-chord distance in mm; arcs are counted once."" },
-    ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000,
-      ""description"": ""Geometry walk bound; reaching it makes counts partial."" },
-    ""include_entities"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""Page entities when true."" },
-    ""max_entities"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 20000, ""default"": 2000 },
-    ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 }
-    ,""read_dwg_text"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""Read source DWG TEXT/MTEXT through AutoCAD; name missing file/engine."" }
-    ,""dwg_path"": { ""type"": ""string"", ""description"": ""Source DWG for an embedded import; must match import identity."" }
-    ,""text_offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 }
-    ,""max_text_entities"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 20000, ""default"": 2000 }
-    ,""dwg_read_timeout_seconds"": { ""type"": ""integer"", ""minimum"": 10, ""maximum"": 900, ""default"": 300 }
-    ,""detail_plan"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""Page native detail actions, source coverage and gaps; apply with horizun_detail_2d."" }
-    ,""detail_offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 }
-    ,""max_detail_entities"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 }
-    ,""line_style_by_layer"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""integer"", ""minimum"": 0 },
-      ""description"": ""CAD layer to line style ID; gaps if absent."" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_cad_networks",
-                Command = "horizun_cad_networks",
-                Description =
-                    "Read a linked or imported DWG as MEP NETWORKS: straight runs - one per MEP curve Revit " +
-                    "would create - the junctions between them classified as terminal, elbow, collinear pair, " +
-                    "tee, cross, irregular, unsupported degree or elevation change, and the connection intents " +
-                    "those junctions imply. It reports what it deliberately did NOT join: every crossing with " +
-                    "no shared endpoint, because in a plan that is two services at different heights and " +
-                    "joining them routes waste through a water main; every gap wider than the connect " +
-                    "tolerance, with the distance measured; and every junction whose arrangement no fitting " +
-                    "covers. Connected components are reported with their open ends and any system conflict - " +
-                    "two systems declared inside one connected run is a contradiction Revit cannot hold, and " +
-                    "it is named rather than resolved. A CURVE IS ONE RUN, not a chain of elbows: the arcs " +
-                    "the reader kept beside the chords are read, so a quarter-circle chorded into eight " +
-                    "pieces is one run carrying its arc, measured ALONG the arc (471 mm on a 300 mm radius " +
-                    "where its chord is 424 mm) with the TANGENT as its direction at each end - the chord of " +
-                    "a quarter-circle points 45 degrees away from where the pipe actually leaves. Per-layer " +
-                    "system, bore and elevation come from the " +
-                    "caller's declarations and are NEVER defaulted: a run with no declared elevation is a run " +
-                    "whose height nobody stated, which is not the same as one at zero. Read-only: nothing is " +
-                    "created and nothing is connected.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""instance_id""],
-  ""properties"": {
-    ""instance_id"": { ""type"": ""integer"",
-      ""description"": ""Which CAD instance to read. List them with horizun_query_cad mode='instances'."" },
-    ""view_id"": { ""type"": ""integer"",
-      ""description"": ""The view to read through, for a CAD placed in one view only."" },
-    ""layers"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
-      ""description"": ""GLOBS over layer names (P-SANI*, M-DUCT-*). Omit to read every layer - which is rarely what a network reading wants, because a network built over the title block is a network over the title block."" },
-    ""layer"": { ""type"": ""string"", ""description"": ""A single glob, for callers with one."" },
-    ""lists"": { ""type"": ""array"", ""items"": { ""type"": ""string"", ""enum"": [""runs"", ""junctions"", ""connections"", ""crossings"", ""gaps"", ""components"", ""dropped_short_runs""] },
-      ""description"": ""Which lists to return a page of; the others come back as counts. The summary always covers the whole analysis."" },
-    ""page_offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0, ""description"": ""Where each listed array starts. listing.<name>.next_offset says where the next page starts."" },
-    ""page_limit"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 5000, ""default"": 500, ""description"": ""At most this many entries per listed array. listing_complete=false means a list is a page."" },
-    ""require_current_sources"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""Read the drawing again for THIS call and do not keep the result: the reply then speaks for the sources as they are now. Without it, a call that names expect_analysis_fingerprint CONTINUES that snapshot - the reply says so, with sources_checked false - and a call without one is read now and kept for the pages that continue it. The two contracts are never mixed."" },
-    ""expect_analysis_fingerprint"": { ""type"": ""string"", ""description"": ""The analysis_fingerprint of the first page. A later page whose full analysis differs (the source changed between pages) is refused rather than stitched onto pages of another reading."" },
-    ""requirement_set"": { ""type"": ""object"",
-      ""description"": ""The versioned DWG-to-BIM mapping the CONVERSION will use. When given, the system, bore and elevation of every layer are derived from its MEP rules by its own precedence, so this reading and the conversion cannot disagree about a layer - two statements about one layer is how a run gets BUILT at one height and CONNECTED at another with both replies looking correct. A layer two rules claim at EQUAL precedence is left undeclared and named, never resolved by sort order. Refused WHOLE when malformed."" },
-    ""layer_declarations"": { ""type"": ""array"",
-      ""description"": ""What each layer's runs ARE, for a caller with no requirement set yet - a network reading is a useful thing to do BEFORE writing one. Nothing is inferred from a layer name here or anywhere in this bridge: a layer called P-DOMW means cold water in one office and nothing in the next. Given ALONGSIDE a requirement set, these win for the layers they name and any DISAGREEMENT with the set refuses the whole call, naming the layer and both values."",
-      ""items"": { ""type"": ""object"", ""required"": [""layer""], ""properties"": {
-        ""layer"": { ""type"": ""string"", ""description"": ""Exact name or glob."" },
-        ""system_type"": { ""type"": ""string"", ""description"": ""The Revit system type name. Without it nothing on this layer can be built: Revit will not create a pipe or a duct without one."" },
-        ""diameter_mm"": { ""type"": ""number"", ""minimum"": 0.001, ""description"": ""The bore. A drawn line carries no width, so this comes from the rule or from nowhere."" },
-        ""elevation_mm"": { ""type"": ""number"", ""description"": ""The height of these runs. Two runs meeting in plan at DIFFERENT declared elevations are a riser or a mistake, never an elbow - and that is what the reply says."" },
-        ""slope_percent"": { ""type"": ""number"", ""description"": ""The fall these runs have, as a percentage. Needed for the outfall walk: a slope says HOW STEEP and the outfall says WHICH WAY. Null and zero are different - null is 'nobody said' and stops the walk at this layer, zero is 'somebody said level'. When a requirement set is also given, this must AGREE with the rule's slope_percent or the call is refused."" }
-      }, ""additionalProperties"": false } },
-    ""connect_tolerance_mm"": { ""type"": ""number"", ""default"": 1.0, ""minimum"": 0.001,
-      ""description"": ""Ends this close become ONE node. This is the declared meaning of 'these two are joined', and raising it joins every pair that close, not only the one being looked at."" },
-    ""gap_review_distance_mm"": { ""type"": ""number"", ""default"": 50.0, ""minimum"": 0,
-      ""description"": ""Ends further apart than the connect tolerance and closer than this are reported as unresolved gaps with the distance measured. They are never bridged."" },
-    ""collinear_tolerance_degrees"": { ""type"": ""number"", ""default"": 2.0, ""minimum"": 0,
-      ""description"": ""Direction change below this is straight, so the two runs are one length the drawing split. Above it, an elbow with the drawing's own angle."" },
-    ""through_tolerance_degrees"": { ""type"": ""number"", ""default"": 15.0, ""minimum"": 0,
-      ""description"": ""At a tee, how close to opposite the through pair must be before the odd one out is called the branch. A junction that fails this is IRREGULAR rather than a tee with a guessed branch."" },
-    ""crossing_check_limit"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 4000,
-      ""description"": ""The crossing check is quadratic in runs. Past this it is skipped and the reply SAYS it was skipped."" },
-    ""outfall"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" },
-      ""description"": ""[x, y] in millimetres, in the drawing's own coordinates: the point this network DRAINS TO - the stack, the sewer connection, the sump. Given it, every invert is computed from it outwards using the slope each layer declares, and each run's UPSTREAM end is decided by the network rather than by which point the drawing listed first (a drawn line has a first point and a second point, and that is drawing order, not hydraulics). A point that matches no junction within the tolerance is REFUSED, not snapped to the nearest one: an outfall on the wrong node inverts an entire drainage layout while looking plausible."" },
-    ""outfall_invert_mm"": { ""type"": ""number"", ""default"": 0.0,
-      ""description"": ""The invert AT the outfall. Every other invert is reported relative to the network, so this only shifts them all together - it is the one number that ties the fall to the building."" },
-    ""outfall_tolerance_mm"": { ""type"": ""number"", ""default"": 50.0, ""minimum"": 0.001,
-      ""description"": ""How near the outfall point must be to a junction of the network."" },
-    ""identity_tolerance_mm"": { ""type"": ""number"", ""minimum"": 0.001,
-      ""description"": ""The tolerance each run's semantic_id is computed at. Defaults to the requirement set's point tolerance, which is what makes a run's id the SAME id the conversion stamps on the element built from it - and therefore what lets horizun_cad_connect resolve a junction without anybody mapping runs to element ids by hand. Overriding it breaks that correspondence, and the reply says so in run_identity.matches_the_conversion rather than letting the next command discover it."" },
-    ""arc_sagitta_mm"": { ""type"": ""number"", ""default"": 5.0, ""minimum"": 0.001,
-      ""description"": ""How far a chord may depart from the arc it replaces. It decides the CHORDS, not the runs: an arc the reader kept is read as ONE run whatever its chord count, and the sagitta then only affects the geometry of curves the reader could not keep - a spline, or an arc whose centre Revit would not give."" },
-    ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_cad_symbols",
-                Command = "horizun_cad_symbols",
-                Description =
-                    "Group the marks on a drawing into SYMBOL TYPES. An electrical unit plan is mostly " +
-                    "symbols - outlets, switches, fixtures, data points - each a handful of arcs and lines, " +
-                    "and the existing point-cluster reading places something in the right spot while saying " +
-                    "nothing about WHAT it is, so a layer holding switches and receptacles converts to a " +
-                    "wall of receptacles. This groups line work by CONNECTIVITY - what a draughtsman drew " +
-                    "together, not what happens to be near - bounded by a declared footprint, then decides " +
-                    "which groups are the same marks under a rigid transform using the same two-stage " +
-                    "matching that decides whether two apartments are the same layout; nothing in that " +
-                    "reasoning depends on scale. Every group it rejects is named with its reason, including " +
-                    "the ones that outgrew the footprint - a symbol touching its home run is connected to " +
-                    "the whole circuit, and without the bound the first component is the entire drawing. " +
-                    "Types are NOT named: what a symbol means lives in the drawing's legend, which is text, " +
-                    "and horizun_cad_extract says whether this reader can see text. Naming a type is one " +
-                    "sentence from a person and then applies to every occurrence of it, which is the point " +
-                    "of grouping them. Read-only.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""instance_id"", ""max_footprint_mm""],
-  ""properties"": {
-    ""instance_id"": { ""type"": ""integer"",
-      ""description"": ""Which CAD instance to read. List them with horizun_query_cad mode='instances'."" },
-    ""view_id"": { ""type"": ""integer"" },
-    ""max_footprint_mm"": { ""type"": ""number"", ""minimum"": 0.001,
-      ""description"": ""REQUIRED, and there is no default. How large a piece of connected line work may be and still be a symbol. A receptacle is forty millimetres across on one drawing and four hundred on another, so a number chosen inside this bridge would be one nobody can argue with in a review - and without a bound the first connected component is the whole circuit, symbols and home runs together."" },
-    ""snap_tolerance_mm"": { ""type"": ""number"", ""default"": 0.5, ""minimum"": 0.001,
-      ""description"": ""How close two ends must be to count as touching. Grouping is by what TOUCHES rather than by a radius, because a radius groups two symbols 30 mm apart into one thing whose signature matches nothing."" },
-    ""match_tolerance_mm"": { ""type"": ""number"", ""default"": 0.5, ""minimum"": 0.001,
-      ""description"": ""How far two drawn segments may differ and still be the same segment. At symbol scale this is much tighter than at unit scale."" },
-    ""min_segments"": { ""type"": ""integer"", ""minimum"": 1, ""default"": 2,
-      ""description"": ""A group smaller than this is rejected and named rather than compared - a single stray line matches every other single stray line."" },
-    ""legend_instance_id"": { ""type"": ""integer"",
-      ""description"": ""A SECOND CAD instance - the legend sheet - read and recognised TOGETHER with the drawing. On a legend each symbol is drawn once beside the words that name it, so a mark that appears in both lands in one type and naming it becomes reading one entry instead of four hundred. The reply says which types have a legend occurrence and which do not. Recognition is RIGID (rotation, mirror, translation) and not similarity, so a legend drawn at a DIFFERENT SCALE from the plan matches nothing - when types_in_both is zero, that is the reason."" },
-    ""legend_layers"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
-      ""description"": ""GLOBS limiting which of the legend's layers take part. A legend sheet carries its title block and its text layers too, and grouping over those adds rejected components without adding symbols."" },
-    ""layers"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
-      ""description"": ""GLOBS over layer names. Grouping over the whole drawing makes the wiring one enormous rejected component and buries the symbols in it."" },
-    ""layer"": { ""type"": ""string"" },
-    ""arc_sagitta_mm"": { ""type"": ""number"", ""default"": 5.0, ""minimum"": 0.001,
-      ""description"": ""At symbol scale this matters more than anywhere else: a 5 mm sagitta over a 40 mm circle is a hexagon, and two instances chorded differently will not match. Lower it for symbol work."" },
-    ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_cad_unit_instances",
-                Command = "horizun_cad_unit_instances",
-                Description =
-                    "Find REPEATED LAYOUTS in a linked or imported DWG. Given regions - closed boundaries the " +
-                    "caller supplies - it groups them into unit TYPES and OCCURRENCES, each occurrence carrying " +
-                    "the exact rigid transform (quarter turns, mirror, offset) that maps the type onto it. " +
-                    "Matching is two stage and neither stage is a similarity score: a rotation-invariant " +
-                    "signature decides who is compared cheaply, then every one of the eight rigid maps between " +
-                    "the bounding boxes is applied and a match is declared only when every segment of the type " +
-                    "lands on a segment of the region, one for one, within tolerance - and a region whose " +
-                    "signature bucket held only itself is still fitted against every type found before it is " +
-                    "called unrecognised. Regions that share a signature and fit no transform are reported as " +
-                    "NEAR MISSES rather than weak matches, because two apartments that differ by a wall are " +
-                    "two apartments. Types are NOT named: a unit's name lives in the drawing's text, and " +
-                    "whether that is readable is a property of the reader - horizun_cad_extract says which. " +
-                    "Read-only.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""instance_id"", ""regions""],
-  ""properties"": {
-    ""instance_id"": { ""type"": ""integer"",
-      ""description"": ""Which CAD instance to read. List them with horizun_query_cad mode='instances'."" },
-    ""view_id"": { ""type"": ""integer"" },
-    ""regions"": { ""type"": ""array"", ""minItems"": 1,
-      ""description"": ""The outlines to compare. This tool does not invent them: deciding where one unit stops and the corridor begins is a reading of the building, and a rectangle guessed here would put the party wall in whichever unit was processed first."",
-      ""items"": { ""type"": ""object"", ""required"": [""id"", ""boundary""], ""properties"": {
-        ""id"": { ""type"": ""string"", ""description"": ""The caller's name for this region. Required, so that two runs of this tool agree about which region is which."" },
-        ""boundary"": { ""type"": ""array"", ""minItems"": 3, ""items"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } },
-          ""description"": ""A closed ring, [[x,y], ...] in millimetres, in the drawing's own coordinates."" },
-        ""level"": { ""type"": ""string"", ""description"": ""The storey this region belongs to, when the caller knows."" }
-      }, ""additionalProperties"": false } },
-    ""layers"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
-      ""description"": ""GLOBS limiting which layers take part in the comparison. Comparing unit layouts across the title block and the north arrow makes every unit unique."" },
-    ""layer"": { ""type"": ""string"" },
-    ""match_tolerance_mm"": { ""type"": ""number"", ""default"": 2.0, ""minimum"": 0.001,
-      ""description"": ""How far two drawn segments may differ and still be the same segment. At zero no real drawing matches itself."" },
-    ""singletons_become_types"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""false leaves a region that matches nothing as UNRECOGNISED, which is usually the more useful answer than a type with one member."" },
-    ""arc_sagitta_mm"": { ""type"": ""number"", ""default"": 5.0, ""minimum"": 0.001 },
-    ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 }
   },
   ""additionalProperties"": false
 }")
@@ -2878,113 +2760,6 @@ namespace Horizun.Contracts
     ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 },
     ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 }
   },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_audit_reinforcement",
-                Command = "horizun_audit_reinforcement",
-                Description =
-                    "Compare the reinforcement in the model against a structural requirement set. Read-only. " +
-                    "Bars are matched to rules by PROVENANCE, never by position: two identical stirrup sets in " +
-                    "one beam are indistinguishable by geometry, and matching on the nearest one reports a set " +
-                    "as correct because its twin was. Each finding carries code, severity, expected, observed, " +
-                    "the tolerance it was judged against, whether it is fixable and which typed action would fix " +
-                    "it. Codes include host_missing, host_ineligible, rule_built_nothing, type_differs, " +
-                    "diameter_differs, shape_differs, bar_outside_host, hook_differs, orientation_differs, " +
-                    "layout_differs, quantity_differs, spacing_differs, array_length_differs, missing_first_bar, " +
-                    "missing_last_bar, cover_differs, bar_mark_conflict, provenance_missing and " +
-                    "stale_requirement_set. Bar positions are re-measured from the model NOW rather than " +
-                    "trusted from the plan, which is how a set that was correct when built and has since had " +
-                    "its host shortened is caught. " +
-                    "THE VERDICT HAS THREE WORDS AND UNKNOWN IS NOT ONE OF THE GOOD ONES: `agrees` means every " +
-                    "property was read AND matched; `incomplete` means nothing disagreed and something could " +
-                    "not be read, which is a partly audited model rather than a clean one; `differences_found` " +
-                    "means at least one property does not match. The reply also lists what this bridge does " +
-                    "NOT check, because a gap nobody wrote down is indistinguishable from a gap nobody found.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""requirement_set"": { ""type"": ""object"", ""description"": ""A horizun.structural-requirements/1 document - the same one that was applied, or a newer one to audit against."" },
-    ""host_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" } },
-    ""chunk"": { ""type"": ""object"", ""properties"": { ""by"": { ""type"": ""string"", ""enum"": [""level"", ""host_type""] }, ""hosts_per_piece"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 2000 }, ""piece_index"": { ""type"": ""integer"", ""minimum"": 0 }, ""partition_sha256"": { ""type"": ""string"", ""pattern"": ""^[0-9a-f]{64}$"" } }, ""required"": [""by"", ""hosts_per_piece"", ""piece_index""], ""additionalProperties"": false, ""description"": ""Audit ONE piece, cut as horizun_plan_reinforcement cuts it; orphans are judged in its hosts only. Not with host_ids."" }
-  },
-  ""required"": [""requirement_set""],
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_plan_reinforcement",
-                Command = "horizun_plan_reinforcement",
-                Description =
-                    "Resolve a structural requirement set against the model and report what it WOULD build, " +
-                    "without opening a transaction. For every rule and every host it names: the bar type and " +
-                    "shape the declared names resolve to (a name matching two definitions is a review, never a " +
-                    "coin toss), the layout recomputed with the diameter READ FROM THE MODEL rather than the one " +
-                    "the set declared, the position of EVERY bar in the set, and whether the set fits inside its " +
-                    "host measured along the distribution direction. That last check is the reason this exists: " +
-                    "Revit creates a set longer than its beam without complaint - right element, right host, " +
-                    "right type - with some of the steel standing outside the concrete, and nothing in its reply " +
-                    "separates that from a correct set. Refusals carry codes from a CLOSED set, and the reply " +
-                    "publishes that set in `refusal_codes` rather than describing it here - so the vocabulary " +
-                    "cannot drift from the code that emits it. Among them: host_not_found, host_ineligible, " +
-                    "host_eligibility_unreadable, bar_type_not_found, bar_type_ambiguous, shape_not_found, " +
-                    "shape_style_differs_from_declared_style, shape_not_allowed_for_this_bar_type, " +
-                    "curve_not_planar, normal_lies_in_the_plane_of_the_bar, layout_refused, set_outside_host, " +
-                    "bar_outside_host, and this_rule_already_built_a_set_in_this_host - which is what stops a " +
-                    "second run of the same set from putting a second coincident cage in the same beam. " +
-                    "Expected steel length EXCLUDES hook length, because Revit adds that itself. The bridge decides no diameter, spacing, cover, grade, hook " +
-                    "or lap - every one arrives in the requirement set. Read-only.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""requirement_set"": { ""type"": ""object"", ""description"": ""A horizun.structural-requirements/1 document. Lengths are millimetres by definition; a units field with any other value is refused rather than converted."" },
-    ""host_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" }, ""description"": ""Narrow every rule to these hosts. The rules still select; this only intersects."" },
-    ""chunk"": { ""type"": ""object"", ""properties"": { ""by"": { ""type"": ""string"", ""enum"": [""level"", ""host_type""] }, ""hosts_per_piece"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 2000 }, ""piece_index"": { ""type"": ""integer"", ""minimum"": 0 }, ""partition_sha256"": { ""type"": ""string"", ""pattern"": ""^[0-9a-f]{64}$"" } }, ""required"": [""by"", ""hosts_per_piece"", ""piece_index""], ""additionalProperties"": false, ""description"": ""Plan ONE piece: hosts grouped by level or category:type, at most hosts_per_piece each, numbered from 0. The reply gives piece_count, next_piece_index and partition_sha256 to quote in every later call. Not with host_ids."" }
-  },
-  ""required"": [""requirement_set""],
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_apply_reinforcement",
-                Command = "horizun_apply_reinforcement",
-                Description =
-                    "Build the cover and reinforcement a structural requirement set declares, in ONE transaction, " +
-                    "and re-read every bar from the model afterwards. A half-applied requirement set is a model " +
-                    "nobody can reason about - some beams reinforced, some not, no record of which - so anything " +
-                    "that fails rolls the whole batch back and the reply says so. " +
-                    "The post-commit check does not stop at identity, because identity is not the failure mode: " +
-                    "it reads back the ACTUAL bar position transforms Revit computed and measures them against " +
-                    "the host, and compares Revit's OWN bar count against the count the layout arithmetic " +
-                    "predicted before the transaction opened. Those two numbers come from different places on " +
-                    "purpose. Total length is REPORTED rather than asserted whenever a hook is declared, because " +
-                    "Revit adds hook length itself and an expectation that guessed at it would fail on every " +
-                    "correctly built bar. Cover is re-read too: SetCommonCoverType does not throw when it does " +
-                    "not take. Every created bar carries provenance in extensible storage - rule, requirement " +
-                    "set and its sha256, host, plan fingerprint, expected quantity, version and commit. " +
-                    "dry_run defaults to true and issues a confirmation token bound to the document, the " +
-                    "arguments AND the resolved model state, so a host that moved between rehearsal and apply " +
-                    "invalidates the token rather than silently building something else. A rule marked " +
-                    "required: false may be refused without stopping the rest. A hook length the set declares " +
-                    "(hook_types[].lengths_mm) is written to the BAR TYPE before any bar is built, which changes " +
-                    "every bar of that type with that hook; the rehearsal lists each such pair in " +
-                    "bar_type_changes and the apply re-reads it.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""requirement_set"": { ""type"": ""object"", ""description"": ""A horizun.structural-requirements/1 document."" },
-    ""host_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" } },
-    ""chunk"": { ""type"": ""object"", ""properties"": { ""by"": { ""type"": ""string"", ""enum"": [""level"", ""host_type""] }, ""hosts_per_piece"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 2000 }, ""piece_index"": { ""type"": ""integer"", ""minimum"": 0 }, ""partition_sha256"": { ""type"": ""string"", ""pattern"": ""^[0-9a-f]{64}$"" } }, ""required"": [""by"", ""hosts_per_piece"", ""piece_index"", ""partition_sha256""], ""additionalProperties"": false, ""description"": ""Build ONE piece. partition_sha256 is REQUIRED, from the plan; a cut that moved since is refused (chunk_partition_changed). Provenance keeps the whole set's sha256. Not with host_ids."" },
-    ""target_document"": { ""type"": ""string"", ""description"": ""The document this must act on. A command that CHANGES a model names the model; it is never inferred from whichever happens to be active."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Rehearse and issue a confirmation token. No token is issued when a required row could not be resolved - there would be nothing to confirm."" },
-    ""confirmation_token"": { ""type"": ""string"", ""description"": ""From the rehearsal. Bound to the document, the arguments and the resolved model state."" },
-    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun reinforcement"" }
-  },
-  ""required"": [""requirement_set"", ""target_document""],
   ""additionalProperties"": false
 }")
             },
@@ -3064,36 +2839,28 @@ namespace Horizun.Contracts
                 Name = "horizun_query_planimetry",
                 Command = "horizun_query_planimetry",
                 Description =
-                    "Read the DOCUMENTATION surface of the active model, from the database rather than from a PDF: " +
-                    "six explicit modes, because one answer would be enormous. inventory is the census (sheets, " +
-                    "views, templates, viewports, schedule placements, title blocks, dimensions, tags, text, " +
-                    "detail curves, filled regions, detail components, generic annotations, sections, elevations, " +
-                    "drafting views, legends, schedules) and names any total it could NOT compute instead of " +
-                    "reporting it as zero. sheets gives number, name, placeholder state, every title-block " +
-                    "instance with its type and family, the title-block extent and the sheet outline, placed " +
-                    "views, viewports, schedule placements, revisions, guide grid and requested parameters. views " +
-                    "gives type, template, scale, discipline, detail level, phase and phase filter, level, crop " +
-                    "and annotation crop as geometry, scope box, plan view range, underlay, parent/dependents, " +
-                    "filters, and the sheets it is placed on. placements gives viewports AND ScheduleSheetInstances " +
-                    "with box outline, label outline, their union, centre, rotation, type, title and detail number " +
-                    "in SHEET coordinates. annotations gives dimensions (references available, broken/linked/" +
-                    "unreadable reference counts, overrides, segments), tags (targets, orphan state, leader, head " +
-                    "position, target categories, host vs linked), text notes (text, width, alignment, position, " +
-                    "empty state) and 2D detail, each with a view-plane bounding box. references gives elevation " +
-                    "markers, reference callouts and reference viewers with their target view - or an explicit " +
-                    "unknown with the reason, NEVER a relation inferred from a name. Read-only: no transaction is " +
-                    "opened. Deterministic order, cursor bound to both the arguments and the result set, exact " +
-                    "totals whether or not the page was truncated, ids the caller named that matched nothing " +
-                    "listed back, and a coverage block that says why an empty answer may not be read as clean.",
+                    "Read documentation from the active model: inventory, sheets, views, placements, annotations and references. " +
+                    "Placement boxes use sheet coordinates; unknown relations and totals are reported. " +
+                    "Read-only; cursor binds arguments and results. Cooperative annotations and sheets pages use cooperative.cursor; " +
+                    "matched totals and unmatched IDs are unknown, and API calls and indexing are indivisible.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""mode"": { ""type"": ""string"", ""enum"": [""inventory"", ""sheets"", ""views"", ""placements"", ""annotations"", ""references""], ""default"": ""inventory"", ""description"": ""Which population to return. Each mode answers about ONE kind of thing; every row carries entity_kind so a list never mixes two without a discriminator."" },
+    ""target_document"": { ""type"": ""string"" },
+    ""mode"": { ""type"": ""string"", ""enum"": [""inventory"", ""sheets"", ""views"", ""unplaced_views"", ""placements"", ""annotations"", ""references"", ""annotation_overlaps"", ""leader_targets"", ""annotation_staleness"", ""sheet_conflicts"", ""free_spot"", ""view_ray"", ""section_mark_diagnosis"", ""iso_inventory"", ""rasters""], ""default"": ""inventory"", ""description"": ""unplaced_views lists printable graphical views without a viewport. placements includes view, scale and boxes in sheet coordinates. Other modes return paginated populations; see docs/NOTES-LEADERS.md."" },
+    ""note_ids"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""integer"" } }, ""points_mm"": { ""type"": ""array"", ""items"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } } },
+    ""changed_unique_ids"": { ""type"": ""array"", ""maxItems"": 20000, ""items"": { ""type"": ""string"" } },
+    ""deleted_unique_ids"": { ""type"": ""array"", ""maxItems"": 20000, ""items"": { ""type"": ""string"" } },
+    ""sheet_id"": { ""type"": ""integer"" }, ""view_id"": { ""type"": ""integer"" }, ""section_view_id"": { ""type"": ""integer"" },
+    ""size_mm"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } }, ""near_mm"": { ""type"": ""array"", ""items"": { ""type"": ""number"" } },
+    ""gap_mm"": { ""type"": ""number"" }, ""step_mm"": { ""type"": ""number"" }, ""max_radius_mm"": { ""type"": ""number"" }, ""include_linked_symbols"": { ""type"": ""boolean"" },
     ""sheet_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" }, ""description"": ""Narrow to these sheets. Ids that matched nothing come back in unmatched_ids."" },
     ""view_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" } },
     ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" }, ""description"": ""annotations/references modes: specific ids."" },
     ""categories"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""dimensions"", ""tags"", ""text_notes"", ""detail_curves"", ""filled_regions"", ""detail_components"", ""generic_annotations"", ""revision_clouds""] }, ""description"": ""mode=annotations ONLY. Refused in any other mode rather than accepted and ignored."" },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""cooperative"": " + CooperativeReadSchema + @",
+    ""time_budget_s"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 120, ""description"": ""Planimetry time budget. Omitted: 20 s (SUPUESTO), or cooperative.ui_budget_ms."" },
     ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 },
     ""cursor"": { ""type"": ""string"", ""description"": ""From a previous reply's next_cursor. Bound to the query arguments AND to the result set: a cursor used with other arguments, or after the model moved, is refused rather than paging a different list."" },
     ""include_parameters"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Project the named parameters onto sheets and views. Requires parameter_names."" },
@@ -3117,7 +2884,7 @@ namespace Horizun.Contracts
                     "never disagree about what is on a sheet. Read-only: no transaction is opened. Two sets of " +
                     "rules, and the boundary is the design: the UNIVERSAL set is what is true without a company " +
                     "standard - a sheet with zero or several title blocks, viewports/schedules that overlap " +
-                    "beyond an explicit tolerance, a placement wholly off the sheet, a viewport or schedule " +
+                    "beyond an explicit tolerance, a placement wholly or partly off the sheet, a schedule summing a non-additive field, a viewport or schedule " +
                     "placement whose target is gone, a view held by more than one viewport, a broken parent, a " +
                     "dimension with AreReferencesAvailable=false or a genuinely broken reference (references into " +
                     "LINKS are never counted broken), an orphaned tag, a duplicate tag over the same target set, " +
@@ -3229,7 +2996,7 @@ namespace Horizun.Contracts
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": {
       ""type"": ""object"", ""required"": [""operation"", ""finding""],
       ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""set_view_template"", ""set_view_scale"", ""rename_view"", ""rename_sheet"", ""place_title_block"", ""move_viewport"", ""move_schedule"", ""clear_element_override"", ""set_crop"", ""set_view_display""] },
+        " + IdentityFields("first of element_id, viewport_id, sheet_id, view_id") + @"""operation"": { ""type"": ""string"", ""enum"": [""set_view_template"", ""set_view_scale"", ""rename_view"", ""rename_sheet"", ""place_title_block"", ""move_viewport"", ""move_schedule"", ""clear_element_override"", ""set_crop"", ""set_view_display""] },
         ""finding"": { ""type"": ""object"", ""required"": [""rule_id"", ""requirement_set"", ""requirement_set_version"", ""element_ids"", ""observed""], ""properties"": {
           ""rule_id"": { ""type"": ""string"", ""minLength"": 1 },
           ""requirement_set"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""The set id the finding cites: horizun-universal-planimetry or the inline set's id."" },
@@ -3336,15 +3103,29 @@ namespace Horizun.Contracts
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation"", ""view_id""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""auto_tags"", ""intent_dimension"", ""dimension_set"", ""auto_dimension_grids"", ""auto_dimension_levels"", ""auto_dimension_curtain_walls"", ""auto_dimension_openings""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""auto_tags"", ""model_notes"", ""intent_dimension"", ""dimension_set"", ""auto_dimension_grids"", ""auto_dimension_levels"", ""auto_dimension_curtain_walls"", ""auto_dimension_openings"", ""auto_dimension_heights"", ""auto_dimension_room"", ""dimension_mode""] },
+    ""mode"": { ""type"": ""string"", ""enum"": [""wall_thickness"", ""opening_width"", ""opening_height"", ""room_clear_width"", ""grid_to_grid"", ""chain_along_line"", ""level_heights"", ""spot_elevation""] },
+    ""line_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+    ""line_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+    ""room_id"": { ""type"": ""integer"", ""description"": ""auto_dimension_room: a closed rectangular Room with four wall sides aligned to the requested plan view."" },
+    ""interior_offset"": { ""type"": ""number"", ""exclusiveMinimum"": 0 },
+    ""exterior_offset"": { ""type"": ""number"", ""exclusiveMinimum"": 0 },
+    ""thickness_offset"": { ""type"": ""number"", ""exclusiveMinimum"": 0 },
+    ""layout_margin"": { ""type"": ""number"", ""minimum"": 0, ""description"": ""auto_dimension_room: chains may move only inside the room box (interior) or the room box grown by this; one that does not fit is dropped and reported."" },
+    ""annotation_clearance"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 10, ""description"": ""auto_dimension_room: reserved half-width around each proposed dimension line while avoiding existing annotation boxes."" },
+    ""expected_values"": { ""type"": ""object"", ""description"": ""auto_dimension_room: measured postconditions for the two interior and four exterior total chains, in units."", ""properties"": { ""interior_x"": { ""type"": ""number"" }, ""interior_y"": { ""type"": ""number"" }, ""exterior_x_top"": { ""type"": ""number"" }, ""exterior_x_bottom"": { ""type"": ""number"" }, ""exterior_y_left"": { ""type"": ""number"" }, ""exterior_y_right"": { ""type"": ""number"" } }, ""additionalProperties"": false },
+    ""level_id"": { ""type"": ""integer"", ""description"": ""auto_dimension_heights: one datum level, including an auxiliary level previously created with horizun_create_elements."" },
+    ""height_selector"": { ""type"": ""string"", ""enum"": [""top_face"", ""bottom_face"", ""opening_head"", ""opening_sill""], ""default"": ""top_face"" },
+    ""expected_value"": { ""type"": ""number"", ""description"": ""auto_dimension_heights with one target: forwarded as the postcondition on the measured height."" },
+    ""expected_tolerance"": { ""type"": ""number"", ""exclusiveMinimum"": 0 },
     ""distance_space"": { ""type"": ""string"", ""enum"": [""model"", ""paper""], ""default"": ""model"", ""description"": ""Applies scale to offset, chain_separation, clearance and max_displacement only; coordinates/probe points remain model-space units."" },
     ""max_displacement"": { ""type"": ""number"", ""minimum"": 0, ""description"": ""auto_tags: approved maximum displacement from the proposed seed during native measured layout. Defaults to 1200 mm in model distance_space or 30 mm in paper distance_space, converted to units (every layout default is millimetres: offset 15, chain_separation 15, clearance 10)."" },
     ""reference_targets"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 32, ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""selector""], ""additionalProperties"": false, ""properties"": {
-      ""element_id"": { ""type"": ""integer"" }, ""selector"": { ""type"": ""string"" }, ""probe_point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }
+      ""element_id"": { ""type"": ""integer"" }, ""selector"": { ""type"": ""string"" }, ""reference_name"": { ""type"": ""string"" }, ""probe_point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }
     } }, ""description"": ""intent_dimension: per-reference selectors; can name exterior/interior faces of the same wall to measure thickness. Mutually exclusive with element_ids."" },
     ""sets"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 30, ""items"": { ""type"": ""object"", ""required"": [""role"", ""operation"", ""offset"", ""side"", ""dimension_type_id""], ""description"": ""Named general/partial/thickness/opening set with intent_dimension or an auto_dimension operation and its normal arguments. Explicit reference selectors and targets define the criterion; duplicate reference sets or partial coverage refuse the whole set."" } },
     ""view_id"": { ""type"": ""integer"" },
-    ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" }, ""description"": ""auto_tags: up to 500. intent_dimension: 2..32; duplicates are refused. auto_dimension_*: OPTIONAL explicit subset - omit to sweep the view (host) or the linked document (with link_instance_id); with link_instance_id these are ids INSIDE the linked document."" },
+    ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" }, ""description"": ""auto_tags: up to 500; omit to sweep the view. intent_dimension: 2..32; duplicates are refused. auto_dimension_*: OPTIONAL explicit subset - omit to sweep the view (host) or the linked document (with link_instance_id); with link_instance_id these are ids INSIDE the linked document."" },
     ""link_instance_id"": { ""type"": ""integer"", ""description"": ""auto_dimension_*: REFUSED with the measured reason. Revit's dimension API rejects datum references lifted through a link (measured live 2026-08-26: 'Invalid number of references', while linked wall FACES construct), and curtain/opening references are datum-backed. Dimension linked geometry via horizun_get_dimension_references linked_targets + horizun_annotate instead."" },
     ""chain_separation"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""description"": ""auto_dimension_*: distance between successive stacked chains on the same side, in units. Defaults to offset."" },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
@@ -3353,17 +3134,38 @@ namespace Horizun.Contracts
     ""orientation"": { ""type"": ""string"", ""enum"": [""horizontal"", ""vertical""], ""default"": ""horizontal"" },
     ""add_leader"": { ""type"": ""boolean"", ""default"": true },
     ""skip_existing"": { ""type"": ""boolean"", ""default"": true },
+    ""categories"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""string"" } },
+    ""include_links"": { ""type"": ""boolean"" },
     ""accept_unmeasurable"": { ""type"": ""array"", ""maxItems"": 200, ""items"": { ""type"": ""integer"" }, ""description"": ""auto_tags: element ids of annotations this plan accepts as unmeasurable. An annotation whose extent cannot be read in the view AND which Revit's own view-scoped visible-element collector still lists as visible blocks planning, with its ids in annotation_coverage.blocking - not measuring something never makes it absent. Naming those exact ids here records the acceptance, reports clearance_scope 'partial' instead of 'complete', and forwards the same list into the returned horizun_annotate request."" },
     ""clearance"": { ""type"": ""number"", ""minimum"": 0, ""default"": 10, ""description"": ""auto_tags: search step and annotation clearance in units."" },
-    ""selector"": { ""type"": ""string"", ""enum"": [""centerline"", ""grid"", ""level"", ""reference_plane"", ""endpoint"", ""face"", ""nearest_face"", ""farthest_face""], ""default"": ""centerline"" },
+    ""selector"": { ""type"": ""string"", ""enum"": [""centerline"", ""grid"", ""level"", ""reference_plane"", ""endpoint"", ""exterior_face"", ""interior_face"", ""top_face"", ""bottom_face"", ""nearest_face"", ""farthest_face"", ""opening_left"", ""opening_right"", ""opening_center"", ""opening_head"", ""opening_sill"", ""opening_front_back_center"", ""family_named_reference""] , ""default"": ""centerline"" },
+    ""reference_name"": { ""type"": ""string"", ""description"": ""intent_dimension with family_named_reference: exact family reference-plane name."" },
     ""probe_point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""Required by nearest_face/farthest_face; forwarded to reference discovery."" },
     ""axis"": { ""type"": ""string"", ""enum"": [""auto"", ""horizontal"", ""vertical""], ""default"": ""auto"" },
     ""side"": { ""type"": ""string"", ""enum"": [""positive"", ""negative""], ""default"": ""positive"" },
     ""offset"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 15, ""description"": ""intent_dimension: perpendicular distance from the outermost selected reference, in units."" },
-    ""dimension_type_id"": { ""type"": ""integer"" }
+    ""dimension_type_id"": { ""type"": ""integer"" },
+    ""text_type_id"": { ""type"": ""integer"" },
+    ""note_source"": { ""type"": ""string"", ""enum"": [""layers"", ""params""], ""default"": ""layers"" },
+    ""omit_source_id"": { ""type"": ""boolean"", ""default"": false }
   },
+  ""oneOf"": [
+    { ""properties"": { ""operation"": { ""const"": ""auto_tags"" } }, ""description"": ""Plan collision-aware tags for element_ids, or sweep every taggable element in the view."" },
+    { ""properties"": { ""operation"": { ""const"": ""model_notes"" } }, ""required"": [""element_ids"", ""text_type_id""], ""description"": ""Text notes from layers or params, with source id."" },
+    { ""properties"": { ""operation"": { ""const"": ""intent_dimension"" } }, ""description"": ""Plan a dimension from element_ids or explicit reference_targets; choose opening_left/opening_right for an opening width."" },
+    { ""properties"": { ""operation"": { ""const"": ""dimension_set"" } }, ""required"": [""sets""], ""description"": ""Plan a named collection of complete dimension roles."" },
+    { ""properties"": { ""operation"": { ""const"": ""auto_dimension_grids"" } }, ""description"": ""Plan visible host grid chains."" },
+    { ""properties"": { ""operation"": { ""const"": ""auto_dimension_levels"" } }, ""description"": ""Plan visible host level chains; use auto_dimension_heights for one level and one face."" },
+    { ""properties"": { ""operation"": { ""const"": ""auto_dimension_curtain_walls"" } }, ""description"": ""Plan visible curtain U/V grid chains."" },
+    { ""properties"": { ""operation"": { ""const"": ""auto_dimension_openings"" } }, ""description"": ""Plan each opening width and its host wall opening/pier chain; inspect omitted before applying."" },
+    { ""properties"": { ""operation"": { ""const"": ""auto_dimension_heights"" } }, ""required"": [""level_id"", ""element_ids""], ""description"": ""Plan level-to-face and level-to-opening heights."" },
+    { ""properties"": { ""operation"": { ""const"": ""auto_dimension_room"" } }, ""required"": [""room_id""], ""description"": ""Plan a rectangular room's interior, exterior, thickness and opening chains."" },
+    { ""properties"": { ""operation"": { ""const"": ""dimension_mode"" } }, ""required"": [""mode""], ""description"": ""wall_thickness/chain_along_line/spot planned here, others delegate; expected_value from geometry."" }
+  ],
   ""allOf"": [
-    { ""if"": { ""properties"": { ""operation"": { ""const"": ""auto_tags"" } } }, ""then"": { ""properties"": { ""element_ids"": { ""maxItems"": 500 } }, ""required"": [""element_ids""] } },
+    { ""if"": { ""properties"": { ""operation"": { ""const"": ""auto_tags"" } } }, ""then"": { ""properties"": { ""element_ids"": { ""maxItems"": 500 } } } },
+    { ""if"": { ""properties"": { ""operation"": { ""const"": ""auto_dimension_heights"" } } }, ""then"": { ""required"": [""level_id"", ""element_ids""] } },
+    { ""if"": { ""properties"": { ""operation"": { ""const"": ""auto_dimension_room"" } } }, ""then"": { ""required"": [""room_id""] } },
     { ""if"": { ""properties"": { ""operation"": { ""const"": ""intent_dimension"" } } }, ""then"": { ""properties"": { ""element_ids"": { ""minItems"": 2, ""maxItems"": 32 } }, ""oneOf"": [{ ""required"": [""element_ids""] }, { ""required"": [""reference_targets""] }] } },
     { ""if"": { ""properties"": { ""operation"": { ""const"": ""dimension_set"" } } }, ""then"": { ""required"": [""sets""] } },
     { ""if"": { ""properties"": { ""selector"": { ""enum"": [""nearest_face"", ""farthest_face""] } }, ""required"": [""selector""] }, ""then"": { ""required"": [""probe_point""] } }
@@ -3376,50 +3178,42 @@ namespace Horizun.Contracts
                 Name = "horizun_manage_schedules",
                 Command = "horizun_manage_schedules",
                 Description =
-                    "Create material takeoffs, sheet lists, view lists, revision schedules and keynote legends, " +
-                    "and edit any schedule's DEFINITION in one atomic verified batch: add/remove fields, per-field totals, " +
-                    "sheet column width, alignment and number format (units, accuracy, rounding), heading " +
-                    "and visibility per field, filters, sorting/grouping with header/footer/blank-line, " +
-                    "itemization, grand totals, headers, rename and duplicate. Fields resolve by stable parameter " +
-                    "id or unambiguous name - a name matching two columns refuses listing both ids, because the " +
-                    "other Comments column is the one that ships. set_filters and set_sorting DECLARE the whole " +
-                    "list (empty clears), so replaying a batch is idempotent instead of doubling every filter. " +
-                    "The confirmation token binds each target schedule's whole definition fingerprint: a " +
-                    "colleague's edit between rehearsal and apply refuses as stale_plan. Replies carry the " +
-                    "canonical definition before and after plus exactly which sections changed. Plain category " +
-                    "schedules are horizun_create_schedule's job; placement on sheets is horizun_manage_views " +
-                    "and horizun_pack_sheets; reading rows is horizun_get_schedule_data.",
+                    "Create material takeoffs, sheet/view lists, revision and keynote schedules; edit any schedule in one " +
+                    "atomic verified batch: fields, totals, filters, sorting, options, rename, duplicate, appearance " +
+                    "(text types, fonts, colours, borders, grid, title), split/unsplit. Filters and sorting declare the " +
+                    "whole list. The token binds the definition: a colleague's edit refuses as stale_plan. Revit has no " +
+                    "API for conditional formatting. Plain schedules: horizun_create_schedule; placement: horizun_manage_views.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""actions""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": {
       ""type"": ""object"", ""required"": [""operation""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""create"", ""duplicate"", ""rename"", ""add_fields"", ""remove_fields"", ""set_field"", ""set_filters"", ""set_sorting"", ""set_options""] },
-        ""key"": { ""type"": ""string"", ""description"": ""Alias for a schedule this action creates; later actions may target it via schedule_key."" },
+        ""operation"": { ""type"": ""string"", ""enum"": [""create"", ""duplicate"", ""rename"", ""add_fields"", ""remove_fields"", ""set_field"", ""set_filters"", ""set_sorting"", ""set_options"", ""set_appearance"", ""split"", ""unsplit""] },
+        ""key"": { ""type"": ""string"", ""description"": ""Alias for a schedule created here; target it with schedule_key."" },
         ""kind"": { ""type"": ""string"", ""enum"": [""material_takeoff"", ""sheet_list"", ""view_list"", ""revision_schedule"", ""keynote_legend""], ""description"": ""create only."" },
         ""category"": { ""type"": ""string"", ""description"": ""create material_takeoff: OST_ token or display name."" },
         ""name"": { ""type"": ""string"" },
         ""schedule_id"": { ""type"": ""integer"" }, ""schedule_key"": { ""type"": ""string"" },
         ""fields"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50, ""items"": { ""type"": ""object"", ""properties"": {
-          ""parameter_id"": { ""type"": ""integer"" }, ""name"": { ""type"": ""string"" }, ""field_index"": { ""type"": ""integer"", ""minimum"": 0 }
+          ""parameter_id"": { ""type"": ""integer"" }, ""name"": { ""type"": ""string"" }, ""field_type"": { ""type"": ""string"", ""description"": ""ScheduleFieldType, e.g. ProjectInfo."" }, ""field_index"": { ""type"": ""integer"", ""minimum"": 0 }
         }, ""additionalProperties"": false } },
         ""parameter_id"": { ""type"": ""integer"", ""description"": ""set_field: the field's stable identity."" },
-        ""field_index"": { ""type"": ""integer"", ""minimum"": 0, ""description"": ""set_field: positional escape hatch when even parameter ids collide."" },
+        ""field_index"": { ""type"": ""integer"", ""minimum"": 0, ""description"": ""set_field: position, if ids collide."" },
         ""heading"": { ""type"": ""string"" }, ""hidden"": { ""type"": ""boolean"" },
-        ""totals"": { ""type"": ""boolean"", ""description"": ""set_field: does THIS column contribute a number to the total rows. ShowGrandTotal decides whether the total ROW exists; this decides whether the column fills it. Setting one without the other is why a schedule shows a grand-total line of empty cells. Re-read after commit: a parameter that cannot be summed reverts without complaining."" },
-        ""width"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""maximum"": 10000, ""description"": ""set_field: the column width ON THE SHEET, in millimetres."" },
+        ""totals"": { ""type"": ""boolean"", ""description"": ""set_field: does this column fill the total rows."" },
+        ""width"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""maximum"": 10000, ""description"": ""set_field: sheet column width, mm."" },
         ""alignment"": { ""type"": ""string"", ""enum"": [""left"", ""center"", ""right""], ""description"": ""set_field: horizontal alignment of the column."" },
         ""format"": { ""type"": ""object"", ""additionalProperties"": false, ""properties"": {
-          ""unit_type_id"": { ""type"": ""string"", ""description"": ""A Forge unit identifier, e.g. autodesk.unit.unit:millimeters."" },
-          ""accuracy"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""description"": ""Revit reads this as a rounding STEP, so zero or negative is refused here rather than accepted and quietly wrong."" },
+          ""unit_type_id"": { ""type"": ""string"", ""description"": ""e.g. autodesk.unit.unit:millimeters"" },
+          ""accuracy"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""description"": ""Rounding step, above zero."" },
           ""suppress_trailing_zeros"": { ""type"": ""boolean"" },
           ""rounding"": { ""type"": ""string"", ""enum"": [""Nearest"", ""Up"", ""Down""] }
-        }, ""description"": ""set_field: the column's number format. Setting any of it clears FormatOptions.UseDefault, because a FormatOptions that still uses the default ignores everything else on it - Revit accepts such a call and changes nothing."" },
+        }, ""description"": ""set_field: number format of the column."" },
         ""filters"": { ""type"": ""array"", ""maxItems"": 30, ""items"": { ""type"": ""object"", ""required"": [""operator""], ""properties"": {
           ""parameter_id"": { ""type"": ""integer"" }, ""field"": { ""type"": ""string"" },
           ""operator"": { ""type"": ""string"", ""enum"": [""equal"", ""not_equal"", ""greater_than"", ""greater_than_or_equal"", ""less_than"", ""less_than_or_equal"", ""contains"", ""not_contains"", ""begins_with"", ""not_begins_with"", ""ends_with"", ""not_ends_with"", ""has_value"", ""has_no_value""] },
-          ""value"": { ""type"": ""string"" }, ""number_value"": { ""type"": ""number"", ""description"": ""Read in the unit the field measures: a length in mm, an area in m2, a volume in m3, a unitless number as given. Any other measured field is refused; filter it by its display text with value."" }
+          ""value"": { ""type"": [""string"", ""integer""], ""description"": ""Text; for ElementId fields a name or id."" }, ""number_value"": { ""type"": ""number"", ""description"": ""Id, or mm / m2 / m3 / unitless."" }
         }, ""additionalProperties"": false } },
         ""sorting"": { ""type"": ""array"", ""maxItems"": 20, ""items"": { ""type"": ""object"", ""properties"": {
           ""parameter_id"": { ""type"": ""integer"" }, ""field"": { ""type"": ""string"" },
@@ -3427,7 +3221,20 @@ namespace Horizun.Contracts
           ""header"": { ""type"": ""boolean"" }, ""footer"": { ""type"": ""boolean"" }, ""blank_line"": { ""type"": ""boolean"" }
         }, ""additionalProperties"": false } },
         ""itemized"": { ""type"": ""boolean"" }, ""grand_total"": { ""type"": ""boolean"" }, ""headers"": { ""type"": ""boolean"" },
-        ""include_links"": { ""type"": ""boolean"", ""description"": ""set_options: Revit's 'Include elements in links' on an EXISTING schedule, re-read from the definition after the commit. Before this, only horizun_create_schedule could set it, so a schedule made without links had to be deleted and remade - losing its placement on sheets, its formatting and its filters."" }
+        ""include_links"": { ""type"": ""boolean"", ""description"": ""set_options: include elements in links."" },
+        ""scope"": { ""type"": ""string"", ""enum"": [""title"", ""headers"", ""body"", ""field""], ""description"": ""set_appearance: region; field = one column."" },
+        ""text_type"": { ""type"": [""string"", ""integer""], ""description"": ""set_appearance: text type of the region."" },
+        ""style"": { ""type"": ""object"", ""additionalProperties"": false, ""properties"": {
+          ""font"": { ""type"": ""string"" }, ""size_pt"": { ""type"": ""number"" },
+          ""bold"": { ""type"": ""boolean"" }, ""italic"": { ""type"": ""boolean"" }, ""underline"": { ""type"": ""boolean"" },
+          ""color"": { ""type"": ""string"" }, ""fill"": { ""type"": ""string"" },
+          ""h_align"": { ""type"": ""string"", ""enum"": [""left"", ""center"", ""right""] },
+          ""v_align"": { ""type"": ""string"", ""enum"": [""top"", ""middle"", ""bottom""] },
+          ""border"": { ""type"": ""object"", ""additionalProperties"": false, ""properties"": { ""top"": { ""type"": [""string"", ""integer""] }, ""bottom"": { ""type"": [""string"", ""integer""] }, ""left"": { ""type"": [""string"", ""integer""] }, ""right"": { ""type"": [""string"", ""integer""] } } }
+        }, ""description"": ""set_appearance: only named attributes; #RRGGBB."" },
+        ""show_grid"": { ""type"": ""boolean"" }, ""show_title"": { ""type"": ""boolean"" },
+        ""parts"": { ""type"": ""integer"", ""description"": ""split: equal segments."" },
+        ""heights_mm"": { ""type"": ""array"", ""items"": { ""type"": ""number"" }, ""description"": ""split: height of each segment but the last."" }
       }, ""additionalProperties"": false
     }},
     ""dry_run"": { ""type"": ""boolean"", ""default"": true },
@@ -3482,8 +3289,9 @@ namespace Horizun.Contracts
     ""level_id"": { ""type"": ""integer"", ""description"": ""Every room of this level."" },
     ""kinds"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""elevations"", ""sections"", ""plan""] }, ""description"": ""What to produce per room. Omit for all three."" },
     ""elevation_count"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 4, ""default"": 4 },
+    ""marker_clearance"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 200, ""description"": ""Half-width of each proposed marker's clear square, in units. The native marker glyph still needs dry-run and visual verification."" },
     ""orient_to_walls"": { ""type"": ""boolean"", ""default"": true, ""description"": ""true rotates each room's markers/sections to its principal wall (a room with no readable boundary is then excluded, coded); false keeps everything cardinal."" },
-    ""name_pattern"": { ""type"": ""string"", ""default"": ""{room_number} {room_name} - {kind} {index}"" },
+    ""name_pattern"": { ""type"": ""string"", ""default"": ""{short_kind} - {room_number}"", ""description"": ""Tokens: room_name, room_number, level, kind, short_kind, index. short_kind renders Corte A-A, Alzado 1 or Planta in Spanish."" },
     ""margin"": { ""type"": ""number"", ""minimum"": 0, ""default"": 500, ""description"": ""Clearance added around the room box for crops, section runs and depths, in units."" },
     ""scale"": { ""type"": ""number"", ""minimum"": 1, ""maximum"": 24000, ""default"": 50, ""description"": ""Marker scale for created elevations."" },
     ""template_view_id"": { ""type"": ""integer"", ""description"": ""A view template applied to every planned view via apply_template actions."" },
@@ -3498,13 +3306,20 @@ namespace Horizun.Contracts
                 Description =
                     "Find group/family duplicates; edit groups, change level/type, place patterns; report " +
                     "annotations. Dry run shows tags/dimensions by view; apply verifies. " +
-                    "Regen needs consent.",
+                    "Regen needs consent. edit_type_members=Edit Group, scope=type, MEP links kept, other copies get new ids; big: submit_job. " +
+                    "this_instance needs name: NEW type, floor split.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""find_duplicates"", ""annotation_report"", ""create"", ""add_members"", ""remove_members"", ""rename_type"", ""duplicate_type"", ""swap_type"", ""change_group_type"", ""set_group_level"", ""place_group"", ""ungroup"", ""convert_to_link""] },
+    " + IdentityFields("type_id") + @"""operation"": { ""type"": ""string"", ""enum"": [""list"", ""find_duplicates"", ""annotation_report"", ""create"", ""add_members"", ""remove_members"", ""rename_type"", ""duplicate_type"", ""swap_type"", ""change_group_type"", ""set_group_level"", ""place_group"", ""ungroup"", ""edit_type_members"", ""convert_to_link"", ""copy_to_levels"", ""check_variation""] },
+    ""level_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50, ""uniqueItems"": true, ""items"": { ""type"": ""integer"", ""minimum"": 1 }, ""description"": ""copy_to_levels: one source group, preserve offset; re-read every member height."" },
+    ""tolerance_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 1, ""description"": ""check_variation bounds tolerance. Excludes parameters."" },
+    ""relative_rotations_degrees"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""number"", ""minimum"": -360, ""maximum"": 360 }, ""description"": ""Known CCW angles from the reference for same-handed copies. check_variation: group_ids order after the first. add_members propagating to copies: required in ascending copy group id order."" },
     ""group_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""edits"": { ""type"": ""array"", ""description"": ""edit_type_members, mm: [{operation: move|set_curve|set_parameter, element_ids, vector | start+end | parameter+value}]"" },
+    ""reconnect_stretch_mm"": { ""type"": ""number"" },
+    ""accept_lost_connections"": { ""type"": ""boolean"" },
     ""type_id"": { ""type"": ""integer"" },
     ""level_id"": { ""type"": ""integer"" },
     ""keep_position"": { ""type"": ""boolean"", ""default"": true },
@@ -3512,8 +3327,8 @@ namespace Horizun.Contracts
     ""point_mm"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" } },
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
     ""name"": { ""type"": ""string"" },
-    ""scope"": { ""type"": ""string"", ""enum"": [""all_instances"", ""this_instance""] },
-    ""accept_member_regeneration"": { ""type"": ""boolean"", ""default"": false, ""description"": ""add_members/remove_members, scope=all_instances only: proceed even though another instance has a member with a non-empty Mark/Comments value that regeneration would lose."" },
+    ""scope"": { ""enum"": [""all_instances"", ""this_instance"", ""type""], ""description"": ""For add_members, type is an alias for all_instances. With other instances, this_instance requires a new type name."" },
+    ""accept_member_regeneration"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Accept loss of Mark/Comments and changes to unowned groups, types or members in the add_members regeneration scope. Other deletions require verified ownership."" },
     ""max_rows"": { ""type"": ""integer"" },
     ""position_tolerance_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 1 },
     ""level_tolerance_mm"": { ""type"": ""number"", ""minimum"": 0, ""default"": 300 },
@@ -3526,18 +3341,22 @@ namespace Horizun.Contracts
                 Name = "horizun_manage_worksets",
                 Command = "horizun_manage_worksets",
                 Description =
-                    "User worksets on a workshared model (otherwise refused, code not_workshared): list (open, editable, " +
-                    "owner, element count), create, rename, move_elements (element_ids or category; borrowed elements are " +
+                    "User worksets on a workshared model (otherwise refused, code not_workshared, except enable): list (open, editable, " +
+                    "owner, element count), status (read-only, element_ids/view_ids: workset, checkout, borrowed_by, creator, " +
+                    "requested_by - nothing borrowed), loans (read-only: what I hold before a sync), create, rename, move_elements (element_ids or category; borrowed elements are " +
                     "reported, never forced), set_default (active workset), visibility per view. Dry run rehearses; apply " +
                     "needs the token; WorksetId and the table are re-read. create/rename/move_elements report " +
                     "ownership_effect (elements and the workset newly owned by the caller - renaming can silently take " +
                     "ownership of thousands) and accept relinquish_after to give everything the caller owns back and " +
-                    "re-measure.",
+                    "re-measure. enable (the only op on a non-shared model): EnableWorksharing + SaveAs a NEW central at " +
+                    "central_path; create_local: a new local of central_path at local_path; both re-read the file. borrow (element_ids, at most 500): check out exactly those elements from the central, never forcing one somebody else holds, and re-read every status; the loan goes back with horizun_save_document operation=sync_with_central relinquish=borrowed_only (or all) or relinquish_own.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""create"", ""rename"", ""move_elements"", ""set_default"", ""visibility""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""status"", ""loans"", ""create"", ""rename"", ""move_elements"", ""set_default"", ""visibility"", ""enable"", ""create_local"", ""borrow""] },
+    ""central_path"": { ""type"": ""string"" }, ""local_path"": { ""type"": ""string"" },
+    ""levels_grids_name"": { ""type"": ""string"", ""description"": ""enable; name is the other workset."" },
     ""workset_id"": { ""type"": ""integer"" },
     ""name"": { ""type"": ""string"" },
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
@@ -3647,8 +3466,8 @@ namespace Horizun.Contracts
                 Command = "horizun_detail_2d",
                 Description =
                     "Atomically create verified detail lines, arcs, polylines, filled/masking regions, detail " +
-                    "components and annotation symbols; set line styles. Dry run rehearses in a rolled-back " +
-                    "transaction. Apply verifies every element after commit or rolls back the batch. Coordinates " +
+                    "components and annotation symbols; set line styles; draw_order restacks existing detail. Dry run rehearses in a rolled-back " +
+                    "transaction and answers applied=false. Apply verifies every element after commit or rolls back the batch. Coordinates " +
                     "are in the view plane; out-of-plane geometry is refused. Delete with horizun_delete_verified.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""actions""],
@@ -3658,7 +3477,9 @@ namespace Horizun.Contracts
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
       ""type"": ""object"", ""required"": [""operation""],
       ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""create_detail_line"", ""create_detail_arc"", ""create_detail_polyline"", ""create_filled_region"", ""create_masking_region"", ""place_detail_component"", ""place_symbol"", ""set_line_style""] },
+        " + IdentityFields("element_id, else view_id") + @"""operation"": { ""type"": ""string"", ""enum"": [""create_detail_line"", ""create_detail_arc"", ""create_detail_polyline"", ""create_filled_region"", ""create_masking_region"", ""place_detail_component"", ""place_symbol"", ""set_line_style"", ""draw_order""] },
+        ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 1000, ""items"": { ""type"": ""integer"" }, ""description"": ""draw_order: existing detail elements to restack in view_id."" },
+        ""order"": { ""type"": ""string"", ""enum"": [""front"", ""back"", ""forward"", ""backward""], ""description"": ""draw_order: Bring to Front, Send to Back, Bring Forward, Send Backward."" },
         ""view_id"": { ""type"": ""integer"", ""description"": ""Required for every creation/placement; optional for set_line_style (and must then match the element's owner view). Drafting, plan, section, elevation and detail views; templates, schedules, sheets and 3D are refused by name."" },
         ""key"": { ""type"": ""string"", ""description"": ""Alias for this action's created element(s); set_line_style can target it via element_key."" },
         ""start"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
@@ -3673,6 +3494,8 @@ namespace Horizun.Contracts
         ""filled_region_type_id"": { ""type"": ""integer"" },
         ""masking_region_type_id"": { ""type"": ""integer"" },
         ""allow_masking_type_as_filled"": { ""type"": ""boolean"", ""default"": false },
+        ""join_tolerance_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""maximum"": 5, ""description"": ""Lines/polylines: accept ends Revit moved by joining or merging, up to this, ONLY for a line at risk (under 3 mm, or collinear and overlapping another). The measured move is reported."" },
+        ""simplify_tolerance_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""maximum"": 50, ""description"": ""Regions: drop vertices closer than this to the previous one (edges under Revit's short-curve tolerance are refused). The dropped count is reported; the simplified loop is what is drawn and re-read."" },
         ""loops"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 32, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 200, ""items"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } } },
         ""family_symbol_id"": { ""type"": ""integer"", ""description"": ""A ViewBased detail-component or generic-annotation symbol; anything model/level/face based is refused."" },
         ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
@@ -3687,7 +3510,8 @@ namespace Horizun.Contracts
         { ""if"": { ""properties"": { ""operation"": { ""const"": ""create_masking_region"" } } }, ""then"": { ""required"": [""view_id"", ""masking_region_type_id"", ""loops""] } },
         { ""if"": { ""properties"": { ""operation"": { ""const"": ""place_detail_component"" } } }, ""then"": { ""required"": [""view_id"", ""family_symbol_id"", ""point""] } },
         { ""if"": { ""properties"": { ""operation"": { ""const"": ""place_symbol"" } } }, ""then"": { ""required"": [""view_id"", ""family_symbol_id"", ""point""] } },
-        { ""if"": { ""properties"": { ""operation"": { ""const"": ""set_line_style"" } } }, ""then"": { ""required"": [""line_style_id""] } }
+        { ""if"": { ""properties"": { ""operation"": { ""const"": ""set_line_style"" } } }, ""then"": { ""required"": [""line_style_id""] } },
+        { ""if"": { ""properties"": { ""operation"": { ""const"": ""draw_order"" } } }, ""then"": { ""required"": [""view_id"", ""element_ids"", ""order""] } }
       ],
       ""additionalProperties"": false
     }},
@@ -3704,18 +3528,21 @@ namespace Horizun.Contracts
                 Command = "horizun_annotate",
                 Description =
                     "Atomically create text notes, tags and linear/angular/radial/diameter/arc-length/spot " +
-                    "dimensions. Text accepts height, justification and rotation for CAD transfer. Dimensions use " +
+                    "dimensions. Text: height, justification, rotation, paper width, printed lines, ray-aimed leader. Dimensions use " +
                     "stable references from horizun_get_dimension_references. Dry run provisionally creates then " +
                     "rolls back; apply binds the plan and verifies every committed annotation or rolls back all. " +
                     "Radial, diameter and arc-length need Revit 2025+; spot slope has no creation API.",
                 InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""target_document"", ""actions""],
+  ""type"": ""object"", ""required"": [""target_document""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" }, ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"", ""description"": ""Units of every coordinate and of expected_value/expected_tolerance - except that for angular_dimension expected_value/expected_tolerance are DEGREES."" },
+    ""on_failure"": { ""type"": ""string"", ""enum"": [""atomic"", ""best_effort""], ""default"": ""atomic"", ""description"": ""best_effort: unbuildable rows are skipped, reported per row."" },
+    ""keep_active_view"": { ""type"": ""boolean"", ""description"": ""Skip temporary activation for linked linear dimensions."" },
+    ""load_tag_family"": { ""type"": ""string"", ""description"": ""Instead of actions: load a user-approved tag .rfa."" },
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 1000, ""items"": {
       ""type"": ""object"", ""required"": [""operation"", ""view_id""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""text"", ""tag"", ""dimension"", ""angular_dimension"", ""radial_dimension"", ""diameter_dimension"", ""arc_length_dimension"", ""spot_elevation"", ""spot_coordinate"", ""spot_slope""], ""description"": ""spot_slope is always refused: Revit exposes no creation API for it in 2023-2027. radial/diameter/arc_length require Revit 2025+."" },
-        ""view_id"": { ""type"": ""integer"", ""description"": ""Not a template, schedule or sheet; a 3D view only when its orientation is locked. For DIMENSION operations this must be the ACTIVE graphical view: Revit materialises dimension references and values only for a displayed view (measured live), so a dimension aimed at a never-shown view is refused at plan time naming horizun_navigate operation=open_view as the fix. Text and tags have no such requirement."" },
+        " + IdentityFields("per action: tag element_id, else view_id") + @"""operation"": { ""type"": ""string"", ""enum"": [""text"", ""tag"", ""dimension"", ""angular_dimension"", ""radial_dimension"", ""diameter_dimension"", ""arc_length_dimension"", ""spot_elevation"", ""spot_coordinate"", ""spot_slope""], ""description"": ""spot_slope is always refused: Revit exposes no creation API for it in 2023-2027. radial/diameter/arc_length require Revit 2025+."" },
+        ""view_id"": { ""type"": ""integer"", ""description"": ""Target view may be inactive. Excludes templates, schedules and sheets. Dimensions require a model view (locked if 3D). If Revit cannot verify a dimension after commit, the batch rolls back. If the view has never been opened, opening it and rehearsing again may help."" },
         ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""text/tag: placement. spot_elevation/spot_coordinate: the origin ON the reference."" },
           ""text"": { ""type"": ""string"" }, ""text_type_id"": { ""type"": ""integer"" },
           ""expected_height_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0,
@@ -3725,29 +3552,48 @@ namespace Horizun.Contracts
           ""vertical_alignment"": { ""type"": ""string"", ""enum"": [""top"", ""middle"", ""bottom""],
             ""description"": ""Text justification; verified."" },
           ""rotation_degrees"": { ""type"": ""number"", ""description"": ""Text only: rotation in the view plane; re-read from the note's BaseDirection."" },
+          ""width_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""description"": ""Text: box width in PAPER mm."" },
+          ""expected_lines"": { ""type"": ""integer"", ""minimum"": 1, ""description"": ""Text: lines that must print."" },
+          ""leader_target"": { ""type"": ""object"", ""description"": ""Text leader: end point and/or element the ray must hit."", ""properties"": {
+            ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }, ""element_id"": { ""type"": ""integer"" },
+            ""link_instance_id"": { ""type"": ""integer"" }, ""linked_element_id"": { ""type"": ""integer"" } }, ""additionalProperties"": false },
+          ""leader_side"": { ""type"": ""string"", ""enum"": [""auto"", ""left"", ""right""] },
+          ""leader_attachment"": { ""type"": ""string"", ""enum"": [""top"", ""middle"", ""bottom""] },
         ""element_id"": { ""type"": ""integer"" }, ""add_leader"": { ""type"": ""boolean"", ""default"": false },
-        ""tag_type_id"": { ""type"": ""integer"", ""description"": ""Optional explicit tag type. The dry run proves it is valid for the created tag, the confirmation binds it, and apply verifies the committed type. Omitted: Revit's resolved default type is used."" },
+        ""link_instance_id"": { ""type"": ""integer"", ""description"": ""tag an element of a Revit link: the link instance in this document, with linked_element_id; instead of element_id."" },
+        ""linked_element_id"": { ""type"": ""integer"", ""description"": ""tag: the element id inside the linked model (needs link_instance_id)."" },
+        ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50, ""items"": { ""type"": ""integer"" }, ""description"": ""tag: more elements on one tag."" },
+        ""leader_end"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""tag: free leader end; units, host model coordinates."" },
+        ""leader_elbow"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""tag: leader elbow; units, host model coordinates."" },
+        ""keynote_key"": { ""type"": ""string"" },
+        ""tag_type_id"": { ""type"": ""integer"", ""description"": ""Optional explicit tag type. For a Room target this must be a RoomTag type; otherwise the dry run proves it is valid for the created IndependentTag. Apply verifies the committed type."" },
+        ""tag_family_path"": { ""type"": ""string"", ""description"": ""Room target only: absolute path to an existing RoomTag .rfa. If no RoomTag type is loaded and this is omitted, the single default M_Room Tag.rfa or Room Tag.rfa in the installed Revit library is used. The file SHA-256 is bound to confirmation. A missing or ambiguous library refuses with an actionable path request."" },
+        ""tag_type_name"": { ""type"": ""string"", ""description"": ""Room target with tag_family_path: exact type name in the RFA. Required when the family has multiple types and tag_type_id is omitted."" },
         ""avoid_collisions"": { ""type"": ""boolean"", ""default"": false, ""description"": ""tag: measure real native bounding boxes in the reversible rehearsal, search within the approved displacement, verify clearance after commit. Conservative boxes include leaders; not visual approval."" },
         ""layout_clearance"": { ""type"": ""number"", ""minimum"": 0, ""default"": 10 },
         ""layout_max_displacement"": { ""type"": ""number"", ""minimum"": 0, ""default"": 1200 },
         ""require_tag_text"": { ""type"": ""boolean"", ""default"": false, ""description"": ""tag: refuse empty text or a lone question mark."" },
         ""layout_accept_unmeasurable"": { ""type"": ""array"", ""maxItems"": 200, ""items"": { ""type"": ""integer"" }, ""description"": ""tag + avoid_collisions: element ids of annotations this call accepts as unmeasurable. Every annotation whose extent CANNOT be read and which Revit's own view-scoped visible-element collector still lists as visible blocks the layout, naming its ids - an unmeasured annotation is never treated as absent. Naming those exact ids here records the acceptance and downgrades the reported clearance_scope to 'partial'; the placement is then never described as collision-free. There is no blanket switch, and an id that was measurable is not silently consumed."" },
-        ""tag_mode"": { ""type"": ""string"", ""enum"": [""by_category"", ""multi_category"", ""material""], ""default"": ""by_category"" },
+        ""tag_mode"": { ""type"": ""string"", ""enum"": [""by_category"", ""multi_category"", ""material"", ""keynote_element"", ""keynote_material"", ""keynote_user""], ""default"": ""by_category"" },
         ""orientation"": { ""type"": ""string"", ""enum"": [""horizontal"", ""vertical""], ""default"": ""horizontal"" },
         ""line_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""line_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""references"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 32, ""items"": { ""type"": ""string"", ""minLength"": 1 }, ""description"": ""Stable representations. Duplicates are refused. dimension: 2..32. angular_dimension: exactly 2. arc_length_dimension: the 2 endpoint references."" },
+        ""references"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 32, ""items"": { ""type"": ""string"", ""minLength"": 1 }, ""description"": ""Stable references, 'level:<id>' or '<face>/?'. No duplicates. dimension: 2..32. angular_dimension: exactly 2. arc_length_dimension: the 2 endpoint references. 'level:<id>' is the host level's plane; '<face>/?' the tile joint nearest pattern_points."" },
+        ""pattern_points"": { ""type"": ""array"", ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }, ""description"": ""One point per '<face>/?' reference: picks the nearest tile joint."" },
+        ""require_printable"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Refuse a dimension not confirmed to print: hidden, outside the crop, or undecided (unknown facts)."" },
         ""dimension_type_id"": { ""type"": ""integer"", ""description"": ""dimension and angular_dimension only - the other shapes' creation APIs take no type. Omitted: the document's default type for the shape is resolved, validated and bound into the plan."" },
         ""arc_center"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""angular_dimension/arc_length_dimension: centre of the dimension arc, in the view plane."" },
         ""arc_radius"": { ""type"": ""number"", ""exclusiveMinimum"": 0 },
         ""arc_reference"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""arc_length_dimension: the stable reference of the arc edge being measured."" },
-        ""reference"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""radial_dimension/diameter_dimension: the arc edge. spot_elevation/spot_coordinate: the referenced face or edge."" },
+        ""reference"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""radial_dimension/diameter_dimension: the arc edge. spot_elevation/spot_coordinate: the referenced face or edge, or 'level:<id>'."" },
         ""leader"": { ""type"": ""boolean"", ""default"": false, ""description"": ""spot_elevation/spot_coordinate only; Revit's own hasLeader creation argument."" },
         ""bend"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""spot leader bend point. Defaulted from the view plane when omitted."" },
         ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""spot leader end point. Defaulted when omitted."" },
         ""prefix"": { ""type"": ""string"" }, ""suffix"": { ""type"": ""string"" },
         ""above"": { ""type"": ""string"" }, ""below"": { ""type"": ""string"" },
         ""value_override"": { ""type"": ""string"", ""description"": ""Overrides and lock apply to two-reference dimensions only; chains take them per segment through horizun_edit_dimensions."" },
+        ""allow_text_override"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Required for value_override."" },
+        ""allow_outside_crop"": { ""type"": ""boolean"", ""default"": false },
         ""eq"": { ""type"": ""boolean"", ""description"": ""EQ constraint; chains of 3+ references only."" },
         ""lock"": { ""type"": ""boolean"" },
         ""expected_value"": { ""type"": ""number"", ""description"": ""POSTCONDITION on the measured value, checked at apply in the still-reversible state and again after commit; a miss rolls the WHOLE batch back. In 'units'; DEGREES for angular_dimension; not accepted on spots (they have no Value)."" },
@@ -3755,7 +3601,7 @@ namespace Horizun.Contracts
       },
       ""allOf"": [
         { ""if"": { ""properties"": { ""operation"": { ""const"": ""text"" } } }, ""then"": { ""required"": [""view_id"", ""point"", ""text"", ""text_type_id""] } },
-        { ""if"": { ""properties"": { ""operation"": { ""const"": ""tag"" } } }, ""then"": { ""required"": [""view_id"", ""point"", ""element_id""] } },
+        { ""if"": { ""properties"": { ""operation"": { ""const"": ""tag"" } } }, ""then"": { ""required"": [""view_id"", ""point""], ""anyOf"": [{ ""required"": [""element_id""] }, { ""required"": [""link_instance_id"", ""linked_element_id""] }] } },
         { ""if"": { ""properties"": { ""operation"": { ""const"": ""dimension"" } } }, ""then"": { ""required"": [""view_id"", ""line_start"", ""line_end"", ""references""] } },
         { ""if"": { ""properties"": { ""operation"": { ""const"": ""angular_dimension"" } } }, ""then"": { ""required"": [""view_id"", ""arc_center"", ""arc_radius"", ""references""] } },
         { ""if"": { ""properties"": { ""operation"": { ""const"": ""radial_dimension"" } } }, ""then"": { ""required"": [""view_id"", ""reference""] } },
@@ -3887,14 +3733,14 @@ namespace Horizun.Contracts
         ""key"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""Unique action name used by later ${key.path} references."" },
         ""tool"": { ""type"": ""string"", ""enum"": [
           ""horizun_write_params_verified"", ""horizun_delete_verified"", ""horizun_create_schedule"",
-          ""horizun_set_keynote"", ""horizun_family_apply"", ""horizun_bind_shared_param"",
-          ""horizun_create_elements"", ""horizun_manage_system_types"", ""horizun_transform_elements"", ""horizun_manage_views"", ""horizun_annotate"",
+          ""horizun_set_keynote"", ""horizun_bind_shared_param"",
+          ""horizun_create_elements"", ""horizun_transform_elements"", ""horizun_manage_views"", ""horizun_annotate"",
           ""horizun_split_floor_loops"", ""horizun_split_multilayer_walls"", ""horizun_split_multilayer_slabs"",
           ""horizun_ungroup_and_mark"", ""horizun_regroup_by_param"", ""horizun_copy_slab_elevations"",
           ""horizun_embed_floors_in_toposolid"", ""horizun_grade_toposolid_around_floors"", ""horizun_rectangularize_walls"",
-          ""horizun_manage_links"", ""horizun_pack_sheets""
+          ""horizun_pack_sheets"", ""horizun_view_visibility""
         ] },
-        ""arguments"": { ""type"": ""object"", ""description"": ""Arguments for the typed tool. target_document, dry_run, confirmation_token and idempotency_key are controlled by the plan."" }
+        ""arguments"": { ""type"": ""object"", ""description"": ""Tool arguments. target_document, dry_run, confirmation_token, idempotency_key are set by the plan. Identity fields: checked plan-wide first."" }
       }, ""additionalProperties"": false
     }},
     ""dry_run"": { ""type"": ""boolean"", ""default"": true },
@@ -3908,17 +3754,17 @@ namespace Horizun.Contracts
                 Name = "horizun_request_python_access",
                 Command = "horizun_request_python_access",
                 Description =
-                    "REQUEST, NEVER SELF-GRANT, persistent arbitrary-Python permission. Opens a visible consent " +
-                    "dialog inside Revit and waits for the machine owner to approve or reject it. Approval is " +
-                    "indefinite across files, batches and Revit restarts until that Windows user turns Python " +
-                    "OFF from the ribbon or the administrator -Disable command. The MCP caller cannot press the " +
-                    "button, cannot bypass the acknowledgement and cannot disable the owner's refusal. Do not " +
-                    "call this when nobody is at the Revit keyboard.",
+                    "REQUEST, NEVER SELF-GRANT, persistent arbitrary-Python permission. request opens a non-modal consent " +
+                    "window in Revit and returns at once (pending_approval, request_id); status reads the owner's decision " +
+                    "(also in horizun_health python_runtime). Approval is indefinite until that user turns Python OFF; the " +
+                    "caller cannot press the button. Not for unattended use.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""request"", ""status""], ""default"": ""request"" },
+    ""request_id"": { ""type"": ""string"", ""description"": ""status: omitted reads the latest."" },
     ""reason"": { ""type"": ""string"", ""maxLength"": 500,
-      ""description"": ""Optional human-readable reason shown as UNVERIFIED caller text in the Revit consent dialog. It never grants permission."" }
+      ""description"": ""Optional reason shown as UNVERIFIED caller text in the consent window. It never grants permission."" }
   },
   ""additionalProperties"": false
 }")
@@ -3933,6 +3779,9 @@ namespace Horizun.Contracts
                     "explicitly approve the persistent Revit UI grant, or configure unsafe_code plus " +
                     "enable_execute_python administratively. It remains enabled until that Windows user revokes " +
                     "it; the MCP client cannot grant itself permission. " +
+                    "To create a project from a template use horizun_document_session operation=new_project (rehearses by default). " +
+                    "idempotency_key: a fresh UUID per deliberate write; reuse it only to retry the identical request. " +
+                    "For family parameters and their values by type use horizun_query_family_internals (Pro edition) operation=parameter_census. " +
                     "POLICY: prefer a typed command when it fully covers the " +
                     "operation. When none exists, or a failed typed call returns fallback.allowed=true - its " +
                     "machine-readable signal that no typed capability covers the request AND nothing was " +
@@ -3950,6 +3799,12 @@ namespace Horizun.Contracts
                     "ELEMENT IDS: ElementId.IntegerValue does not exist in Revit 2026+ (it is .Value, 64-bit, " +
                     "since 2024) - use horizun.id_value(some_id), which reads either on 2023-2027, instead of " +
                     "either property. " +
+                    "COORDINATES AND LEADERS: horizun.model_to_view / view_to_model / view_to_sheet / sheet_to_view / " +
+                    "model_to_sheet / sheet_to_model(viewport, ...) convert between model, view and sheet (feet; " +
+                    "horizun.calibrate_viewport returns the offset to a position you measured), horizun.view_ray(view, " +
+                    "[(u, v)], depth_ft, categories) casts rays from the view plane into host and links, and " +
+                    "horizun.leaders_capture(note) / leaders_restore(note, captured) save and put back text-note leaders " +
+                    "(restore re-reads and reports verified). " +
                     "WHAT REVIT RAISED comes back as 'dialogs' and 'failures' beside __output__ - read them " +
                     "when an open fails, because the bridge CANCELS modal dialogs and all the script sees is " +
                     "'Opening was canceled'. Each carries 'while', the script's own last checkpoint() label. " +
@@ -3981,11 +3836,10 @@ namespace Horizun.Contracts
                     "inside that transaction is discarded. That is a host behaviour observed, not a guarantee " +
                     "offered. Commit or RollBack in a finally - see transaction_policy on every response. " +
                     "Element ids are 64-bit longs in 2024+; wrap ElementId.Value in int() before json.dumps. " +
-                    "target_document is REQUIRED and is matched against the ACTIVE document - this command will " +
+                    "target_document is REQUIRED for a script that may write (matched against the ACTIVE document), and optional with read_only=true or rehearsal=true, which read the active document and are always rolled back; when named it is checked the same way. This command will " +
                     "not switch documents for you, and a script that needs no document cannot run here. " +
-                    "run_async=true returns a job_id immediately for work longer than the request timeout. " +
-                    "Every execution requires a durable idempotency_key; a preflight executes nothing and " +
-                    "needs none. " +
+                    "run_async=true returns a job_id immediately; a run still going after 45 s answers state=running with its job_id - follow it with horizun_job_status, never resend. " +
+                    "A missing idempotency_key for a write is generated and returned; reuse it only for the identical retry. A preflight, read_only and rehearsal need none. " +
                     "STILL A PRIVILEGED BYPASS: it has no dry run, no plan and no confirmation token, so unlike " +
                     "the typed write commands nothing rehearses what it will do. Accepted risk, not a satisfied " +
                     "policy - see docs/security-model.md.",
@@ -4049,8 +3903,8 @@ namespace Horizun.Contracts
                         {
                             ["type"] = "string",
                             ["description"] =
-                                "REQUIRED for every execution; not needed (and not claimed) for preflight=true, " +
-                                "which executes nothing. Claimed durably before Python runs: the same key " +
+                                "Optional for a write: a missing key is generated and returned for retries of this same operation. " +
+                                "Not claimed for preflight, read_only or rehearsal. Claimed durably before Python runs: the same key " +
                                 "with the identical operation replays its recorded answer without executing, a " +
                                 "different operation under that key is refused, and a claimed operation with no " +
                                 "terminal record after a crash is reported in_doubt instead of repeated."
@@ -4089,7 +3943,7 @@ namespace Horizun.Contracts
                                 "re-send it because a poll looks slow. Cancelling the MCP request stops YOU " +
                                 "WAITING and nothing else: the Revit API cannot interrupt work on its UI thread. " +
                                 "Poll horizun_job_status with the job_id; the result and any error are kept there, " +
-                                "because an async caller never sees a reply. REQUIRES idempotency_key."
+                                "because an async caller never sees a reply. A missing idempotency_key is generated and returned."
                         }
                     },
                     // target_document only. The SOURCE requirement is "exactly one of code /
@@ -4122,6 +3976,7 @@ namespace Horizun.Contracts
     ""target_document_title""
   ],
   ""properties"": {
+    ""confirm_large_operation"": { ""type"": ""boolean"", ""description"": ""Explicitly confirm execution when the conservative scope estimate exceeds the large-model threshold."" },
     ""target_document_title"": {
       ""type"": ""string"",
       ""description"": ""Title of the document you believe is active. The scan ABORTS if the active document differs. Required because two Revit hosts run side by side (2025 on one port, 2026 on another) and a scan of the wrong model is a clean bill of health for a file nobody looked at. '.rvt' is optional.""
@@ -4180,7 +4035,7 @@ namespace Horizun.Contracts
           ""weight""
         ]
       },
-      ""description"": ""Which sections to run. Default: all of them. A section you did not ask for is reported as 'not_requested', never as empty.""
+      ""description"": ""Which sections to run. Default: all of them. A section you did not ask for is reported as 'not_requested', never as empty. A partial response supplies resume.sections in the order of sections_not_measured; call again with those sections and the same pagination cursor, if used. Weight requires all its source sections in the same call.""
     },
     ""target_parameter"": {
       ""type"": ""string"",
@@ -4358,11 +4213,11 @@ namespace Horizun.Contracts
     ""cooperative"": {
       ""type"": ""object"",
       ""additionalProperties"": false,
-      ""description"": ""OPT-IN cooperative reading. OMIT IT AND NOTHING CHANGES: this reader behaves exactly as it always has, and the reply carries no extra field. Send it when a PARTIAL answer that arrives is worth more to you than a complete one nobody waited for - a scan of a large model holds Revit's UI thread for as long as it runs, and the person whose Revit it is cannot click anything meanwhile. With it, the read asks BETWEEN elements whether to carry on: it stops if you have gone away, and it stops at your budget. A result that stopped early says PARTIAL and never passes itself off as clean. WHAT THIS DOES NOT PROVE: ui_budget_ms bounds how long the command SPENDS, not that Revit's interface stayed responsive - the command holds the UI thread for its whole duration, the reply still travels back through the pipe, and Revit's own event queue decides when the window repaints. Stopping work and releasing the interface are different events, and only a sampler watching from outside can measure the second."",
+      ""description"": ""When cooperative is omitted, model_scan applies a 120000 ms budget by default. An explicit cooperative object is respected; ui_budget_ms 0 means no time limit. Send it when a PARTIAL answer that arrives is worth more to you than a complete one nobody waited for - a scan of a large model holds Revit's UI thread for as long as it runs, and the person whose Revit it is cannot click anything meanwhile. With it, the read asks BETWEEN elements whether to carry on: it stops if you have gone away, and it stops at your budget. A result that stopped early says PARTIAL and never passes itself off as clean. WHAT THIS DOES NOT PROVE: ui_budget_ms bounds how long the command SPENDS, not that Revit's interface stayed responsive - the command holds the UI thread for its whole duration, the reply still travels back through the pipe, and Revit's own event queue decides when the window repaints. Stopping work and releasing the interface are different events, and only a sampler watching from outside can measure the second."",
       ""properties"": {
         ""ui_budget_ms"": {
           ""type"": ""integer"",
-          ""minimum"": 1000,
+          ""minimum"": 0,
           ""maximum"": 600000,
           ""default"": 20000,
           ""description"": ""How long this read may hold Revit's UI thread before it stops and says so. Twenty seconds by default, chosen against what a person does: below about that a frozen window reads as 'it is working'; past it people start clicking, then killing Revit.""
@@ -4394,10 +4249,11 @@ namespace Horizun.Contracts
                     "an error). Parameter.Set() returning false is reported as a refused write, never counted. Writing " +
                     "to a type re-codes every instance of it: the blast radius is measured and reported. on_failure=" +
                     "'atomic' (default) rolls the whole batch back; 'best_effort' commits what worked. The terminal " +
-                    "transaction state is a first-class field. A unit STRING on Double/Integer storage is applied with " +
-                    "SetValueString, which parses the units inside Revit and never returns the parsed number, so those rows " +
+                    "transaction state is a first-class field. Unit strings on Double storage are parsed in the document's units BEFORE " +
+                    "Set(double) and verified against the converted request. Integer strings use SetValueString, so those rows " +
                     "can only be verified against a re-read of themselves: they are counted separately under " +
-                    "writes_confirmed_by_parse_read_back_only and never claimed as verified against your value. Use " +
+                    "writes_confirmed_by_parse_read_back_only and never claimed as verified against your value. selector + set " +
+                    "writes the same value(s) to every element a selector matches (only_if_empty skips filled cells). Use " +
                     "dry_run=true to resolve every target and see what would be written without opening a transaction.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
@@ -4417,6 +4273,9 @@ namespace Horizun.Contracts
       }
     },
     ""sequence"": { ""type"": ""object"", ""description"": ""Generates:{parameter,order_by[level|x|y|room],element_ids|category,prefix,start,step,pad,restart_per_level,phase_id}"" },
+    ""selector"": " + ElementSelectorSchema + @",
+    ""set"": { ""type"": ""object"", ""maxProperties"": 10, ""description"": ""With selector: {parameter: value} written to EVERY matched element (up to 10,000; more is refused, never partial). Each row is re-read."" },
+    ""only_if_empty"": { ""type"": ""boolean"", ""default"": false, ""description"": ""With selector: skip cells that already hold a value (counted in selector.skipped_not_empty)."" },
     ""writes"": {
       ""type"": ""array"", ""minItems"": 1,
       ""description"": ""The batch. Each entry names ONE parameter on ONE target."",
@@ -4425,12 +4284,17 @@ namespace Horizun.Contracts
         ""required"": [""parameter"", ""value""],
         ""properties"": {
           ""target_id"": { ""type"": ""integer"", ""description"": ""Element id OR type id. Omit (or set target='project_info') to write a Project Information field. Writing a type id affects every instance of that type."" },
+          ""unique_id"": { ""type"": ""string"", ""description"": ""Stable Revit UniqueId. Alone resolves the current id; alongside target_id it must identify the same element."" },
+          ""expected_category"": { ""type"": ""string"", ""description"": ""Prior-reading category; mismatch refuses the batch. Not enough alone: send unique_id."" },
+          ""expected_type"": { ""type"": ""string"", ""description"": ""Prior-reading type; mismatch refuses the batch. Not enough alone: send unique_id."" },
           ""target"": { ""type"": ""string"", ""enum"": [""project_info""], ""description"": ""Write to the document's Project Information element instead of an id."" },
           ""parameter"": { ""type"": ""string"", ""description"": ""A BuiltInParameter name (e.g. KEYNOTE_PARAM), a shared/project parameter GUID, or a parameter name as it reads in the UI. A name matching more than one parameter is an error, not a guess."" },
-          ""value"": { ""description"": ""String | number | boolean | null. Coerced to the parameter's storage type; a value that cannot be coerced is an error naming that storage type, never a silent skip. For Double/Integer storage, a STRING value is applied with SetValueString (unit-aware, e.g. '3000 mm'); a NUMBER is applied raw, in Revit internal units (feet)."" }
+          ""value"": { ""description"": ""String | number | boolean | null. Double strings (e.g. '3000 mm') are parsed in document units before Set and verified against the conversion. Integer strings use SetValueString with parse-only confirmation. Numbers use raw Revit internal units (feet for length)."" }
         }
       }
     },
+    ""accept_raw_feet"": { ""type"": ""boolean"", ""default"": false,
+                         ""description"": ""A bare number on a Length parameter is Revit's internal FEET. Without this, a number outside 0.1 mm-30 m is refused; true writes every bare number as feet (a real 32 m elevation is 104.99) and the row stays verified against your number. The rehearsal shows each bare number's reading in number_read_as."" },
     ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: write params"",
                             ""description"": ""The label of the single undo step this batch becomes."" },
     ""on_failure"": { ""type"": ""string"", ""enum"": [""atomic"", ""best_effort""], ""default"": ""atomic"",
@@ -4455,7 +4319,7 @@ namespace Horizun.Contracts
                 Name = "horizun_delete_verified",
                 Command = "horizun_delete_verified",
                 Description =
-                    "Delete an explicit list of ElementIds, or purge unused elements to a real fixed point, and report " +
+                    "Delete an explicit list of ElementIds, the elements a selector matches (mode=query), or purge unused elements to a real fixed point, and report " +
                     "only what the model confirms. Every id comes back with EXACTLY ONE verdict out of deleted | not_found | " +
                     "failed | skipped_still_in_use | skipped_protected | unexamined_unreadable_id | attempted_fate_unknown; " +
                     "the totals are disjoint and sum to requested_total. The first five are decided by re-resolving that id " +
@@ -4468,12 +4332,17 @@ namespace Horizun.Contracts
   ""type"": ""object"",
   ""required"": [""mode""],
   ""properties"": {
-    ""mode"": { ""type"": ""string"", ""enum"": [""ids"", ""purge_unused""],
-                ""description"": ""REQUIRED. ids: delete exactly the ids given. purge_unused: ask Revit for unused elements and delete them, repeating until a pass finds none. Omission is refused; it never selects the broader purge operation."" },
+    ""mode"": { ""type"": ""string"", ""enum"": [""ids"", ""purge_unused"", ""query""],
+                ""description"": ""REQUIRED. ids: delete exactly the ids given. purge_unused: ask Revit for unused elements and delete them, repeating until a pass finds none. query: delete what `selector` matches; the dry run lists ids, the counted cascade and suggested protect_ids, the apply (same arguments + token) re-reads the selector and must find zero. Omission is refused; it never selects the broader purge operation."" },
+    ""selector"": " + ElementSelectorSchema + @",
     ""ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
-               ""description"": ""Required for mode='ids'. Ids that do not resolve are reported as not_found, never dropped."" },
+               ""description"": ""Required for mode='ids' (or unique_ids). Ids that do not resolve are reported as not_found, never dropped."" },
+    ""unique_ids"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""minLength"": 1 }, ""description"": ""Aligned with the ids; mismatch refuses the call."" },
+    ""expected_category"": { ""type"": ""string"", ""description"": ""Category (name or OST_*) when read. Not enough alone: send unique_ids."" },
+    ""expected_type"": { ""type"": ""string"", ""description"": ""Type (name or 'Family: Type') when read. Not enough alone: send unique_ids."" },
     ""protect_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
                        ""description"": ""Never delete these, even if a purge pass calls them unused. Use for view templates you are about to assign rather than delete."" },
+    ""allow_foreign_dependents"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Workshared, mode=ids: a cascade that takes elements not ours (no mark, not this session, other creator) is refused unless true."" },
     ""target_document"": { ""type"": ""string"",
       ""description"": ""REQUIRED. Title or full path of the document to delete from. It must be the document that is ACTIVE in Revit; this command will not switch documents for you. A delete aimed at whatever window happens to be in front is a delete aimed at whatever turns up."" },
     ""confirmation_token"": { ""type"": ""string"",
@@ -4518,12 +4387,16 @@ namespace Horizun.Contracts
                     "in Revit (Advanced options); an omitted dry_run is an ESTIMATE whose token the apply needs. " +
                     "new_project creates a blank project from template_path (or Revit's DefaultProjectTemplate) at a .rvt " +
                     "save_as_path that must NOT exist - never overwrites; rehearses by default, applies with the token, " +
-                    "re-reads file and document, and reports whether it was activated.",
+                    "re-reads file and document, and reports whether it was activated. activate targets an open document, " +
+                    "previews by default; cloud activation uses its ModelPath. Unsaved or detached projects require a new " +
+                    "local save_as_path and a token before SaveAs and activation. Desktop Connector roots are checked against its Windows registrations; an unregistered custom root cannot be detected. Revit may override local cloud changes " +
+                    "when opening a restored, relinquished or out-of-date cloud model. " +
+                    "batch: closed-file reads/actions/save/discard; token covers passed rows. exit_application: task-owned exit.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect"", ""sync_with_central"", ""new_project""],
+    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect"", ""sync_with_central"", ""new_project"", ""activate""],
                      ""description"": ""inspect reads a file's version off disk unopened. sync_with_central is owner-gated; preview is an estimate. new_project creates a blank project from a template."" },
     ""file_path"": { ""type"": ""string"",
                      ""description"": ""open/inspect: the file to read. For save/save_as/close it is an ALIAS of target_document, kept for compatibility - it no longer defaults to the active document."" },
@@ -4547,13 +4420,13 @@ namespace Horizun.Contracts
                       ""description"": ""open only: open every workset. If the document is already open this cannot be applied retroactively: the call succeeds only when post-read evidence proves every user workset is already open, and reports satisfied=true with applied=false. Needed when something downstream MEASURES worksets, because a closed workset is indistinguishable from an empty one. IT CAN ALSO KILL REVIT - measured: 2 of 24 ACC models took Revit 2025.4 down with an access violation inside SelectedPartitionsForEdit on open, and both opened fine with this left false. Off by default, and the first thing to drop when a specific model dies on open."" },
     ""close_workset_names"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""maxItems"": 128,
                       ""description"": ""open only: exact user-workset names to keep CLOSED while every other user workset opens. Resolved from the unopened file before opening; a missing or ambiguous name refuses. After opening, every requested name and every other user workset are re-read from the Document; workset_configuration_applied is true only when that observed state proves the exact plan. Mutually exclusive with open_all_worksets=true. This is for honest partial-load audits: the reply can measure which content was unavailable instead of accidentally opening all and testing the wrong condition."" },
-    ""on_open_dialog"": { ""type"": ""string"", ""enum"": [""cancel"", ""dismiss""], ""default"": ""cancel"",
-                     ""description"": ""open only: how a modal dialog raised WHILE opening is answered unattended. 'cancel' (default) presses Cancel; 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort, recorded in revit_said; scoped to the open call - every other dialog still cancels."" },
-    ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path. new_project: the new .rvt, which must NOT exist (never overwritten)."" },
+    ""on_open_dialog"": { ""type"": ""string"", ""enum"": [""cancel"", ""dismiss"", ""resolve_in_memory""], ""default"": ""cancel"",
+                     ""description"": ""open only: 'cancel' (default) presses Cancel; 'dismiss' acknowledges and continues. 'resolve_in_memory' requires detach=true and requests default error resolutions; after opening, each requested deletion ID is reported as verified_deleted, still_present or unverified. The recovered document is protected from overwriting the source. Scoped to the open call; every other dialog still cancels."" },
+    ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination. new_project: new .rvt. activate: new local .rvt or .rfa for unsaved or detached documents, never overwritten."" },
     ""template_path"": { ""type"": ""string"", ""description"": ""new_project: absolute path of the .rte to create from. Omitted: this Revit's DefaultProjectTemplate (Options > File Locations), named in the reply as template_source; none configured is a refusal, never a template-less project."" },
     ""compact"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save/save_as: pass Compact to the API. The response reports the byte delta it actually produced."" },
     ""comment"": { ""type"": ""string"", ""description"": ""sync_with_central: stored in central; at most 30000 chars."" },
-    ""relinquish"": { ""type"": ""string"", ""enum"": [""all"", ""keep_borrowed"", ""none""], ""default"": ""all"", ""description"": ""sync_with_central: ownership to give back."" },
+    ""relinquish"": { ""type"": ""string"", ""enum"": [""all"", ""keep_borrowed"", ""borrowed_only"", ""none""], ""default"": ""all"", ""description"": ""sync_with_central: ownership to give back. borrowed_only returns only the elements borrowed one by one and keeps owned worksets."" },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save_as: allow overwriting an existing destination file."" },
     ""max_backups"": { ""type"": ""integer"", ""minimum"": 1, ""description"": ""save_as: cap the .000N backup pile Revit leaves behind."" },
     ""force_workshared"": { ""type"": ""boolean"", ""default"": false,
@@ -4561,8 +4434,8 @@ namespace Horizun.Contracts
     ""save_on_close"": { ""type"": ""boolean"", ""default"": false, ""description"": ""close: save before closing. Off by default - closing should not be a write you did not ask for."" },
     ""discard_unsaved"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""close: REQUIRED to close a document that has unsaved changes without saving them. Close() discards them, returns true, and leaves nothing behind to detect it - the file on disk is untouched and IsModified cannot be asked of a closed document, so an hour of lost edits and an untouched model produce identical responses. Not enough on its own: a dry_run token is required too. Unknown counts as modified."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": false,
-                     ""description"": ""save/save_as: validate target and options without calling Save or touching disk. close: rehearse without closing or activating; may issue a discard confirmation. inspect is read-only. open with dry_run=true is explicitly refused."" },
+    ""dry_run"": { ""type"": ""boolean"",
+                     ""description"": ""Defaults depend on operation: new_project and sync_with_central rehearse by default; save, save_as and close default to false. save/save_as: validate target and options without calling Save or touching disk. close: rehearse without closing or activating; may issue a discard confirmation. inspect is read-only. open with dry_run=true is explicitly refused."" },
     ""activate_other"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""close: Revit's API cannot close the ACTIVE document, so closing the last document of a batch used to need a decoy opened by hand (and a relaunched batch SKIPPED the model that stayed open). With this true, the command activates another open document first - or opens the bridge's own empty anchor project when nothing else qualifies - then closes the target, and REPORTS which document it activated. Off by default because activation changes what the user is looking at; it must be asked for, never a side effect."" },
     ""confirmation_token"": { ""type"": ""string"",
@@ -4578,9 +4451,9 @@ namespace Horizun.Contracts
                     "What changed between two model deliveries, the model explained, and quality over time. snapshot: " +
                     "record the active model, or a .rvt opened detached and closed unsaved (file_path + expected_version), " +
                     "to %USERPROFILE%\\.horizun\\snapshots\\<id>.json.gz: per element UniqueId, category, family/type, " +
-                    "level, workset, phases, bbox, location, instance/type parameters (internal units), geometry hash. " +
+                    "level, workset, phases, bbox, location, volume, instance/type parameters (internal units), geometry hash. " +
                     "list: stored snapshots. compare before/after (snapshot id or 'active'): added, deleted, modified " +
-                    "(parameter before/after, moves over tolerance, type changes) by category/discipline/level, paged, " +
+                    "(parameter before/after, moves, type changes) by OST_ category (language-independent, with changed_fields)/discipline/level, paged, " +
                     "CSV+JSON exported. Identity is UniqueId; a re-created model is flagged and heuristic_match pairs by " +
                     "category/type/location, marked inferred. compare and colorize report identity_proven: true only when " +
                     "both sides carry the same document creation GUID (Revit 2024+); with only Project Information " +
@@ -4688,13 +4561,48 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_audit_model",
                 Command = "horizun_audit_model",
-                Description = @"Pre-delivery audit of the NAMED model: warnings (each classified by root cause - exact_duplicate, contained, vertical_overlap with its measured mm, or stranded_profile - from the failing elements' own geometry, never from Revit's localized description text), orphan group types, in-place families, imported (not linked) CAD, views off sheets, unplaced/redundant rooms, links, design options, file weight, COORDINATES (internal origin vs project base point vs survey point, project location, true north, units, how far the GEOMETRY sits from the internal origin, and link placement), DATUMS (duplicate and coincident levels and grids, levels nothing draws, grids off the building's own dominant angle), WALL_SKETCH_DRIFT (a wall's edited elevation profile left behind by a move), 4D/5D READINESS against roles the caller declares, and an OPT-IN TEMPLATE_COMPARISON against a project template and/or shared parameter file. Read-only (template_comparison opens the template in the background, detached, and closes it without saving). Every count is the model's, every list states total vs. shown, and any check that could not run is reported as failed rather than skipped silently.",
+                Description = @"Read-only audit of the named model: warnings, groups, families, CAD, views, rooms, links, design options, weight, coordinates, datums, wall drift, 4D/5D and optional template comparison. Lists report totals; unreadable checks fail explicitly. Templates open detached and close without saving.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""target_document""],
+  ""allOf"": [{
+    ""if"": { ""anyOf"": [{ ""required"": [""level_id""] }, { ""required"": [""wall_ids""] }, { ""required"": [""tolerance_mm""] }] },
+    ""then"": { ""required"": [""operation""], ""properties"": { ""operation"": { ""const"": ""wall_slab"" } } }
+  }],
   ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""warnings"", ""wall_slab""], ""description"": ""warnings: read warning occurrences grouped by description and severity; paged by individual failing element, with unique_id and suggested typed calls requiring input. wall_slab: sample five stations per supported host wall; level status counts cover the requested page. Omit for the existing audit."" },
+    ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""description"": ""warnings or wall_slab: record offset; model changes can invalidate pages."" },
+    ""page_size"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 100 },
+    ""level_id"": { ""type"": ""integer"", ""minimum"": 1, ""description"": ""wall_slab: base constraint level."" },
+    ""wall_ids"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""integer"", ""minimum"": 1 }, ""description"": ""wall_slab: host wall ids."" },
+    ""tolerance_mm"": { ""type"": ""number"", ""minimum"": 0, ""default"": 5, ""description"": ""wall_slab: contact tolerance; omitted means SUPUESTO."" },
+    ""byte_budget"": { ""type"": ""integer"", ""minimum"": 1024, ""maximum"": 524288, ""default"": 65536, ""description"": ""Maximum UTF-8 bytes of the warnings result body."" },
+    ""confirm_large_operation"": { ""type"": ""boolean"", ""description"": ""Explicitly confirm execution when the conservative scope estimate exceeds the large-model threshold."" },
     ""target_document"": { ""type"": ""string"",
                ""description"": ""REQUIRED: the exact title of the document to audit. This command acts on the ACTIVE document and will NOT switch for you - naming a different one refuses. An audit is a claim about a named model, and a report naming the wrong model is worse than no report."" },
+    ""cooperative"": {
+      ""type"": ""object"",
+      ""additionalProperties"": false,
+      ""description"": ""OPT-IN cooperative reading. OMIT IT AND NOTHING CHANGES: this reader behaves exactly as it always has, and the reply carries no extra field. Send it when a PARTIAL answer that arrives is worth more to you than a complete one nobody waited for - a scan of a large model holds Revit's UI thread for as long as it runs, and the person whose Revit it is cannot click anything meanwhile. With it, the read asks BETWEEN elements whether to carry on: it stops if you have gone away, and it stops at your budget. A result that stopped early says PARTIAL and never passes itself off as clean. WHAT THIS DOES NOT PROVE: ui_budget_ms bounds how long the command SPENDS, not that Revit's interface stayed responsive - the command holds the UI thread for its whole duration, the reply still travels back through the pipe, and Revit's own event queue decides when the window repaints. Stopping work and releasing the interface are different events, and only a sampler watching from outside can measure the second."",
+      ""properties"": {
+        ""ui_budget_ms"": {
+          ""type"": ""integer"",
+          ""minimum"": 1000,
+          ""maximum"": 600000,
+          ""default"": 20000,
+          ""description"": ""How long this read may hold Revit's UI thread before it stops and says so. Twenty seconds by default, chosen against what a person does: below about that a frozen window reads as 'it is working'; past it people start clicking, then killing Revit.""
+        },
+        ""max_units"": {
+          ""type"": ""integer"",
+          ""minimum"": 1,
+          ""description"": ""A hard bound on elements EXAMINED, independent of the clock. Separate from the budget on purpose: a bound in units is reproducible across machines and a bound in milliseconds is not.""
+        },
+        ""cursor"": {
+          ""type"": ""string"",
+          ""description"": ""Continue a previous partial read. Opaque, and REFUSED against a different request: resuming one query at another query's position produces a page of the wrong elements with nothing to show that anything went wrong. Where this command already pages with its own cursor or offset, the reply says so and issues none here - two continuation tokens over different things is worse than either.""
+        }
+      }
+    },
     ""top"": { ""type"": ""integer"", ""default"": 20, ""minimum"": 1,
                ""description"": ""How many items to list per finding. Totals are always exact regardless of this."" },
     ""requirement_set"": { ""type"": ""object"",
@@ -4789,10 +4697,11 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_quantities",
                 Command = "horizun_quantities",
-                Description = @"Volume takeoff in m3 from all three sources Revit offers â€” the Volume parameter, the real solid geometry, and the material takeoff â€” reported side by side with the disagreement measured. Handlers that report a single volume are picking one silently; we have measured a 75% gap between the parameter and the geometry on the same beam. COVERAGE IS EXPLICIT AND NEVER A ZERO: a read that failed is reported as failed, so each source carries candidates/measured/not_applicable/failed plus known_total_m3 and total_is_complete, and known_total is the sum over MEASURED elements only. Two sources are compared only where BOTH produced a number: 'all_agree' is null when nothing could be compared and false when coverage is partial â€” it is never true unless every candidate was compared and agreed. Totals from different sources cover different element sets, so total_reconciliation is computed over the intersection, not over each source's own sum. A volume of exactly zero is a measurement, not an absence. Pass element_ids or a category. Read-only. MODE takeoff: pass mode='takeoff' with quantities=[{name, source: parameter|geometry_volume|geometry_area|length|count, parameter?, unit}] and classification_parameter to measure the caller-named quantities per element for the budget join (horizun_budget_compare): every reading is measured | absent | empty | unreadable | invalid - a zero is a measurement and nothing else is - with a per-code rollup that states how many elements each sum covers; include_links=true sweeps loaded Revit links with per-row provenance (element id, document, document path, link instance id, placement, transform) and names links that were NOT loaded. A linked file placed MORE THAN ONCE is one entry per PLACEMENT, each with its own link instance id and transform, counted once per placement and declared in repeated_link_documents. Units are declared by you and never compiled in; Length/Area/Volume parameters are read in m / m2 / m3 and a mismatched declaration is invalid, never silently relabelled. Modes room_finishes (gross room faces, openings apart) and carbon (materials x caller factors): see phase, carbon_factors.",
+                Description = "Volume mode compares parameter, geometry and material takeoff in m3, with measured coverage and agreement only over common elements. takeoff measures caller-defined quantities per element and code, optionally including links with placement provenance; units must match. room_finishes measures gross faces and openings; carbon uses caller factors. Missing and failed readings are distinguished from zero. Read-only.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
+    ""confirm_large_operation"": { ""type"": ""boolean"", ""description"": ""Explicitly confirm execution when the conservative scope estimate exceeds the large-model threshold."" },
     ""target_document_title"": { ""type"": ""string"",
       ""description"": ""Title of the document you believe is active. When present, the takeoff ABORTS if the active document differs - the same guard model_scan has, and it matters MORE here because this number gets billed: a takeoff of the wrong model is a priced bill of quantities for a file nobody looked at. '.rvt' is optional. Optional for compatibility; pass it whenever more than one document is open."" },
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
@@ -4803,6 +4712,7 @@ namespace Horizun.Contracts
                         ""description"": ""Geometry detail level. Fine is the default here on purpose: Coarse geometry under-reports, and this number gets billed."" },
     ""tolerance_pct"": { ""type"": ""number"", ""default"": 1.0,
                          ""description"": ""Relative disagreement above which sources are flagged as not agreeing."" },
+    ""cooperative"": " + CooperativeReadSchema + @",
     ""top"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1,
                 ""description"": ""Max element rows returned. Totals and coverage are EXACT and independent of this; a shortened list sets truncated=true and rows_matching says how many there were."" },
     ""code_parameter"": { ""type"": ""string"", ""description"": ""Parameter carrying each element's budget/classification code (instance first, then type). Supplied per call - no organisation's parameter is compiled in. Adds 'code' per row and a by_code rollup whose sums state how many elements they cover."" },
@@ -4839,238 +4749,6 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
-                Name = "horizun_clash",
-                Command = "horizun_clash",
-                Description = @"Clash detection between two category sets, across the host model AND loaded Revit links (link geometry is transformed into host coordinates). Every clash names the source model of both elements. COVERAGE IS ACCOUNTED FOR PER ELEMENT AND PER PAIR: every element that never entered the check is counted with its reason (no bounding box, a read that threw, a collector that failed), so candidate counts are not survivor counts; a pair with no usable solid and a pair whose boolean threw are both reported as unresolved rather than clean; a clash whose intersection volume is short because some booleans failed says so; and one physical pair is reported once even when the two category sets overlap. If any of that happened, or links were excluded or unloaded, the result is PARTIAL rather than clean â€” a zero from this tool means zero. Read-only. With plan_penetrations=true each qualifying pair (exactly one MEP curve) additionally becomes a penetration plan - crossing point with its basis, direction, measured cross-section, wall-opening rectangle or sleeve placement - emitted as next_arguments for horizun_create_elements; refusals (linked host, structural host without opt-in, near-vertical run, unreadable section) are named per row.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [""categories_a"", ""categories_b""],
-  ""properties"": {
-    ""categories_a"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-                        ""description"": ""BuiltInCategory names, e.g. [\""OST_StructuralFraming\""]."" },
-    ""categories_b"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1 },
-    ""include_links"": { ""type"": ""boolean"", ""default"": true,
-                         ""description"": ""Include loaded Revit links. Turning this off on a model that HAS links makes the result partial, and it will be labelled as such."" },
-    ""tolerance_mm"": { ""type"": ""number"", ""default"": 0.0,
-                        ""description"": ""Intersections whose overlap is under this are ignored. 0 = report any real overlap."" },
-    ""max_results"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1, ""maximum"": 2000 },
-    ""plan_penetrations"": { ""type"": ""boolean"", ""default"": false,
-                             ""description"": ""Turn each clash pair with exactly one MEP curve into a penetration plan: crossing point (volume-weighted intersection centroid, basis stated), direction, measured cross-section, and - for wall hosts - the opening rectangle, emitted as next_arguments for horizun_create_elements (kind wall_opening). Refusals are per-row and named: linked host, structural host without opt-in, near-vertical run (a floor case), unreadable cross-section. Still read-only."" },
-    ""clearance_mm"": { ""type"": ""number"", ""default"": 0, ""minimum"": 0, ""maximum"": 500,
-                        ""description"": ""Clearance added ALL AROUND the penetrant cross-section when sizing openings."" },
-    ""allow_structural_hosts"": { ""type"": ""boolean"", ""default"": false,
-                                  ""description"": ""Plan penetrations through STRUCTURAL hosts. Off by default: cutting a bearing element is an engineering decision, and this argument is the record that a person made it."" },
-    ""sleeve_type_id"": { ""type"": ""integer"",
-                          ""description"": ""A FamilySymbol to place point-wise at crossings that cannot take a wall opening (floor/framing hosts, near-vertical runs). Without it those rows are refused by name."" },
-    ""cluster_radius_mm"": { ""type"": ""number"", ""default"": 0, ""minimum"": 0, ""maximum"": 5000,
-                             ""description"": ""Crossings of ONE host within this radius fold into one opening (transitive). 0 = every crossing is its own opening."" },
-    ""record_findings"": { ""type"": ""boolean"", ""default"": false,
-                           ""description"": ""Fold this run into the document's durable coordination ledger: stable order-normalized pair identities, open/persisting/regression accounting, and resolved_by_model ONLY when this run's coverage is complete for its scope. Work the ledger with horizun_coordination."" },
-    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""summary""], ""default"": ""full"",
-                         ""description"": ""summary: clash_summary (totals by category pair and source model) plus the 10 largest clashes with their clash_index; counts, coverage and headline still describe every clash. The rest: horizun_coordination (with record_findings) or response_mode=full. Not with plan_penetrations."" }
-  }
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_plan_mep",
-                Command = "horizun_plan_mep",
-                Description = @"Plan a multi-segment pipe or duct run along an explicit polyline, deterministically and READ-ONLY. Collinear vertices are MERGED AND NAMED (the run gets fewer corners than the request had points, and the reply says which); a segment under 50 mm refuses with the measured millimetres and its vertex. The reply is a ready horizun_create_elements request: the segments plus one batch_index elbow per corner, committing as ONE atomic batch through the normal rehearse/token/verify pipeline - the deferred corner selection happens inside the transaction, where any refusal rolls the whole run back. system_analysis reads Revit's own critical-path results against your limits; an uncalculated system is never ok.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""operation""],
-  ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""route_run"", ""network_census"", ""system_analysis""] },
-    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""maxItems"": 500, ""description"": ""network_census: seed elements (omitted: every MEP curve; refused above 2000); connector connectivity (IsConnected), never geometry. system_analysis: system ids only (max 100)."" },
-    ""kind"": { ""type"": ""string"", ""enum"": [""pipe"", ""duct""] },
-    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
-    ""level_id"": { ""type"": ""integer"" },
-    ""type_id"": { ""type"": ""integer"", ""description"": ""PipeType or DuctType."" },
-    ""system_type_id"": { ""type"": ""integer"", ""description"": ""PipingSystemType or MechanicalSystemType."" },
-    ""points"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 50, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } },
-    ""classification"": { ""type"": ""string"", ""description"": ""system_analysis without element_ids: a MEPSystemClassification name, e.g. SupplyAir."" },
-    ""limits"": { ""type"": ""object"", ""description"": ""system_analysis: max_velocity_m_s, max_pressure_loss_pa, max_friction_pa_per_m. Sections beyond them are listed."" }
-  }
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_plan_from_ifc",
-                Command = "horizun_plan_from_ifc",
-                Description =
-                    "Read an IFC, report everything in it, and PLAN the subset this bridge can rebuild EXACTLY. READ-ONLY: it opens no transaction and writes nothing; horizun_apply_ifc_plan is the apply half, and it is a separate confirmable command because a conversion nobody read is a conversion nobody agreed to. WHAT IS PLANNED is decided by REPRESENTATION, never by class name: a wall with an Axis polyline is a Revit wall, and a wall exported as a faceted BREP is a lump of geometry with the word wall on it. The subset: WALLS from an Axis 2-point polyline, at the height their body extrusion measures; COLUMNS at their placement point, rotated by the placement plan angle, refused when the placement is tilted out of plan; BEAMS from an Axis 2-point polyline; SLABS from a vertical extrusion of a horizontal polygon, HOLES INCLUDED; OPENINGS as wall openings when rectangular and not filled - a door cuts its own hole, and cutting both cuts the wall twice; DOORS and WINDOWS as hosted instances at the centre of the opening they fill, because several exporters put a door placement on its hinge side. THE INVENTORY IS THE DELIVERABLE AS MUCH AS THE PLAN: every class is counted and judged against a CLOSED, printed table, and every skipped element is NAMED with the representation that caused it - an importer whose report lists only what it managed is one that drops a third of a building without anybody noticing. UNITS are read from the file (SI prefixes and conversion-based units both), because a model in metres read as millimetres is a building the size of a coin. PLACEMENTS are composed IN FULL, rotations included, with cycles and grid placements refused rather than silently treated as the origin. ALREADY-IMPORTED entities are detected from the provenance an earlier run recorded and are NOT planned again. WHAT IT DOES NOT DO: BREPs, tessellations, CSG, revolutions, mapped representations, composite and trimmed curves, arcs in a boundary, circular and parameterised profiles and multi-solid bodies are named and refused; property sets and quantities are counted and NOT transferred; a layered IFC construction is not rebuilt as a Revit compound type; materials are recorded, never applied.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [
-    ""path""
-  ],
-  ""properties"": {
-    ""target_document"": {
-      ""type"": ""string"",
-      ""description"": ""OPTIONAL guard. When given, the read is REFUSED unless the ACTIVE document matches it. Two Revit hosts run side by side on machines like this one, and a clean report about a model nobody looked at is worse than no report. The reply names the document it actually read either way.""
-    },
-    ""path"": {
-      ""type"": ""string"",
-      ""description"": ""Full path of the .ifc (STEP physical file). ifcXML and ifcZIP are different formats and are not read.""
-    },
-    ""type_mapping"": {
-      ""type"": ""object"",
-      ""description"": ""Which Revit type each IFC thing becomes. Two key shapes, MORE SPECIFIC WINS: 'IFCWALL' maps a whole class, and 'IFCWALL:<IfcWallType name>' maps one exporter type. Values are Revit type NAMES; a family type may be given as 'Family: Type'. Required in practice - without a key for a class, every element of it is skipped WITH that reason, because the type is a decision about this project's standards that this bridge does not carry and will not guess.""
-    },
-    ""level_mapping"": {
-      ""type"": ""object"",
-      ""description"": ""IFC storey -> Revit level, keyed by the storey's GlobalId or its name, valued by a Revit level id (integer) or level name (string). Levels are NEVER created: a project's level scheme is a decision, not data. Storeys with no match are reported in 'levels' and their elements are skipped.""
-    },
-    ""level_id"": {
-      ""type"": ""integer"",
-      ""description"": ""Fallback Revit level for elements whose storey maps to nothing, and for elements the file does not place in a storey at all. Optional; without it those elements are skipped WITH the reason.""
-    },
-    ""default_wall_height"": {
-      ""type"": ""number"",
-      ""description"": ""Millimetres. Used ONLY for walls whose height cannot be measured from their body extrusion, and the reply says per row which walls took it. Without it, such a wall is skipped rather than built to a guess.""
-    },
-    ""only_kinds"": {
-      ""type"": ""array"",
-      ""items"": {
-        ""type"": ""string"",
-        ""enum"": [
-          ""wall"",
-          ""column"",
-          ""beam"",
-          ""slab"",
-          ""opening"",
-          ""hosted""
-        ]
-      },
-      ""description"": ""Plan only these families of element. Omit for all six.""
-    },
-    ""only_classes"": {
-      ""type"": ""array"",
-      ""items"": {
-        ""type"": ""string""
-      },
-      ""description"": ""Plan only these IFC classes, e.g. ['IFCWALLSTANDARDCASE']. The inventory still reports the whole file.""
-    },
-    ""global_id_parameter"": {
-      ""type"": ""string"",
-      ""description"": ""Name of an EXISTING instance text parameter to write the IFC GlobalId into, so the lineage is visible in the model and in schedules. The GlobalId is recorded in Extensible Storage by horizun_apply_ifc_plan either way. A name no element carries makes create_elements refuse the whole batch, which is why this is opt-in.""
-    },
-    ""material_parameter"": {
-      ""type"": ""string"",
-      ""description"": ""Name of an EXISTING instance text parameter to write the IFC material name into. Revit carries material on the TYPE, so the material is RECORDED, not applied; applying it would mean creating types, which is inventing a standard.""
-    },
-    ""material_mapping"": {
-      ""type"": ""object"",
-      ""description"": ""IFC material name -> the text to record instead. Only affects what material_parameter writes.""
-    },
-    ""allow_structural"": {
-      ""type"": ""boolean"",
-      ""description"": ""Let planned wall openings be cut into STRUCTURAL walls. Off by default: cutting a bearing wall is an engineering decision, and this argument is the record that a person made it.""
-    },
-    ""batch_size"": {
-      ""type"": ""integer"",
-      ""minimum"": 1,
-      ""maximum"": 200,
-      ""description"": ""Rows per create_elements action within a stage (default 100). Smaller batches make a partial apply easier to recover from.""
-    }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_apply_ifc_plan",
-                Command = "horizun_apply_ifc_plan",
-                Description =
-                    "Build a plan from horizun_plan_from_ifc THROUGH the same typed horizun_create_elements this bridge already rehearses, confirms and re-reads after commit - this command creates nothing itself, so there is no second creation path to trust. It adds three things nothing else can. (1) THE BINDING: it re-hashes the IFC, re-reads every resolved type and level BY NAME, re-fingerprints the actions and checks the target document and the Revit build, refusing stale_plan naming WHICH one moved - between a plan and its apply somebody can receive a new issue of the file, rename a type or delete a level, and Revit hands a deleted level id to the next element created. (2) THE HOST RESOLUTION: an opening cannot name the wall it is cut into and a door cannot name the wall it hangs in, because those elements do not exist until the stage before them commits; the plan names the IFC entity and this substitutes the real id, from what it just created or from what an earlier run left behind. A host it cannot resolve STOPS the stage rather than cutting a hole in whatever wall happened to be there. (3) THE PROVENANCE: every created element is stamped in Extensible Storage with its IFC GlobalId, class, representation and the file hash - invisible in the UI, and the only reason a second run is an update instead of a second building perfectly aligned with the first. Stages commit SEPARATELY, so a partial names exactly which landed and never claims an atomicity it does not have.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""required"": [
-    ""target_document"",
-    ""apply_binding"",
-    ""actions""
-  ],
-  ""properties"": {
-    ""target_document"": {
-      ""type"": ""string"",
-      ""description"": ""The document this plan was made against. Checked against the ACTIVE document before anything is written.""
-    },
-    ""apply_binding"": {
-      ""type"": ""object"",
-      ""description"": ""Copied VERBATIM from the horizun_plan_from_ifc reply. Names the file, its sha256, its unit scale, the target document, the Revit build and every type and level the plan resolved. Without it there is nothing to check the model against before writing."",
-      ""required"": [
-        ""source_sha256"",
-        ""source_path"",
-        ""actions_fingerprint""
-      ],
-      ""additionalProperties"": true,
-      ""properties"": {
-        ""plan_fingerprint"": {
-          ""type"": ""string""
-        },
-        ""actions_fingerprint"": {
-          ""type"": ""string""
-        },
-        ""source_sha256"": {
-          ""type"": ""string""
-        },
-        ""source_path"": {
-          ""type"": ""string""
-        },
-        ""source_bytes"": {
-          ""type"": ""integer""
-        },
-        ""length_scale_mm"": {
-          ""type"": ""number""
-        },
-        ""target_document"": {
-          ""type"": ""string""
-        },
-        ""revit_version"": {
-          ""type"": ""string""
-        },
-        ""resolved_names"": {
-          ""type"": ""array"",
-          ""items"": {
-            ""type"": ""object"",
-            ""additionalProperties"": true
-          }
-        }
-      }
-    },
-    ""actions"": {
-      ""type"": ""array"",
-      ""description"": ""execute_plan_request.actions from the plan, UNCHANGED. Sending anything else is refused as stale_plan, because the fingerprint covers exactly what would be built."",
-      ""items"": {
-        ""type"": ""object"",
-        ""additionalProperties"": true
-      }
-    },
-    ""candidate_index"": {
-      ""type"": ""array"",
-      ""description"": ""candidate_index from the plan, UNCHANGED. It carries the IFC identity of each row and the host each opening and hosted family belongs to. WITHOUT IT nothing is stamped with its GlobalId - so the next run plans the same entities again and builds a second copy - and no opening or door can resolve its host."",
-      ""items"": {
-        ""type"": ""object"",
-        ""additionalProperties"": true
-      }
-    },
-    ""dry_run"": {
-      ""type"": ""boolean"",
-      ""description"": ""Default TRUE. A rehearsal runs every stage through create_elements' own rehearsal and writes nothing; a stage whose rows are all invalid is reported as rehearsed_nothing rather than as a pass.""
-    },
-    ""confirmation_token"": {
-      ""type"": ""string"",
-      ""description"": ""The token create_elements asked for, passed through to each stage.""
-    },
-    ""idempotency_key"": {
-      ""type"": ""string"",
-      ""description"": ""Suffixed per stage, so a retry of a partly applied plan does not rebuild the stages that landed.""
-    }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
                 Name = "horizun_code_check",
                 Command = "horizun_code_check",
                 Description =
@@ -5098,9 +4776,7 @@ namespace Horizun.Contracts
                 Name = "horizun_link_schedule",
                 Command = "horizun_link_schedule",
                 Description =
-                    "4D: a schedule (MS Project .xml, CSV id,name,start,finish,wbs, Primavera .xer) to elements. import; match by " +
-                    "parameter or rules, gaps both ways; write activity/dates to text instance parameters; status_view " +
-                    "colours a duplicated view by status at as_of. write/status_view: dry run, token, re-read.",
+                    "4D XML/CSV/XER: import, match, write, colour. Rehearse, confirm, reread.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation"", ""schedule_path""],
   ""properties"": {
@@ -5108,30 +4784,18 @@ namespace Horizun.Contracts
     ""target_document"": { ""type"": ""string"" },
     ""schedule_path"": { ""type"": ""string"" },
     ""match"": { ""type"": ""object"", ""description"": ""{parameter, key:id|wbs} or {rules:[{activity,category,level?,parameter?,value?}]}"" },
-    ""write"": { ""type"": ""object"", ""description"": ""{activity_parameter, start_parameter?, finish_parameter?}"" },
+    ""write"": { ""type"": ""object"", ""properties"": {
+      ""activity_parameter"": { ""type"": ""string"" },
+      ""activity_field"": { ""enum"": [""name"",""id"",""wbs""], ""default"": ""name"" },
+      ""allow_unmarked"": { ""type"": ""boolean"", ""default"": false, ""description"": ""HRZ_* outputs only."" },
+      ""start_parameter"": { ""type"": ""string"" },
+      ""finish_parameter"": { ""type"": ""string"" }
+    } },
     ""view_id"": { ""type"": ""integer"" },
     ""as_of"": { ""type"": ""string"", ""description"": ""yyyy-MM-dd"" },
+    ""include_as_of_day"": { ""type"": ""boolean"", ""default"": true },
     ""max_rows"": { ""type"": ""integer"" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_federation_check",
-                Command = "horizun_federation_check",
-                Description =
-                    "Federation QA against declared rules, read-only: out-of-place categories per model (host and loaded links), link levels, " +
-                    "expected/missing/duplicate links, link workset and phase, and whether each link's shared coordinates match " +
-                    "the host's (same site).",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""rules""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"" },
-    ""rules"": { ""type"": ""object"", ""description"": ""{models:[{match (title regex or $host), allowed_categories?, forbidden_categories?}], expected_links:[{name_matches, count?, workset_matches?}], same_site?, levels_match?: true|{tolerance_mm}}"" },
-    ""tolerance_mm"": { ""type"": ""number"" },
-    ""max_items"": { ""type"": ""integer"" }
   },
   ""additionalProperties"": false
 }")
@@ -5258,44 +4922,6 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
-                Name = "horizun_copy_between_documents",
-                Command = "horizun_copy_between_documents",
-                Description =
-                    "Copy elements from another Revit document into the ACTIVE one - already OPEN (source_document) " +
-                    "or a library .rvt/.rte opened in the BACKGROUND, never activated, and closed WITHOUT SAVING " +
-                    "before this returns (source_path; shares horizun_open_document's version guard - a mismatched " +
-                    "file is refused, never silently upgraded - and always detaches). The direction is " +
-                    "fixed and that is the design: this bridge writes to the active document and nowhere else, " +
-                    "so the destination is always the active model and the source is read. EVERY AMBIGUITY REFUSES BEFORE WRITING, each one a case Revit itself accepts: a " +
-                    "view-specific element copied without its view, a hosted instance whose host is not coming, " +
-                    "a member copied out of its group, a pinned element, an element with no category. Revit " +
-                    "brings the TYPES with the elements and cannot rename one on the way in - its " +
-                    "DuplicateTypeAction has exactly two members - so duplicate_types chooses between taking " +
-                    "the destination's same-named type (whose layers may differ, and nothing compares them) and " +
-                    "aborting the whole copy, which is the default; the SAME handler reports every name collision, " +
-                    "materials included. The reply names every type that arrived, " +
-                    "measured as the difference in the destination's type set rather than reported by the copy.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""target_document""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"", ""description"": ""The DESTINATION, which must be the document active in Revit."" },
-    ""source_document"": { ""type"": ""string"", ""description"": ""Title of the other OPEN document to read from (exactly one of this or source_path). Two open documents sharing a title refuse, rather than guessing which project the geometry came from."" },
-    ""source_path"": { ""type"": ""string"", ""description"": ""A .rvt/.rte NOT already open (exactly one of this or source_document): opened in the background, never activated, ALWAYS detached, closed WITHOUT SAVING before this call returns - success, refusal or exception alike. A file from another Revit year is refused (same guard as horizun_open_document); there is no allow_upgrade here, because upgrading somebody's shared library in passing is not this command's decision."" },
-    ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" }, ""description"": ""Ids IN THE SOURCE document (exactly one of this or type_names). Ids are per document; an id from the destination names a different element there. Only usable with source_document - a source opened by source_path was never open before, so no id from it could be known ahead of this call."" },
-    ""type_names"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""string"" }, ""description"": ""Type names to resolve BY NAME in the source document (exactly one of this or element_ids) - the way to name what to copy from a file opened by source_path, which has no ids to give ahead of time. Each name must match EXACTLY ONE ElementType in the source; category narrows a collision, and zero or more-than-one matches refuse by name rather than guess."" },
-    ""category"": { ""type"": ""string"", ""description"": ""type_names only: a BuiltInCategory token (e.g. OST_Walls) that narrows the name match when the same type name exists under more than one category."" },
-    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
-    ""offset"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""Translation applied to the copy. Omit to land at the same coordinates."" },
-    ""duplicate_types"": { ""type"": ""string"", ""enum"": [""abort_on_collision"", ""use_destination""], ""default"": ""abort_on_collision"" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
-    ""confirmation_token"": { ""type"": ""string"" },
-    ""transaction_name"": { ""type"": ""string"" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
                 Name = "horizun_validate_ids",
                 Command = "horizun_validate_ids",
                 Description =
@@ -5363,43 +4989,40 @@ namespace Horizun.Contracts
                 Name = "horizun_manage_materials",
                 Command = "horizun_manage_materials",
                 Description =
-                    "Create, duplicate and edit MATERIALS in one verified batch: graphics (colour, surface and " +
-                    "cut pattern and their colours, transparency, shininess, smoothness), identity (class, " +
-                    "category) and the appearance asset. Names are checked unique against the document and " +
-                    "against the batch before anything runs, and every value is re-read from the material after " +
-                    "the commit. ASSIGNING AN APPEARANCE ASSET DUPLICATES IT BY DEFAULT: several materials " +
-                    "commonly share one asset, so pointing this material at yours without copying would mean a " +
-                    "later edit changing every material that shares it. Pass share_appearance_asset to share " +
-                    "deliberately, and the dry run lists how many materials already use that asset. The " +
-                    "CONTENTS of a rendering asset - textures, bitmap paths, procedural parameters - are not " +
-                    "edited here and are not reported as though they were.",
+                    "Create, duplicate and edit materials in a verified batch. set_appearance edits an exclusive asset or replaces it with Generic, in its own batch.",
                 InputSchema = JObject.Parse(@"{
+  ""description"": ""Full details. Create, duplicate and edit MATERIALS in one verified batch: graphics (colour, surface and cut pattern and their colours, transparency, shininess, smoothness), identity (class, category) and the appearance asset. Names are checked unique against the document and against the batch before anything runs, and every value is re-read from the material after the commit. ASSIGNING AN APPEARANCE ASSET DUPLICATES IT BY DEFAULT: several materials commonly share one asset, so pointing this material at yours without copying would mean a later edit changing every material that shares it. Pass share_appearance_asset to share deliberately, and the dry run lists how many materials already use that asset. The set_appearance edits a supported schema colour and its texture on an exclusive appearance asset; replace_with_generic creates a new Generic asset. Transparency requires generic_transparency. set_appearance must be the only action in its batch. share_appearance_asset: Point at the asset instead of a copy of it. Off by default: sharing means a later edit of that asset changes every material using it. structural: Physical properties. When the material has NO structural asset, one is CREATED - but only if this object carries a 'class' (Concrete, Metal, Wood, Plastic, Generic, Gas, Liquid), because the class decides which fields exist at all and choosing it for you would produce a material whose properties nobody picked; without it the call is refused with that sentence. Optional 'name' names the new property set. Fields, written and RE-READ per field: density, minimum_yield_stress, minimum_tensile_strength, concrete_compression, young_modulus, poisson_ratio, shear_modulus, thermal_expansion_coefficient. Values are in REVIT'S INTERNAL UNITS and are not converted - density is mass per cubic foot, moduli are force per square foot - because a conversion invented here produces a number nobody can trace back to the model. A name outside that list is reported as unknown_field and NOT written. The three vector properties take one number and are written to all three axes (isotropic); writing one axis would leave a material isotropic in name and orthotropic in its numbers. duplicate_shared_assets: A structural or thermal property set is an ELEMENT, and several materials commonly point at the same one - Autodesk's own templates ship concrete assets shared by a dozen. Editing it changes every one of them. With this false (the default) an edit that would reach another material is REFUSED and the other materials are named; with it true, this material gets its own copy first and the others are untouched. Nothing here silently edits a material you did not name. thermal: Thermal properties. When the material has NO thermal asset, one is CREATED if this object carries a 'material_type' (Solid, Liquid, Gas); without it the call is refused rather than guessing. Fields, written and re-read per field: thermal_conductivity, specific_heat, density, emissivity, permeability, porosity, reflectivity. Same unit rule, same unknown_field rule. material_id: Identifies the material for duplicate, update or set_appearance; material_name is an alternative."",
   ""type"": ""object"", ""required"": [""target_document"", ""actions""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true },
     ""confirmation_token"": { ""type"": ""string"" },
+    ""idempotency_key"": { ""type"": ""string"" },
     ""transaction_name"": { ""type"": ""string"" },
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": {
       ""type"": ""object"", ""required"": [""key"", ""operation""], ""properties"": {
         ""key"": { ""type"": ""string"", ""minLength"": 1 },
-        ""operation"": { ""type"": ""string"", ""enum"": [""create"", ""duplicate"", ""update""] },
+        ""operation"": { ""type"": ""string"", ""enum"": [""create"", ""duplicate"", ""update"", ""set_appearance""] },
         ""name"": { ""type"": ""string"", ""description"": ""Required by create and duplicate; optional rename for update."" },
-        ""material_id"": { ""type"": ""integer"", ""description"": ""Required by duplicate and update."" },
+        ""material_id"": { ""type"": ""integer"", ""description"": ""Material ID; material_name is an alternative."" },
         ""material_name"": { ""type"": ""string"", ""description"": ""The same choice by name, when the id is not to hand."" },
         ""color"": { ""type"": ""string"", ""description"": ""#RRGGBB, the shaded colour."" },
         ""surface_pattern"": { ""type"": ""string"", ""description"": ""Fill pattern name, or 'solid'."" },
         ""surface_pattern_color"": { ""type"": ""string"" },
         ""cut_pattern"": { ""type"": ""string"" }, ""cut_pattern_color"": { ""type"": ""string"" },
-        ""transparency"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 100 },
+        ""generic_diffuse"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 255 } },
+        ""match_shading_color"": { ""type"": ""boolean"" },
+        ""replace_with_generic"": { ""type"": ""boolean"" },
+        ""remove_diffuse_texture"": { ""type"": ""boolean"" },
+        ""transparency"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 100, ""description"": ""For set_appearance 0..1; other operations use integer 0..100 for shading."" },
         ""shininess"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 128 },
         ""smoothness"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 100 },
         ""material_class"": { ""type"": ""string"" }, ""material_category"": { ""type"": ""string"" },
         ""appearance_asset_id"": { ""type"": ""integer"" },
-        ""share_appearance_asset"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Point at the asset instead of a copy of it. Off by default: sharing means a later edit of that asset changes every material using it."" },
-        ""structural"": { ""type"": ""object"", ""description"": ""Physical properties. When the material has NO structural asset, one is CREATED - but only if this object carries a 'class' (Concrete, Metal, Wood, Plastic, Generic, Gas, Liquid), because the class decides which fields exist at all and choosing it for you would produce a material whose properties nobody picked; without it the call is refused with that sentence. Optional 'name' names the new property set. Fields, written and RE-READ per field: density, minimum_yield_stress, minimum_tensile_strength, concrete_compression, young_modulus, poisson_ratio, shear_modulus, thermal_expansion_coefficient. Values are in REVIT'S INTERNAL UNITS and are not converted - density is mass per cubic foot, moduli are force per square foot - because a conversion invented here produces a number nobody can trace back to the model. A name outside that list is reported as unknown_field and NOT written. The three vector properties take one number and are written to all three axes (isotropic); writing one axis would leave a material isotropic in name and orthotropic in its numbers."" },
-        ""thermal"": { ""type"": ""object"", ""description"": ""Thermal properties. When the material has NO thermal asset, one is CREATED if this object carries a 'material_type' (Solid, Liquid, Gas); without it the call is refused rather than guessing. Fields, written and re-read per field: thermal_conductivity, specific_heat, density, emissivity, permeability, porosity, reflectivity. Same unit rule, same unknown_field rule."" },
-        ""duplicate_shared_assets"": { ""type"": ""boolean"", ""default"": false, ""description"": ""A structural or thermal property set is an ELEMENT, and several materials commonly point at the same one - Autodesk's own templates ship concrete assets shared by a dozen. Editing it changes every one of them. With this false (the default) an edit that would reach another material is REFUSED and the other materials are named; with it true, this material gets its own copy first and the others are untouched. Nothing here silently edits a material you did not name."" }
+        ""share_appearance_asset"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Share the appearance asset instead of copying it."" },
+        ""structural"": { ""type"": ""object"", ""description"": ""Physical properties; see full contract for fields and units."" },
+        ""thermal"": { ""type"": ""object"", ""description"": ""Thermal properties; see full contract for fields and units."" },
+        ""duplicate_shared_assets"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Copy shared structural or thermal assets before editing."" }
       }, ""additionalProperties"": false } }
   },
   ""additionalProperties"": false
@@ -5410,14 +5033,13 @@ namespace Horizun.Contracts
                 Name = "horizun_manage_styles",
                 Command = "horizun_manage_styles",
                 Description =
-                    "Object styles, subcategories, line styles, line and fill patterns. list_* read; " +
-                    "set_object_style and create_* " +
-                    "rehearse, then re-read every value after commit. " +
-                    "Deleting: horizun_delete_verified.",
+                    "Object styles, subcategories, line styles, line and fill patterns, and colour schemes of rooms, " +
+                    "areas and spaces (list, create as a copy, edit, apply to a view, legend). list_* read; the rest " +
+                    "rehearse, then re-read after commit. Deleting: horizun_delete_verified.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""list_object_styles"", ""set_object_style"", ""create_subcategory"", ""list_line_styles"", ""create_line_style"", ""list_line_patterns"", ""create_line_pattern"", ""list_fill_patterns"", ""create_fill_pattern""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list_object_styles"", ""set_object_style"", ""create_subcategory"", ""list_line_styles"", ""create_line_style"", ""list_line_patterns"", ""create_line_pattern"", ""list_fill_patterns"", ""create_fill_pattern"", ""list_color_schemes"", ""create_color_scheme"", ""edit_color_scheme"", ""apply_color_scheme"", ""place_color_legend""] },
     ""target_document"": { ""type"": ""string"" },
     ""category"": { ""type"": ""string"", ""description"": ""OST_ name, id or name. Parent for create_subcategory."" },
     ""subcategory"": { ""type"": ""string"" },
@@ -5431,6 +5053,14 @@ namespace Horizun.Contracts
     ""fill"": { ""type"": ""string"", ""enum"": [""solid"", ""hatch"", ""crosshatch""] },
     ""angle"": { ""type"": ""number"", ""description"": ""Degrees."" }, ""spacing"": { ""type"": ""number"" }, ""spacing2"": { ""type"": ""number"" },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""scheme_id"": { ""type"": ""integer"", ""description"": ""Colour scheme to use."" },
+    ""parameter"": { ""type"": ""string"", ""description"": ""Scheme parameter, name or id."" },
+    ""by_range"": { ""type"": ""boolean"" }, ""include_links"": { ""type"": ""boolean"" }, ""title"": { ""type"": ""string"" },
+    ""entries"": { ""type"": ""array"", ""items"": { ""type"": ""object"", ""required"": [""value"", ""color""], ""additionalProperties"": false, ""properties"": {
+      ""value"": {}, ""color"": { ""type"": ""string"" }, ""caption"": { ""type"": ""string"" }, ""visible"": { ""type"": ""boolean"" }, ""pattern"": { ""type"": [""string"", ""integer""] }
+    } }, ""description"": ""Scheme entries."" },
+    ""value_units"": { ""type"": ""string"", ""enum"": [""internal"", ""mm"", ""m"", ""feet"", ""m2"", ""ft2""], ""description"": ""Required for a numeric (length/area) scheme."" },
+    ""view_id"": { ""type"": ""integer"" }, ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   },
   ""additionalProperties"": false
@@ -5462,29 +5092,6 @@ namespace Horizun.Contracts
     ""project_position"": { ""type"": ""object"", ""description"": ""east_west, north_south, elevation (units), angle_to_true_north (deg)."" },
     ""confirm_shared_coordinates"": { ""type"": ""boolean"" },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_electrical",
-                Command = "horizun_electrical",
-                Description =
-                    "Electrical panels and circuits. list_panels, list_circuits (panel, number, members, loads, length, " +
-                    "voltage drop where the API gives it) read. create_circuit (element_ids, optional panel_id), " +
-                    "assign_panel, add_to_circuit, remove_from_circuit and panel_schedule rehearse the real Revit call, " +
-                    "then re-read the circuit, its members and its panel after commit.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""operation""],
-  ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""list_panels"", ""list_circuits"", ""create_circuit"", ""assign_panel"", ""add_to_circuit"", ""remove_from_circuit"", ""panel_schedule""] },
-    ""target_document"": { ""type"": ""string"" },
-    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
-    ""circuit_id"": { ""type"": ""integer"" }, ""panel_id"": { ""type"": ""integer"" },
-    ""system_type"": { ""type"": ""string"", ""default"": ""PowerCircuit"" },
-    ""template_id"": { ""type"": ""integer"" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   },
   ""additionalProperties"": false
@@ -5525,129 +5132,9 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
-                Name = "horizun_mep_routing",
-                Command = "horizun_mep_routing",
-                Description =
-                    "MEP routing preferences and size catalogs. read: a type's rules per group, segments (nominal/inner/outer), duct, " +
-                    "conduit and cable-tray catalogs. set_rules, add_sizes, remove_sizes, resize, slope, route and hangers: dry_run -> " +
-                    "confirmation_token -> apply, re-read, rolled back on mismatch. resize: catalog sizes only; fittings Revit replaced are " +
-                    "checked. slope: a gravity run to a grade from a fixed end. route: orthogonal 3-D path around obstacles, spatial-checked. " +
-                    "hangers: a caller family at spaced stations under the structure above. size_by_flow proposes sizes; writes nothing.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""operation""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"" },
-    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""slope"", ""size_by_flow"", ""route"", ""hangers""] },
-    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""in"", ""feet""], ""default"": ""mm"" },
-    ""type_id"": { ""type"": ""integer"" }, ""segment_id"": { ""type"": ""integer"" },
-    ""kind"": { ""type"": ""string"", ""enum"": [""pipe"", ""duct"", ""conduit"", ""cable_tray""], ""description"": ""route: run kind to create."" },
-    ""system_type_id"": { ""type"": ""integer"", ""description"": ""route: piping/duct system type (pipe, duct)."" },
-    ""level_id"": { ""type"": ""integer"", ""description"": ""route: Level of the new run."" },
-    ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""route: first point [x, y, z], in units."" },
-    ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""route: last point [x, y, z], in units."" },
-    ""clearance_mm"": { ""type"": ""number"", ""default"": 50, ""description"": ""route: air kept around the run's surface."" },
-    ""grid_mm"": { ""type"": ""number"", ""default"": 100, ""minimum"": 10, ""description"": ""route: search lattice spacing."" },
-    ""max_nodes"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200000, ""description"": ""route: search budget; no_route when exhausted."" },
-    ""preferred_elevation"": { ""type"": ""object"", ""properties"": { ""min_mm"": { ""type"": ""number"" }, ""max_mm"": { ""type"": ""number"" } }, ""description"": ""route: Z band preferred, not enforced."" },
-    ""rules"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""group"", ""action""], ""properties"": {
-      ""group"": { ""type"": ""string"", ""description"": ""RoutingPreferenceRuleGroupType: Segments, Elbows, Junctions, Crosses, Transitions, Unions, Caps..."" },
-      ""action"": { ""type"": ""string"", ""enum"": [""add"", ""remove"", ""move""] },
-      ""index"": { ""type"": ""integer"" }, ""to_index"": { ""type"": ""integer"" }, ""part_id"": { ""type"": ""integer"" },
-      ""min_size"": { ""type"": ""number"", ""description"": ""with max_size; omit both for all sizes"" }, ""max_size"": { ""type"": ""number"" }, ""description"": { ""type"": ""string"" }
-    }, ""additionalProperties"": false } },
-    ""junction"": { ""type"": ""string"", ""enum"": [""Tee"", ""Tap""] },
-    ""catalog"": { ""type"": ""string"", ""enum"": [""segment"", ""conduit"", ""duct_round"", ""duct_rectangular"", ""duct_oval"", ""cable_tray""] },
-    ""conduit_standard"": { ""type"": ""string"" },
-    ""sizes"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""nominal""], ""properties"": {
-      ""nominal"": { ""type"": ""number"" }, ""inner"": { ""type"": ""number"" }, ""outer"": { ""type"": ""number"" }, ""bend_radius"": { ""type"": ""number"" }
-    }, ""additionalProperties"": false } },
-    ""element_ids"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""integer"" }, ""description"": ""slope: the run's pipes, or one seed pipe with walk=true."" },
-    ""system_id"": { ""type"": ""integer"" },
-    ""diameter"": { ""type"": ""number"" }, ""width"": { ""type"": ""number"" }, ""height"": { ""type"": ""number"" },
-    ""max_velocity"": { ""type"": ""number"", ""description"": ""m/s"" }, ""flow"": { ""type"": ""number"", ""description"": ""L/s; default: the element's flow"" },
-    ""walk"": { ""type"": ""boolean"", ""description"": ""slope: walk the network from one seed pipe through fittings (max 200 elements)."" },
-    ""slope_percent"": { ""type"": ""number"", ""description"": ""slope: grade to hold, e.g. 2.0 for 2%."" },
-    ""fixed_end"": { ""type"": ""string"", ""description"": ""slope: 'upstream', 'downstream', or the open-end pipe id to hold, optionally ':high' or ':low'."" },
-    ""min_clearance"": { ""type"": ""number"", ""description"": ""slope: refuse if any point lands below the floor under the held end plus this."" },
-    ""hanger_type_id"": { ""type"": ""integer"", ""description"": ""hangers: level-based family type placed at each station"" },
-    ""spacing_mm"": { ""type"": ""number"", ""description"": ""hangers: maximum distance between supports"" },
-    ""end_offset_mm"": { ""type"": ""number"", ""description"": ""hangers: clearance from each run end and each tap fitting"" },
-    ""rod_length_parameter"": { ""type"": ""string"", ""description"": ""hangers: instance length parameter set to the measured rod"" },
-    ""attach"": { ""type"": ""string"", ""enum"": [""structure_above""], ""default"": ""structure_above"" },
-    ""max_rod_mm"": { ""type"": ""number"", ""default"": 3000 },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
-  }, ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_connect_mep",
-                Command = "horizun_connect_mep",
-                Description =
-                    "Join or separate MEP connectors DIRECTLY - a pipe to the pump it serves, a duct to an air " +
-                    "terminal - with every precondition measured before anything is written and the connection " +
-                    "re-read from the model afterwards. Refuses, naming the measurement: connectors in different " +
-                    "domains, connectors that are not at the same point (the gap is reported in your units), an " +
-                    "end that is already connected to something else (it is named), and a size mismatch unless " +
-                    "you say the mismatch is intended. When an element has more than one free connector it " +
-                    "REFUSES rather than choosing which end you meant. The dry run makes the connections " +
-                    "provisionally, regenerates, re-reads every pair and rolls back, so 'ConnectTo did not throw' " +
-                    "is never mistaken for evidence. On success the reply also lists every connector still OPEN " +
-                    "on the elements it touched: connecting what was asked and leaving three ends dangling is a " +
-                    "correct command and an incomplete network, and only the caller can tell which.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""target_document"", ""actions""],
-  ""properties"": {
-    ""target_document"": { ""type"": ""string"" },
-    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
-    ""tolerance"": { ""type"": ""number"", ""description"": ""How far apart two connectors may be and still be joined. Default 1 mm, maximum 50 mm. The bound is tight on purpose: a looser one would let this MOVE somebody's geometry to close a visible gap."" },
-    ""on_row_failure"": { ""type"": ""string"", ""enum"": [""abort"", ""skip""], ""default"": ""abort"", ""description"": ""What a row that will not connect does to the batch. 'abort' (the default, and what this command has always done) writes NOTHING when any row fails - the reply then names the row and its reason rather than handing back one exception for up to 200 pairs. 'skip' commits the rows that verified and reports the rest, each with its reason; the reply is marked coverage_complete:false and state 'committed_partial', because a network that is partly connected and reads as success is worse than a batch that failed. Each row is applied in its own sub-transaction, so a skipped one leaves nothing behind. The dry run rehearses under the same setting, so what it shows is what the apply will do."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
-    ""confirmation_token"": { ""type"": ""string"" },
-    ""transaction_name"": { ""type"": ""string"" },
-    ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""items"": {
-      ""type"": ""object"", ""required"": [""key"", ""a_element_id"", ""b_element_id""], ""properties"": {
-        ""key"": { ""type"": ""string"", ""minLength"": 1 },
-        ""operation"": { ""type"": ""string"", ""enum"": [""connect"", ""disconnect""], ""default"": ""connect"" },
-        ""a_element_id"": { ""type"": ""integer"" },
-        ""a_connector"": { ""type"": ""integer"", ""description"": ""Required whenever the element does not have exactly one FREE connector. Read them with horizun_query_model."" },
-        ""b_element_id"": { ""type"": ""integer"" },
-        ""b_connector"": { ""type"": ""integer"" },
-        ""replace_existing"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Allow an end that is already connected to be taken from what it is connected to. Off by default: doing it silently is how a branch disappears from a system nobody was looking at."" },
-        ""allow_size_mismatch"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Accept a measured difference in profile or size. Some equipment connectors legitimately differ from the run that serves them; the measurement stays in the reply either way."" }
-      }, ""additionalProperties"": false } }
-  },
-  ""additionalProperties"": false
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_manage_links",
-                Command = "horizun_manage_links",
-                Description = @"List and manage links; read linked-element candidates without the dangerous view/link collector overload. Unload/reload/add use measured previews, then re-read load state; add_instance creates another placement and verifies it belongs to the type asked for. Pin/unpin and coordinates verify. Scan point-cloud deviation with explicit gaps.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""visible_elements"", ""unload"", ""reload"", ""pin"", ""unpin"", ""add"", ""add_instance"", ""change_path"", ""acquire_coordinates"", ""scan_deviation""], ""default"": ""list"", ""description"": ""visible_elements reads linked candidates in view_id without Revit's unsafe 3-argument collector; it reports measured gates and residual visibility uncertainty."" },
-    ""kind"": { ""type"": ""string"", ""enum"": [""rvt"", ""point_cloud"", ""ifc""], ""description"": ""add: from the extension (.rvt, .rcp/.rcs, .ifc); a year without the IFC importer refuses ifc_importer_unavailable."" },
-    ""path"": { ""type"": ""string"", ""description"": ""add: absolute .rvt, .rcp/.rcs or .ifc; change_path: the .rvt to repoint to. Validated before anything is touched."" },
-    ""link_type_id"": { ""type"": ""integer"", ""description"": ""unload/reload: the RevitLinkType, from operation=list. add_instance: the loaded type to place AGAIN - Revit holds one link type per path, so a file linked twice is one type with two instances, and each placement's elements are measured on their own in a takeoff with include_links."" },
-    ""link_instance_id"": { ""type"": ""integer"", ""description"": ""pin/unpin; acquire_coordinates: the RVT or CAD link instance; scan_deviation: the PointCloudInstance."" },
-    ""view_id"": { ""type"": ""integer"", ""description"": ""visible_elements: host plan view id."" },
-    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200, ""description"": ""visible_elements output rows; whole-set counts stay exact."" },
-    ""element_ids"": { ""type"": ""array"", ""maxItems"": 200, ""items"": { ""type"": ""integer"" }, ""description"": ""scan_deviation: walls, floors, columns whose faces are measured."" },
-    ""tolerance_mm"": { ""type"": ""number"", ""default"": 10, ""description"": ""scan_deviation: a face passes when 95% of its points are within this distance."" },
-    ""target_document"": { ""type"": ""string"", ""description"": ""Required for every mutating operation: the document the change lands in."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
-    ""confirmation_token"": { ""type"": ""string"" }
-  }
-}")
-            },
-            new CommandContract
-            {
                 Name = "horizun_plan_structure",
                 Command = "horizun_plan_structure",
-                Description = @"Plan structural columns on grid intersections, or framing between consecutive intersections along each grid, deterministically and READ-ONLY: the reply is the account (every crossing found, every crossing an existing column already occupies - measured by distance, never by name -, every span an existing beam covers, every span too short to be real, each with its code) plus a ready horizun_create_elements request in next_arguments. Crossings are computed within the grids' drawn extents only; arc grids are named as unplannable rather than approximated; two grids crossing a third at one physical spot plan ONE column. Writing stays with create_elements' own rehearse/token/verify pipeline.",
+                Description = @"Read-only plan: columns at straight grid crossings or beams in free parts of bays. Same-level beam boxes in the datum band (-1000/+10 mm) exclude grid overlaps greater than 150 mm with 0.01 mm tolerance. See omitted_existing_beams for beam identities and crossing_grid when a crossing triggers a trim. Where model boxes or reference levels are unavailable, the planner checks framing placement using nominal sections or measured footprints and withholds coverage_unmeasured_spans without proven longitudinal clearance. Returns next_arguments or ordered next_arguments_batches for create_elements. Rehearse, confirm and verify each batch separately.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation"", ""level_id"", ""type_id""],
   ""properties"": {
@@ -5655,131 +5142,7 @@ namespace Horizun.Contracts
     ""level_id"": { ""type"": ""integer"", ""description"": ""The Level placements land on."" },
     ""type_id"": { ""type"": ""integer"", ""description"": ""A FamilySymbol in OST_StructuralColumns (columns) or OST_StructuralFraming (beams)."" },
     ""grid_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""Restrict to these grids; omitted = every straight grid in the document."" },
-    ""min_span_mm"": { ""type"": ""number"", ""default"": 300, ""minimum"": 0, ""maximum"": 20000, ""description"": ""beams_along_grids: spans shorter than this are omitted BY NAME rather than modelled."" }
-  }
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_coordination",
-                Command = "horizun_coordination",
-                Description = @"List, update and export the durable clash-finding ledger that horizun_clash record_findings=true maintains per document. A finding is a clash pair with a stable order-normalized identity, a state and a history: open, assigned, accepted_risk, closed_by_decision are the states people set; resolved_by_model is MEASURED - only a complete detection run of the finding's own scope can set it, a partial run resolves nothing, and a resolved finding that returns is flagged as a regression. The ledger is bridge state under the Horizun data root, not model state: no Revit transaction opens here, and every update is re-read from disk before success is claimed. Every state change, assignment and comment lands in an APPEND-ONLY history the export carries. Export writes csv, json or bcf and reports the re-read byte count and SHA-256; the BCF claim is exactly STRUCTURAL - the zip is re-read and every markup.bcf re-parsed as XML against the ledger, and no consumer round-trip is proven. operation=import reads a returned .bcfzip back into the ledger: topics matching the GUID this ledger MINTED update status/comments (closed becomes closed_by_decision, NEVER resolved_by_model). A topic from ANY OTHER tool (Navisworks, ACC, Solibri, BIMcollab, both BCF 2.1 and 3.0) is resolved by its own viewpoint Components - AuthoringToolId as a Revit Element Id or UniqueId, IfcGuid via the IFC_GUID parameter or the computed export id - and RE-DETECTED against the active document and loaded links; only a REPRODUCED pair becomes a finding (origin bcf, runComplete=false always, carrying the topic's guid/title/priority/assigned_to/status), a topic resolving fewer than two elements is reported not_traceable with the reason, never invented. Import is a dry run by default. operation=import_navisworks reads naviscoord-mcp's navis_handoff output (coordination_handoff.json; revit_worklist.json carries one side only and is reported untraceable-by-design): elements are matched by normalized source_file against the active document and loaded rvt links, and the pair is RE-DETECTED - solid intersection, or a measured distance otherwise. Only a REPRODUCED pair is folded into the ledger (origin navisworks; priority/responsible/immovable_side/suggested_action carried) with runComplete=false always - it never resolves a finding by itself. Reports issues_total/traceable/matched/reproduced/not_reproduced/not_traceable. Dry run by default. operation=show creates a PERSISTENT 3D view (section box + overrides: red = must move, orange = immovable, blue = unknown) over selected findings - the one operation here that WRITES the model, dry_run -> token -> apply, verified by re-reading the view/box/overrides; a link-only side is painted at the link level (link_level_overrides says so). The dry run and the apply report elements_painted_requested (renamed from elements_painted in 2.2.0: it counts the overrides asked for, never paint that was proved); what was verified is overrides_applied and shown. operation=evidence returns a ready manage_views section over one finding's clash point, to capture with horizun_capture_view. operation=navisworks_readiness (read-only) finds the 3D view named exactly 'Navisworks' (else the default '{3D}') and reports its detail level, section box, visual phase and which model categories WITH ELEMENTS are hidden in it - verdict not_ready when detail level is not Fine (MEASURED: Coarse exports a pipe as one line, zero clashes found against it) or an MEP category with elements is hidden. operation=prepare_navisworks (write, dry_run -> token -> apply) sets that view's detail level to Fine and, only with unhide=true, unhides the named categories (refusing any View.CanCategoryBeHidden denies, e.g. a governing template). operation=navisworks_status (read-only) reports every navisworks-origin finding's own revit_status plus a navis_set_status suggestion list ('resolved' only when a complete detection run measured it gone) to feed back to naviscoord-mcp; path+overwrite optionally write it to a JSON file, re-read and row-count verified.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""operation"": {
-      ""type"": ""string"",
-      ""enum"": [
-        ""list"",
-        ""update"",
-        ""export"",
-        ""import"",
-        ""import_navisworks"",
-        ""show"",
-        ""evidence"",
-        ""navisworks_readiness"",
-        ""prepare_navisworks"",
-        ""navisworks_status""
-      ],
-      ""default"": ""list""
-    },
-    ""target_document"": { ""type"": ""string"", ""description"": ""show/prepare_navisworks: required - the document being changed.""},
-    ""unhide"": { ""type"": ""boolean"", ""default"": false, ""description"": ""prepare_navisworks: also unhide the categories named in `categories`. Without it, categories is refused rather than silently ignored.""},
-    ""categories"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""string"" }, ""description"": ""prepare_navisworks with unhide=true: model category NAMES (as navisworks_readiness reports them) to unhide in the Navisworks view.""},
-    ""finding_ids"": { ""type"": ""array"", ""maxItems"": 300, ""items"": { ""type"": ""string"" }, ""description"": ""show: scope to these findings; omitted uses status (or every open/assigned/accepted_risk finding).""},
-    ""view_name"": { ""type"": ""string"", ""description"": ""show: the persistent view's name; refused if one already exists with it.""},
-    ""per_issue"": { ""type"": ""boolean"", ""default"": false, ""description"": ""show: one view per finding instead of one aggregate view. Not yet implemented - refused.""},
-    ""max_views"": { ""type"": ""integer"", ""default"": 10, ""description"": ""show: reserved for per_issue.""},
-    ""select"": { ""type"": ""boolean"", ""default"": false, ""description"": ""show: also select the painted elements (best-effort, not part of the verified postconditions).""},
-    ""confirmation_token"": { ""type"": ""string"", ""description"": ""show/prepare_navisworks apply: from the dry run.""},
-    ""status"": {
-      ""type"": ""string"",
-      ""description"": ""list: filter by status. update: the new status (open, assigned, accepted_risk, closed_by_decision - resolved_by_model is detection's verdict and refuses).""
-    },
-    ""assignee"": {
-      ""type"": ""string"",
-      ""description"": ""list: filter by assignee. update: set it (empty string clears).""
-    },
-    ""note"": {
-      ""type"": ""string"",
-      ""description"": ""update: set the note (empty string clears).""
-    },
-    ""comment"": {
-      ""type"": ""string"",
-      ""description"": ""update: append one entry to the finding's append-only history (never overwrites).""
-    },
-    ""window_mm"": {
-      ""type"": ""number"",
-      ""default"": 1500,
-      ""minimum"": 100,
-      ""maximum"": 20000,
-      ""description"": ""evidence: half-extent of the section window around the clash point.""
-    },
-    ""finding_id"": {
-      ""type"": ""string"",
-      ""description"": ""update: the finding to change, from operation=list.""
-    },
-    ""max_rows"": {
-      ""type"": ""integer"",
-      ""default"": 100,
-      ""minimum"": 1,
-      ""maximum"": 500
-    },
-    ""path"": {
-      ""type"": ""string"",
-      ""description"": ""export: absolute destination file. import: the .bcfzip to read. import_navisworks: the navis_handoff json. navisworks_status: optional absolute destination to also write the JSON to (re-read and row-count verified).""
-    },
-    ""format"": {
-      ""type"": ""string"",
-      ""enum"": [
-        ""csv"",
-        ""json"",
-        ""bcf""
-      ],
-      ""default"": ""csv""
-    },
-    ""dry_run"": {
-      ""type"": ""boolean"",
-      ""default"": true,
-      ""description"": ""import: show what a returned .bcfzip WOULD change. import_navisworks: show what would be matched/reproduced before recording it. prepare_navisworks: preview the detail-level/unhide change before a confirmation_token applies it. update: explicit true rehearses and writes nothing.""
-    },
-    ""overwrite"": {
-      ""type"": ""boolean"",
-      ""default"": false,
-      ""description"": ""export/navisworks_status(path): replace an existing file. Off by default so a write cannot silently clobber evidence.""
-    },
-    ""on_conflict"": {
-      ""type"": ""string"",
-      ""enum"": [
-        ""report"",
-        ""prefer_external"",
-        ""prefer_local""
-      ],
-      ""default"": ""report"",
-      ""description"": ""operation=import: what to do when an issue changed on BOTH sides since the file was sent out - the topic carries a newer external change and this ledger carries a newer local one. 'report' (default) applies NOTHING for those and lists them: a coordinator's week-old 'Closed' overwriting yesterday's re-detection leaves the ledger saying Closed about a clash that is still in the model. 'prefer_external' takes the file's word; 'prefer_local' keeps this ledger's. There is no safe default beyond reporting, because which side is right depends on what happened and nothing here knows that.""
-    }
-  }
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_resolve_clash",
-                Command = "horizun_resolve_clash",
-                Description = @"Resolve horizun_clash ledger findings with verification. propose (read-only): shift or re-elevate the MEP run by the minimum + clearance; a connected run moves with its eligible network (run_shift) or is report-only naming the blocking connection; checked against host AND loaded links. Structure, architecture, pinned runs and moves touching a third element are report-only. apply: dry_run -> token -> TransactionGroup, re-detected on solids; the pair must vanish with no new clash or it rolls back; undoable; resolved_by_model only by that measurement. propose_opening/apply_opening: cut a wall/floor/roof/ceiling or place a caller sleeve family where a move cannot fix it; the finding stays open (opening_requested).",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""propose"", ""apply"", ""propose_opening"", ""apply_opening""], ""default"": ""propose"" },
-    ""target_document"": { ""type"": ""string"" },
-    ""finding_ids"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""string"" } },
-    ""proposals"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""object"" }, ""description"": ""apply/apply_opening: next_arguments.proposals from propose/propose_opening."" },
-    ""clearance_mm"": { ""type"": ""number"", ""default"": 50 },
-    ""max_move_mm"": { ""type"": ""number"", ""default"": 600 },
-    ""sleeve_type_id"": { ""type"": ""integer"", ""description"": ""apply_opening: caller sleeve family type placed at the crossing instead of a cut; required for framing/columns."" },
-    ""approval_parameter"": { ""type"": ""string"", ""description"": ""apply_opening: text instance parameter marked on the created opening/sleeve."" },
-    ""approval_value"": { ""type"": ""string"", ""description"": ""apply_opening: value for approval_parameter, e.g. 'pending structural approval'."" },
-    ""allow_structural"": { ""type"": ""boolean"", ""default"": false, ""description"": ""*_opening: true records that a person approved cutting/sleeving a STRUCTURAL host."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+    ""min_span_mm"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 20000, ""description"": ""beams_along_grids: spans shorter than an explicit minimum are reported as omitted. When absent, the 150.01 mm minimum applies only to free segments next to columns."" }
   }
 }")
             },
@@ -5799,16 +5162,42 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_manage_classification_table",
+                Command = "horizun_manage_classification_table",
+                Description = "Set an absolute or project-relative keynote/Assembly Code table file, or reload its current resource. Re-read path, load state and entry count after commit. A keynote file is diagnosed first (unreadable, duplicated keys, missing parents, cycles) and refused with errors; operation=diagnose returns that report and whether the file is the loaded one, writing nothing.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document""], ""additionalProperties"": false,
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""table"": { ""type"": ""string"", ""enum"": [""keynote"", ""assembly_code""], ""default"": ""keynote"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""set_path"", ""reload"", ""diagnose""], ""default"": ""set_path"" },
+    ""path"": { ""type"": ""string"", ""description"": ""Existing local table file; absolute or relative to the saved RVT. Required for set_path, omitted for reload, optional for diagnose (default: current file)."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
+    ""confirmation_token"": { ""type"": ""string"" }
+  }
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_set_keynote",
                 Command = "horizun_set_keynote",
                 Description = @"Set the Keynote code on elements, reporting exactly what it touched. In Revit the Keynote parameter normally lives on the TYPE, so writing it re-codes every instance of that type: this tool resolves the target first, tells you the blast radius (including elements you did not name), writes each type once, and VERIFIES AFTER THE COMMIT: every target is re-resolved from the committed document and its value read fresh, because a value read inside an open transaction can still disappear with it. elements_now_carrying_this_keynote is counted by asking the model again afterwards, never by summing what the plan expected. The counts are kept apart because they answer different questions: requested_ids (every id sent, INCLUDING entries that were not integers), parsed_ids, targets_resolved, writes_accepted_in_transaction (not evidence), writes_verified_after_commit (evidence) and writes_failed. Use scope='instance' to refuse any write that would spill onto siblings, or dry_run=true to see the impact first.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
-  ""required"": [""element_ids"", ""keynote""],
+  ""anyOf"": [ { ""required"": [""keynote"", ""element_ids""] }, { ""required"": [""keynote"", ""unique_ids""] }, { ""required"": [""assignments""] } ],
   ""properties"": {
+    ""assignments"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 5000,
+      ""description"": ""Batch: a different code per element/type id in one rehearsal, token and transaction. Replaces element_ids+keynote. Two codes resolving to one type refuse the call."",
+      ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""keynote""], ""properties"": {
+        ""element_id"": { ""type"": ""integer"" }, ""keynote"": { ""type"": ""string"" },
+        ""unique_id"": { ""type"": ""string"" }, ""expected_category"": { ""type"": ""string"", ""description"": ""Not enough alone: send unique_id."" }, ""expected_type"": { ""type"": ""string"", ""description"": ""Not enough alone: send unique_id."" } } } },
+    ""validate_against_table"": { ""type"": ""boolean"", ""description"": ""Refuse codes absent from the keynote table loaded in the project (default true with assignments, false otherwise)."" },
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1,
-                       ""description"": ""Elements to code. If the Keynote lives on their type, the type is what gets written."" },
-    ""keynote"": { ""type"": ""string"", ""description"": ""The keynote code. Empty string clears it."" },
+                       ""description"": ""Elements to code (or send unique_ids). If the Keynote lives on their type, the type is what gets written."" },
+    ""unique_ids"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""minLength"": 1 }, ""description"": ""Aligned with the ids; mismatch refuses the call."" },
+    ""expected_category"": { ""type"": ""string"", ""description"": ""Category (name or OST_*) when read. Not enough alone: send unique_ids."" },
+    ""expected_type"": { ""type"": ""string"", ""description"": ""Type (name or 'Family: Type') when read. Not enough alone: send unique_ids."" },
+    ""keynote"": { ""type"": ""string"", ""description"": ""The keynote code for element_ids. Empty string clears it."" },
     ""scope"": { ""type"": ""string"", ""enum"": [""auto"", ""instance"", ""type""], ""default"": ""auto"",
                  ""description"": ""auto: write wherever the parameter lives (type if that is the only place). instance: only write an instance-level Keynote; fail rather than spill onto siblings. type: always write the type."" },
     ""target_document"": { ""type"": ""string"",
@@ -5816,59 +5205,6 @@ namespace Horizun.Contracts
     ""confirmation_token"": { ""type"": ""string"",
       ""description"": ""REQUIRED when dry_run=false. The token returned by the dry run of this exact request. Single-use, expires, and bound to this document and this request - if either changed, execution is refused and nothing is written."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Resolve targets and report the blast radius without writing."" }
-  }
-}")
-            },
-            new CommandContract
-            {
-                Name = "horizun_family_apply",
-                Command = "horizun_family_apply",
-                Description = @"Homologate the ACTIVE family document (.rfa) in ONE transaction: collapse surplus types down to one and rename it to family_name, add missing shared parameters from an SPF (respecting instance/type and the parameter group), clear formulas on the parameters about to be written (a formula-driven parameter refuses a value), set values, remove named parameters (the caller's parameter spec's 'NA' entries), and strip vendor junk under the conservative rule: String storage, no formula, matches a junk pattern, not excluded, not kept, not in the caller-supplied protected prefix (protected_prefix). TWO checks run. A PARAMETER SCHEMA CHECK IS ENFORCED, NOT LOGGED (it is NOT a geometry check and is no longer called one): the count of Double parameters and the presence of IsCustom are captured before, re-enumerated fresh after the writes, and if either changed â€” or if either census could not be read completely â€” the WHOLE transaction is rolled back and the family is left untouched. Every reported field is a fresh read of the family document after the commit: params_set reports value_written vs value_read_back and a mismatch is a failure, type_name_after comes from fm.CurrentType.Name, params_added/params_removed are counted by re-reading fm.Parameters and never by counting calls that did not throw (FamilyManager.Set and RemoveParameter return void â€” there is not even a bool to check). Never opens a file: rfa_path is a guard that must match the active document, because opening a 2025 .rfa in Revit 2026 upgrades it irreversibly. SEPARATELY, the SHAPE is measured: bounding box, solid volume, surface area, solid count and connector positions of the ACTIVE family type are captured before and compared after, and reported in geometry_check as unchanged / unchanged_where_measured / unproven (zero dimensions compared - a verdict that measured nothing does not wear the word of a clean pass) / changed. Only the active type is measured, because activating another type to measure it would itself modify the file - the others are listed as not verified rather than assumed intact. Idempotent: a second run reports nothing to do, not an error. Use dry_run=true to see the plan without a transaction.",
-                InputSchema = JObject.Parse(@"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""confirmation_token"": { ""type"": ""string"", ""description"": ""REQUIRED when dry_run=false. The token the dry run of this exact request returned. Single-use, expiring, bound to this document and this request - if either changed, execution is refused and nothing is written."" },
-    ""rfa_path"": { ""type"": ""string"", ""description"": ""GUARD, not an instruction to open anything. If given, the run aborts unless it resolves to the ACTIVE family document's PathName. This handler never calls OpenDocumentFile: opening a 2025 .rfa from Revit 2026 upgrades the file irreversibly and breaks the family catalog. Open the family yourself (or via horizun_document_session) in the right Revit, then pass its path here to prove this is the one."" },
-    ""expected_revit_version"": { ""type"": ""string"", ""description"": ""GUARD, e.g. '2025'. Aborts unless the running Revit reports this VersionNumber. The families are 2025; saving one from 2026 upgrades it with no way back."" },
-    ""family_name"": { ""type"": ""string"", ""description"": ""The canonical Family Name (no .rfa). Given, the family is collapsed to exactly ONE type named this. Omitted, no type is created, deleted or renamed."" },
-    ""keep_type"": { ""type"": ""string"", ""description"": ""Which existing type survives the collapse. Default: the one already named family_name, else the first. Every other type is deleted, so name it when the family carries real different sizes â€” those must be split into one family per size BEFORE this runs, not collapsed here."" },
-    ""collapse_types"": { ""type"": ""boolean"", ""default"": true, ""description"": ""With family_name set: delete the surplus types. false renames the surviving/current type only and leaves the others alone."" },
-    ""spf_path"": { ""type"": ""string"", ""description"": ""Your shared parameter file (the .txt Revit exports for a Shared Parameter File) to take add_shared_params from. The app's SharedParametersFilename is restored afterwards."" },
-    ""add_shared_params"": {
-      ""type"": ""array"",
-      ""description"": ""Shared parameters to add if missing. A parameter already present is left exactly as it is (idempotence), never re-added."",
-      ""items"": {
-        ""type"": ""object"",
-        ""required"": [""name""],
-        ""properties"": {
-          ""name"": { ""type"": ""string"", ""description"": ""Definition name as it reads in the SPF."" },
-          ""instance"": { ""type"": ""boolean"", ""default"": false, ""description"": ""true = instance parameter, carrying its own value per placed element. false (default) = type parameter, one value shared by every instance of the type. Pick instance only for values that must vary per occurrence."" },
-          ""group"": { ""type"": ""string"", ""default"": ""PG_DATA"", ""description"": ""Parameter group: 'PG_DATA', 'PG_IDENTITY_DATA', a GroupTypeId name ('Data', 'IdentityData'), or a full group ForgeTypeId. A group that cannot be resolved is an ERROR for that row â€” never a silent fallback to Data, which would file the parameter in the wrong place and report success."" }
-        }
-      }
-    },
-    ""values"": { ""type"": ""object"", ""description"": ""{ parameter_name: value }. Set on the surviving type. String | number | boolean | null. A number on Double/Integer storage is raw Revit internal units; a STRING on Double/Integer goes through SetValueString (unit-aware) and can only be confirmed against a re-read of itself â€” those rows are reported separately and never claimed as verified against your value."" },
-    ""clear_formulas"": { ""type"": ""boolean"", ""default"": true, ""description"": ""SetFormula(p, null) on a parameter in 'values' that is driven by a formula, BEFORE writing it. Imported families arrive with Description/Manufacturer/Material governed by a vendor formula, and Revit refuses a value on those ('Cannot set the value of a parameter determined by a formula'). false = such a row is refused and reported, never silently skipped."" },
-    ""clear_formulas_on"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Extra parameter names to clear the formula of even though no value is written to them."" },
-    ""remove_params"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Parameters to delete by name â€” typically the caller's parameter spec's 'NA' entries. A name that is not in the family is 'nothing to do', not an error (idempotence). Revit refuses to remove a referenced parameter: that is reported as skipped with Revit's reason, never counted as removed."" },
-    ""junk_rules"": {
-      ""type"": ""object"",
-      ""description"": ""Vendor metadata stripping (BIMobject/manufacturer families arrive with dozens â€” a Caleffi valve had 70). Off unless enabled."",
-      ""properties"": {
-        ""enabled"": { ""type"": ""boolean"", ""default"": false },
-        ""patterns"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""REQUIRED when enabled. Lowercase substrings that mark a parameter as junk. There is NO default list: what counts as vendor junk depends on whose families these are, and a built-in list would delete parameters by rules you never read. This command owns HOW to strip safely - match, veto, protect, one transaction, verify by re-reading, roll back if the parameter census moved; WHAT to strip is yours to state."" },
-        ""exclude"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Optional. Lowercase substrings that VETO removal even on a junk match. Empty means veto nothing. IsCustom is refused regardless of this list, because it moves geometry - that is a fact about Revit, not a policy."" },
-        ""keep"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Optional. Exact names (lowercased) never removed. Empty means keep nothing by name."" }
-      }
-    },
-    ""protected_prefix"": { ""type"": ""string"", ""description"": ""Optional caller-supplied prefix. Parameters whose name starts with it are counted in the census (protected_prefix_count_before/after) and are never removed by the junk sweep â€” remove_params can still delete one by exact name. Omitted: they are not tracked at all, and the counts are reported as null, which is NOT the same as zero."" },
-    ""save"": { ""type"": ""boolean"", ""default"": false, ""description"": ""doc.Save() in place after a successful commit. Never SaveAs, never a rename, never a delete of the original â€” an earlier scripted approach lost a family that way. saved_path is reported only after the file is found on disk, re-read from disk as a real family file, AND PROVEN TO HAVE CHANGED: size, timestamp and a SHA-256 of the contents are taken BEFORE the save and compared after, because a valid file that was already there is not evidence that Save wrote anything. A save that leaves the bytes identical is reported as saved=false with both hashes, since the commit already changed the family in memory and the file on disk is now behind it. The response also states whether a recoverable backup was left beside it. A rolled-back run never saves."" },
-    ""target_document"": { ""type"": ""string"",
-      ""description"": ""REQUIRED. Title or full path of the document to write to. It must be the document that is ACTIVE in Revit; this command will not switch documents for you. A write aimed at whatever window happens to be in front is a write aimed at whatever turns up."" },
-    ""confirmation_token"": { ""type"": ""string"",
-      ""description"": ""REQUIRED when dry_run=false. The token returned by the dry run of this exact request. Single-use, expires, and bound to this document and this request - if either changed, execution is refused and nothing is written."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Resolve everything and report the plan and the before-census. Opens no transaction and saves nothing."" },
-    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: homologar familia"", ""description"": ""The label of the single undo step this becomes."" }
   }
 }")
             },
@@ -5923,6 +5259,24 @@ namespace Horizun.Contracts
       ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns the plan (which floors, how many loops each) and a single-use confirmation_token."" },
     ""confirmation_token"": { ""type"": ""string"",
       ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope - if either changed, nothing is written."" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_split_by_level",
+                Command = "horizun_split_by_level",
+                Description = "Split one basic wall, architectural/structural column or vertical pipe, duct, conduit or cable tray at every crossed level. Recreates doors and windows on the corresponding wall piece, reconnects MEP pieces and external connectors, and re-reads all resulting pieces. split_at=openings splits one straight wall at the jambs of its doors/windows into side and opening pieces (the original keeps its id; other inserts' new ids are mapped). An unsupported dependency or failed verification rolls the transaction back. Dry run is the default.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""additionalProperties"": false,
+  ""required"": [""target_document"", ""element_id""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"", ""description"": ""The active document to modify."" },
+    ""element_id"": { ""type"": ""integer"", ""description"": ""Exactly one wall, column or vertical MEP run."" },
+    ""split_at"": { ""type"": ""string"", ""enum"": [""levels"", ""openings""], ""default"": ""levels"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
+    ""confirmation_token"": { ""type"": ""string"" },
+    ""idempotency_key"": { ""type"": ""string"" }
   }
 }")
             },
@@ -6161,8 +5515,11 @@ namespace Horizun.Contracts
   ""type"": ""object"",
   ""properties"": {
     ""job_id"": { ""type"": ""string"", ""description"": ""A specific job (the id horizun_execute_python returns). Omitted: the most recent ones."" },
+    ""wait_s"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 60, ""description"": ""Wait for a job state change. Requires job_id; status only."" },
     ""limit"": { ""type"": ""integer"", ""default"": 5, ""description"": ""How many recent jobs to describe."" },
-    ""checkpoints"": { ""type"": ""integer"", ""default"": 10, ""description"": ""How many of the LAST checkpoints of each job to include."" }
+    ""checkpoints"": { ""type"": ""integer"", ""default"": 10, ""description"": ""How many of the LAST checkpoints of each job to include."" },
+    ""output_page"": { ""type"": ""integer"", ""minimum"": 1, ""description"": ""With job_id: page N of a Python output over 20000 chars."" },
+    ""cancel"": { ""type"": ""boolean"", ""default"": false, ""description"": ""With job_id: ask Revit to stop that job. Queued: removed, never runs. A running Python script is asked to stop at its next checkpoint, safe_point or should_stop; its open transactions are rolled back and the job finishes as cancelled_running. A request, not a stop - read the job's own state afterwards."" }
   },
   ""additionalProperties"": false
 }")
@@ -6183,7 +5540,10 @@ namespace Horizun.Contracts
                     "hierarchy separator). HONESTY: a code that is NOT in the catalog returns is_leaf=null (unknown) " +
                     "— never false; 'exists' is a separate field, so 'absent' and 'not a leaf' are never conflated. " +
                     "operation=search: find codes whose description best matches 'query' (accent- and case-insensitive " +
-                    "whole-token overlap), returning code/description/is_leaf/score ranked highest first. Both leaf and " +
+                    "whole-token overlap), returning code/description/is_leaf/score ranked highest first. operation=match: " +
+                    "pair each of 'queries' with a code and EXPLAIN it: candidates with confidence %, matched and missing " +
+                    "features, number conflicts, and decision accept/review with its reason (below threshold, ambiguous, " +
+                    "no candidate); feed accepted pairs to horizun_set_keynote assignments. UTF-16 keynote files are read. Both leaf and " +
                     "search share the same COLUMN parsing: delimiter is auto-detected among tab/;/,/| by counting each " +
                     "one consistently across the first sampled lines (a genuine tie between two delimiters REFUSES and " +
                     "asks for 'delimiter' explicitly, rather than guessing); pass 'delimiter' to pin it. code_column " +
@@ -6197,7 +5557,8 @@ namespace Horizun.Contracts
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""leaf"", ""search"", ""bsdd_search"", ""bsdd_search_dictionary"", ""bsdd_class"", ""bsdd_property"", ""bsdd_dictionaries""] },
+    ""category"": { ""type"": ""string"", ""description"": ""products: BuiltInCategory filter; catalog_path names the user kit JSON."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""leaf"", ""search"", ""match"", ""products"", ""bsdd_search"", ""bsdd_search_dictionary"", ""bsdd_class"", ""bsdd_property"", ""bsdd_dictionaries""] },
     ""text"": { ""type"": ""string"" },
     ""uri"": { ""type"": ""string"", ""description"": ""bSDD class, property or dictionary URI."" },
     ""dictionary_uris"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } },
@@ -6224,7 +5585,53 @@ namespace Horizun.Contracts
     ""description_column"": { ""type"": [""integer"", ""string""],
       ""description"": ""search only: which column holds the description: a 0-based index, or a header-name string when has_header=true. Default: column 1."" },
     ""max_results"": { ""type"": ""integer"", ""default"": 10,
-      ""description"": ""search only: how many ranked matches to return (capped at 200)."" }
+      ""description"": ""search: ranked matches (cap 200); match: candidates per query (default 3, cap 20)."" },
+    ""queries"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""object"", ""required"": [""text""],
+      ""properties"": { ""id"": { ""type"": [""string"", ""integer""] }, ""text"": { ""type"": ""string"" } } },
+      ""description"": ""match: items to pair with a code, e.g. {id: type id, text: family + type + material}. Or send query for one."" },
+    ""threshold"": { ""type"": ""number"", ""default"": 80, ""description"": ""match: minimum confidence (0-100) to accept a candidate."" },
+    ""leaf_only"": { ""type"": ""boolean"", ""default"": true, ""description"": ""match: only leaf codes are candidates."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_template_kit",
+                Command = null,           // host-resident: answered in the server, never forwarded to Revit
+                Description =
+                    "AI-ready templates: read a Horizun template kit (.hzkit.json, schema horizun.template-kit/1) that the MCP " +
+                    "generated FROM a live template, and brief yourself before modelling. operation=list: installed kits. load (default; by path, kit_name or model_path): template, " +
+                    "conventions, catalog summary, playbook tasks, rule topics, quality checks, limitations and whether the kit " +
+                    "matches this server's contract. find: types by intent (text, accent-insensitive), category, code prefix, host " +
+                    "(none|wall|ceiling|floor|roof|face) and dims ranges (name: [min,max] mm); each hit carries code, unit, " +
+                    "nominal and envelope dims in mm (search nominal when present), measured footprint, placement (host, route) and the exact " +
+                    "horizun_create_elements recipe plus the horizun_query_model call that resolves its type_id. type: one entry " +
+                    "by key. rules: selection rules (topic filter). playbook: ordered steps of a task with this server's tool names " +
+                    "and verifications (task filter). checks: quality gates. validate: kit_valid, recipes_valid against tool schemas, contract_match and template_hash_match. load reports unavailable_tools with their groups. audit (Revit, read-only): model checks and optional external drawing declarations (declared_evidence_path); declared evidence never becomes a measured pass. evidence_schema: the external declaration JSON Schema, without Revit or a kit. Read-only.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""product_only"": { ""type"": ""boolean"", ""default"": false, ""description"": ""find: only product families supplied in the kit; load recipe retains rehearsal and verification."" },
+    ""policy"": { ""type"": ""string"", ""enum"": [""existing_first"", ""existing_only"", ""allow_create""], ""default"": ""existing_first"", ""description"": ""find: existing_only returns no_match without resize advice when no existing size matches within 0.5 mm per dimension."" },
+    ""include_unusable"": { ""type"": ""boolean"", ""default"": false, ""description"": ""find: include entries marked usable=false, retaining their reason."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""load"", ""find"", ""type"", ""rules"", ""playbook"", ""checks"", ""validate"", ""audit"", ""evidence_schema""], ""default"": ""load"" },
+    ""declared_evidence_path"": { ""type"": ""string"", ""description"": ""audit: absolute JSON manifest, schema horizun.template-check-evidence/1 (operation=evidence_schema). Validates source hash and per-check drawing/model references; executed_with_declared_evidence retains passed=null, declared_passed and host_verified=false."" },
+    ""target_document"": { ""type"": ""string"", ""description"": ""audit: the ACTIVE model to judge against the kit."" },
+    ""top"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200, ""default"": 20, ""description"": ""audit: sample size per finding."" },
+    ""path"": { ""type"": ""string"", ""description"": ""Absolute path of the .hzkit.json."" },
+    ""kit_name"": { ""type"": ""string"", ""description"": ""An installed kit (<data root>/kits/<kit_name>.hzkit.json); a model made from a kit template names it in Project Information HZ_AI_Kit."" },
+    ""model_path"": { ""type"": ""string"", ""description"": ""Instead of path: a model/template file or folder; the kit is <stem>.hzkit.json beside it, or the only *.hzkit.json there."" },
+    ""text"": { ""type"": ""string"" },
+    ""category"": { ""type"": ""string"" },
+    ""code"": { ""type"": ""string"", ""description"": ""Classification code prefix."" },
+    ""host"": { ""type"": ""string"" },
+    ""dims"": { ""type"": ""object"", ""additionalProperties"": true, ""description"": ""Parameter name to [min,max] (mm; null = open) or an exact value."" },
+    ""near"": { ""type"": ""object"", ""additionalProperties"": true, ""description"": ""find: the dimensions you NEED (name: mm). Ranks by closeness and, when no type is exact, returns size_missing with the new_size recipe instead of letting you use a wrong size."" },
+    ""limit"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 50, ""default"": 10 },
+    ""key"": { ""type"": ""string"", ""description"": ""type: family|type key from find."" },
+    ""topic"": { ""type"": ""string"" },
+    ""task"": { ""type"": ""string"" }
   },
   ""additionalProperties"": false
 }")
@@ -6451,7 +5858,7 @@ namespace Horizun.Contracts
                     "length, zones vs the stated stirrup total, zones vs the span between axes, levels vs the scale, table count x length vs " +
                     "total and rows vs the totals row, cards vs a sheet's stated count. With requirement_set (bar_type_names...) the beam " +
                     "cards are PROPOSED as section_rules keyed by mark - all or nothing, every reason listed. Writes nothing; plan the " +
-                    "proposal with horizun_plan_reinforcement.",
+                    "proposal with horizun_plan_reinforcement (Pro edition).",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -6891,33 +6298,139 @@ namespace Horizun.Contracts
                 Name = "horizun_target",
                 Command = null,           // host-resident: answered in the server, never forwarded to Revit
                 Description =
-                    "Which Revit these tools are talking to, and how to change it - answered WITHOUT touching Revit. " +
-                    "With no arguments it reports every Revit that has published a bridge (year, pid, whether that " +
-                    "process is still running, add-in version) and which one is selected and why. Pass 'year' to send " +
-                    "every later call in this session to that Revit, or 'auto' to go back to the most recently started " +
-                    "one. This matters because two Revit versions open at once is normal - a model saved by one year " +
-                    "does not open in another - and the expensive failure is not a dead bridge, it is a healthy one " +
-                    "attached to the wrong instance: a read answers about the wrong model, a WRITE lands in it. " +
-                    "HONESTY: an add-in too old to publish its command list reports command_count=null (unknown), " +
-                    "never 0; a year that has published nothing is REFUSED and the current target is left unchanged.",
+                    "Which Revit these tools talk to, answered WITHOUT touching Revit. No arguments: every Revit that " +
+                    "published a bridge (year, pid, alive, add-in version) and which is selected and why. 'year' or 'pid' " +
+                    "sends every later call to that Revit ('auto' clears it); with two instances of one year use pid, or 'document' " +
+                    "(the model's name) to follow the model across Revit restarts. A " +
+                    "year with no bridge is REFUSED and the target kept. operation=focus_window brings pid's window to the " +
+                    "front. HORIZUN_SESSION_KEY remembers the choice; HORIZUN_REVIT_PID pins one.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
     ""pid"": { ""type"": ""integer"",
       ""description"": ""Process id of a SPECIFIC Revit instance to direct calls to. Use this when two instances of the same year are running - a year no longer names one process. Wins over year."" },
     ""year"": { ""type"": ""string"",
-      ""description"": ""Four-digit Revit year to direct all later calls to, e.g. '2026'. Pass 'auto' to clear the choice and go back to the most recently started running Revit. Omit to only report, changing nothing."" }
+      ""description"": ""Four-digit Revit year to direct all later calls to, e.g. '2026'. Pass 'auto' to clear the choice and go back to the most recently started running Revit. Omit to only report, changing nothing."" },
+    ""document"": { ""type"": ""string"",
+      ""description"": ""Name of the MODEL (as in Revit's title bar, extension optional) to direct calls to. The server finds the one running Revit whose active document it is and keeps following the model if that instance restarts; none or two showing it is refused and the target kept. Not with pid or year."" },
+    ""operation"": { ""enum"": [""report"", ""focus_window""] }
   },
   ""additionalProperties"": false
 }")
             }
-        });
+        }));
 
         /// <summary>
         /// Attach behavioural metadata and the argument every mutating execution shares.
         /// Keeping this here means a newly-added mutating command cannot forget to tell
         /// either the server or the add-in about idempotency.
         /// </summary>
+        // Conditions found by scripts/audit-conditional-requirements.py. Keep the
+        // runtime requirement visible to kit validation, rather than only prose.
+        private static void AddConditionalRequirements(List<CommandContract> all)
+        {
+            JObject Schema(string tool) => all.First(c => c.Name == tool).InputSchema;
+            JObject Has(string field) => new JObject { ["required"] = new JArray(field) };
+            JObject Is(string field, params string[] values) => new JObject
+            { ["required"] = new JArray(field), ["properties"] = new JObject { [field] = new JObject { ["enum"] = new JArray(values) } } };
+            void Append(JObject schema, JObject condition, string requirements)
+            {
+                var conditions = schema["allOf"] as JArray;
+                if (conditions == null) schema["allOf"] = conditions = new JArray();
+                conditions.Add(new JObject { ["if"] = condition, ["then"] = JObject.Parse(requirements) });
+            }
+            void Add(string tool, JObject condition, string requirements) => Append(Schema(tool), condition, requirements);
+            void On(string tool, string field, string values, string requirements) => Add(tool, Is(field, values.Split('|')), requirements);
+
+            foreach (string name in new[] { "get_document_info", "horizun_navigate", "horizun_get_dimension_references", "horizun_plan_annotations", "horizun_plan_views", "horizun_model_scan", "horizun_quantities", "horizun_plan_structure" })
+                Schema(name)["properties"]["target_document"] = new JObject { ["type"] = "string" };
+            Schema("horizun_query_structure")["properties"]["target_document"] = new JObject { ["type"] = "string" };
+            Schema("horizun_query_dimensions")["properties"]["target_document"] = new JObject { ["type"] = "string" };
+            foreach (string name in new[] { "horizun_list_schedules", "horizun_get_schedule_data", "horizun_query_detail_2d", "horizun_audit_planimetry" })
+                Schema(name)["properties"]["target_document"] = new JObject { ["type"] = "string" };
+            On("horizun_query_structure", "mode", "steel_review", "{'required':['tolerance_mm']}");
+            On("horizun_code_check", "operation", "headroom", "{'required':['headroom']}");
+            On("horizun_code_check", "operation", "travel_distance", "{'required':['travel']}");
+            On("horizun_framing", "operation", "remove", "{'required':['element_ids'],'properties':{'element_ids':{'minItems':1}}}");
+
+            On("horizun_manage_groups", "operation", "create|add_members|remove_members", "{'required':['element_ids'],'properties':{'element_ids':{'minItems':1}}}");
+            On("horizun_manage_groups", "operation", "rename_type|duplicate_type|swap_type|change_group_type", "{'required':['type_id']}");
+            On("horizun_manage_groups", "operation", "swap_type|change_group_type|ungroup", "{'required':['group_ids'],'properties':{'group_ids':{'minItems':1}}}");
+            On("horizun_manage_groups", "operation", "change_group_type|set_group_level|add_members|remove_members|edit_type_members", "{'required':['group_ids'],'properties':{'group_ids':{'minItems':1,'maxItems':1}}}");
+            On("horizun_manage_groups", "operation", "set_group_level", "{'required':['level_id']}");
+            On("horizun_manage_groups", "operation", "edit_type_members", "{'required':['scope'],'properties':{'scope':{'const':'type'}}}");
+            Add("horizun_manage_groups", Has("relative_rotations_degrees"), "{'properties':{'operation':{'enum':['check_variation','add_members']}}}");
+            On("horizun_manage_groups", "operation", "check_variation", "{'properties':{'relative_rotations_degrees':{'maxItems':49}}}");
+            On("horizun_manage_phases", "operation", "set_element_phases", "{'anyOf':[{'required':['created_phase_id']},{'required':['demolished_phase_id']}]}");
+            On("horizun_manage_worksets", "operation", "rename|set_default|visibility|move_elements", "{'required':['workset_id']}");
+            On("horizun_manage_worksets", "operation", "visibility", "{'required':['view_ids','visibility'],'properties':{'view_ids':{'minItems':1}}}");
+            On("horizun_manage_worksets", "operation", "move_elements", "{'oneOf':[{'required':['element_ids'],'properties':{'element_ids':{'minItems':1}}},{'required':['category']}]}");
+
+            On("horizun_quantities", "mode", "carbon", "{'required':['factor_source']}");
+            On("horizun_quantities", "mode", "takeoff", "{'required':['classification_parameter','quantities'],'properties':{'quantities':{'minItems':1}}}");
+            Add("horizun_quantities", JObject.Parse("{'required':['include_links'],'properties':{'include_links':{'const':true}}}"), "{'required':['category'],'not':{'required':['element_ids']}}");
+            Add("horizun_query_model", JObject.Parse("{'required':['sum_parameters'],'properties':{'sum_parameters':{'minItems':1}},'not':{'required':['response_mode'],'properties':{'response_mode':{'const':'summary'}}}}"), "{'required':['group_by'],'properties':{'group_by':{'minItems':1}}}");
+
+            On("horizun_manage_curtain", "operation", "set_mullions", "{'required':['mode']}");
+            Add("horizun_manage_curtain", JObject.Parse("{'required':['operation','mode'],'properties':{'operation':{'const':'set_mullions'},'mode':{'const':'add'}}}"), "{'required':['mullion_type_id']}");
+            On("horizun_slab_shape", "operation", "add_point", "{'required':['points'],'properties':{'points':{'minItems':1}}}");
+            On("horizun_slab_shape", "operation", "add_split_line", "{'required':['start','end']}");
+            Add("horizun_create_railing", Has("path"), "{'required':['level_id'],'properties':{'path':{'minItems':2}}}");
+            On("horizun_join_geometry", "cut_order", "first_cuts", "{'required':['pairs']}");
+            On("horizun_view_visibility", "operation", "marker_scale", "{'required':['view_ids','coarser_than'],'properties':{'view_ids':{'minItems':1},'coarser_than':{'minimum':1,'maximum':24000}}}");
+            On("horizun_view_visibility", "operation", "copy_link_overrides", "{'required':['view_id','view_ids'],'properties':{'view_ids':{'minItems':1,'maxItems':200}}}");
+            On("horizun_view_visibility", "operation", "read|hide|unhide|set_overrides|clear_overrides|hide_foreign_markers|datum_cleanup|explain_overrides|link_datum_cleanup", "{'required':['view_id']}");
+            On("horizun_view_visibility", "operation", "set_scale", "{'required':['view_id','scale']}");
+            On("horizun_view_visibility", "operation", "override_report|graphics_report", "{'required':['view_ids']}");
+            On("horizun_view_visibility", "operation", "copy_view_graphics", "{'required':['view_id','view_ids']}");
+            On("horizun_view_visibility", "operation", "hide|unhide|set_overrides|clear_overrides|explain_overrides", "{'anyOf':[{'required':['element_ids'],'properties':{'element_ids':{'minItems':1}}},{'required':['categories'],'properties':{'categories':{'minItems':1}}},{'required':['family_names']},{'required':['type_names']}]}");
+            On("horizun_view_visibility", "operation", "set_overrides", "{'required':['overrides'],'properties':{'overrides':{'minProperties':1}}}");
+            On("horizun_verify_changes", "operation", "what_if", "{'required':['what_if']}");
+            var whatIf = (JObject)Schema("horizun_verify_changes")["properties"]["what_if"];
+            whatIf["allOf"] = JArray.Parse("[{'if':{'required':['action'],'properties':{'action':{'const':'move'}}},'then':{'required':['vector']}}]");
+            // These messages describe nested contracts; keep the requirement at
+            // its own level, rather than accidentally requiring a top-level key.
+            var match = (JObject)Schema("horizun_link_schedule")["properties"]["match"];
+            match["oneOf"] = JArray.Parse("[{'required':['parameter']},{'required':['rules']}]");
+            match["properties"] = JObject.Parse("{'rules':{'type':'array','minItems':1,'items':{'type':'object','required':['activity','category']}}}");
+
+            Add("horizun_capture_view", Has("margin_ratio"), "{'required':['element_ids']}");
+            Add("horizun_capture_view", JObject.Parse("{'required':['calibrate_world_to_pixel'],'properties':{'calibrate_world_to_pixel':{'const':true}}}"), "{'required':['hide_annotations'],'properties':{'hide_annotations':{'const':true},'pixel_size':{'maximum':4096}}}");
+            On("horizun_delete_verified", "mode", "ids", "{'required':['ids'],'properties':{'ids':{'minItems':1}}}");
+            Add("horizun_delete_verified", JObject.Parse("{'required':['dry_run'],'properties':{'dry_run':{'const':false}}}"), "{'properties':{'max_passes':{'const':1}}}");
+            On("horizun_export", "format", "pdf|fbx|pdf_set|dwg_set", "{'required':['view_ids'],'properties':{'view_ids':{'minItems':1}}}");
+            On("horizun_export", "format", "dwg|image", "{'required':['view_ids'],'properties':{'view_ids':{'minItems':1,'maxItems':1}}}");
+            Add("horizun_export", JObject.Parse("{'required':['format','nwc_scope'],'properties':{'format':{'const':'nwc'},'nwc_scope':{'const':'view'}}}"), "{'required':['view_ids'],'properties':{'view_ids':{'minItems':1,'maxItems':1}}}");
+            On("horizun_export", "format", "cobie", "{'required':['cobie']}");
+            On("horizun_export", "format", "ifc_setup", "{'required':['ifc_version','ifc_setup'],'properties':{'ifc_setup':{'required':['name']}}}");
+            On("horizun_export", "format", "dwg_layers", "{'required':['dwg_setup'],'properties':{'dwg_setup':{'required':['name']}}}");
+            On("horizun_save_document", "operation", "sync_with_central", "{'required':['comment'],'properties':{'comment':{'minLength':1,'pattern':'\\\\S'}}}");
+            On("horizun_plan_annotations", "mode", "wall_thickness|opening_height|spot_elevation", "{'required':['element_ids'],'properties':{'element_ids':{'minItems':1,'maxItems':50}}}");
+            On("horizun_plan_annotations", "mode", "chain_along_line", "{'required':['line_start','line_end','element_ids'],'properties':{'element_ids':{'minItems':1,'maxItems':200}}}");
+            On("horizun_plan_annotations", "mode", "room_clear_width", "{'required':['room_id']}");
+
+            var sequence = (JObject)Schema("horizun_write_params_verified")["properties"]["sequence"];
+            sequence["oneOf"] = JArray.Parse("[{'required':['element_ids']},{'required':['category']}]");
+            Append(sequence, Has("category"), "{'required':['phase_id']}");
+            Append(sequence, JObject.Parse("{'required':['order_by'],'properties':{'order_by':{'const':'room'}}}"), "{'required':['phase_id']}");
+            Append(sequence, JObject.Parse("{'required':['order_by'],'properties':{'order_by':{'type':'array','not':{'items':{'not':{'const':'room'}}}}}}"), "{'required':['phase_id']}");
+            Add("horizun_query_model", JObject.Parse("{'required':['return_parameters'],'properties':{'return_parameters':{'type':'array','not':{'items':{'not':{'const':'*'}}}}},'not':{'required':['response_mode'],'properties':{'response_mode':{'const':'summary'}}}}"), "{'required':['parameter_format'],'properties':{'parameter_format':{'const':'full'}},'not':{'anyOf':[{'required':['group_by'],'properties':{'group_by':{'minItems':1}}},{'required':['sum_parameters'],'properties':{'sum_parameters':{'minItems':1}}}]}}");
+            On("horizun_selection_context", "operation", "snapshot|diff", "{'required':['snapshot_name'],'properties':{'snapshot_name':{'minLength':1}}}");
+            On("horizun_selection_context", "operation", "validate_ids", "{'required':['checks']}");
+            On("horizun_selection_context", "operation", "snapshot", "{'oneOf':[{'required':['ids'],'properties':{'ids':{'minItems':1}}},{'required':['selector']},{'required':['selection'],'properties':{'selection':{'const':true}}}]}");
+            foreach (var ruleLocation in new[] { new[] { "horizun_audit_model", "workset_rules" }, new[] { "horizun_model_scan", "sheet_rules" } })
+            {
+                var rules = Schema(ruleLocation[0])["properties"][ruleLocation[1]] as JObject;
+                if (rules != null) Append(rules, JObject.Parse("{'type':'object'}"), "{'required':['version']}");
+            }
+            foreach (JObject creation in Schema("horizun_create_elements")["properties"]["elements"]["items"]["oneOf"])
+            {
+                var props = (JObject)creation["properties"];
+                if (props["top_offset"] != null) Append(creation, Has("top_offset"), "{'required':['top_level_id']}");
+                if (props["host_face"] != null) Append(creation, Is("host_face", "end"), "{'required':['host_id']}");
+            }
+        }
+
         private static List<CommandContract> Annotate(List<CommandContract> all)
         {
             var always = new HashSet<string>(StringComparer.Ordinal)
@@ -6928,20 +6441,12 @@ namespace Horizun.Contracts
             var dryRun = new HashSet<string>(StringComparer.Ordinal)
             {
                 "horizun_create_schedule", "horizun_write_params_verified", "horizun_delete_verified",
-                "horizun_manage_links", "horizun_coordination",
-                "horizun_create_elements", "horizun_apply_reinforcement",
-                "horizun_apply_cad_plan",
-                "horizun_apply_ifc_plan",
-                "horizun_apply_cad_update",
-                "horizun_manage_cad_links",
-                "horizun_create_family",
-                "horizun_manage_system_types",
+                "horizun_create_elements",
                 "horizun_transform_elements",
-                "horizun_resolve_clash", "horizun_undo",
+                "horizun_undo",
                 "horizun_manage_views",
                 "horizun_manage_schedules",
                 "horizun_export",
-                "horizun_deliver_ifc",
                 "horizun_link_schedule",
                 // Only operation=travel_distance with travel.create_paths writes (PathOfTravel elements).
                 "horizun_code_check",
@@ -6954,34 +6459,25 @@ namespace Horizun.Contracts
                 "horizun_manage_revisions",
                 "horizun_manage_phases", "horizun_manage_assemblies_parts",
                 "horizun_manage_groups", "horizun_manage_worksets",
-                "horizun_connect_mep",
-                "horizun_mep_routing",
                 "horizun_structural_connections",
                 "horizun_manage_materials",
-                "horizun_manage_styles", "horizun_manage_units", "horizun_electrical",
-                "horizun_copy_between_documents",
+                "horizun_manage_styles", "horizun_manage_units",
                 "horizun_execute_plan",
                 "horizun_apply_corrections",
-                "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param", "horizun_manage_parameters",
-                "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param",
-                "horizun_split_floor_loops", "horizun_split_multilayer_walls",
+                "horizun_set_keynote", "horizun_manage_classification_table", "horizun_bind_shared_param", "horizun_manage_parameters",
+                "horizun_set_keynote", "horizun_bind_shared_param",
+                "horizun_split_floor_loops", "horizun_split_multilayer_walls", "horizun_split_by_level",
                 "horizun_split_multilayer_slabs", "horizun_ungroup_and_mark",
                 "horizun_regroup_by_param", "horizun_copy_slab_elevations",
                 "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
                 "horizun_rectangularize_walls",
-                "horizun_manage_curtain", "horizun_slab_shape", "horizun_create_railing",
+                "horizun_manage_curtain", "horizun_slab_shape", "horizun_create_railing", "horizun_wall_sweep", "horizun_join_geometry", "horizun_room_finishes", "horizun_wall_finish", "horizun_planimetry_ops",
+                "horizun_view_crop", "horizun_sheet_layout",
+                "horizun_view_visibility",
                 "horizun_framing",
                 // Only operation=colorize writes (a duplicated view with overrides); every
                 // other operation reads the model and writes only under the data root.
                 "horizun_model_diff",
-                // It writes nothing ITSELF, and that is why it sat in no set and fell through to
-                // ReadOnly: its children do, called in-process (connect_mep, create_elements and,
-                // through a refit, delete_verified) - past the admission a read_only profile
-                // applies by this effect, and with readOnlyHint=true on the wire. It opens a
-                // mutation gate and honours dry_run (default true), so this is its effect.
-                // Found by WriteVerificationCatalogTests, which derives "writes" from the
-                // source (DocumentGate.ForMutation) instead of trusting this list.
-                "horizun_cad_connect"
             };
             // Writes something outside the model that is still there after the call: a PNG,
             // a workbook. full_write is the rung that authorizes these.
@@ -7033,7 +6529,7 @@ namespace Horizun.Contracts
             var destructive = new HashSet<string>(StringComparer.Ordinal)
             {
                 "horizun_delete_verified", "horizun_execute_plan", "horizun_execute_python", "horizun_document_session",
-                "horizun_export", "horizun_deliver_ifc", "horizun_create_family", "horizun_power_bi_push",
+                "horizun_export", "horizun_power_bi_push",
                 // overwrite_policy=replace replaces a workbook (backed up first) and a
                 // non-dry-run push lands rows in a dataset. Same reasons as export and
                 // power_bi_push above.
@@ -7058,6 +6554,8 @@ namespace Horizun.Contracts
                 // nothing. The original becomes the core wall and keeps its
                 // ElementId, and its reply says originals_deleted is 0 by design.
                 "horizun_split_multilayer_slabs", "horizun_split_floor_loops", "horizun_ungroup_and_mark",
+                // original_wall=delete_if_unhosted deletes the ARQ walls the finish layers replace.
+                "horizun_wall_finish",
                 // Redefining a type deletes the old type and, with scope=all_instances, the
                 // removed members of every other instance; ungroup destroys the grouping.
                 "horizun_manage_groups",
@@ -7086,7 +6584,7 @@ namespace Horizun.Contracts
             // classified by Effect as ordinary model writes.
             var openWorld = new HashSet<string>(StringComparer.Ordinal)
             {
-                "horizun_open_document", "horizun_export", "horizun_deliver_ifc", "horizun_create_family",
+                "horizun_open_document", "horizun_export",
                 "horizun_power_bi_push", "horizun_execute_python", "horizun_catalog_lookup",
                 // Reads a cloud CDE over HTTPS and, on request, writes ACC issues: open-world by nature.
                 "horizun_cde_cloud"
@@ -7195,24 +6693,43 @@ namespace Horizun.Contracts
                         };
                 }
             }
+            BatchSessionRules.AddSchema(all.First(c => c.Name == "horizun_document_session").InputSchema,
+                all.First(c => c.Name == "horizun_execute_plan").InputSchema);
+            SessionExitRules.AddSchema(all.First(c => c.Name == "horizun_document_session").InputSchema);
             ToolInputRules.AddSessionVariants(all.First(c => c.Name == "horizun_document_session").InputSchema);
             ToolInputRules.AddCreationVariants(all.First(c => c.Name == "horizun_create_elements").InputSchema);
+            AddConditionalRequirements(all);
             all.First(c => c.Name == "horizun_create_elements").InputSchema["properties"]["validation_mode"] = new JObject
             { ["type"] = "string", ["enum"] = new JArray("arguments", "revit_rollback"), ["default"] = "arguments",
               ["description"] = "dry_run validation depth. arguments opens no transaction. revit_rollback creates provisionally, commits internally, verifies geometry, then rolls back the whole group and verifies IDs absent. Never saves a file." };
-            all.First(c => c.Name == "horizun_manage_system_types").InputSchema["properties"]["validation_mode"] =
-                all.First(c => c.Name == "horizun_create_elements").InputSchema["properties"]["validation_mode"].DeepClone();
+            all.First(c => c.Name == "horizun_create_elements").InputSchema["properties"]["validation_mode"]["description"] =
+                "Oblique pipe tees rehearse in Revit and bind the built wye type. revit_rollback also builds the rest provisionally, verifies after an inner commit and proves the rollback. Never saves a file.";
             all.First(c => c.Name == "horizun_execute_python").InputSchema["properties"]["scripts_root"] = new JObject
             {
                 ["type"] = "string", ["description"] = "Optional absolute script directory. code_path must then be relative and stay inside it. Source is frozen and hashed before durable idempotency admission; changed content under the same key is refused."
             };
             var pythonProps = (JObject)all.First(c => c.Name == "horizun_execute_python").InputSchema["properties"];
+            // The add-in has read it since field 6.x; undeclared, it was reachable only by a client
+            // that ignored additionalProperties:false, and the server now refuses undeclared arguments.
+            pythonProps["read_only"] = new JObject { ["type"] = "boolean", ["default"] = false,
+                ["description"] = "Run inside a TransactionGroup that is always rolled back, and prove the model did not move. Save/SaveAs/Close/Open calls are refused before the run by a textual scan, which is not a sandbox." };
+            pythonProps["documentation_only"] = new JObject { ["type"] = "boolean", ["default"] = false,
+                ["description"] = "Run inside a TransactionGroup that is KEPT only if Revit's account of the run (created, modified, deleted) touches views, sheets, annotation and elements a view owns - the set permission_profile=documentation allows the typed tools. Anything else (a wall moved, a type, family, material, parameter or Object Style edited, a deletion outside the pre-run documentation snapshot, a change in another document) rolls the whole run back, re-reads it, and fails with error_code documentacion_violada and documentation_only_check.offending_ids. Uncertainty refuses. Not combinable with read_only, rehearsal or run_async; Save/SaveAs/Close/Open calls are refused before the run by a textual scan, which is not a sandbox." };
+            pythonProps["code"]["description"] = ((string)pythonProps["code"]["description"] ?? "") + " To read family parameters and values by type use horizun_query_family_internals (Pro edition) operation=parameter_census.";
+            pythonProps["rehearsal"] = new JObject { ["type"] = "boolean", ["default"] = false,
+                ["description"] = "read_only plus Revit's record of what changed, by category; rolled back and re-read." };
             pythonProps["includes"] = new JObject { ["type"] = "array", ["maxItems"] = 16, ["items"] = new JObject { ["type"] = "string" },
                 ["description"] = "Local Python paths executed in order before the main script, in the same scope. Main plus includes share the source size limit and durable snapshot. Relative to scripts_root when supplied. Injected horizun v1 provides transaction(), report() and out_reference(type)." };
             pythonProps["response_mode"] = new JObject { ["type"] = "string", ["enum"] = new JArray("compact", "full"), ["default"] = "compact",
                 ["description"] = "compact removes repeated contract prose, preserving errors, evidence and observation coverage. Python remains self-reported; host ID observations do not verify geometry or script authorship." };
-            pythonProps["max_output_chars"] = new JObject { ["type"]="integer",["minimum"]=1024,["maximum"]=MaxScriptTextChars,["default"]=MaxScriptTextChars,
-                ["description"]="Limit for serialized __output__. Oversize output is explicitly withheld rather than presented as a complete partial structure; full JSON is saved and read back in a local temporary file when possible, with its path returned." };
+            pythonProps["response"] = new JObject { ["type"] = "string", ["enum"] = new JArray("normal", "output_only"), ["default"] = "normal",
+                ["description"] = "output_only returns only the script's __output__ in an output field on success. Oversize output retains truncation details; errors retain their diagnostics. Python output remains self-reported." };
+            pythonProps["timeout_s"] = new JObject { ["type"] = "number", ["minimum"] = 1, ["maximum"] = 86400,
+                ["description"] = "Cooperative seconds from script start; requires a checkpoint to stop." };
+            pythonProps["deadline_s"] = new JObject { ["type"] = "number", ["minimum"] = 1, ["maximum"] = 86400,
+                ["description"] = "Cooperative seconds from script start; must not exceed timeout_s." };
+            pythonProps["max_output_chars"] = new JObject { ["type"]=new JArray("integer","null"),["minimum"]=1024,["maximum"]=MaxScriptTextChars,
+                ["description"]="Page size and limit for the serialized __output__ (omitted: 20000). Longer output is saved whole: page 1 comes back as TEXT with output_paging; the rest via horizun_job_status job_id=<id> output_page=N." };
             var captureProps=(JObject)all.First(c=>c.Name=="horizun_capture_view").InputSchema["properties"];
             captureProps["target_document"]=new JObject { ["type"]="string",["description"]="Required when using temporary view options; must identify the active document." };
             captureProps["element_ids"]=new JObject { ["type"]="array",["minItems"]=1,["maxItems"]=2000,["items"]=new JObject { ["type"]="integer" },["description"]="Frame these model elements, using crop/section box temporarily. Restores and verifies the view after export, including on failure." };
@@ -7220,8 +6737,9 @@ namespace Horizun.Contracts
             captureProps["hide_category_ids"]=new JObject { ["type"]="array",["maxItems"]=256,["items"]=new JObject { ["type"]="integer" } };
             captureProps["hide_annotations"]=new JObject { ["type"]="boolean",["default"]=false };
             captureProps["calibrate_world_to_pixel"]=new JObject { ["type"]="boolean",["default"]=false,["description"]="Plans/sections with rectangular unsplit active crop only, requires hide_annotations=true; max 4096 pixels per axis. Creates temporary colored anchors in a separate export, fits from three anchors and checks three independent anchors within 1.5 pixels, verifies background stability, then rolls back. Returns the clean PNG and measured affine map; fails explicitly when calibration cannot be proven." };
-            captureProps["display_style"]=new JObject { ["type"]="string",["enum"]=new JArray("Wireframe","HLR","Shading","ShadingWithEdges","FlatColors","Realistic","RealisticWithEdges") };
+            captureProps["display_style"]=new JObject { ["type"]="string",["description"]="shaded, shaded_with_edges, hlr, wireframe, consistent_colors, realistic (Revit DisplayStyle names also work). The reply says if it was applied and the camera and style the image shows." };
             captureProps["orientation"]=new JObject { ["type"]="string",["enum"]=new JArray("top","front","right","isometric"),["description"]="Temporary orientation, orthographic 3D only. Spatial output contains measured model crop and axes; exact world-to-pixel mapping remains explicitly uncalibrated." };
+
 
             // TOOLSETS. A row that names a tool that does not exist, or a toolset that does
             // not exist, is a rename nobody finished and fails here, loudly, like every other
@@ -7238,6 +6756,8 @@ namespace Horizun.Contracts
             {
                 // Read project-context.json and CDE folder/sidecar contents written by people.
                 "horizun_project_context", "horizun_information_container",
+                // A template kit manifest: generated, then possibly edited by people.
+                "horizun_template_kit",
                 // Manifests, registries and review plans written by other apps and people.
                 "horizun_exchange",
                 "horizun_job_status", "horizun_excel_read_rows", "horizun_budget_compare",
@@ -7260,6 +6780,7 @@ namespace Horizun.Contracts
             }
             return all;
         }
+
         /// <summary>
         /// A fingerprint of every contract above: names, forwarding targets, descriptions
         /// and schemas. Two builds with the same hash agree about what every command takes.
@@ -7288,6 +6809,8 @@ namespace Horizun.Contracts
                 sb.Append(c.OutputSchema == null ? "-" : c.OutputSchema.ToString(Newtonsoft.Json.Formatting.None));
                 sb.Append((char)30);
             }
+            // The identity guard's coverage is part of the agreement (R2S m-5).
+            sb.Append(IdentityCoverage.Summary());
             using (var sha = SHA256.Create())
                 return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString())), 0, 12)
                                    .Replace("-", "").ToLowerInvariant();
@@ -7305,38 +6828,336 @@ namespace Horizun.Contracts
         public static IEnumerable<string> PluginCommands =>
             All.Where(c => !string.IsNullOrEmpty(c.Command)).Select(c => c.Command);
     }
+    /// <summary>
+    /// THE IDENTITY-GUARD COVERAGE as DATA, kept in the contract assembly so that it joins <see cref="Contract.Hash"/>: a server and an
+    /// add-in that disagree about which tools verify an identity, or which operations write nothing, are different builds
+    /// and must not be mixed (review of R2R, m-5). ElementIdentityGuard reads these tables; it owns no copy.
+    /// </summary>
+    public static class IdentityCoverage
+    {
+        /// <summary>Tools whose identity fields are verified against the active document.</summary>
+        private static readonly string[] VerifiedArray =
+        {
+            "horizun_write_params_verified", "horizun_delete_verified", "horizun_set_keynote",
+            "horizun_transform_elements", "horizun_execute_plan",
+            "horizun_annotate", "horizun_manage_views", "horizun_fix_planimetry", "horizun_edit_dimensions",
+            "horizun_detail_2d", "horizun_manage_groups",
+            "horizun_create_elements", "horizun_manage_curtain", "horizun_slab_shape", "horizun_manage_parameters",
+            "horizun_framing", "horizun_create_railing", "horizun_view_crop", "horizun_view_visibility",
+            "horizun_wall_sweep", "horizun_join_geometry", "horizun_wall_finish",
+            "horizun_manage_worksets", "horizun_manage_phases",
+            "horizun_manage_assemblies_parts", "horizun_apply_corrections",
+            "horizun_split_floor_loops", "horizun_split_by_level", "horizun_split_multilayer_walls",
+            "horizun_split_multilayer_slabs", "horizun_ungroup_and_mark", "horizun_copy_slab_elevations",
+            "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
+            "horizun_rectangularize_walls",
+            "horizun_sheet_layout", "horizun_planimetry_ops", "horizun_room_finishes",
+            "horizun_pack_sheets", "horizun_manage_revisions", "horizun_manage_schedules",
+            "horizun_structural_connections",
+            "horizun_manage_materials", "horizun_link_schedule",
+            "horizun_capture_view", "horizun_export",
+            "horizun_model_diff", "horizun_manage_styles"
+        };
+
+        /// <summary>Operations of a covered tool that read and write nothing: an identity there protects nothing and is refused.</summary>
+        private static readonly KeyValuePair<string, string[]>[] ReadArray =
+        {
+            new KeyValuePair<string, string[]>("horizun_sheet_layout", new[] { "get_viewport_box" }),
+            new KeyValuePair<string, string[]>("horizun_wall_finish", new[] { "match_core" }),
+            new KeyValuePair<string, string[]>("horizun_join_geometry", new[] { "read" }),
+            new KeyValuePair<string, string[]>("horizun_manage_curtain", new[] { "read" }),
+            new KeyValuePair<string, string[]>("horizun_slab_shape", new[] { "read" }),
+            new KeyValuePair<string, string[]>("horizun_view_crop", new[] { "read", "read_section_box" }),
+            new KeyValuePair<string, string[]>("horizun_view_visibility", new[] { "read", "explain_overrides", "override_report", "graphics_report" }),
+            new KeyValuePair<string, string[]>("horizun_wall_sweep", new[] { "read" }),
+            new KeyValuePair<string, string[]>("horizun_manage_groups", new[] { "list", "find_duplicates", "annotation_report", "check_variation" }),
+            new KeyValuePair<string, string[]>("horizun_manage_styles", new[] { "list_object_styles", "list_line_styles", "list_line_patterns", "list_fill_patterns", "list_color_schemes" })
+        };
+
+        /// <summary>horizun_capture_view writes (a temporary isolation, then undone) only when one of these options is sent.</summary>
+        private static readonly string[] CaptureArray =
+            { "element_ids", "margin_ratio", "hide_category_ids", "hide_annotations", "display_style", "orientation", "calibrate_world_to_pixel" };
+
+        /// <summary>Covered tools every call of which deletes (or replaces by deleting) the elements it is given: a category-only identity is refused for them.</summary>
+        private static readonly string[] AlwaysDeletingArray =
+        {
+            "horizun_delete_verified", "horizun_split_floor_loops", "horizun_split_multilayer_slabs", "horizun_split_by_level",
+            "horizun_rectangularize_walls", "horizun_ungroup_and_mark"
+        };
+
+        /// <summary>
+        /// A node of a covered tool whose operation / action / mode / decision / original_wall is (or contains, between underscores) one
+        /// of these words deletes: a category-only identity is refused there. Deliberately wide: refusing a weak identity on an
+        /// operation that merely detaches or removes a member is cheap; letting one through on a deletion is not.
+        /// </summary>
+        private static readonly string[] DeleteWordsArray = { "delete", "remove", "purge", "erase", "ungroup" };
+
+        /// <summary>The keys of a node whose string value names the operation (checked against <see cref="DeleteWords"/>).</summary>
+        private static readonly string[] OperationKeysArray = { "operation", "action", "mode", "decision", "original_wall" };
+
+        /// <summary>
+        /// Operations that DELETE (or replace by deleting) an element the caller named, and whose name carries none of <see cref="DeleteWords"/>
+        /// (R2T M-1). Matched whole, lower-case, against the operation keys of the node. Swept from every doc.Delete / d.Delete of the commands
+        /// of the covered tools; a test classifies every deleting command file.
+        /// </summary>
+        private static readonly KeyValuePair<string, string[]>[] DeletingOperationsArray =
+        {
+            // level_steps deletes the step fitting it levels; replace_junctions deletes the box junction it rebuilds.
+            // dissolve_parts deletes the PartMaker (and its parts) of the named element; disassemble deletes the named assembly instance.
+            new KeyValuePair<string, string[]>("horizun_manage_assemblies_parts", new[] { "dissolve_parts", "disassemble" }),
+            // add_members / edit_type_members regroup: the named group instance is ungrouped and the group TYPE the caller named is deleted and redefined.
+            new KeyValuePair<string, string[]>("horizun_manage_groups", new[] { "add_members", "edit_type_members" })
+        };
+
+        /// <summary>
+        /// A node of the tool that has this dotted path with this text deletes what it is given, whatever its operation is called ("path=value").
+        /// framing with spec.wall.method=curtain replaces the carrier wall by a curtain wall and deletes it when the curtain covers it whole.
+        /// </summary>
+        private static readonly KeyValuePair<string, string[]>[] DeletingConditionsArray =
+        {
+            new KeyValuePair<string, string[]>("horizun_framing", new[] { "spec.wall.method=curtain" })
+        };
+
+        /// <summary>
+        /// Operations whose NAME carries a deletion word but which do not delete the element they name (R2U m-6): they detach, un-bind or drop a
+        /// definition. Matched whole, lower-case, like <see cref="DeletingOperationsArray"/>; they do not make a node, or its children, a deletion.
+        /// manage_schedules remove_fields drops schedule columns; manage_parameters remove_binding un-binds a parameter (the element and the
+        /// parameter stay); electrical remove_from_circuit takes a member out of a circuit; mep_routing remove_sizes drops sizes from a routing preference.
+        /// </summary>
+        private static readonly KeyValuePair<string, string[]>[] NotDeletingArray =
+        {
+            new KeyValuePair<string, string[]>("horizun_manage_schedules", new[] { "remove_fields" }),
+            new KeyValuePair<string, string[]>("horizun_manage_parameters", new[] { "remove_binding" })
+        };
+
+        /// <summary>
+        /// For a deleting operation of <see cref="DeletingOperationsArray"/>, the id keys it really deletes ("operation=key,key"); the rest of the ids of
+        /// the node are not deleted (R2U m-6). manage_groups add_members ungroups the group instance (group_ids) and deletes and redefines its type (type_id);
+        /// the elements it adds (element_ids) stay. An operation of that table that is not listed here deletes every id it names.
+        /// </summary>
+        private static readonly KeyValuePair<string, string[]>[] DeletingKeysArray =
+        {
+            new KeyValuePair<string, string[]>("horizun_manage_groups", new[] { "add_members=group_ids,type_id" })
+        };
+
+        /// <summary>Tools whose identity fields are refused because they take no ids of the active document.</summary>
+        private static readonly string[] NoSubjectArray = {  };
+        // Tools whose request is a batch of actions[]: an identity at the top level would be consumed without protecting any action.
+        private static readonly string[] PerActionArray = { "horizun_annotate", "horizun_edit_dimensions" };
+
+        /// <summary>Misspellings of an identity field (lower-case, no separators) and the name each should have been.</summary>
+        private static readonly KeyValuePair<string, string>[] NearNamesArray =
+        {
+            new KeyValuePair<string, string>("identity", "identity"), new KeyValuePair<string, string>("uniqueid", "unique_id"),
+            new KeyValuePair<string, string>("uniqueids", "unique_ids"), new KeyValuePair<string, string>("expectedcategory", "expected_category"),
+            new KeyValuePair<string, string>("expectedtype", "expected_type")
+        };
+
+        /// <summary>The EXACT paths where a property called identity is text the tool defines itself (who approved, who signed), not an identity map.</summary>
+        private static readonly KeyValuePair<string, string[]>[] OwnIdentityTextArray =
+        {
+            new KeyValuePair<string, string[]>("horizun_plan_views", new[] { "identity" }),
+            new KeyValuePair<string, string[]>("horizun_audit_model", new[] { "prevention_gate.override.identity" }),
+            new KeyValuePair<string, string[]>("horizun_save_document", new[] { "require_gate.override.identity" }),
+            new KeyValuePair<string, string[]>("horizun_export", new[] { "require_gate.override.identity" })
+        };
+
+        /// <summary>
+        /// The id key a bare unique_id (s:) / unique_ids (l:) is FILLED INTO when the node carries no ids, for each covered tool that has one (a tool
+        /// not listed has none). Like <see cref="DocumentedIdKeysArray"/> it is derived from the guard's own code by a test (R2U m-2).
+        /// </summary>
+        private static readonly KeyValuePair<string, string>[] DocumentedDefaultKeysArray =
+        {
+            new KeyValuePair<string, string>("horizun_write_params_verified", "s:target_id;l:element_ids"),
+            new KeyValuePair<string, string>("horizun_set_keynote", "s:element_id;l:element_ids"),
+            new KeyValuePair<string, string>("horizun_transform_elements", "s:element_id;l:element_ids"),
+            new KeyValuePair<string, string>("horizun_delete_verified", "s:element_id;l:ids"),
+            new KeyValuePair<string, string>("horizun_annotate", "s:element_id,view_id;l:"),
+            new KeyValuePair<string, string>("horizun_edit_dimensions", "s:element_id;l:"),
+            new KeyValuePair<string, string>("horizun_manage_schedules", "s:schedule_id;l:"),
+            new KeyValuePair<string, string>("horizun_manage_styles", "s:scheme_id;l:")
+        };
+
+        /// <summary>The names an identity can arrive under. A covered tool accepts them even where its schema does not declare them.</summary>
+        private static readonly string[] AcceptedNamesArray = { "identity", "unique_id", "unique_ids", "expected_category", "expected_type" };
+
+        /// <summary>
+        /// For each covered tool, the id keys a bare unique_id (s:) and unique_ids (l:) are compared with, first present first.
+        /// The guard (ElementIdentityGuard.SpecFor) resolves with its own code; a test proves the two are the same, so a change in one moves
+        /// the contract hash through this table (R2T m-1).
+        /// </summary>
+        private static readonly KeyValuePair<string, string>[] DocumentedIdKeysArray =
+        {
+            new KeyValuePair<string, string>("horizun_write_params_verified", "s:target_id,element_id,host_id;l:ids,element_ids,host_ids"),
+            new KeyValuePair<string, string>("horizun_delete_verified", "s:target_id,element_id,host_id;l:ids,element_ids,host_ids"),
+            new KeyValuePair<string, string>("horizun_set_keynote", "s:target_id,element_id,host_id;l:ids,element_ids,host_ids"),
+            new KeyValuePair<string, string>("horizun_transform_elements", "s:target_id,element_id,host_id;l:ids,element_ids,host_ids"),
+            new KeyValuePair<string, string>("horizun_execute_plan", "s:;l:"),
+            new KeyValuePair<string, string>("horizun_annotate", "s:element_id,link_instance_id,view_id;l:element_ids"),
+            new KeyValuePair<string, string>("horizun_manage_views", "s:view_id,sheet_id,viewport_id;l:element_ids,view_ids,viewport_ids"),
+            new KeyValuePair<string, string>("horizun_fix_planimetry", "s:element_id,viewport_id,schedule_instance_id,sheet_id,view_id;l:element_ids"),
+            new KeyValuePair<string, string>("horizun_edit_dimensions", "s:element_id;l:"),
+            new KeyValuePair<string, string>("horizun_detail_2d", "s:element_id,view_id;l:element_ids"),
+            new KeyValuePair<string, string>("horizun_manage_groups", "s:type_id;l:element_ids,group_ids"),
+            new KeyValuePair<string, string>("horizun_create_elements", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_manage_curtain", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_slab_shape", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_manage_parameters", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_framing", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_create_railing", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_view_crop", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_view_visibility", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids,view_ids"),
+            new KeyValuePair<string, string>("horizun_wall_sweep", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_join_geometry", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_wall_finish", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_manage_worksets", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids,view_ids"),
+            new KeyValuePair<string, string>("horizun_manage_phases", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_manage_assemblies_parts", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_apply_corrections", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_split_floor_loops", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_split_by_level", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_split_multilayer_walls", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_split_multilayer_slabs", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_ungroup_and_mark", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_copy_slab_elevations", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_embed_floors_in_toposolid", "s:toposolid_id;l:element_ids"),
+            new KeyValuePair<string, string>("horizun_grade_toposolid_around_floors", "s:toposolid_id;l:element_ids"),
+            new KeyValuePair<string, string>("horizun_rectangularize_walls", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_sheet_layout", "s:viewport_id,sheet_id,view_id;l:viewport_ids"),
+            new KeyValuePair<string, string>("horizun_planimetry_ops", "s:view_id,source_legend_id,model_tag_id,link_instance_id,element_id,text_note_type_id,schedule_id;l:note_ids,grid_ids,datum_ids,view_ids,viewport_ids"),
+            new KeyValuePair<string, string>("horizun_room_finishes", "s:;l:room_ids"),
+            new KeyValuePair<string, string>("horizun_pack_sheets", "s:sheet_id,viewport_id,schedule_instance_id,view_id,schedule_id;l:"),
+            new KeyValuePair<string, string>("horizun_manage_revisions", "s:revision_id,view_id;l:sheet_ids,remove_sheet_ids"),
+            new KeyValuePair<string, string>("horizun_manage_styles", "s:scheme_id,view_id;l:"),
+            new KeyValuePair<string, string>("horizun_manage_schedules", "s:schedule_id;l:"),
+            new KeyValuePair<string, string>("horizun_structural_connections", "s:;l:member_ids"),
+            new KeyValuePair<string, string>("horizun_manage_materials", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_link_schedule", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_capture_view", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids"),
+            new KeyValuePair<string, string>("horizun_export", "s:schedule_id,ifc_filter_view_id;l:view_ids,family_ids,nwc_export_element_ids"),
+            new KeyValuePair<string, string>("horizun_model_diff", "s:target_id,element_id,host_id,instance_id,view_id,sheet_id;l:ids,element_ids,host_ids,wall_ids,member_ids,room_ids")
+        };
+
+        public static IReadOnlyList<KeyValuePair<string, IReadOnlyList<string>>> DeletingOperations { get; } = Frozen(DeletingOperationsArray);
+        public static IReadOnlyList<KeyValuePair<string, IReadOnlyList<string>>> DeletingConditions { get; } = Frozen(DeletingConditionsArray);
+        public static IReadOnlyList<string> AcceptedNames { get; } = Array.AsReadOnly(AcceptedNamesArray);
+        public static IReadOnlyList<KeyValuePair<string, string>> DocumentedIdKeys { get; } = Array.AsReadOnly(DocumentedIdKeysArray);
+        public static IReadOnlyList<KeyValuePair<string, string>> DocumentedDefaultKeys { get; } = Array.AsReadOnly(DocumentedDefaultKeysArray);
+        public static IReadOnlyList<KeyValuePair<string, IReadOnlyList<string>>> NotDeletingOperations { get; } = Frozen(NotDeletingArray);
+        public static IReadOnlyList<KeyValuePair<string, IReadOnlyList<string>>> DeletingKeys { get; } = Frozen(DeletingKeysArray);
+        public static IReadOnlyList<string> NoSubjectTools { get; } = Array.AsReadOnly(NoSubjectArray);
+        public static IReadOnlyList<string> PerActionTools { get; } = Array.AsReadOnly(PerActionArray);
+        public static IReadOnlyList<KeyValuePair<string, string>> NearNames { get; } = Array.AsReadOnly(NearNamesArray);
+        public static IReadOnlyList<KeyValuePair<string, IReadOnlyList<string>>> OwnIdentityTextPaths { get; } = Frozen(OwnIdentityTextArray);
+
+        // ---- the tables as READ-ONLY views (R2T m-1): a caller cannot reach the array behind them -------------------------------
+        public static IReadOnlyList<string> VerifiedTools { get; } = Array.AsReadOnly(VerifiedArray);
+        public static IReadOnlyList<KeyValuePair<string, IReadOnlyList<string>>> ReadOperations { get; } = Frozen(ReadArray);
+        public static IReadOnlyList<string> CaptureTemporaryFields { get; } = Array.AsReadOnly(CaptureArray);
+        public static IReadOnlyList<string> AlwaysDeletingTools { get; } = Array.AsReadOnly(AlwaysDeletingArray);
+        public static IReadOnlyList<string> DeleteWords { get; } = Array.AsReadOnly(DeleteWordsArray);
+        public static IReadOnlyList<string> OperationKeys { get; } = Array.AsReadOnly(OperationKeysArray);
+
+        private static IReadOnlyList<KeyValuePair<string, IReadOnlyList<string>>> Frozen(KeyValuePair<string, string[]>[] rows) =>
+            Array.AsReadOnly(rows.Select(r => new KeyValuePair<string, IReadOnlyList<string>>(r.Key, Array.AsReadOnly(r.Value))).ToArray());
+
+        /// <summary>
+        /// A node of a covered tool that carries one of these keys detaches or removes what it names whatever its operation is called
+        /// (manage_revisions update_revision remove_sheet_ids takes sheets out of a revision): a category-only identity is refused there.
+        /// </summary>
+        private static readonly string[] DeleteKeysArray = { "remove_sheet_ids" };
+
+        /// <summary>Read-only view of <c>DeleteKeysArray</c> (R2T m-1: no table is a modifiable array).</summary>
+        public static IReadOnlyList<string> DeleteKeys { get; } = Array.AsReadOnly(DeleteKeysArray);
+
+        /// <summary>Canonical text of the whole coverage, for <see cref="Contract.Hash"/>.</summary>
+        public static string Summary()
+        {
+            var sb = new StringBuilder();
+            sb.Append("verified=").Append(string.Join(",", VerifiedTools.OrderBy(t => t, StringComparer.Ordinal))).Append((char)30);
+            sb.Append("writes_nothing=");
+            foreach (KeyValuePair<string, IReadOnlyList<string>> kv in ReadOperations.OrderBy(k => k.Key, StringComparer.Ordinal))
+                sb.Append(kv.Key).Append(':').Append(string.Join("|", kv.Value.OrderBy(o => o, StringComparer.Ordinal))).Append(';');
+            sb.Append((char)30).Append("capture=").Append(string.Join("|", CaptureTemporaryFields.OrderBy(o => o, StringComparer.Ordinal))).Append((char)30);
+            sb.Append("deleting=").Append(string.Join(",", AlwaysDeletingTools.OrderBy(t => t, StringComparer.Ordinal)))
+              .Append(';').Append(string.Join(",", DeleteWords)).Append(';').Append(string.Join(",", OperationKeys))
+              .Append(';').Append(string.Join(",", DeleteKeys.OrderBy(k => k, StringComparer.Ordinal))).Append((char)30);
+            sb.Append("deleting_operations=");
+            foreach (KeyValuePair<string, IReadOnlyList<string>> kv in DeletingOperations.OrderBy(k => k.Key, StringComparer.Ordinal))
+                sb.Append(kv.Key).Append(':').Append(string.Join("|", kv.Value.OrderBy(o => o, StringComparer.Ordinal))).Append(';');
+            sb.Append((char)30).Append("deleting_conditions=");
+            foreach (KeyValuePair<string, IReadOnlyList<string>> kv in DeletingConditions.OrderBy(k => k.Key, StringComparer.Ordinal))
+                sb.Append(kv.Key).Append(':').Append(string.Join("|", kv.Value.OrderBy(o => o, StringComparer.Ordinal))).Append(';');
+            sb.Append((char)30).Append("not_deleting=");
+            foreach (KeyValuePair<string, IReadOnlyList<string>> kv in NotDeletingOperations.OrderBy(k => k.Key, StringComparer.Ordinal))
+                sb.Append(kv.Key).Append(':').Append(string.Join("|", kv.Value.OrderBy(o => o, StringComparer.Ordinal))).Append(';');
+            sb.Append((char)30).Append("deleting_keys=");
+            foreach (KeyValuePair<string, IReadOnlyList<string>> kv in DeletingKeys.OrderBy(k => k.Key, StringComparer.Ordinal))
+                sb.Append(kv.Key).Append(':').Append(string.Join("|", kv.Value.OrderBy(o => o, StringComparer.Ordinal))).Append(';');
+            sb.Append((char)30).Append("no_subject=").Append(string.Join(",", NoSubjectTools.OrderBy(t => t, StringComparer.Ordinal)));
+            sb.Append((char)30).Append("per_action=").Append(string.Join(",", PerActionTools.OrderBy(t => t, StringComparer.Ordinal)));
+            sb.Append((char)30).Append("near_names=");
+            foreach (KeyValuePair<string, string> kv in NearNames.OrderBy(k => k.Key, StringComparer.Ordinal)) sb.Append(kv.Key).Append('>').Append(kv.Value).Append(';');
+            sb.Append((char)30).Append("own_identity_text=");
+            foreach (KeyValuePair<string, IReadOnlyList<string>> kv in OwnIdentityTextPaths.OrderBy(k => k.Key, StringComparer.Ordinal))
+                sb.Append(kv.Key).Append(':').Append(string.Join("|", kv.Value.OrderBy(o => o, StringComparer.Ordinal))).Append(';');
+            sb.Append((char)30).Append("default_keys=");
+            foreach (KeyValuePair<string, string> kv in DocumentedDefaultKeys.OrderBy(k => k.Key, StringComparer.Ordinal)) sb.Append(kv.Key).Append('=').Append(kv.Value).Append('/');
+            sb.Append((char)30).Append("accepted=").Append(string.Join(",", AcceptedNames)).Append((char)30);
+            sb.Append("keys=");
+            foreach (KeyValuePair<string, string> kv in DocumentedIdKeys.OrderBy(k => k.Key, StringComparer.Ordinal))
+                sb.Append(kv.Key).Append('=').Append(kv.Value).Append('/');
+            sb.Append((char)30);
+            return sb.ToString();
+        }
+    }
+
     /// <summary>Operation-specific input rules shared by schema and handler.</summary>
     public static class ToolInputRules
     {
+        /// <summary>Only these save operations rehearse without changing the document.</summary>
+        public static bool IsSaveDocumentRehearsal(string tool, JObject request)
+        {
+            if (tool != "horizun_save_document" || request == null) return false;
+            string operation = request.Value<string>("operation");
+            if (operation != "relinquish_own" && operation != "sync_with_central") return false;
+            return request["dry_run"] == null || request.Value<bool?>("dry_run") == true;
+        }
+
         public static readonly Dictionary<string, string[]> CreationFields = new Dictionary<string, string[]>
         {
-            ["fitting"] = new[] { "fitting", "elements" },
+            ["door"] = new[] { "point", "host_id", "level_id", "type_id", "type_name", "coordinate_mode", "rotation_degrees", "flip" },
+            ["window"] = new[] { "point", "host_id", "level_id", "type_id", "type_name", "coordinate_mode", "rotation_degrees", "flip" },
+            ["wall_chain"] = new[] { "points", "closed", "level_id", "type_id", "type_name", "height", "top_level_id", "top_offset", "offset", "base_offset", "flip", "structural", "join_rule" },
+            ["fitting"] = new[] { "fitting", "elements", "type_id" },
             ["slab_opening"] = new[] { "host_id", "allow_structural", "shape", "center", "diameter", "width", "height" },
             ["beam_system"] = new[] { "level_id", "profile", "beam_type_id", "direction", "spacing" },
-            ["wall_foundation"] = new[] { "wall_id", "type_id" },
+            ["wall_foundation"] = new[] { "wall_id", "type_id", "top_elevation", "width", "thickness" },
             ["accessory_inline"] = new[] { "pipe_id", "point", "type_id" },
             ["mep_system"] = new[] { "name", "system_type_id", "member_element_ids" },
             ["shaft"] = new[] { "base_level_id", "top_level_id", "profile", "allow_structural" },
-            ["room_separator"] = new[] { "level_id", "view_id", "profile" },
-            ["level"] = new[] { "elevation", "name" }, ["grid"] = new[] { "start", "end", "name" },
+            ["room_separator"] = new[] { "level_id", "view_id", "profile", "closed" },
+            ["level"] = new[] { "elevation", "name" }, ["grid"] = new[] { "start", "end", "name", "extent_3d" },
             ["wall_opening"] = new[] { "start", "end", "corner_1", "corner_2", "host_id", "allow_structural" },
             ["wall_profile"] = new[] { "profile", "level_id", "type_id", "structural" },
             ["displacement"] = new[] { "view_id", "element_ids", "displacement" },
-            ["stairs"] = new[] { "level_id", "top_level_id", "type_id", "desired_risers", "tread_depth", "runs", "landings" },
+            ["stairs"] = new[] { "level_id", "top_level_id", "top_offset", "type_id", "desired_risers", "tread_depth", "runs", "landings" },
             // join_rule: none disallows BOTH ends, so Revit does not trim the wall
             // back to whatever it meets. Without it a drawing's wall arrives with
             // its ends moved - MEASURED at 1.6 mm - and the postcondition that
             // checks where it runs fails on a wall that is exactly right.
-            ["wall"] = new[] { "start", "end", "level_id", "type_id", "height", "offset", "base_offset", "top_level_id", "top_offset", "flip", "structural", "arc", "join_rule" },
-            ["floor"] = new[] { "profile", "level_id", "type_id", "offset", "structural" },
-            ["ceiling"] = new[] { "profile", "level_id", "type_id", "offset" },
-            ["roof"] = new[] { "profile", "level_id", "type_id", "offset", "slope_degrees", "slope_ratio", "edge_slopes" },
+            ["wall"] = new[] { "start", "end", "level_id", "type_id", "type_name", "height", "offset", "base_offset", "top_level_id", "top_offset", "flip", "structural", "arc", "join_rule" },
+            ["floor"] = new[] { "profile", "level_id", "type_id", "type_name", "offset", "structural", "slope_degrees", "slope_ratio", "slope_arrow_start", "slope_arrow_end" },
+            // A named plane drawn in a plan, elevation or section view; the view's own direction is its cut vector.
+            ["reference_plane"] = new[] { "start", "end", "name", "view_id" },
+            ["ceiling"] = new[] { "profile", "level_id", "type_id", "type_name", "offset", "slope_degrees", "slope_ratio", "slope_arrow_start", "slope_arrow_end", "expected_arrow_elevations" },
+            ["roof"] = new[] { "profile", "level_id", "type_id", "type_name", "offset", "slope_degrees", "slope_ratio", "edge_slopes" },
             ["room"] = new[] { "point", "level_id", "name", "number", "placement", "phase_id", "min_area_m2" },
             // flip: a MIRRORED symbol. No rotation reproduces a reflection, and a
             // drawing distinguishes a left-handed fixture from a right-handed one
             // that way. Applied with flipHand() and verified by re-reading
             // HandFlipped; a family that cannot be flipped refuses the row.
-            ["family_instance"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "structural_type", "host_id", "rotation_degrees", "flip", "face_allowance_mm", "facing_degrees", "side_dead_band_mm", "host_face", "top_level_id", "top_offset", "height" },
+            ["family_instance"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "structural_type", "host_id", "rotation_degrees", "flip", "face_allowance_mm", "facing_degrees", "side_dead_band_mm", "host_face", "top_level_id", "top_offset", "height", "find_host" },
             // A sprinkler is a family_instance restricted to OST_Sprinklers, same routes (level,
             // hosted or face - most sprinklers are ceiling/pipe hosted, so host_id stays). The
             // wall-side fields (facing_degrees/side_dead_band_mm/host_face) are dropped, and
@@ -7345,7 +7166,7 @@ namespace Horizun.Contracts
             // its OWN variant, so this cannot be folded into family_instance's).
             ["sprinkler"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "host_id" },
             ["structural_column"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "rotation_degrees", "top_level_id", "top_offset", "height" },
-            ["structural_framing"] = new[] { "start", "end", "type_id", "level_id", "structural_type" },
+            ["structural_framing"] = new[] { "start", "end", "type_id", "level_id", "structural_type", "join_rule" },
             ["duct"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter", "width", "height" },
             ["pipe"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter" },
             ["conduit"] = new[] { "start", "end", "type_id", "level_id", "diameter" },
@@ -7361,19 +7182,61 @@ namespace Horizun.Contracts
             // Toposolid.Create(doc, points, typeId, levelId): the points ARE the top surface (Revit 2024+).
             ["toposolid"] = new[] { "points", "landxml_path", "type_id", "level_id" }
         };
-        public static string ValidateCreation(JObject item, string kind)
+        public static string ValidateCreation(JObject item, string kind) => ValidateCreation(item, kind, out _);
+
+        public static string ValidateCreation(JObject item, string kind, out Tuple<string, string> foreign)
         {
-            // Checked AHEAD of the CreationFields lookup: "sprinkler" has no row of its own
-            // there (it shares family_instance's tools/list variant to stay inside the 512 KiB
-            // budget), so this requirement would be silently skipped by the early return below.
+            foreign = ForeignCreationField(item, kind);
+            if (foreign != null) return CreationFieldMessage(kind, foreign.Item1, foreign.Item2);
+            // Suggest corrections to misspelled fields before reporting a missing coordinate mode.
             if ((kind == "family_instance" || kind == "sprinkler" || kind == "structural_column") && item["coordinate_mode"] == null)
                 return "coordinate_mode is required: absolute or level_offset. Legacy ambiguous Z placement is refused.";
-            if (!CreationFields.TryGetValue(kind, out var fields)) return null; // handler owns typed fallback
-            var allowed = new HashSet<string>(fields, StringComparer.Ordinal) { "kind", "parameters", "source_reference", "source_row" };
-            foreach (var field in item.Properties())
-                if (!allowed.Contains(field.Name)) return field.Name + " is not applicable to kind '" + kind + "'.";
+            if (!CreationFields.ContainsKey(kind)) return null; // handler owns typed fallback
             if (item["parameters"] != null && !(item["parameters"] is JObject)) return "parameters must be an object.";
             return null;
+        }
+
+        public static Tuple<string, string> ForeignCreationField(JObject item, string kind, Func<string, bool> handledElsewhere = null)
+        {
+            if (!CreationFields.TryGetValue(kind, out var fields)) return null;
+            var allowed = new HashSet<string>(fields, StringComparer.Ordinal) { "kind", "parameters", "source_reference", "source_row" };
+            var foreign = item.Properties().FirstOrDefault(field => !allowed.Contains(field.Name) &&
+                handledElsewhere?.Invoke(field.Name) != true);
+            if (foreign == null) return null;
+            string name = foreign.Name;
+            string suggestion = allowed.Where(f => name.StartsWith(f + "_", StringComparison.OrdinalIgnoreCase) ||
+                    f.StartsWith(name + "_", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(f => Math.Abs(f.Length - name.Length)).ThenBy(f => f, StringComparer.Ordinal).FirstOrDefault();
+            if (suggestion == null)
+            {
+                var near = allowed.Select(f => new { Field = f, Distance = FieldDistance(name, f) })
+                    .Where(x => x.Distance <= 2).OrderBy(x => x.Distance).Take(2).ToArray();
+                if (near.Length == 1 || (near.Length == 2 && near[0].Distance < near[1].Distance)) suggestion = near[0].Field;
+            }
+            return Tuple.Create(name, suggestion);
+        }
+
+        public static string CreationFieldMessage(string kind, string field, string suggestion) =>
+            "'" + field + "' is not applicable to kind '" + kind + "'." +
+            (suggestion == null ? "" : " Did you mean '" + suggestion + "'?");
+
+        private static int FieldDistance(string given, string declared)
+        {
+            if (Math.Abs(given.Length - declared.Length) > 2) return 3;
+            var row = Enumerable.Range(0, declared.Length + 1).ToArray();
+            for (int i = 0; i < given.Length; i++)
+            {
+                int diagonal = row[0];
+                row[0] = i + 1;
+                for (int j = 0; j < declared.Length; j++)
+                {
+                    int above = row[j + 1];
+                    int substitution = char.ToLowerInvariant(given[i]) == char.ToLowerInvariant(declared[j]) ? 0 : 1;
+                    row[j + 1] = Math.Min(diagonal + substitution, Math.Min(above, row[j]) + 1);
+                    diagonal = above;
+                }
+            }
+            return row[declared.Length];
         }
         internal static void AddCreationVariants(JObject schema)
         {
@@ -7384,50 +7247,56 @@ namespace Horizun.Contracts
             ((JArray)props["kind"]["enum"]).Add("displacement");
             ((JArray)props["kind"]["enum"]).Add("stairs");
             ((JArray)props["kind"]["enum"]).Add("toposolid");
+            foreach (string architecturalKind in new[] { "door", "window", "wall_chain" })
+                ((JArray)props["kind"]["enum"]).Add(architecturalKind);
+            props["type_name"] = new JObject { ["type"] = "string", ["minLength"] = 1,
+                ["description"] = "Closest loaded architectural type if missing: SUPUESTO. type_id wins." };
+            // room_separator already declares closed; wall_chain adds its own sentence instead of replacing it.
+            string closedText = props["closed"]?.Value<string>("description");
+            props["closed"] = new JObject { ["type"] = "boolean", ["default"] = false,
+                ["description"] = (closedText == null ? "" : closedText + " ") + "wall_chain: add a segment from the last point back to the first." };
             props["source_row"] = new JObject { ["type"]="integer", ["minimum"]=1 };
             // JOIN RULE. Declared here because every field named in CreationFields
             // is cloned from these properties: a field in that table with no
             // property here dereferences null and takes the whole contract down at
             // startup - measured, as a Revit that loaded no add-in at all.
+            props["extent_3d"] = new JObject
+            {
+                ["type"] = "string", ["enum"] = new JArray("maximize", "none"), ["default"] = "maximize",
+                ["description"] = "kind='grid': maximize (default) makes the grid span every level so it shows in all plans (Maximize 3D Extents); a Z on start/end is ignored. Read back against the levels."
+            };
             props["face_allowance_mm"] = new JObject
             {
                 ["type"] = "number",
                 ["exclusiveMinimum"] = 0,
-                ["description"] = "How far a work-plane based family may sit from the face it is placed on. A " +
-                                  "SEARCH-and-project distance, separate from the tolerance that decides which " +
-                                  "host it belongs to and from the exactness its final position is checked with."
+                ["description"] = "Max distance a work-plane family may sit from its face: a search distance, not a position tolerance."
             };
             props["host_face"] = new JObject
             {
                 ["type"] = "string",
                 ["enum"] = new JArray("side", "end"),
-                ["description"] = "family_instance with host_id on a WALL: 'side' (default) places on the face the " +
-                                  "point is in front of; 'end' places a work-plane based device on the wall's TERMINAL " +
-                                  "face at the end nearer the point, found by geometry. A joined end, a point outside " +
-                                  "the end face and a wall-based family are refused by name."
+                ["description"] = "family_instance with host_id on a WALL: 'side' (default) = the face the point is in front of; " +
+                                  "'end' = the wall's terminal face nearer the point. Joined ends, points outside it and wall-based families are refused."
             };
             props["facing_degrees"] = new JObject
             {
                 ["type"] = "number",
-                ["description"] = "family_instance on a wall face: the direction the device FACES in plan, in degrees " +
-                                  "from +X, when the caller knows it. Decides the face only when the point lies inside " +
-                                  "the host's thickness. Sent together with side_dead_band_mm."
+                ["description"] = "family_instance on a wall face: the direction the device faces in plan, degrees from +X; " +
+                                  "decides the face only when the point is inside the host's thickness. Send with side_dead_band_mm."
             };
             props["side_dead_band_mm"] = new JObject
             {
                 ["type"] = "number",
                 ["minimum"] = 0,
-                ["description"] = "family_instance on a wall face: when present, the rotation is NOT read as the side. " +
-                                  "A point inside the host's thickness goes on the face facing_degrees points out of, " +
-                                  "or else on the side of the centreline it lies on when further from it than this; " +
-                                  "otherwise the row is refused. Absent, the older rule applies: the rotation decides."
+                ["description"] = "family_instance on a wall face: when present the rotation is not read as the side. A point inside the thickness " +
+                                  "takes the face facing_degrees points out of, else its centreline side if further than this; otherwise refused."
             };
             props["join_rule"] = new JObject
             {
                 ["type"] = "string",
                 ["enum"] = new JArray("none", "auto", "butt"),
-                ["description"] = "wall: none disallows the join at BOTH ends, so Revit does not trim the wall " +
-                                  "back to what it meets. A conversion wants this: the drawing's line is the wall."
+                ["description"] = "wall or structural_framing: none disallows joins at BOTH ends so Revit keeps the " +
+                                  "requested location line; auto retains Revit's normal joins. butt applies to walls only."
             };
             props["view_id"] = new JObject { ["type"]="integer" };
             props["element_ids"] = new JObject { ["type"]="array",["minItems"]=1,["maxItems"]=2000,["items"]=new JObject { ["type"]="integer" } };
@@ -7457,7 +7326,7 @@ namespace Horizun.Contracts
                 // whole tool over budget. ValidateCreation still allows both fields by name for
                 // every kind - this only affects what the compact, advertised schema documents.
                 bool leanKind = pair.Key == "flex_pipe" || pair.Key == "flex_duct" || pair.Key == "sprinkler" ||
-                                pair.Key == "space" || pair.Key == "area" || pair.Key == "area_boundary" || pair.Key == "toposolid";
+                                pair.Key == "space" || pair.Key == "area" || pair.Key == "area_boundary" || pair.Key == "toposolid" || pair.Key == "reference_plane";
                 var specific = new JObject { ["kind"] = new JObject { ["const"] = pair.Key } };
                 if (!leanKind)
                 {
@@ -7470,6 +7339,17 @@ namespace Horizun.Contracts
                 if (pair.Key == "room_separator" || pair.Key == "area_boundary") specific["profile"]["items"]["minItems"] = 2;
                 if(pair.Key=="wall_profile") specific["profile"]["description"]="One simple contour in a vertical plane, absolute internal XYZ. No holes. Revit base normalization is checked against the resulting world-space side-face silhouette.";
                 if (pair.Key == "area_boundary") specific["profile"]["description"] = "One open chain; one line per curve.";
+                if (pair.Key == "reference_plane")
+                {
+                    specific["name"] = new JObject { ["type"] = "string" };
+                    specific["view_id"] = new JObject { ["type"] = "integer", ["description"] = "Plan, elevation or section view." };
+                }
+                if (pair.Key == "floor")
+                {
+                    foreach (string slopeField in new[] { "slope_degrees", "slope_ratio" }) ((JObject)specific[slopeField]).Remove("description");
+                    specific["slope_arrow_start"]["description"] = "Sloped floor: low point of the horizontal arrow; needs end and one slope.";
+                    ((JObject)specific["slope_arrow_end"]).Remove("description");
+                }
                 if (pair.Key == "toposolid") specific["landxml_path"]["description"] = "Instead of points: LandXML TIN, shared coords; path#name = surface";
                 if (pair.Key == "toposolid") specific["points"]["description"] = "Top surface; absolute internal coords.";
                 if (pair.Key == "sprinkler")
@@ -7489,7 +7369,9 @@ namespace Horizun.Contracts
                 {
                     case "level": requiredFields = new[] { "elevation" }; break;
                     case "grid": requiredFields = new[] { "start", "end" }; break;
-                    case "wall": requiredFields = new[] { "start", "end", "level_id", "height" }; break;
+                    case "wall": requiredFields = new[] { "start", "end", "level_id" }; break;
+                    case "wall_chain": requiredFields = new[] { "points", "level_id" }; break;
+                    case "door": case "window": requiredFields = new[] { "point", "host_id" }; break;
                     case "floor": case "ceiling": case "roof": requiredFields = new[] { "profile", "level_id" }; break;
                     case "wall_profile": requiredFields = new[] { "profile", "level_id", "type_id" }; break;
                     case "wall_opening": requiredFields = new[] { "host_id" }; break;
@@ -7513,6 +7395,7 @@ namespace Horizun.Contracts
                     case "mep_system": requiredFields = new[] { "name", "system_type_id" }; break;
                     case "shaft": requiredFields = new[] { "base_level_id", "top_level_id", "profile" }; break;
                     case "room_separator": requiredFields = new[] { "level_id", "view_id", "profile" }; break;
+                    case "reference_plane": requiredFields = new[] { "start", "end", "name", "view_id" }; break;
                     default: requiredFields = new[] { "start", "end", "type_id", "level_id" }; break;
                 }
                 foreach (string field in requiredFields) required.Add(field);
@@ -7522,8 +7405,13 @@ namespace Horizun.Contracts
                     specific["point"]["minItems"] = point2D ? 2 : 3;
                     specific["point"]["maxItems"] = point2D ? 2 : 3;
                 }
-                if (pair.Key == "wall_profile" || pair.Key == "roof") specific["profile"]["maxItems"] = 1;
-                variants.Add(new JObject { ["type"] = "object", ["properties"] = specific, ["required"] = required, ["additionalProperties"] = false });
+                if (pair.Key == "wall_profile") specific["profile"]["maxItems"] = 1;
+                var variant = new JObject { ["type"] = "object", ["properties"] = specific, ["required"] = required, ["additionalProperties"] = false };
+                if (pair.Key == "room" || pair.Key == "space")
+                    variant["allOf"] = JArray.Parse(@"[{'if':{'required':['placement'],'properties':{'placement':{'const':'all_enclosed'}}},'then':{'required':['phase_id'],'not':{'required':['point']}},'else':{'required':['point'],'not':{'anyOf':[{'required':['phase_id']},{'required':['min_area_m2']}]}}}]");
+                if (pair.Key == "room_separator")
+                    variant["allOf"] = JArray.Parse(@"[{'if':{'properties':{'closed':{'const':true}},'required':['closed']},'then':{'properties':{'profile':{'items':{'minItems':3}}}}}]");
+                variants.Add(variant);
             }
             props["profile"] = new JObject { ["anyOf"] = new JArray(props["profile"].DeepClone(),
                 JObject.Parse(@"{'type':'array','minItems':3,'items':{'type':'array','minItems':2,'maxItems':2,'items':{'type':'number'}}}")) };
@@ -7545,7 +7433,10 @@ namespace Horizun.Contracts
             ["save_as"] = new[] { "target_document", "file_path", "compact", "force_workshared", "save_as_path", "overwrite", "max_backups" },
             ["close"] = new[] { "target_document", "file_path", "save_on_close", "discard_unsaved", "activate_other", "force_workshared", "confirmation_token" },
             ["sync_with_central"] = new[] { "target_document", "comment", "relinquish", "compact", "confirmation_token" },
-            ["new_project"] = new[] { "save_as_path", "template_path", "confirmation_token" }
+            ["new_project"] = new[] { "save_as_path", "template_path", "confirmation_token" },
+            ["activate"] = new[] { "target_document", "save_as_path", "confirmation_token" },
+            ["batch"] = new[] { "models", "confirmation_token" },
+            ["exit_application"] = new[] { "expected_pid", "expected_started_utc", "owner_session", "discard_documents", "confirmation_token" }
         };
         private static HashSet<string> AllowedSession(string operation)
         {
@@ -7558,7 +7449,7 @@ namespace Horizun.Contracts
         public static string ValidateSession(JObject request, string operation)
         {
             var allowed = AllowedSession(operation);
-            if (allowed == null) return "operation must be inspect, open, save, save_as, close, sync_with_central or new_project.";
+            if (allowed == null) return "operation must be inspect, open, save, save_as, close, sync_with_central, new_project, activate, batch or exit_application.";
             foreach (var p in request.Properties())
                 if (!allowed.Contains(p.Name)) return p.Name + " is not applicable to operation '" + operation + "'. Nothing ran.";
             JToken dry = request["dry_run"];
@@ -7567,6 +7458,8 @@ namespace Horizun.Contracts
                 return "open does not support dry_run=true. Use inspect to read local file information without opening.";
             if (request["max_backups"] != null && (request["max_backups"].Type != JTokenType.Integer || (long)request["max_backups"] < 1 || (long)request["max_backups"] > int.MaxValue))
                 return "max_backups must be an integer from 1 to 2147483647.";
+            if (operation == "batch") return BatchSessionRules.Validate(request);
+            if (operation == "exit_application") return SessionExitRules.Validate(request);
             return null;
         }
         internal static void AddSessionVariants(JObject schema)
@@ -7592,11 +7485,17 @@ namespace Horizun.Contracts
                 if (operation == "sync_with_central") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
                 // new_project rehearses when dry_run is omitted, like a sync (DocumentSessionNewProject.cs).
                 if (operation == "new_project") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
+                if (operation == "activate") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
+                if (operation == "batch") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
+                if (operation == "exit_application") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
                 var required = new JArray("operation");
                 if (operation == "save_as" || operation == "new_project") required.Add("save_as_path");
                 if (operation == "open") required.Add("expected_version");
                 if (operation == "inspect") required.Add("file_path");
                 if (operation == "sync_with_central") required.Add("target_document");
+                if (operation == "activate") required.Add("target_document");
+                if (operation == "batch") required.Add("models");
+                if (operation == "exit_application") foreach (string field in new[] { "expected_pid", "expected_started_utc", "owner_session" }) required.Add(field);
                 var variant = new JObject { ["type"] = "object", ["properties"] = props, ["required"] = required, ["additionalProperties"] = false };
                 if (operation == "save" || operation == "save_as" || operation == "close")
                     variant["anyOf"] = new JArray(new JObject { ["required"] = new JArray("target_document") }, new JObject { ["required"] = new JArray("file_path") });
@@ -7604,6 +7503,151 @@ namespace Horizun.Contracts
             }
             schema["oneOf"] = variants;
             schema["additionalProperties"] = false;
+        }
+    }
+}
+namespace Horizun.Contracts {
+    public static class BatchSessionRules
+    {
+        public static string Validate(JObject request)
+        {
+            if (!(request["models"] is JArray models) || models.Count < 1 || models.Count > 100)
+                return "models must contain 1..100 model objects.";
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var destinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var token in models)
+            {
+                if (!(token is JObject model)) return "Each model must be an object.";
+                foreach (var p in model.Properties())
+                    if (!new[] { "file_path", "expected_version", "detach", "audit", "close", "save_as_path", "actions", "reads" }.Contains(p.Name))
+                        return "Unknown batch model field: " + p.Name;
+                foreach (string field in new[] { "file_path", "expected_version", "close", "save_as_path" })
+                    if (model[field] != null && (model[field].Type != JTokenType.String || string.IsNullOrWhiteSpace((string)model[field])))
+                        return field + " must be a non-empty string.";
+                string path = model.Value<string>("file_path");
+                if (!LocalModelPath(path)) return "file_path must be an absolute local .rvt or .rfa path.";
+                if (!paths.Add(Normalize(path))) return "Duplicate model source: " + path;
+                foreach (string field in new[] { "detach", "audit" })
+                    if (model[field] != null && model[field].Type != JTokenType.Boolean) return field + " must be boolean.";
+                string close = model.Value<string>("close") ?? "discard";
+                if (close != "discard" && close != "save") return "close must be discard or save.";
+                string destination = model.Value<string>("save_as_path");
+                if (close == "save" && destination != null)
+                {
+                    if (!LocalModelPath(destination)) return "close=save requires an absolute local save_as_path (.rvt or .rfa).";
+                    if (!destinations.Add(Normalize(destination))) return "Duplicate save_as_path.";
+                    if (!string.Equals(System.IO.Path.GetExtension(path), System.IO.Path.GetExtension(destination), StringComparison.OrdinalIgnoreCase))
+                        return "Source and destination file extensions must match.";
+                }
+                else if (close != "save" && destination != null) return "save_as_path applies only to close=save.";
+                if (model["actions"] != null && (!(model["actions"] is JArray actions) || actions.Count > 100 || actions.Any(a => !(a is JObject))))
+                    return "actions must be an array of at most 100 execute_plan actions.";
+                if (model["reads"] != null)
+                {
+                    if (!(model["reads"] is JArray reads) || reads.Count > 100) return "reads must contain at most 100 typed read objects.";
+                    foreach (var read in reads)
+                    {
+                        if (!(read is JObject r) || r["tool"]?.Type != JTokenType.String || !(r["arguments"] is JObject) || r.Properties().Any(p => p.Name != "tool" && p.Name != "arguments"))
+                            return "Each read requires only tool and arguments.";
+                        var contract = Contract.Find(r.Value<string>("tool"));
+                        if (!AdmitsRead(contract, (JObject)r["arguments"])) return "reads admits only typed read operations.";
+                    }
+                }
+            }
+            if (paths.Overlaps(destinations)) return "A batch destination cannot overwrite any source.";
+            return null;
+        }
+
+        public static bool AdmitsRead(CommandContract contract, JObject args) => contract != null &&
+            (contract.Effect == ToolEffect.ReadOnly || (contract.Effect == ToolEffect.MutatingUnlessDryRun &&
+            IdentityCoverage.ReadOperations.Any(kv => kv.Key == contract.Name && kv.Value.Contains(args?.Value<string>("operation")))));
+
+        public static string DetachDecision(bool workshared, bool? requested, out bool detach)
+        {
+            detach = requested ?? workshared;
+            return workshared && !detach ? "Batch refuses detach=false for central or local workshared files; no connected model was opened." : null;
+        }
+
+        public static string SaveDecision(bool workshared, bool detached) => workshared && !detached
+            ? "Batch refuses saving a connected workshared model." : null;
+
+        private static string Normalize(string path) => System.IO.Path.GetFullPath(path).TrimEnd('\\').Replace('/', '\\');
+        private static bool LocalModelPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || path.Length < 4 || !char.IsLetter(path[0]) || path[1] != ':' || (path[2] != '\\' && path[2] != '/')) return false;
+            try
+            {
+                string extension = System.IO.Path.GetExtension(path);
+                System.IO.Path.GetFullPath(path);
+                return extension.Equals(".rvt", StringComparison.OrdinalIgnoreCase) || extension.Equals(".rfa", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        public static void AddSchema(JObject session, JObject plan)
+        {
+            ((JArray)session["properties"]["operation"]["enum"]).Add("batch");
+            session["properties"]["models"] = JObject.Parse(@"{
+                'type':'array','minItems':1,'maxItems':100,'items':{
+                'type':'object','required':['file_path'],'additionalProperties':false,'properties':{
+                'file_path':{'type':'string'},'expected_version':{'type':'string'},
+                'detach':{'type':'boolean'},'audit':{'type':'boolean','default':false},
+                'close':{'enum':['discard','save'],'default':'discard'},'save_as_path':{'type':'string'},
+                'actions':{'type':'array','maxItems':100,'items':{'type':'object'}},
+                'reads':{'type':'array','maxItems':100,'items':{'type':'object','additionalProperties':false,'required':['tool','arguments'],
+                'properties':{'tool':{'type':'string'},'arguments':{'type':'object'}}}}}}}");
+            session["properties"]["models"]["description"] = "batch models; see DOCUMENT-BATCH.md.";
+            // A compact action envelope; execute_plan validates each child and its arguments.
+            session["properties"]["models"]["items"]["properties"]["actions"]["items"] = JObject.Parse(@"{
+                'type':'object','required':['key','tool','arguments'],'additionalProperties':false,
+                'properties':{'key':{'type':'string'},'tool':{'type':'string'},'arguments':{'type':'object'}}}");
+        }
+    }
+}
+
+namespace Horizun.Contracts
+{
+    public static class SessionExitRules
+    {
+        public static string Validate(JObject r)
+        {
+            if (r["expected_pid"]?.Type != JTokenType.Integer || (long)r["expected_pid"] < 1 || (long)r["expected_pid"] > int.MaxValue)
+                return "expected_pid must name the exact process started by this task.";
+            if (r["expected_started_utc"]?.Type != JTokenType.String || !DateTimeOffset.TryParse((string)r["expected_started_utc"], out _))
+                return "expected_started_utc must be the process start timestamp.";
+            if (r["owner_session"]?.Type != JTokenType.String || !Guid.TryParse((string)r["owner_session"], out _))
+                return "owner_session must be the GUID supplied in HORIZUN_OWNER_SESSION when this task launched Revit.";
+            if (r["discard_documents"] != null && (!(r["discard_documents"] is JArray discards) || discards.Count > 1000 || discards.Any(t => t.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)t))))
+                return "discard_documents must be an array of document fingerprints from this operation's rehearsal.";
+            return null;
+        }
+
+        public static string OwnershipError(JObject r, int pid, string startedUtc, string launchOwner)
+        {
+            string error = Validate(r);
+            if (error != null) return error;
+            if (string.IsNullOrWhiteSpace(launchOwner) || !string.Equals(launchOwner, r.Value<string>("owner_session"), StringComparison.Ordinal))
+                return "This process was not launched with this task's HORIZUN_OWNER_SESSION marker. A running shared Revit cannot be claimed by this command.";
+            if (pid != r.Value<int>("expected_pid") || Math.Abs((DateTimeOffset.Parse(startedUtc) - DateTimeOffset.Parse(r.Value<string>("expected_started_utc"))).TotalSeconds) > 1)
+                return "Process identity differs from the task's launch record (pid and start timestamp are both required). Nothing was closed.";
+            return null;
+        }
+
+        public static bool DiscardRequired(bool? modified, JToken pending) => modified != false || pending != null;
+        public static bool Ready(JArray states) => states.OfType<JObject>().All(d => !d.Value<bool>("discard_required") || d.Value<bool>("discard_authorized"));
+        public static string ForeignDiscard(JArray states, IEnumerable<string> discards) =>
+            discards.Any(f => !states.OfType<JObject>().Any(d => d.Value<string>("fingerprint") == f))
+            ? "discard_documents names a document not in this process." : null;
+
+        public static void AddSchema(JObject session)
+        {
+            ((JArray)session["properties"]["operation"]["enum"]).Add("exit_application");
+            var props = (JObject)session["properties"];
+            props["expected_pid"] = JObject.Parse("{'type':'integer','minimum':1}");
+            props["expected_started_utc"] = JObject.Parse("{'type':'string'}");
+            props["owner_session"] = JObject.Parse("{'type':'string'}");
+            props["discard_documents"] = JObject.Parse("{'type':'array','maxItems':1000,'items':{'type':'string'}}");
+            session["description"] = "Owned exit; token; verify termination.";
         }
     }
 }

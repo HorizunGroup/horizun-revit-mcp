@@ -50,7 +50,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class Detail2DCommand : ICommand
+    public sealed partial class Detail2DCommand : ICommand
     {
         public string Name => "horizun_detail_2d";
         public string Description =>
@@ -105,6 +105,9 @@ namespace Horizun.Revit.Commands
             if (!DimensionPlanRules.UnitScale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out scale))
                 return CommandResult.Fail("units must be mm, m or feet.");
 
+            // draw_order re-stacks EXISTING detail and creates nothing: its own rehearsal and apply (Detail2DDrawOrder.cs).
+            if (actions.Any(IsDrawOrder)) return ExecuteDrawOrder(app, gate, request, actions);
+
             var plans = new List<Plan>(); var errors = new JArray();
             var outcomes = new List<ActionOutcome>();
             // Keys declared by earlier actions, in batch order: a set_line_style may only
@@ -124,6 +127,16 @@ namespace Horizun.Revit.Commands
             }
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
             string hash = DocumentGate.PlanHash(request, "units", "actions");
+
+            // join_tolerance_mm is honoured only for a line that really is at risk of a join or merge (very short,
+            // or collinear and overlapping another): the hazard is decided here, over the whole batch.
+            if (plans.Any(x => x.JoinToleranceFeet > 0))
+            {
+                IDictionary<int, string> joinHazards = Detail2DOutcomeRules.LineHazards(HazardSegments(plans), Detail2DRules.CurveToleranceFeet);
+                foreach (Plan hazardous in plans)
+                    if (hazardous.JoinToleranceFeet > 0 && joinHazards.TryGetValue(hazardous.Index, out string hazardText))
+                        hazardous.JoinHazard = hazardText;
+            }
 
             // ---- THE REHEARSAL: provisional creation, measurement, mandatory rollback.
             // Run on BOTH paths whenever every action planned cleanly; never over a batch
@@ -174,6 +187,10 @@ namespace Horizun.Revit.Commands
                     ["plan"] = new JArray(plans.Select(p => PlanRow(p)))
                 };
                 result["rehearsal"] = rehearsal == null ? (JToken)JValue.CreateNull() : rehearsal.ToJson();
+                Detail2DOutcomeRules.StampNotApplied(result, errors.Count, constructible);
+                IDictionary<int, string> hazards = Detail2DOutcomeRules.LineHazards(HazardSegments(plans), Detail2DRules.CurveToleranceFeet);
+                if (hazards.Count > 0)
+                    result["line_hazards"] = new JArray(hazards.Select(h => new JObject { ["index"] = h.Key, ["risk"] = h.Value }));
                 if (rehearsal == null)
                     result["rehearsal_note"] = "The batch was NOT rehearsed: " + errors.Count + " action(s) are " +
                         "invalid, so no transaction was opened and nothing was provisionally created.";
@@ -263,11 +280,12 @@ namespace Horizun.Revit.Commands
                                 new[] { rbTx.StatusName, rbGroup.StatusName });
                             return CommandResult.FailWithDetail(
                                 (plans.Count - inTxVerified) + " of " + plans.Count + " action(s) failed " +
-                                "verification BEFORE the commit, so the whole batch was rolled back. " +
+                                "verification BEFORE the commit, so the whole batch was rolled back. Differences: " +
+                                Detail2DOutcomeRules.Headline(Detail2DOutcomeRules.FailedChecks(inTxRows)) + ". " +
                                 PlanFailure.SingleTransactionOutcome(true, rbTx.StatusName, "nothing was drawn") +
                                 " The TransactionGroup reported '" + rbGroup.StatusName + "'. Each row lists " +
                                 "every requested/read comparison.",
-                                ApplyDetail(state, rbTx.StatusName, rbGroup.StatusName, inTxRows));
+                                ApplyDetail(state, rbTx.StatusName, rbGroup.StatusName, inTxRows, plans));
                         }
                         Guard.Commit(tx, txName);
                     }
@@ -322,13 +340,15 @@ namespace Horizun.Revit.Commands
                     string state = DimensionPlanRules.FinalState(false, new[] { rbGroup.StatusName });
                     return CommandResult.FailWithDetail(
                         "The transaction committed, but " + (plans.Count - verified) + " of " + plans.Count +
-                        " action(s) failed the post-commit re-read, so the TransactionGroup was rolled back " +
+                        " action(s) failed the post-commit re-read (" +
+                        Detail2DOutcomeRules.Headline(Detail2DOutcomeRules.FailedChecks(rows)) +
+                        "), so the TransactionGroup was rolled back " +
                         "(Revit reported '" + rbGroup.StatusName + "'). " +
                         (PlanFailure.IsConfirmedRollback(rbGroup.StatusName)
                             ? "Nothing from this call remains in the model."
                             : "DO NOT assume the model is clean - re-read its real state before any retry.") +
                         " Each row lists every requested/read comparison.",
-                        ApplyDetail(state, "Committed", rbGroup.StatusName, rows));
+                        ApplyDetail(state, "Committed", rbGroup.StatusName, rows, plans));
                 }
                 try { Guard.Assimilate(group, txName); }
                 catch (SilentRollbackException ex)
@@ -359,6 +379,7 @@ namespace Horizun.Revit.Commands
                 };
                 ApplicationOutcome.StampApplied(applied, ApplicationOutcome.Committed,
                                                 plans.Count, verified, verified, 0, 0, 0);
+                applied["applied"] = true;
                 return CommandResult.Ok(applied);
             }
         }
@@ -413,6 +434,17 @@ namespace Horizun.Revit.Commands
                     }
                 }
 
+                if (a["join_tolerance_mm"] != null)
+                {
+                    if (op != OpLine && op != OpPolyline)
+                        throw new ArgumentException("join_tolerance_mm applies to detail lines and polylines only.");
+                    if (a["join_tolerance_mm"].Type != JTokenType.Float && a["join_tolerance_mm"].Type != JTokenType.Integer)
+                        throw new ArgumentException("join_tolerance_mm must be a number.");
+                    string joinProblem = Detail2DOutcomeRules.ParseJoinTolerance(a.Value<double>("join_tolerance_mm"), out double joinFeet);
+                    if (joinProblem != null) throw new ArgumentException(joinProblem);
+                    p.JoinToleranceFeet = joinFeet;
+                }
+
                 if (p.Key != null)
                 {
                     Plan already;
@@ -437,14 +469,14 @@ namespace Horizun.Revit.Commands
             string[] allowed;
             switch (op)
             {
-                case OpLine: allowed = new[] { "operation", "view_id", "start", "end", "line_style_id", "key" }; break;
+                case OpLine: allowed = new[] { "operation", "view_id", "start", "end", "line_style_id", "join_tolerance_mm", "key" }; break;
                 case OpArc:
                     allowed = new[] { "operation", "view_id", "start", "end", "point_on_arc", "center", "radius",
                                       "start_angle_degrees", "end_angle_degrees", "line_style_id", "key" }; break;
-                case OpPolyline: allowed = new[] { "operation", "view_id", "points", "closed", "line_style_id", "key" }; break;
+                case OpPolyline: allowed = new[] { "operation", "view_id", "points", "closed", "line_style_id", "join_tolerance_mm", "key" }; break;
                 case OpFilled: allowed = new[] { "operation", "view_id", "filled_region_type_id", "loops",
-                                                 "allow_masking_type_as_filled", "key" }; break;
-                case OpMasking: allowed = new[] { "operation", "view_id", "masking_region_type_id", "loops", "key" }; break;
+                                                 "allow_masking_type_as_filled", "simplify_tolerance_mm", "key" }; break;
+                case OpMasking: allowed = new[] { "operation", "view_id", "masking_region_type_id", "loops", "simplify_tolerance_mm", "key" }; break;
                 case OpComponent:
                 case OpSymbol: allowed = new[] { "operation", "view_id", "family_symbol_id", "point",
                                                  "rotation_degrees", "key" }; break;
@@ -655,6 +687,25 @@ namespace Horizun.Revit.Commands
                 {
                     ViewPoint v = ParsePoint(p.View, loop[vi], scale, "loops[" + li + "][" + vi + "]");
                     vView.Add(v.ViewFeet); vModel.Add(v.Model);
+                }
+                // simplify_tolerance_mm: vertices closer than this to the previous one are dropped, so a
+                // screw head or an arrowhead drawn with edges below Revit's ShortCurveTolerance becomes a
+                // boundary Revit accepts. What was dropped is reported; the loop that is drawn (and re-read)
+                // is the simplified one.
+                if (a["simplify_tolerance_mm"] != null)
+                {
+                    double tolMm = a.Value<double>("simplify_tolerance_mm");
+                    if (double.IsNaN(tolMm) || double.IsInfinity(tolMm) || tolMm <= 0 || tolMm > 50)
+                        throw new ArgumentException("simplify_tolerance_mm must be in (0, 50].");
+                    int dropped;
+                    List<double[]> keptView = Detail2DOutcomeRules.SimplifyLoop(vView, tolMm / 304.8, out dropped);
+                    if (dropped > 0)
+                    {
+                        var keptModel = new List<XYZ>();
+                        foreach (double[] kv in keptView) keptModel.Add(vModel[vView.IndexOf(kv)]);
+                        vView = keptView; vModel = keptModel;
+                        p.SimplifiedVertices += dropped;
+                    }
                 }
                 string loopInvalid = Detail2DRules.ValidateLoop(vView);
                 if (loopInvalid != null) throw new ArgumentException("loops[" + li + "]: " + loopInvalid);
@@ -977,7 +1028,7 @@ namespace Horizun.Revit.Commands
                             ["constructible"] = constructible,
                             ["reason"] = constructible
                                 ? null
-                                : (m.Unreadable ?? "one or more rehearsal checks did not match - see verification"),
+                                : (m.Unreadable ?? CommandResult.MismatchReason(verification)),
                             ["evidence"] = Evidence(m),
                             ["verification"] = verification
                         };
@@ -1325,9 +1376,16 @@ namespace Horizun.Revit.Commands
                 double[][] seg = p.RequestedSegments[0];
                 add("curve_kind", "line", e0 == null ? null : e0.CurveKind,
                     e0 != null && e0.CurveKind == "line");
+                bool lineJoined = false;
+                bool lineOk = e0 != null && e0.VStart != null && e0.VEnd != null &&
+                    (DimensionPlanRules.SameEndpoints(seg[0], seg[1], e0.VStart, e0.VEnd, tol) ||
+                     Detail2DOutcomeRules.EndpointsAcceptable(Detail2DOutcomeRules.EndpointDisplacement(seg[0], seg[1], e0.VStart, e0.VEnd),
+                         tol, p.JoinToleranceFeet, p.JoinHazard != null, out lineJoined));
                 add("endpoints_carry_request", Show(seg[0]) + " -> " + Show(seg[1]),
-                    e0 == null || e0.VStart == null ? "(unread)" : Show(e0.VStart) + " -> " + Show(e0.VEnd),
-                    e0 != null && DimensionPlanRules.SameEndpoints(seg[0], seg[1], e0.VStart, e0.VEnd, tol));
+                    e0 == null || e0.VStart == null ? "(unread)" : Show(e0.VStart) + " -> " + Show(e0.VEnd), lineOk);
+                if (lineJoined)
+                    add("endpoints_moved_by_join", "within join_tolerance_mm (granted, line at risk: " + p.JoinHazard + ")",
+                        (Detail2DOutcomeRules.EndpointDisplacement(seg[0], seg[1], e0.VStart, e0.VEnd) * 304.8).ToString("0.###", CultureInfo.InvariantCulture) + " mm", true);
             }
             else if (op == OpArc)
             {
@@ -1346,19 +1404,29 @@ namespace Horizun.Revit.Commands
             }
             else if (op == OpPolyline)
             {
-                int matched = 0;
+                int matched = 0, joinedSegments = 0;
                 for (int i = 0; i < p.RequestedSegments.Count && i < m.Elements.Count; i++)
                 {
                     ElementFacts em = m.Elements[i];
-                    if (em.CurveKind == "line" &&
-                        DimensionPlanRules.SameEndpoints(p.RequestedSegments[i][0], p.RequestedSegments[i][1],
-                                                         em.VStart, em.VEnd, tol))
+                    bool segmentJoined = false;
+                    if (em.CurveKind == "line" && em.VStart != null && em.VEnd != null &&
+                        (DimensionPlanRules.SameEndpoints(p.RequestedSegments[i][0], p.RequestedSegments[i][1],
+                                                          em.VStart, em.VEnd, tol) ||
+                         Detail2DOutcomeRules.EndpointsAcceptable(
+                             Detail2DOutcomeRules.EndpointDisplacement(p.RequestedSegments[i][0], p.RequestedSegments[i][1], em.VStart, em.VEnd),
+                             tol, p.JoinToleranceFeet, p.JoinHazard != null, out segmentJoined)))
+                    {
                         matched++;
+                        if (segmentJoined) joinedSegments++;
+                    }
                 }
                 add("segments_carry_request",
                     p.RequestedSegments.Count + " line segment(s), in order",
                     matched + " of " + m.Elements.Count + " read segment(s) match their requested pair",
                     matched == p.RequestedSegments.Count && m.Elements.Count == p.RequestedSegments.Count);
+                if (joinedSegments > 0)
+                    add("segments_moved_by_join", "within join_tolerance_mm (granted, polyline at risk: " + p.JoinHazard + ")",
+                        joinedSegments + " segment(s) read with ends moved by Revit's join, inside the tolerance", true);
             }
             else if (op == OpFilled || op == OpMasking)
             {
@@ -1702,6 +1770,7 @@ namespace Horizun.Revit.Commands
             if (p.RegionType != null)
             {
                 row["region_type"] = IdNameJson(p.RegionType);
+                if (p.SimplifiedVertices > 0) row["simplified_vertices"] = p.SimplifiedVertices;
                 ((JObject)row["region_type"])["is_masking"] = p.RegionTypeIsMasking;
                 row["loops"] = p.LoopViewPoints.Count;
                 row["curves_per_loop"] = new JArray(p.LoopViewPoints.Select(l => (JToken)l.Count));
@@ -1761,10 +1830,11 @@ namespace Horizun.Revit.Commands
             return o;
         }
 
-        private static JObject ApplyDetail(string state, string txStatus, string groupStatus, JArray rows)
+        private static JObject ApplyDetail(string state, string txStatus, string groupStatus, JArray rows, List<Plan> plans = null)
         {
-            return new JObject
+            var detail = new JObject
             {
+                ["applied"] = false,
                 ["state"] = state,
                 ["transaction_status"] = txStatus,
                 ["transaction_group_status"] = groupStatus,
@@ -1772,6 +1842,30 @@ namespace Horizun.Revit.Commands
                 ["comparison_tolerance_feet"] = Detail2DRules.CurveToleranceFeet,
                 ["rows"] = rows ?? new JArray()
             };
+            // Which property differed, per action, without opening every row; and, for a line, whether it
+            // was one of the shapes whose ends Revit joins or merges (a few millimetres, or collinear overlap).
+            JArray failed = Detail2DOutcomeRules.FailedChecks(rows);
+            if (failed.Count > 0)
+            {
+                detail["failed_checks"] = failed;
+                if (plans != null)
+                {
+                    JArray risk = Detail2DOutcomeRules.AtRisk(failed, Detail2DOutcomeRules.LineHazards(HazardSegments(plans), Detail2DRules.CurveToleranceFeet));
+                    if (risk.Count > 0) detail["likely_causes"] = risk;
+                }
+            }
+            return detail;
+        }
+
+        /// <summary>The detail lines of a batch as view-plane segments, for the join/merge hazard check.</summary>
+        private static List<DetailSegment> HazardSegments(IEnumerable<Plan> plans)
+        {
+            var list = new List<DetailSegment>();
+            foreach (Plan p in plans)
+                if (p.Operation == OpLine || p.Operation == OpPolyline)
+                    foreach (double[][] seg in p.RequestedSegments)
+                        list.Add(new DetailSegment { Index = p.Index, A = seg[0], B = seg[1] });
+            return list;
         }
 
         // ---------------------------------------------------------------------
@@ -1951,6 +2045,12 @@ namespace Horizun.Revit.Commands
 
         private sealed class Plan
         {
+            /// <summary>Granted by the caller (join_tolerance_mm); used only if JoinHazard is set.</summary>
+            public double JoinToleranceFeet;
+            /// <summary>Why this line is at risk of a join/merge (short, collinear overlap); null when it is not.</summary>
+            public string JoinHazard;
+            /// <summary>Vertices dropped by simplify_tolerance_mm across this region's loops.</summary>
+            public int SimplifiedVertices;
             public int Index; public string Operation; public View View; public double Scale;
             public string Key;
 

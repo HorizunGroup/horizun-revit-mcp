@@ -176,7 +176,7 @@ namespace Horizun.Core.Tests
             string dispatcher = File.ReadAllText(Path.GetFullPath(
                 Path.Combine(CommandsDir(), "..", "Core", "Dispatcher.cs")));
             int claim = dispatcher.IndexOf("_idempotency.Claim", StringComparison.Ordinal);
-            int execute = dispatcher.IndexOf("cmd.Execute(app, req.ParamsJson)", StringComparison.Ordinal);
+            int execute = dispatcher.IndexOf("IdentityPrepass.Execute(app, cmd, req.ParamsJson, LargeModelDispatch.Execute)", StringComparison.Ordinal);
             Assert.True(claim >= 0 && execute >= 0 && claim < execute,
                 "the durable claim must be established before any command, including Python, runs");
         }
@@ -221,6 +221,10 @@ namespace Horizun.Core.Tests
             foreach (string path in Directory.EnumerateFiles(CommandsDir(), "*Command.cs"))
             {
                 string text = File.ReadAllText(path);
+                if (Path.GetFileName(path) == "ManageViewsCommand.cs")
+                    text += Source("ManageViewsCommand.Execution.cs");
+                if (Path.GetFileName(path) == "ApplyReinforcementCommand.cs")
+                    text += Source("ApplyReinforcementCommand.Execute.cs") + Source("ApplyReinforcementCommand.Batch.cs");
                 bool opensTransaction = text.Contains("new Transaction(") || text.Contains("new TransactionGroup(");
                 if (!opensTransaction) continue;
 
@@ -366,7 +370,7 @@ namespace Horizun.Core.Tests
             Assert.True(preflightBlock < queue && preflightBlock < run,
                 "the preflight block must return before anything is queued or executed.");
             // Compile-only, never Execute: the one call a preflight makes into the engine.
-            Assert.Contains("compileOnly.Compile()", text);
+            Assert.Contains("ScriptPrecompile.Failure preflightCompile = ScriptPrecompile.Check(", text);
             // And the combination that would queue a no-op is refused outright.
             Assert.Contains("preflight=true cannot be combined with run_async=true", text);
         }
@@ -388,6 +392,17 @@ namespace Horizun.Core.Tests
             Assert.True(mutatingCase >= 0 && exemption > mutatingCase,
                 "RequiresIdempotency must exempt an execute_python preflight inside the Mutating case; " +
                 "otherwise every preflight burns a durable key for work that never runs.");
+        }
+
+        [Fact]
+        public void Save_rehearsal_exemption_is_wired_before_the_mutating_key_demand()
+        {
+            string dispatcher = File.ReadAllText(Path.GetFullPath(
+                Path.Combine(CommandsDir(), "..", "Core", "Dispatcher.cs")));
+            int mutating = dispatcher.IndexOf("case ToolEffect.Mutating:", StringComparison.Ordinal);
+            int exemption = dispatcher.IndexOf("ToolInputRules.IsSaveDocumentRehearsal(contract.Name, request)", StringComparison.Ordinal);
+            int demand = dispatcher.IndexOf("return true;", mutating, StringComparison.Ordinal);
+            Assert.True(mutating >= 0 && exemption > mutating && exemption < demand);
         }
 
         [Theory]

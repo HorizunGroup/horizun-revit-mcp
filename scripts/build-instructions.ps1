@@ -18,7 +18,8 @@
 [CmdletBinding()]
 param(
     [string]$Version,
-    [Parameter(Mandatory = $true)][string]$OutputDir
+    [Parameter(Mandatory = $true)][string]$OutputDir,
+    [string]$RendererPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,13 +33,13 @@ if (-not $Version) {
 }
 if (-not $Version) { throw 'could not determine the product version' }
 
-$chrome = @(
+$chrome = if ($RendererPath) { $RendererPath } else { @(
     "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
     "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
     "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
     "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-if (-not $chrome) { throw 'no Chrome or Edge found to render the instruction sheets' }
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
+if (-not $chrome -or -not (Test-Path -LiteralPath $chrome -PathType Leaf)) { throw 'no Chrome or Edge found to render the instruction sheets' }
 
 if (-not (Test-Path -LiteralPath $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
@@ -68,9 +69,26 @@ foreach ($lang in 'es', 'en') {
     Set-Content -LiteralPath $staged -Value $text -Encoding UTF8
 
     $pdf = Join-Path $OutputDir "Instalar en Claude Desktop.$lang.pdf"
-    & $chrome --headless --disable-gpu --no-pdf-header-footer `
-        "--print-to-pdf=$pdf" ("file:///" + $staged.Replace('\', '/')) 2>&1 | Out-Null
-    Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+    # A stale PDF must not make a failed render look successful. Chrome's
+    # stderr is diagnostic; the process exit code determines failure.
+    if (Test-Path -LiteralPath $pdf) { Remove-Item -LiteralPath $pdf -Force }
+    $stderrPath = [IO.Path]::GetTempFileName()
+    try {
+        $savedPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $chrome --headless --disable-gpu --no-pdf-header-footer `
+            "--print-to-pdf=$pdf" ("file:///" + $staged.Replace('\', '/')) 2> $stderrPath | Out-Null
+        $rendererExit = $LASTEXITCODE
+        $ErrorActionPreference = $savedPreference
+        if ($rendererExit -ne 0) {
+            $diagnostic = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+            throw "renderer failed for '$lang' (exit $rendererExit): $diagnostic"
+        }
+    }
+    finally {
+        $ErrorActionPreference = $savedPreference
+        Remove-Item -LiteralPath $staged, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
 
     if (-not (Test-Path -LiteralPath $pdf)) { throw "the renderer produced no PDF for '$lang'" }
     $bytes = (Get-Item -LiteralPath $pdf).Length

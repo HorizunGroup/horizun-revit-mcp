@@ -146,7 +146,7 @@ function Test-HorizunMcpbManifest {
     }
 
     $version = [string](Get-Field $Manifest 'version')
-    if ($version -and $version -notmatch '^\d+\.\d+\.\d+$') { $p.Add("version '$version' is not semantic") | Out-Null }
+    if ($version -and $version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') { $p.Add("version '$version' is not semantic") | Out-Null }
     if ($ExpectedVersion -and $version -ne $ExpectedVersion) {
         $p.Add("version is '$version' but this tree is at '$ExpectedVersion'; an extension that lies about its version cannot be diagnosed") | Out-Null
     }

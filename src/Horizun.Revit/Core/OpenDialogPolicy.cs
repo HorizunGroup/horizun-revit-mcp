@@ -19,11 +19,17 @@ namespace Horizun.Revit.Core
     {
         Cancel,
         Dismiss,
+        ResolveInMemory,
 
         // Never accepted from an MCP argument. Compiled Horizun consent UI uses this
         // internal policy so the global dialog watcher observes the prompt without
         // answering it on the machine owner's behalf.
-        Human
+        Human,
+
+        // Never accepted from an MCP argument. horizun_export sets it around the export
+        // call only; the answer then comes from ExportDialogPolicy's closed catalog and
+        // every decision is recorded for the reply.
+        ExportKnown
     }
 
     public static class OpenDialogPolicy
@@ -40,8 +46,10 @@ namespace Horizun.Revit.Core
             string v = (raw ?? "").Trim().ToLowerInvariant();
             if (v.Length == 0 || v == "cancel") return DialogAnswer.Cancel;
             if (v == "dismiss") return DialogAnswer.Dismiss;
-            error = "on_open_dialog must be 'cancel' or 'dismiss' (got '" + raw + "'). Nothing was opened.";
+            if (v == "resolve_in_memory") return DialogAnswer.ResolveInMemory;
+            error = "on_open_dialog must be 'cancel', 'dismiss' or 'resolve_in_memory' (got '" + raw + "'). Nothing was opened.";
             return DialogAnswer.Cancel;
         }
     }
 }
+

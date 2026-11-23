@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP server — standard MCP Prompts.
 //
 // Prompts contain product operating policy, never an organisation's standards.
@@ -23,8 +23,6 @@ namespace Horizun.Server
                         "Plan and execute delivery stages with fresh rehearsal boundaries and explicit visual approval.", Arg("profile", "Project delivery profile with existing view IDs, dimension/tag criteria, paper zones, publication sheets and planimetry requirements.", true)),
                     Prompt("room-documentation", "Rehearse room documentation",
                         "Compose room views and explicit sheet placements without applying them.", Arg("specification", "Explicit rooms, view types, templates, scale, names, margins and optional sheet placements.", true)),
-                    Prompt("family-recipe", "Rehearse a family recipe",
-                        "Compile a height-parametric rectangular prism or tube recipe.", Arg("specification", "Explicit template/output paths, units, dimensions, height parameter, distinct types and load policy.", true)),
                     Prompt("review-correct-verify", "Rehearse corrections from audit findings",
                         "Preserve finding identity and re-audit evidence.", Arg("selection", "Audit finding IDs, fingerprint and any explicit corrective inputs.", true)),
                     Prompt("health-first", "Start safely in Revit",
@@ -43,6 +41,9 @@ namespace Horizun.Server
                     Prompt("sheet-qaqc", "Run sheet QA/QC",
                         "Audit sheets, views, placements and annotations without changing them.",
                         Arg("scope", "Optional sheet numbers, ids or discipline; omit for every non-placeholder sheet.", false)),
+                    Prompt("sheet-issue", "Issue a sheet set",
+                        "Audit, save locally and export a versioned PDF set with a manifest and a PDF QA.",
+                        Arg("scope", "The sheets to issue, by number or id.", false)),
                     Prompt("family-qaqc", "Run family QA/QC",
                         "Inspect family health, in-place content and measurable hygiene without writes.",
                         Arg("scope", "Optional category or explicit family scope; omit for the whole active model.", false)),
@@ -55,21 +56,9 @@ namespace Horizun.Server
                     Prompt("quantity-export-pack", "Prepare a quantity and Power BI export pack",
                         "Make a read-only takeoff first; any file or Power BI destination remains a separate approved step.",
                         Arg("scope", "Categories, parameters and grouping required for the takeoff.", true)),
-                    Prompt("dwg-to-bim-review", "Plan DWG to BIM safely",
-                        "Read the selected drawing and requirement set, returning a plan and ambiguities without building anything.",
-                        Arg("requirement_set", "Approved DWG-to-BIM requirement set to use; required because layer meaning is never guessed.", true)),
                     Prompt("safe-batch-parameter-update", "Rehearse a safe batch parameter update",
                         "Resolve explicit targets and rehearse a verified parameter change without applying it.",
                         Arg("updates", "Explicit element ids, parameter names and requested values; required.", true)),
-                    Prompt("architecture-structure-coordination", "Review architecture / structure coordination",
-                        "Measure the stated architecture/structure coordination scope and clashes without changing either model.",
-                        Arg("scope", "Explicit disciplines, categories, links or levels to coordinate; omit only to inspect the active model's measurable scope.", false)),
-                    Prompt("mep-coordination-review", "Review MEP coordination",
-                        "Inspect MEP coordination and return only a non-writing routing proposal where applicable.",
-                        Arg("scope", "Explicit systems, disciplines, links or levels to inspect; omit for the active model's measurable MEP scope.", false)),
-                    Prompt("western-forms-concrete-review", "Review Western Forms / concrete",
-                        "Audit the supplied concrete and reinforcement requirements without creating or modifying reinforcement.",
-                        Arg("requirement_set", "Approved concrete, reinforcement or formwork requirement set; required because Horizun does not invent engineering rules.", true)),
                     Prompt("qaqc-report-export", "Export a QA/QC report",
                         "Append only measured QA/QC findings to an approved local workbook; the writer backs up and re-reads every appended cell.",
                         Arg("workbook_path", "Absolute path of the approved .xlsx workbook to receive the report rows.", true),
@@ -80,36 +69,16 @@ namespace Horizun.Server
                     // The three procedures added with the 2026-09-15 catalogue. A
                     // procedure whose `prompt` names nothing is a catalogue entry a
                     // client cannot act on, so the two lists move together.
-                    Prompt("mep-network-completion", "Complete an MEP network",
-                        "Join MEP segments that merely touch into a connected network, with every precondition measured and every connection re-read.",
-                        Arg("scope", "The systems, levels or element ids whose open connectors are in scope; required because 'connect everything' is not a scope.", true),
-                        Arg("tolerance_mm", "How far apart two connectors may be and still be joined. Default 1 mm; geometry is never moved to close a gap.", false)),
                     Prompt("graphic-review-pack", "Build a coloured review view",
                         "Duplicate a view and colour it by one parameter's values, with a returned legend and a capture.",
                         Arg("source_view_id", "The view to duplicate. The original is never modified.", true),
                         Arg("parameter", "The parameter whose distinct values become colours; it must be filterable for the chosen categories.", true),
                         Arg("categories", "The BuiltInCategory names the colouring applies to.", true)),
-                    Prompt("dwg-to-bim-unit", "Convert one unit from a drawing, end to end",
-                        "Inventory, walls, devices and two audits for one unit, as a resumable run a batch repeats per unit.",
-                        Arg("walls_set", "The walls requirement set, bounded to the unit.", true),
-                        Arg("devices_set", "The devices requirement set, bounded to the same unit.", true),
-                        Arg("dwg_path", "The drawing the link shows, readable on this machine.", true)),
-                    Prompt("dwg-to-bim-update", "Bring a converted unit to a new drawing revision",
-                        "Apply what an update decides alone, then ask one grouped decision per set for what it holds, and audit against the new revision.",
-                        Arg("walls_set", "The walls requirement set of the unit.", true),
-                        Arg("devices_set", "The devices requirement set of the unit.", true),
-                        Arg("dwg_path", "The NEW revision of the drawing, readable on this machine.", true)),
                     // The two DWG procedures the catalogue carried with no prompt behind them.
-                    Prompt("dwg-mep-unit-conversion", "Convert DWG MEP units to a connected model",
-                        "Plan, build, connect and audit MEP runs from a unit drawing, with repeated unit layouts recognised and every unjoined junction reported.",
-                        Arg("requirement_set", "Approved requirement set: what each layer means, with system, bore and elevation; required because layer meaning is never guessed.", true),
-                        Arg("unit_regions", "The unit boundaries as regions in drawing millimetres; required because a whole-floor reading is not a unit.", true),
-                        Arg("outfall", "Where a draining network leaves, with its invert. Omit only for networks that do not drain; without it every run is built level.", false)),
-                    Prompt("dwg-electrical-symbols", "Place DWG symbols as family instances",
-                        "Group the marks on the named symbol layers into types and place each type as the family a person named, with every rejected group reported.",
-                        Arg("symbol_layers", "The symbol layers, as globs; required because grouping over the whole drawing buries the symbols in the wiring.", true),
-                        Arg("max_footprint_mm", "How large connected line work may be and still be one symbol; required because a receptacle is 40 mm on one drawing and 400 mm on another.", true),
-                        Arg("family_types", "The family type for each symbol type, as decided by a person; required because this route never names a symbol type itself.", true)),
+                    Prompt("model-with-template-kit", "Model with an AI-ready Horizun template",
+                        "Modelar con una plantilla AI-ready: brief yourself from the template kit, pick every type from its catalog, follow its playbook and close with its checks.",
+                        Arg("kit_name", "Installed kit name (Project Information HZ_AI_Kit of the model names it). Optional: without it the kit is found from the active model or listed.", false),
+                        Arg("task", "What to model (e.g. 'the ground floor from sheet A-101'). Optional: without it the person is asked.", false)),
                     Prompt("project-intake", "Start a BIM project the ISO 19650 way",
                         "Arrancar un proyecto BIM según ISO 19650: ask only what the project context is missing, with options, and write project-context.json from the answers.",
                         Arg("path", "Absolute path of the project's project-context.json. Optional: without it the intake starts from nothing and the draft is only rehearsed until a path is agreed.", false)),
@@ -158,14 +127,6 @@ namespace Horizun.Server
                         "(a compatible template per kind) and optional room_sheets with explicit placements. Reject partial room coverage. " +
                         "Return the rehearsal and confirmation request; do not apply yet. After approved application, reread view scales, templates and placements and inspect sheet captures.";
                     break;
-                case "family-recipe":
-                    description = "Rehearse a fixed-footprint, height-parametric family recipe.";
-                    body = "Call horizun_health first. Specification: " + Argument(args, "specification", true) +
-                        ". Discover an existing compatible RFT and confirm output/overwrite/load choices. Use horizun_create_family recipe " +
-                        "rectangular_prism or rectangular_tube; require explicit width/depth, wall for tube, height_parameter and at least two " +
-                        "distinct type heights. Only height flexes; XY is fixed. Rehearse with dry_run=true and return confirmation, without applying. " +
-                        "After approval inspect reopened-file verification, measured flex and PNG; never substitute a successful export for visual approval.";
-                    break;
                 case "review-correct-verify":
                     description = "Rehearse selected corrections, preserving audit identity.";
                     body = "Call horizun_health first. Selection: " + Argument(args, "selection", true) +
@@ -178,9 +139,7 @@ namespace Horizun.Server
                     description = "Start every Revit task against a measured target.";
                     body =
                         "Call horizun_health first. Confirm the reachable Revit year, process and active document. " +
-                        "If more than one Revit is reachable, " + (Tools.IsCallable("horizun_target")
-                            ? "use horizun_target instead of guessing"
-                            : "do not guess: ask the user which one to use") + ". Do not write " +
+                        "If more than one Revit is reachable, use horizun_target instead of guessing. Do not write " +
                         "until the objective, target elements and acceptance evidence are unambiguous.";
                     break;
                 case "verified-change":
@@ -201,7 +160,7 @@ namespace Horizun.Server
                     description = "Audit without changing the model or hiding incomplete coverage.";
                     body =
                         "Call horizun_health, then use read-only typed tools such as horizun_model_scan, " +
-                        "horizun_audit_model, horizun_quantities and horizun_clash. " +
+                        "horizun_audit_model and horizun_quantities. " +
                         (string.IsNullOrWhiteSpace(focus) ? "Cover the whole model." : "Focus: " + focus + ".") +
                         " Report closed worksets, unloaded links, truncation and unreadable sections as uncertainty; " +
                         "never interpret absence under incomplete coverage as proof that a problem does not exist.";
@@ -226,6 +185,17 @@ namespace Horizun.Server
                         ". State every required inline requirement_set explicitly; without one, report only the " +
                         "universal checks. Return blocking, advisory and unknown findings with sheet/view ids, " +
                         "and do not apply corrections until a human approves their dry run.";
+                    break;
+                case "sheet-issue":
+                    string issueScope = Argument(args, "scope", false);
+                    description = "Issue a sheet set as a versioned PDF.";
+                    body =
+                        "Call horizun_health first. Audit " + (string.IsNullOrWhiteSpace(issueScope) ? "the sheets to issue" : "these sheets: " + issueScope) +
+                        " with horizun_audit_planimetry, save locally, then rehearse horizun_export format=pdf with pdf_version=auto, " +
+                        "pdf_archive_previous, emit_manifest and pdf_qa, and apply only with the token of that rehearsal. " +
+                        "Before saving, read annotation_staleness on the sheets' views (horizun_query_planimetry) and the own-changes diff (horizun_model_diff compare, origin). " +
+                        "Report the audit, the staleness, the diff, the save, the version, the files moved to the archive and the QA findings separately; " +
+                        "a QA finding is reported, not hidden.";
                     break;
                 case "family-qaqc":
                     string familyScope = Argument(args, "scope", false);
@@ -263,15 +233,6 @@ namespace Horizun.Server
                         "with coverage and provenance first. Do not write a workbook, export a file or push to " +
                         "Power BI until a human supplies and approves the destination under full_write.";
                     break;
-                case "dwg-to-bim-review":
-                    string dwgSet = Argument(args, "requirement_set", true);
-                    description = "Plan a DWG-to-BIM conversion without creating model elements.";
-                    body =
-                        "Call horizun_health and horizun_query_cad first. Use this approved requirement set: " + dwgSet +
-                        ". Run horizun_plan_from_cad only. Report geometry coverage, source units, layer mapping, " +
-                        "unresolved candidates, rival readings and the plan fingerprint. Never infer layer meaning, " +
-                        "and do not call apply until a human reviews this plan.";
-                    break;
                 case "safe-batch-parameter-update":
                     string updates = Argument(args, "updates", true);
                     description = "Rehearse a narrowly scoped parameter change; do not apply it.";
@@ -280,32 +241,6 @@ namespace Horizun.Server
                         ". Use horizun_write_params_verified with dry_run=true. Report each resolved target, " +
                         "missing or read-only parameter, proposed value and confirmation token. Do not apply, widen " +
                         "the target set or retry a partial result.";
-                    break;
-                case "architecture-structure-coordination":
-                    string architectureScope = Argument(args, "scope", false);
-                    description = "Measure architecture/structure coordination without changing either discipline.";
-                    body =
-                        "Call horizun_health first and confirm the active document and all measurable links. Use " +
-                        "horizun_query_structure and horizun_query_model " +
-                        (string.IsNullOrWhiteSpace(architectureScope) ? "for the active model's measurable coordination scope." : "for this stated scope: " + architectureScope + ".") +
-                        " Run horizun_clash only with explicit, reviewable source/target categories. Report host/link coverage, " +
-                        "unloaded links, phases, design options, clash tolerances and unknowns separately. Do not move, resize, " +
-                        "create or delete elements; proposed corrections require a separate approved dry run.";
-                    break;
-                case "mep-network-completion":
-                    string networkScope = Argument(args, "scope", true);
-                    string networkTolerance = Argument(args, "tolerance_mm", false);
-                    description = "Connect an MEP network with measured preconditions and verified connections.";
-                    body =
-                        "Call horizun_health first. Work only inside this scope: " + networkScope + ". Read the open " +
-                        "connectors with horizun_plan_mep network_census and horizun_query_model; name every pair you " +
-                        "intend to join by element id AND connector id. Where the run needs a fitting, build it with " +
-                        "horizun_create_elements; where two things simply meet, join them with horizun_connect_mep" +
-                        (string.IsNullOrWhiteSpace(networkTolerance) ? "" : " at a tolerance of " + networkTolerance + " mm") +
-                        ". Run every call as a dry run first and read the rehearsal. NEVER move geometry to close a gap: " +
-                        "a refusal that reports the measured distance is the answer, not an obstacle. Report the " +
-                        "connectors still open afterwards - a network can be correctly connected and still incomplete, " +
-                        "and only the person who asked can tell which.";
                     break;
                 case "graphic-review-pack":
                     string sourceViewId = Argument(args, "source_view_id", true);
@@ -321,67 +256,6 @@ namespace Horizun.Server
                         "true, two different values share a colour and the legend is the only way to tell them apart. " +
                         "Finish with horizun_capture_view and report the legend beside the image.";
                     break;
-                case "dwg-to-bim-update":
-                    string updWalls = Argument(args, "walls_set", true);
-                    string updDevices = Argument(args, "devices_set", true);
-                    string updDrawing = Argument(args, "dwg_path", true);
-                    description = "Bring a converted unit to a new revision of its drawing.";
-                    body =
-                        "Call horizun_health first. Repoint the CAD link to " + updDrawing + " with horizun_manage_cad_links " +
-                        "(rehearse, then apply). Start horizun_run_procedure with procedure dwg-to-bim-update and inputs: " +
-                        "walls set " + updWalls + ", devices set " + updDevices + ", drawing " + updDrawing + ", the hash of " +
-                        "the revision it supersedes, the document, the CAD link id and the level. Advance it. When it waits " +
-                        "for a decision, show the person the held rows with their classification and origin, and record " +
-                        "their answer with operation decide - never decide for them. A change whose origin is unknown is " +
-                        "said to be unknown.";
-                    break;
-                case "dwg-to-bim-unit":
-                    string unitWalls = Argument(args, "walls_set", true);
-                    string unitDevices = Argument(args, "devices_set", true);
-                    string unitDrawing = Argument(args, "dwg_path", true);
-                    description = "Convert one unit from a drawing: inventory, walls, devices, audits.";
-                    body =
-                        "Call horizun_health first. Start horizun_run_procedure with procedure dwg-to-bim-unit and these " +
-                        "inputs: walls set " + unitWalls + ", devices set " + unitDevices + ", drawing " + unitDrawing +
-                        ", plus the document, the CAD link id and the level. Advance it step by step. A step that holds " +
-                        "- a rehearsal that is not clean, a reply that never arrived - is read and decided, never sent " +
-                        "again. At the end, report the inventory by outcome, what each audit found not built and why, " +
-                        "and say that finishing the steps is not accepting the unit.";
-                    break;
-                case "dwg-mep-unit-conversion":
-                    string mepSet = Argument(args, "requirement_set", true);
-                    string unitRegions = Argument(args, "unit_regions", true);
-                    string outfall = Argument(args, "outfall", false);
-                    description = "Convert DWG MEP units into a connected, audited model.";
-                    body =
-                        "Call horizun_health first, then horizun_cad_extract and read what the reader is blind to before " +
-                        "anything depends on it. Use this approved requirement set: " + mepSet + ", and only inside these " +
-                        "unit regions: " + unitRegions + ". Read the networks with horizun_cad_networks and the repeated " +
-                        "layouts with horizun_cad_unit_instances. Plan with horizun_plan_from_cad" +
-                        (string.IsNullOrWhiteSpace(outfall)
-                            ? "; no outfall was given, so every run will be built LEVEL - say so in the report, and do " +
-                              "not build a draining system that way"
-                            : " with this outfall and invert: " + outfall) +
-                        ". Rehearse horizun_apply_cad_plan with dry_run=true, then apply; join with horizun_cad_connect " +
-                        "the same way; finish with horizun_audit_cad_model and horizun_cad_review. Never join a crossing " +
-                        "that shares no endpoint, never treat a riser as an elbow, and list every junction, crossing and " +
-                        "gap that was NOT joined with its reason.";
-                    break;
-                case "dwg-electrical-symbols":
-                    string symbolLayers = Argument(args, "symbol_layers", true);
-                    string footprint = Argument(args, "max_footprint_mm", true);
-                    string familyTypes = Argument(args, "family_types", true);
-                    description = "Place DWG symbols as the family types a person named.";
-                    body =
-                        "Call horizun_health first, then horizun_cad_extract, and settle the chord tolerance before " +
-                        "grouping. Group the marks with horizun_cad_symbols on these layers only: " + symbolLayers +
-                        ", with a footprint of " + footprint + " mm. Place each symbol type as the family type this " +
-                        "person named: " + familyTypes + " - never name a type yourself, and leave any type they did not " +
-                        "name unplaced and listed. Rehearse horizun_create_elements with dry_run=true before applying, " +
-                        "and re-read the result with horizun_query_model. Report every rejected group with its reason; " +
-                        "do not raise the footprint until something passes, and report mirrored occurrences instead of " +
-                        "placing them rotated.";
-                    break;
                 case "material-standardisation":
                     string materialStandard = Argument(args, "material_standard", true);
                     description = "Bring materials to an approved standard, verified value by value.";
@@ -393,26 +267,6 @@ namespace Horizun.Server
                         "is why assigning one duplicates it unless sharing is asked for. Do not edit elements that " +
                         "reference these materials, and do not invent a name, class or colour the standard does not " +
                         "state - report what the standard does not cover instead.";
-                    break;
-                case "mep-coordination-review":
-                    string mepScope = Argument(args, "scope", false);
-                    description = "Inspect MEP coordination and provide only non-writing routing plans.";
-                    body =
-                        "Call horizun_health first. Inspect MEP elements and links " +
-                        (string.IsNullOrWhiteSpace(mepScope) ? "in the active model's measurable scope." : "for this stated scope: " + mepScope + ".") +
-                        " Use horizun_query_model and horizun_clash with explicit categories and tolerance. Where a route must be " +
-                        "evaluated, call horizun_plan_mep only and report its alternatives, conflicts and plan fingerprint. Do not " +
-                        "create, reroute, resize or connect MEP elements; missing systems, unloaded links and unreadable data remain unknown.";
-                    break;
-                case "western-forms-concrete-review":
-                    string concreteRequirements = Argument(args, "requirement_set", true);
-                    description = "Audit declared concrete, formwork and reinforcement requirements without writes.";
-                    body =
-                        "Call horizun_health first. Use this approved requirement set: " + concreteRequirements +
-                        ". Resolve it into explicit structural categories, levels, marks, cover, bar and formwork checks before reading " +
-                        "the model. Use horizun_query_structure and horizun_audit_reinforcement only. Report measured compliance, " +
-                        "missing evidence, unmodeled formwork and incomplete coverage separately. Do not generate, apply, renumber or " +
-                        "modify reinforcement or forms.";
                     break;
                 case "qaqc-report-export":
                     string workbookPath = Argument(args, "workbook_path", true);
@@ -526,6 +380,33 @@ namespace Horizun.Server
                         "counts, evidence - and the overall state is the WEAKEST hop's. A hop through Python is at most " +
                         "self_reported_verified. WHEN NOBODY IS AT THE KEYBOARD, only read and export files: every model write, " +
                         "Navisworks status, Power BI refresh or Project write needs a person's yes.";
+                    break;
+                }
+                case "model-with-template-kit":
+                {
+                    string kitName = Argument(args, "kit_name", false);
+                    string task = Argument(args, "task", false);
+                    description = "Model with an AI-ready Horizun template / Modelar con una plantilla AI-ready.";
+                    body =
+                        "You are modelling in Revit through the Horizun MCP with an AI-READY TEMPLATE: its kit tells you every type, " +
+                        "where it inserts, what it needs as host, its code and unit, how this server creates it and how to prove it. " +
+                        "1) Call horizun_health (active document, Revit busy?). 2) Brief yourself: horizun_template_kit operation=load " +
+                        (string.IsNullOrWhiteSpace(kitName)
+                            ? "with model_path = the active document's path; if no kit is found, read Project Information HZ_AI_Kit with horizun_query_model " +
+                              "(categories OST_ProjectInformation, return_parameters [HZ_AI_Kit]) and pass that kit_name, or operation=list. "
+                            : "kit_name=" + kitName + ". ") +
+                        "Read conventions, playbook_tasks, checks and limitations, and check contract_match - if false, rehearse every call. " +
+                        "3) The task: " + (string.IsNullOrWhiteSpace(task) ? "ask the person what to model and from which drawings. " : task + ". ") +
+                        "Follow horizun_template_kit operation=playbook for each stage in order (levels_and_grids, foundations, columns, beams, slabs, " +
+                        "walls, openings, stairs_and_railings, furniture_and_fixtures, rooms, reinforcement, documentation, verify_and_report). " +
+                        "4) NEVER invent a type: find it with operation=find (text in Spanish or English, category, host, dims) and use the hit's " +
+                        "placement.recipe and resolve call; use rules for choices (walls by use, doors by room, mounting heights, covers). " +
+                        "Check the hit's footprint against the clearances before placing. If no type fits, say so and propose duplicating the " +
+                        "closest one - ask before creating types. 5) Every write: dry_run=true first, then apply " +
+                        "with the token and a new idempotency_key; the reply must be verified_applied. Set HZ_AI_Source (drawing/instruction) " +
+                        "and HZ_AI_Status='draft' on what you create. 6) Close with operation=checks: run every check, capture 'HZ AI - 3D Check', " +
+                        "read 'HZ AI - Quantities by code', and report counts by category, each check's result, what is NOT done and the " +
+                        "verdict usable today / with corrections / not yet. WHEN NOBODY IS AT THE KEYBOARD, rehearse and report; do not apply.";
                     break;
                 }
                 case "project-intake":

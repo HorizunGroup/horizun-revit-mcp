@@ -3,24 +3,24 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary; enumerated values walked from the full input schemas of horizun://contract/tools served by the same binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "9b55b342bbb586e6ae921413409008aaeb8b67bb256d8640d2969823fb64e5b2",
-  "generated_from_contract_hash": "e44f15ba2c5bbc64f7555ae8",
+  "generated_from_server_sha": "1d165ebcd07c4178d7c0c119889ecf9784399b64f75fc4da2a4fd7e77d6c2aa4",
+  "generated_from_contract_hash": "85330e90d323a3e0f8992ffa",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "02e67e74f5d32989c592a8832f5d11ba9c7fd890",
-  "code_candidate_version": "4.0.1",
+  "code_candidate_commit": "ca4d5ee810fa76f3d7bf354d03211abbbe3a2573-dirty",
+  "code_candidate_version": "6.0.0",
   "code_candidate_stamp_source": "product_version",
-  "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "02e67e74f5d32989c592a8832f5d11ba9c7fd890",
+  "source_tree_clean_at_generation": false,
+  "source_tree_head_at_generation": "ca4d5ee810fa76f3d7bf354d03211abbbe3a2573",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
-    "tools": 125,
-    "reads": 46,
-    "writes": 79,
-    "destructive": 20,
-    "operations": 481,
-    "enumerated_variants": 1653
+    "tools": 110,
+    "reads": 38,
+    "writes": 72,
+    "destructive": 19,
+    "operations": 573,
+    "enumerated_variants": 1971
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -46,9 +46,19 @@
       "read_only": true,
       "destructive": false,
       "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
+      "operations": 2,
+      "enumerated_variants": 2,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "info",
+            "context"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_health",
@@ -56,7 +66,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 0,
+      "enumerated_variants": 2,
       "operation_detail": []
     },
     {
@@ -64,9 +74,28 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
+      "operations": 3,
+      "enumerated_variants": 8,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "save_local",
+            "sync_with_central",
+            "relinquish_own"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "sync_with_central"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_open_document",
@@ -74,7 +103,7 @@
       "destructive": false,
       "open_world": true,
       "operations": 0,
-      "enumerated_variants": 2,
+      "enumerated_variants": 3,
       "operation_detail": []
     },
     {
@@ -92,7 +121,7 @@
       "destructive": false,
       "open_world": true,
       "operations": 0,
-      "enumerated_variants": 11,
+      "enumerated_variants": 4,
       "operation_detail": []
     },
     {
@@ -100,8 +129,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": true,
-      "operations": 3,
-      "enumerated_variants": 9,
+      "operations": 8,
+      "enumerated_variants": 18,
       "operation_detail": [
         {
           "property": "operation",
@@ -109,7 +138,27 @@
           "values": [
             "check",
             "snapshot",
-            "compare_to"
+            "compare_to",
+            "what_if"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "action",
+          "path": "what_if.action",
+          "values": [
+            "delete",
+            "join",
+            "unjoin",
+            "move"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "what_if"
           ],
           "source_read_confirmed": true
         }
@@ -151,8 +200,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 39,
-      "enumerated_variants": 339,
+      "operations": 45,
+      "enumerated_variants": 400,
       "operation_detail": [
         {
           "property": "kind",
@@ -187,10 +236,14 @@
             "space",
             "area",
             "area_boundary",
+            "reference_plane",
             "wall_profile",
             "displacement",
             "stairs",
-            "toposolid"
+            "toposolid",
+            "door",
+            "window",
+            "wall_chain"
           ],
           "source_read_confirmed": true
         },
@@ -203,7 +256,9 @@
             "transition",
             "tee",
             "takeoff",
-            "cross"
+            "takeoff_or_tee",
+            "cross",
+            "cap"
           ],
           "source_read_confirmed": true
         },
@@ -216,66 +271,109 @@
             "transition",
             "tee",
             "takeoff",
-            "cross"
+            "takeoff_or_tee",
+            "cross",
+            "cap"
           ],
           "source_read_confirmed": true
         }
       ]
-    },
-    {
-      "tool": "horizun_create_family",
-      "read_only": false,
-      "destructive": true,
-      "open_world": true,
-      "operations": 12,
-      "enumerated_variants": 48,
-      "operation_detail": [
-        {
-          "property": "kind",
-          "path": "forms.kind",
-          "values": [
-            "extrusion",
-            "blend",
-            "revolution",
-            "sweep",
-            "swept_blend"
-          ],
-          "source_read_confirmed": true
-        },
-        {
-          "property": "kind",
-          "path": "connectors.kind",
-          "values": [
-            "pipe",
-            "duct",
-            "electrical",
-            "conduit",
-            "cable_tray"
-          ],
-          "source_read_confirmed": true
-        },
-        {
-          "property": "kind",
-          "path": "family_lines.kind",
-          "values": [
-            "symbolic",
-            "model"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
-    },
-    {
-      "tool": "horizun_manage_system_types",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 22,
-      "operation_detail": []
     },
     {
       "tool": "horizun_list_elements",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 0,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_measure_geometry",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 21,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_query_relations",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 17,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_selection_context",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 5,
+      "enumerated_variants": 20,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "context",
+            "snapshot",
+            "diff",
+            "validate_ids",
+            "view_contents"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "snapshot",
+            "diff"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "validate_ids"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "snapshot"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_api_help",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 2,
+      "enumerated_variants": 2,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "describe",
+            "check_signature"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_room_boundaries",
       "read_only": true,
       "destructive": false,
       "open_world": false,
@@ -297,15 +395,18 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 17,
-      "enumerated_variants": 26,
+      "operations": 22,
+      "enumerated_variants": 33,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operations.operation",
           "values": [
             "wall_join",
+            "wall_attach_top",
+            "wall_attach_base",
             "move",
+            "move_preserve_pin",
             "copy",
             "rotate",
             "mirror",
@@ -320,7 +421,9 @@
             "array_linear",
             "array_radial",
             "rename_level",
-            "edit_sketch"
+            "edit_sketch",
+            "column_attach",
+            "column_detach"
           ],
           "source_read_confirmed": true
         }
@@ -332,7 +435,7 @@
       "destructive": true,
       "open_world": false,
       "operations": 7,
-      "enumerated_variants": 12,
+      "enumerated_variants": 13,
       "operation_detail": [
         {
           "property": "operation",
@@ -354,6 +457,14 @@
             "remove"
           ],
           "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "set_mullions"
+          ],
+          "source_read_confirmed": true
         }
       ]
     },
@@ -363,7 +474,7 @@
       "destructive": true,
       "open_world": false,
       "operations": 5,
-      "enumerated_variants": 8,
+      "enumerated_variants": 10,
       "operation_detail": [
         {
           "property": "operation",
@@ -376,6 +487,22 @@
             "reset_shape"
           ],
           "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "add_point"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "add_split_line"
+          ],
+          "source_read_confirmed": true
         }
       ]
     },
@@ -384,8 +511,8 @@
       "read_only": false,
       "destructive": true,
       "open_world": false,
-      "operations": 9,
-      "enumerated_variants": 11,
+      "operations": 10,
+      "enumerated_variants": 12,
       "operation_detail": [
         {
           "property": "operation",
@@ -399,7 +526,8 @@
             "global_list",
             "global_create",
             "global_set",
-            "global_delete"
+            "global_delete",
+            "purge_legacy_marks"
           ],
           "source_read_confirmed": true
         }
@@ -433,7 +561,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 4,
-      "enumerated_variants": 4,
+      "enumerated_variants": 5,
       "operation_detail": [
         {
           "property": "operation",
@@ -442,6 +570,14 @@
             "wall",
             "ceiling",
             "read",
+            "remove"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
             "remove"
           ],
           "source_read_confirmed": true
@@ -458,6 +594,402 @@
       "operation_detail": []
     },
     {
+      "tool": "horizun_view_crop",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 12,
+      "enumerated_variants": 12,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "read",
+            "set_crop_box",
+            "set_crop_shape",
+            "reset_crop_shape",
+            "set_crop_from_elements",
+            "set_crop_from_room",
+            "set_annotation_crop_offsets",
+            "crop_active",
+            "crop_visible",
+            "read_section_box",
+            "section_box_active",
+            "set_section_box"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_sheet_layout",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 7,
+      "enumerated_variants": 10,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "get_viewport_box",
+            "move_viewport",
+            "auto_layout",
+            "layout_grid",
+            "set_view_scale",
+            "rename",
+            "set_title"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_view_visibility",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 15,
+      "enumerated_variants": 56,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "read",
+            "hide",
+            "unhide",
+            "set_overrides",
+            "clear_overrides",
+            "hide_foreign_markers",
+            "marker_scale",
+            "copy_link_overrides",
+            "datum_cleanup",
+            "set_scale",
+            "explain_overrides",
+            "override_report",
+            "link_datum_cleanup",
+            "graphics_report",
+            "copy_view_graphics"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "marker_scale"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "copy_link_overrides"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "read",
+            "hide",
+            "unhide",
+            "set_overrides",
+            "clear_overrides",
+            "hide_foreign_markers",
+            "datum_cleanup",
+            "explain_overrides",
+            "link_datum_cleanup"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "set_scale"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "override_report",
+            "graphics_report"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "copy_view_graphics"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "hide",
+            "unhide",
+            "set_overrides",
+            "clear_overrides",
+            "explain_overrides"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "set_overrides"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_wall_sweep",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 7,
+      "enumerated_variants": 14,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "read",
+            "create_type",
+            "place",
+            "place_edge"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "kind",
+          "path": "kind",
+          "values": [
+            "slab_edge",
+            "fascia",
+            "gutter"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_join_geometry",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 9,
+      "enumerated_variants": 50,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "read",
+            "join",
+            "unjoin",
+            "switch_order",
+            "corners",
+            "fix_corners",
+            "auto_priority",
+            "excavate",
+            "unexcavate"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "read",
+            "join"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "unjoin",
+            "switch_order",
+            "excavate",
+            "unexcavate"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "auto_priority"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "corners",
+            "fix_corners"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "join",
+            "unjoin",
+            "switch_order",
+            "fix_corners",
+            "auto_priority",
+            "excavate",
+            "unexcavate"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_room_finishes",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 2,
+      "enumerated_variants": 2,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "floors",
+            "baseboards"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_wall_finish",
+      "read_only": false,
+      "destructive": true,
+      "open_world": false,
+      "operations": 6,
+      "enumerated_variants": 10,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "match_core",
+            "create_finish_layers",
+            "convert_to_finish",
+            "paint_faces"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "action",
+          "path": "pairs.action",
+          "values": [
+            "paint",
+            "remove"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_audit_support",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 5,
+      "enumerated_variants": 8,
+      "operation_detail": [
+        {
+          "property": "mode",
+          "path": "mode",
+          "values": [
+            "floating",
+            "slab_supports",
+            "loose_beam_ends",
+            "coverage_gaps",
+            "model_offset"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "allOf.if.mode",
+          "values": [
+            "floating"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "allOf.if.mode",
+          "values": [
+            "coverage_gaps"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "allOf.if.mode",
+          "values": [
+            "model_offset"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_planimetry_ops",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 14,
+      "enumerated_variants": 37,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "datum_extents",
+            "fit_viewport",
+            "resolve_overlaps",
+            "legend_from_families",
+            "stagger_grid_bubbles",
+            "move_note",
+            "note_from_model",
+            "clone_tag",
+            "arrange_column",
+            "set_leader_end",
+            "reseat_leaders",
+            "required_notes",
+            "replace_text",
+            "sync_sheet_references"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
       "tool": "horizun_list_schedules",
       "read_only": true,
       "destructive": false,
@@ -471,8 +1003,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 53,
-      "enumerated_variants": 79,
+      "operations": 60,
+      "enumerated_variants": 96,
       "operation_detail": [
         {
           "property": "operation",
@@ -523,7 +1055,14 @@
             "sheet_set_delete",
             "renumber_sheets",
             "create_perspective",
-            "set_sun_study"
+            "set_sun_study",
+            "set_graphic_display",
+            "hide_outside_crop",
+            "set_starting_view",
+            "extend_grids_3d",
+            "create_room_isometric",
+            "set_view_properties",
+            "create_selection_filter"
           ],
           "source_read_confirmed": true
         },
@@ -558,16 +1097,7 @@
       "destructive": true,
       "open_world": true,
       "operations": 0,
-      "enumerated_variants": 94,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_deliver_ifc",
-      "read_only": false,
-      "destructive": true,
-      "open_world": true,
-      "operations": 0,
-      "enumerated_variants": 13,
+      "enumerated_variants": 108,
       "operation_detail": []
     },
     {
@@ -576,7 +1106,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 23,
+      "enumerated_variants": 47,
       "operation_detail": []
     },
     {
@@ -595,163 +1125,6 @@
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 5,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_plan_from_cad",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 2,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_manage_cad_links",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 4,
-      "enumerated_variants": 11,
-      "operation_detail": [
-        {
-          "property": "operation",
-          "path": "operation",
-          "values": [
-            "list",
-            "add",
-            "reload",
-            "repoint"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
-    },
-    {
-      "tool": "horizun_apply_cad_update",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_plan_cad_update",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 10,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_audit_cad_model",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_apply_cad_plan",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_query_cad",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 6,
-      "enumerated_variants": 16,
-      "operation_detail": [
-        {
-          "property": "mode",
-          "path": "mode",
-          "values": [
-            "instances",
-            "layers",
-            "geometry",
-            "coverage",
-            "profile",
-            "blocks"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
-    },
-    {
-      "tool": "horizun_cad_connect",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 6,
-      "enumerated_variants": 8,
-      "operation_detail": [
-        {
-          "property": "fitting",
-          "path": "junctions.fitting",
-          "values": [
-            "direct",
-            "elbow",
-            "tee",
-            "cross",
-            "transition",
-            "none"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
-    },
-    {
-      "tool": "horizun_cad_review",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_cad_extract",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_cad_networks",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 14,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_cad_symbols",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_cad_unit_instances",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
       "operation_detail": []
     },
     {
@@ -774,39 +1147,12 @@
       ]
     },
     {
-      "tool": "horizun_audit_reinforcement",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 2,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_plan_reinforcement",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 2,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_apply_reinforcement",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 2,
-      "operation_detail": []
-    },
-    {
       "tool": "horizun_query_structure",
       "read_only": true,
       "destructive": false,
       "open_world": false,
       "operations": 15,
-      "enumerated_variants": 35,
+      "enumerated_variants": 36,
       "operation_detail": [
         {
           "property": "mode",
@@ -829,6 +1175,14 @@
             "steel_review"
           ],
           "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "allOf.if.mode",
+          "values": [
+            "steel_review"
+          ],
+          "source_read_confirmed": true
         }
       ]
     },
@@ -837,8 +1191,8 @@
       "read_only": true,
       "destructive": false,
       "open_world": false,
-      "operations": 6,
-      "enumerated_variants": 25,
+      "operations": 16,
+      "enumerated_variants": 35,
       "operation_detail": [
         {
           "property": "mode",
@@ -847,9 +1201,19 @@
             "inventory",
             "sheets",
             "views",
+            "unplaced_views",
             "placements",
             "annotations",
-            "references"
+            "references",
+            "annotation_overlaps",
+            "leader_targets",
+            "annotation_staleness",
+            "sheet_conflicts",
+            "free_spot",
+            "view_ray",
+            "section_mark_diagnosis",
+            "iso_inventory",
+            "rasters"
           ],
           "source_read_confirmed": true
         }
@@ -905,20 +1269,65 @@
       "read_only": true,
       "destructive": false,
       "open_world": false,
-      "operations": 7,
-      "enumerated_variants": 32,
+      "operations": 19,
+      "enumerated_variants": 65,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operation",
           "values": [
             "auto_tags",
+            "model_notes",
             "intent_dimension",
             "dimension_set",
             "auto_dimension_grids",
             "auto_dimension_levels",
             "auto_dimension_curtain_walls",
-            "auto_dimension_openings"
+            "auto_dimension_openings",
+            "auto_dimension_heights",
+            "auto_dimension_room",
+            "dimension_mode"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "mode",
+          "values": [
+            "wall_thickness",
+            "opening_width",
+            "opening_height",
+            "room_clear_width",
+            "grid_to_grid",
+            "chain_along_line",
+            "level_heights",
+            "spot_elevation"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "allOf.if.mode",
+          "values": [
+            "wall_thickness",
+            "opening_height",
+            "spot_elevation"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "allOf.if.mode",
+          "values": [
+            "chain_along_line"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "allOf.if.mode",
+          "values": [
+            "room_clear_width"
           ],
           "source_read_confirmed": true
         }
@@ -929,8 +1338,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 14,
-      "enumerated_variants": 36,
+      "operations": 17,
+      "enumerated_variants": 49,
       "operation_detail": [
         {
           "property": "operation",
@@ -944,7 +1353,10 @@
             "set_field",
             "set_filters",
             "set_sorting",
-            "set_options"
+            "set_options",
+            "set_appearance",
+            "split",
+            "unsplit"
           ],
           "source_read_confirmed": true
         },
@@ -991,8 +1403,8 @@
       "read_only": false,
       "destructive": true,
       "open_world": false,
-      "operations": 14,
-      "enumerated_variants": 16,
+      "operations": 17,
+      "enumerated_variants": 40,
       "operation_detail": [
         {
           "property": "operation",
@@ -1011,7 +1423,86 @@
             "set_group_level",
             "place_group",
             "ungroup",
-            "convert_to_link"
+            "edit_type_members",
+            "convert_to_link",
+            "copy_to_levels",
+            "check_variation"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "create",
+            "add_members",
+            "remove_members"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "rename_type",
+            "duplicate_type",
+            "swap_type",
+            "change_group_type"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "swap_type",
+            "change_group_type",
+            "ungroup"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "change_group_type",
+            "set_group_level",
+            "add_members",
+            "remove_members",
+            "edit_type_members"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "set_group_level"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "edit_type_members"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.then.operation",
+          "values": [
+            "check_variation",
+            "add_members"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "check_variation"
           ],
           "source_read_confirmed": true
         }
@@ -1022,19 +1513,51 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 6,
-      "enumerated_variants": 9,
+      "operations": 11,
+      "enumerated_variants": 20,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operation",
           "values": [
             "list",
+            "status",
+            "loans",
             "create",
             "rename",
             "move_elements",
             "set_default",
+            "visibility",
+            "enable",
+            "create_local",
+            "borrow"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "rename",
+            "set_default",
+            "visibility",
+            "move_elements"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
             "visibility"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "move_elements"
           ],
           "source_read_confirmed": true
         }
@@ -1065,7 +1588,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 8,
-      "enumerated_variants": 11,
+      "enumerated_variants": 12,
       "operation_detail": [
         {
           "property": "operation",
@@ -1079,6 +1602,14 @@
             "rename_phase",
             "create_phase",
             "assign_design_option"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "set_element_phases"
           ],
           "source_read_confirmed": true
         }
@@ -1115,8 +1646,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 8,
-      "enumerated_variants": 11,
+      "operations": 9,
+      "enumerated_variants": 16,
       "operation_detail": [
         {
           "property": "operation",
@@ -1129,7 +1660,8 @@
             "create_masking_region",
             "place_detail_component",
             "place_symbol",
-            "set_line_style"
+            "set_line_style",
+            "draw_order"
           ],
           "source_read_confirmed": true
         }
@@ -1141,7 +1673,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 10,
-      "enumerated_variants": 24,
+      "enumerated_variants": 35,
       "operation_detail": [
         {
           "property": "operation",
@@ -1177,7 +1709,7 @@
       "destructive": true,
       "open_world": false,
       "operations": 3,
-      "enumerated_variants": 41,
+      "enumerated_variants": 39,
       "operation_detail": [
         {
           "property": "kind",
@@ -1196,9 +1728,19 @@
       "read_only": false,
       "destructive": false,
       "open_world": true,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
+      "operations": 2,
+      "enumerated_variants": 2,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "request",
+            "status"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_execute_python",
@@ -1206,7 +1748,7 @@
       "destructive": true,
       "open_world": true,
       "operations": 0,
-      "enumerated_variants": 2,
+      "enumerated_variants": 4,
       "operation_detail": []
     },
     {
@@ -1232,15 +1774,24 @@
       "read_only": false,
       "destructive": true,
       "open_world": false,
-      "operations": 2,
-      "enumerated_variants": 2,
+      "operations": 3,
+      "enumerated_variants": 4,
       "operation_detail": [
         {
           "property": "mode",
           "path": "mode",
           "values": [
             "ids",
-            "purge_unused"
+            "purge_unused",
+            "query"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "allOf.if.mode",
+          "values": [
+            "ids"
           ],
           "source_read_confirmed": true
         }
@@ -1251,8 +1802,8 @@
       "read_only": false,
       "destructive": true,
       "open_world": true,
-      "operations": 7,
-      "enumerated_variants": 17,
+      "operations": 10,
+      "enumerated_variants": 28,
       "operation_detail": [
         {
           "property": "operation",
@@ -1264,7 +1815,10 @@
             "close",
             "inspect",
             "sync_with_central",
-            "new_project"
+            "new_project",
+            "activate",
+            "batch",
+            "exit_application"
           ],
           "source_read_confirmed": true
         }
@@ -1317,9 +1871,18 @@
       "read_only": true,
       "destructive": false,
       "open_world": false,
-      "operations": 7,
-      "enumerated_variants": 16,
+      "operations": 9,
+      "enumerated_variants": 18,
       "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "warnings",
+            "wall_slab"
+          ],
+          "source_read_confirmed": true
+        },
         {
           "property": "operation",
           "path": "prevention_gate.operation",
@@ -1351,7 +1914,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 4,
-      "enumerated_variants": 15,
+      "enumerated_variants": 17,
       "operation_detail": [
         {
           "property": "mode",
@@ -1363,64 +1926,24 @@
             "carbon"
           ],
           "source_read_confirmed": true
-        }
-      ]
-    },
-    {
-      "tool": "horizun_clash",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 2,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_plan_mep",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 5,
-      "enumerated_variants": 8,
-      "operation_detail": [
+        },
         {
-          "property": "operation",
-          "path": "operation",
+          "property": "mode",
+          "path": "allOf.if.mode",
           "values": [
-            "route_run",
-            "network_census",
-            "system_analysis"
+            "carbon"
           ],
           "source_read_confirmed": true
         },
         {
-          "property": "kind",
-          "path": "kind",
+          "property": "mode",
+          "path": "allOf.if.mode",
           "values": [
-            "pipe",
-            "duct"
+            "takeoff"
           ],
           "source_read_confirmed": true
         }
       ]
-    },
-    {
-      "tool": "horizun_plan_from_ifc",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 12,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_apply_ifc_plan",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
     },
     {
       "tool": "horizun_code_check",
@@ -1428,7 +1951,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 4,
-      "enumerated_variants": 4,
+      "enumerated_variants": 6,
       "operation_detail": [
         {
           "property": "operation",
@@ -1440,6 +1963,22 @@
             "headroom"
           ],
           "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "headroom"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "operation",
+          "path": "allOf.if.operation",
+          "values": [
+            "travel_distance"
+          ],
+          "source_read_confirmed": true
         }
       ]
     },
@@ -1449,7 +1988,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 4,
-      "enumerated_variants": 4,
+      "enumerated_variants": 7,
       "operation_detail": [
         {
           "property": "operation",
@@ -1465,30 +2004,12 @@
       ]
     },
     {
-      "tool": "horizun_federation_check",
-      "read_only": true,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
-    },
-    {
       "tool": "horizun_audit_access",
       "read_only": true,
       "destructive": false,
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 10,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_copy_between_documents",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 5,
       "operation_detail": []
     },
     {
@@ -1515,8 +2036,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 3,
-      "enumerated_variants": 3,
+      "operations": 4,
+      "enumerated_variants": 4,
       "operation_detail": [
         {
           "property": "operation",
@@ -1524,7 +2045,8 @@
           "values": [
             "create",
             "duplicate",
-            "update"
+            "update",
+            "set_appearance"
           ],
           "source_read_confirmed": true
         }
@@ -1535,8 +2057,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 9,
-      "enumerated_variants": 17,
+      "operations": 14,
+      "enumerated_variants": 28,
       "operation_detail": [
         {
           "property": "operation",
@@ -1550,7 +2072,12 @@
             "list_line_patterns",
             "create_line_pattern",
             "list_fill_patterns",
-            "create_fill_pattern"
+            "create_fill_pattern",
+            "list_color_schemes",
+            "create_color_scheme",
+            "edit_color_scheme",
+            "apply_color_scheme",
+            "place_color_legend"
           ],
           "source_read_confirmed": true
         }
@@ -1578,30 +2105,6 @@
       ]
     },
     {
-      "tool": "horizun_electrical",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 7,
-      "enumerated_variants": 7,
-      "operation_detail": [
-        {
-          "property": "operation",
-          "path": "operation",
-          "values": [
-            "list_panels",
-            "list_circuits",
-            "create_circuit",
-            "assign_panel",
-            "add_to_circuit",
-            "remove_from_circuit",
-            "panel_schedule"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
-    },
-    {
       "tool": "horizun_structural_connections",
       "read_only": false,
       "destructive": false,
@@ -1609,110 +2112,6 @@
       "operations": 0,
       "enumerated_variants": 0,
       "operation_detail": []
-    },
-    {
-      "tool": "horizun_mep_routing",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 16,
-      "enumerated_variants": 28,
-      "operation_detail": [
-        {
-          "property": "operation",
-          "path": "operation",
-          "values": [
-            "read",
-            "set_rules",
-            "add_sizes",
-            "remove_sizes",
-            "resize",
-            "slope",
-            "size_by_flow",
-            "route",
-            "hangers"
-          ],
-          "source_read_confirmed": true
-        },
-        {
-          "property": "kind",
-          "path": "kind",
-          "values": [
-            "pipe",
-            "duct",
-            "conduit",
-            "cable_tray"
-          ],
-          "source_read_confirmed": true
-        },
-        {
-          "property": "action",
-          "path": "rules.action",
-          "values": [
-            "add",
-            "remove",
-            "move"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
-    },
-    {
-      "tool": "horizun_connect_mep",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 2,
-      "enumerated_variants": 7,
-      "operation_detail": [
-        {
-          "property": "operation",
-          "path": "actions.operation",
-          "values": [
-            "connect",
-            "disconnect"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
-    },
-    {
-      "tool": "horizun_manage_links",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 14,
-      "enumerated_variants": 14,
-      "operation_detail": [
-        {
-          "property": "operation",
-          "path": "operation",
-          "values": [
-            "list",
-            "visible_elements",
-            "unload",
-            "reload",
-            "pin",
-            "unpin",
-            "add",
-            "add_instance",
-            "change_path",
-            "acquire_coordinates",
-            "scan_deviation"
-          ],
-          "source_read_confirmed": true
-        },
-        {
-          "property": "kind",
-          "path": "kind",
-          "values": [
-            "rvt",
-            "point_cloud",
-            "ifc"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
     },
     {
       "tool": "horizun_plan_structure",
@@ -1728,54 +2127,6 @@
           "values": [
             "columns_on_grid_intersections",
             "beams_along_grids"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
-    },
-    {
-      "tool": "horizun_coordination",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 10,
-      "enumerated_variants": 16,
-      "operation_detail": [
-        {
-          "property": "operation",
-          "path": "operation",
-          "values": [
-            "list",
-            "update",
-            "export",
-            "import",
-            "import_navisworks",
-            "show",
-            "evidence",
-            "navisworks_readiness",
-            "prepare_navisworks",
-            "navisworks_status"
-          ],
-          "source_read_confirmed": true
-        }
-      ]
-    },
-    {
-      "tool": "horizun_resolve_clash",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 4,
-      "enumerated_variants": 4,
-      "operation_detail": [
-        {
-          "property": "operation",
-          "path": "operation",
-          "values": [
-            "propose",
-            "apply",
-            "propose_opening",
-            "apply_opening"
           ],
           "source_read_confirmed": true
         }
@@ -1801,21 +2152,32 @@
       ]
     },
     {
+      "tool": "horizun_manage_classification_table",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 3,
+      "enumerated_variants": 5,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "set_path",
+            "reload",
+            "diagnose"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
       "tool": "horizun_set_keynote",
       "read_only": false,
       "destructive": false,
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 3,
-      "operation_detail": []
-    },
-    {
-      "tool": "horizun_family_apply",
-      "read_only": false,
-      "destructive": false,
-      "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
       "operation_detail": []
     },
     {
@@ -1834,6 +2196,15 @@
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 0,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_split_by_level",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 2,
       "operation_detail": []
     },
     {
@@ -1922,8 +2293,8 @@
       "read_only": true,
       "destructive": false,
       "open_world": true,
-      "operations": 7,
-      "enumerated_variants": 7,
+      "operations": 9,
+      "enumerated_variants": 9,
       "operation_detail": [
         {
           "property": "operation",
@@ -1931,11 +2302,40 @@
           "values": [
             "leaf",
             "search",
+            "match",
+            "products",
             "bsdd_search",
             "bsdd_search_dictionary",
             "bsdd_class",
             "bsdd_property",
             "bsdd_dictionaries"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_template_kit",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 10,
+      "enumerated_variants": 13,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list",
+            "load",
+            "find",
+            "type",
+            "rules",
+            "playbook",
+            "checks",
+            "validate",
+            "audit",
+            "evidence_schema"
           ],
           "source_read_confirmed": true
         }
@@ -2205,9 +2605,19 @@
       "read_only": false,
       "destructive": false,
       "open_world": true,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
+      "operations": 2,
+      "enumerated_variants": 2,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "report",
+            "focus_window"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     }
   ]
 }

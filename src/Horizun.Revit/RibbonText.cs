@@ -57,6 +57,7 @@ namespace Horizun.Revit
             switch ((profile ?? "").Trim().ToLowerInvariant())
             {
                 case "read_only": return T(es, "solo consultar; no cambia nada", "look only; changes nothing");
+                case "documentation": return T(es, "solo documentación: vistas, anotación, láminas, PDF, imágenes de vistas y guardado local; no modifica elementos modelados", "documentation only: views, annotation, sheets, PDF, view images and local save; does not change modelled elements");
                 case "safe_write": return T(es, "puede modificar el modelo abierto (cada cambio se comprueba)", "may change the open model (every change is checked)");
                 case "full_write": return T(es, "puede modificar, exportar y abrir o cerrar documentos", "may change, export and open or close documents");
                 case "unsafe_code": return T(es, "todo lo anterior y además scripts de Python", "all of the above, plus Python scripts");
@@ -179,6 +180,7 @@ namespace Horizun.Revit
         internal const string OptionPause = "pause";
         internal const string OptionCentral = "central";
         internal const string OptionSync = "sync";
+        internal const string OptionSyncOnly = "synconly";
 
         /// <summary>The option the person clicked, or null when the window was closed.</summary>
         internal string Selected { get; private set; }
@@ -242,6 +244,9 @@ namespace Horizun.Revit
             bool sync;
             try { sync = BridgeSettings.SyncWithCentralOwnerEnabled; } catch { sync = false; }
             rows.Children.Add(Row(OptionSync, SyncCentralPermissionCommand.Title(spanish), SyncCentralPermissionCommand.Detail(spanish), SyncCentralPermissionCommand.State(spanish, sync)));
+            bool syncOnly;
+            try { syncOnly = BridgeSettings.SyncOnlyGrantEnabled; } catch { syncOnly = false; }
+            rows.Children.Add(Row(OptionSyncOnly, SyncOnlyGrantCommand.Title(spanish), SyncOnlyGrantCommand.Detail(spanish), SyncOnlyGrantCommand.State(spanish, syncOnly)));
             root.Children.Add(rows);
 
             // Footer: a plain close. Escape does the same.

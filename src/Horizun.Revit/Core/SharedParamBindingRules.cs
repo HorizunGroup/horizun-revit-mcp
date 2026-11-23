@@ -17,6 +17,11 @@
 // is NOT APPLICABLE - not a measurement that failed, and not a gate on the
 // verdict.
 // -----------------------------------------------------------------------------
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+
 namespace Horizun.Revit.Core
 {
     public static class SharedParamBindingRules
@@ -32,6 +37,43 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static bool VaryApplies(bool typeBinding) => !typeBinding;
 
+        internal static ResolvedPlan ResolvePlan(string command, string documentKey, string revitVersion,
+            string documentFingerprint, Guid guid, string name, string dataType, bool reinsert,
+            bool existingCategoriesMeasured, IEnumerable<long> existingCategories,
+            ICollection<long> finalCategories, string kind, string group)
+        {
+            var existing = existingCategories?.ToArray();
+            var plan = new ResolvedPlan
+            {
+                Command = command,
+                DocumentKey = documentKey,
+                RevitVersion = revitVersion,
+                DocumentFingerprint = documentFingerprint,
+                ExpectedCascadeCount = existing?.Count(id => !finalCategories.Contains(id)) ?? 0
+            };
+            plan.Elements.Add(new PlannedElement
+            {
+                UniqueId = "binding:" + guid.ToString("d"),
+                Category = "ParameterBinding",
+                TypeName = name,
+                Action = reinsert ? PlannedAction.Modify : PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                {
+                    { "op", reinsert ? "reinsert" : "insert" },
+                    { "data_type", dataType },
+                    { "existing", existing == null && !existingCategoriesMeasured ? "<unmeasured>" : CategoryKey(existing) },
+                    { "final", CategoryKey(finalCategories) },
+                    { "kind", kind },
+                    { "group", group ?? "" }
+                }
+            });
+            return plan;
+        }
+
+        // A CategorySet can enumerate in any order. IDs identify categories across languages.
+        private static string CategoryKey(IEnumerable<long> ids) => ids == null ? "" :
+            string.Join(",", ids.OrderBy(id => id).Select(id => id.ToString(CultureInfo.InvariantCulture)));
+
         /// <summary>
         /// The facts BindSharedParamCommand measured after the commit. Each nullable is
         /// tri-state on purpose: null is "could not look", never "false".
@@ -42,6 +84,7 @@ namespace Horizun.Revit.Core
             public bool? ExistsAfter;
             public bool KindMeasured;
             public bool KindMatches;
+            public bool? DataTypeMatches;
             public bool CatsMeasured;
             public bool CatsComplete;
             public bool CatsHaveUnreadable;
@@ -63,6 +106,7 @@ namespace Horizun.Revit.Core
 
             if (!f.KindMeasured) return Unknown;
             if (!f.KindMatches) return NotBound;      // it is bound - as the OTHER kind.
+            if (f.DataTypeMatches != true) return Unknown;
 
             if (!f.CatsMeasured) return Unknown;
             // A category missing from a list that is admittedly a LOWER BOUND is not a

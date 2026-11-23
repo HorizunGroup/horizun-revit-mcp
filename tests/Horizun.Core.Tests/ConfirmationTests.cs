@@ -25,6 +25,55 @@ namespace Horizun.Core.Tests
         private const string OtherDoc = "rvt:2026|guid:def|path:y|title:tower";
 
         [Fact]
+        public void Composite_continuation_does_not_expire_but_retains_the_approved_request()
+        {
+            var s = NewStore();
+            var original = s.Issue("horizun_create_elements", Doc, "stage-hash");
+            var check = s.ValidateAndRenew(original.Token, "horizun_create_elements", Doc, "stage-hash", null, out string continuation);
+            Assert.True(check.Ok);
+            _clock = _clock.AddDays(30);
+            Assert.True(s.Validate(continuation, "horizun_create_elements", Doc, "stage-hash").Ok);
+            var altered = s.Issue("horizun_create_elements", Doc, "stage-hash");
+            Assert.False(s.ValidateAndRenew(altered.Token, "horizun_create_elements", Doc, "different-hash", null, out _).Ok);
+        }
+
+        [Fact]
+        public void A_composite_token_is_judged_when_the_call_arrived_not_after_minutes_of_preparation()
+        {
+            var s = NewStore();
+            var t = s.Issue("horizun_create_elements", Doc, "stage-hash");
+            DateTime arrived = _clock.AddSeconds(3);
+            _clock = _clock.AddMinutes(14);   // resolving a large scan plan
+            Assert.Null(s.Liveness(t.Token, arrived));
+            Assert.Equal(ConfirmationState.Expired, s.Validate(t.Token, "horizun_create_elements", Doc, "stage-hash").State);
+            Assert.True(s.ValidateAndRenew(t.Token, "horizun_create_elements", Doc, "stage-hash", null, arrived, out string c).Ok);
+            Assert.NotNull(c);
+        }
+
+        [Fact]
+        public void A_token_already_dead_when_the_call_arrived_is_refused_up_front_and_a_future_time_is_not_trusted()
+        {
+            var s = NewStore();
+            var t = s.Issue("stage", Doc, "one");
+            _clock = _clock.Add(ConfirmationStore.DefaultTtl).AddSeconds(1);
+            Assert.Contains("expired", s.Liveness(t.Token, _clock));
+            Assert.Contains("expired", s.Liveness(t.Token, _clock.AddDays(-1).AddDays(2)));
+            Assert.Equal(ConfirmationState.Expired, s.Validate(t.Token, "stage", Doc, "one", _clock.AddHours(1)).State);
+            Assert.NotNull(s.Liveness("nope", _clock));
+        }
+
+        [Fact]
+        public void Invalid_late_composite_token_is_refused_without_spending_earlier_token()
+        {
+            var s = NewStore();
+            var first = s.Issue("stage", Doc, "one");
+            var last = s.Issue("stage", Doc, "two");
+            _clock = _clock.Add(ConfirmationStore.DefaultTtl).Add(TimeSpan.FromSeconds(1));
+            Assert.False(s.ValidateAndRenew(last.Token, "stage", Doc, "two", null, out _).Ok);
+            Assert.Equal(ConfirmationState.Expired, s.Validate(first.Token, "stage", Doc, "one").State);
+        }
+
+        [Fact]
         public void A_token_issued_for_this_plan_and_this_document_is_accepted_once()
         {
             var s = NewStore();

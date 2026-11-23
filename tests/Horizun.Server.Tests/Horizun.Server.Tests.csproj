@@ -16,9 +16,32 @@
     <RootNamespace>Horizun.Server.Tests</RootNamespace>
   </PropertyGroup>
 
+  <!-- Parse the producers themselves for the cross-command write contract. -->
   <ItemGroup>
+    <Compile Include="..\..\src\Horizun.Revit\Core\AssumptionNotes.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CreationFieldErrors.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CreationBatch.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReliabilityDefaults.cs" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ApplicationOutcome.cs" Link="ApplicationOutcome.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ExportDeliveryRules.cs" Link="ExportDeliveryRules.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Horizun.Server\StaleServer.cs" Link="StaleServer.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TemplateKitRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReadResultCoverage.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ClientPresence.cs" />
+    <Compile Include="..\..\src\Horizun.Server\TransportProgress.cs" Link="TransportProgress.cs" />
+    <Compile Include="..\..\src\Horizun.Server\TemplateKitTool.ProductFamilies.cs" Link="TemplateKitTool.ProductFamilies.cs" />
     <Compile Include="..\..\src\Horizun.Server\WerDumpEvidence.cs" Link="WerDumpEvidence.cs" />
+    <Compile Include="..\..\src\Horizun.Server\PartialWriteGate.cs" Link="PartialWriteGate.cs" />
+    <None Include="..\..\src\Horizun.Revit\Recipes\hz_compat.py"
+          Link="Recipes\hz_compat.py" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\..\src\Horizun.Server\Horizun.Server.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Horizun.Core.Tests\Horizun.Core.Tests.csproj" ReferenceOutputAssembly="false" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RequestGate.cs" Link="RequestGate.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CallProgress.cs" Link="CallProgress.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -52,7 +75,6 @@
     <!-- The MCP App the clash tool declares. Linked with McpResources because the
          property that matters - that the app and the text render the same payload from
          the same fields - is only assertable against the shipped source. -->
-    <Compile Include="..\..\src\Horizun.Server\McpAppResources.cs" Link="McpAppResources.cs" />
     <!-- The impact preview, with its three files under the server's logical names so
          the page the tests read is the page the server serves. -->
     <Compile Include="..\..\src\Horizun.Server\ImpactPreviewApp.cs" Link="ImpactPreviewApp.cs" />
@@ -67,8 +89,16 @@
     <Compile Include="..\..\src\Horizun.Server\McpLogging.cs" Link="McpLogging.cs" />
     <Compile Include="..\..\src\Horizun.Server\ToolListMonitor.cs" Link="ToolListMonitor.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpTasks.cs" Link="McpTasks.cs" />
+    <Compile Include="..\..\src\Horizun.Server\CancelAnswerMapping.cs" Link="CancelAnswerMapping.cs" />
+    <Compile Include="..\..\src\Horizun.Server\HostFailure.cs" Link="HostFailure.cs" />
     <Compile Include="..\..\src\Horizun.Server\CatalogLookup.cs" Link="CatalogLookup.cs" />
+    <Compile Include="..\..\src\Horizun.Server\CatalogMatch.cs" Link="CatalogMatch.cs" />
     <Compile Include="..\..\src\Horizun.Server\TextFold.cs" Link="TextFold.cs" />
+    <Compile Include="..\..\src\Horizun.Server\TemplateKitTool.cs" Link="TemplateKitTool.cs" />
+    <Compile Include="..\..\src\Horizun.Server\TemplateKitTool.Audit.cs" Link="TemplateKitTool.Audit.cs" />
+    <Compile Include="..\..\src\Horizun.Server\TemplateKitTool.Recipes.cs" />
+    <Compile Include="..\..\src\Horizun.Server\TemplateKitTool.Checks.cs" />
+    <Compile Include="..\..\src\Horizun.Server\TemplateKitTool.DeclaredEvidence.cs" />
     <!-- The ISO 19650 project context tool, with the schema embedded under the SAME
          logical name the server uses, so the tests read the resource the shipped
          code reads rather than a file next to the test. -->
@@ -95,6 +125,11 @@
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\CsvText.cs" Link="CsvText.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelReadRows.cs" Link="ExcelReadRows.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LevelSpanRules.cs" Link="LevelSpanRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GeometryInput.cs" Link="GeometryInput.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LoopHealthRules.cs" Link="LoopHealthRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallSketchDriftRules.cs" Link="WallSketchDriftRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PointClouds\Recognition\*.cs" Link="PointClouds\Recognition\%(Filename)%(Extension)" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />
     <!-- The budget comparison and the rules it runs, so the Excel destination can be
          proved against a disposable workbook and the Power BI one in dry_run only. -->
@@ -139,10 +174,21 @@
          of the shared-root property is under test with the same source the add-in
          compiles. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" Link="HorizunPaths.cs" />
+    <Compile Include="../../src/Horizun.Revit/Core/OutputPages.cs" Link="OutputPages.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncResultPayload.cs" Link="AsyncResultPayload.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DiscoverySweep.cs" Link="DiscoverySweep.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RegistryContract.cs" Link="RegistryContract.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" Link="CommandResult.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CommandDeadlinePolicy.cs" Link="CommandDeadlinePolicy.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ErrorCodes.cs" Link="ErrorCodes.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Ed25519.cs" Link="Ed25519.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ErrorSignature.cs" Link="ErrorSignature.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScriptPrecompile.cs" Link="ScriptPrecompile.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScriptErrorSummary.cs" Link="ScriptErrorSummary.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ApiHelpRules.cs" Link="ApiHelpRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ApiSignatureRules.cs" Link="ApiSignatureRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\HealthState.cs" Link="HealthState.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModalDialogKinds.cs" Link="ModalDialogKinds.cs" />
     <!-- CommandResult now carries the fallback signal, so its type comes with it. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\FallbackSignal.cs" Link="FallbackSignal.cs" />
     <!-- The transport hop, as the shipped code rather than a copy: PipeEnvelope is what
@@ -155,6 +201,8 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanFailure.cs" Link="PlanFailure.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Transport\PipeEnvelope.cs" Link="PipeEnvelope.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpResult.cs" Link="McpResult.cs" />
+    <Compile Include="..\..\src\Horizun.Server\HealthAnswer.cs" Link="HealthAnswer.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ServerFacts.cs" Link="ServerFacts.cs" />
     <!-- The typed-overlap advisory masked by Python's OWN lexer. It needs a real
          IronPython engine, which this project already has for the recipe syntax check,
          and it is the path the command actually takes - the hand scanner is only the
@@ -167,12 +215,21 @@
          since-window, the refusal to call an unwatched run quiet, and a dialog scope
          that is released even when the block throws) is exercised against stand-ins. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptPrelude.cs" Link="ScriptPrelude.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonRunControl.cs" Link="PythonRunControl.cs" />
+    <!-- The .NET libraries execute_python preloads so `from System.Linq import ...`
+         imports without clr.AddReference on .NET 8+ Revit. Proved against IronPython. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonBclAssemblies.cs" Link="PythonBclAssemblies.cs" />
+    <!-- The compatibility rewrite, run for real: what it produces must compile and
+         behave in IronPython together with the prelude's transaction tracking. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonCompat.cs" Link="PythonCompat.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonSourceMask.cs" Link="PythonSourceMask.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Idempotency.cs" Link="Idempotency.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DurableCommandIdempotency.cs" Link="DurableCommandIdempotency.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DurableStoreRetention.cs" Link="DurableStoreRetention.cs" />
     <!-- The add-in's job record, so "the server reads where the add-in writes" can be
          asserted with the writer that actually ships rather than a stand-in. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" Link="Job.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CheckpointThrottle.cs" Link="CheckpointThrottle.cs" />
     <!-- The sequence allowlist and the step states, so the SCHEMA and the ADMISSION
          can be compared against each other rather than kept in step by hand. A tool
          the schema offers and admission refuses is a documented option the server
@@ -188,13 +245,19 @@
     <Compile Include="..\..\src\Horizun.Server\JobStatus.cs" Link="JobStatus.cs" />
     <!-- The shared contract, so drift between the two halves is a failing test. -->
     <Compile Include="..\..\src\Horizun.Contracts\Contract.cs" Link="Contract.cs" />
+    <Compile Include="..\..\src\Horizun.Contracts\Edition.cs" Link="Edition.cs" />
     <!-- Which Revit a session is pointed at, and the tool that repoints it. The pair
          used to be two static fields written one after the other while calls ran on
          other threads, and the only place that property can be proved is here: it
          needs concurrency and no Revit at all. Targets.cs comes with the two small
          things it leans on - the refusal type and the log. -->
     <Compile Include="..\..\src\Horizun.Server\TargetSelection.cs" Link="TargetSelection.cs" />
+    <Compile Include="..\..\src\Horizun.Server\InstanceRouting.cs" Link="InstanceRouting.cs" />
     <Compile Include="..\..\src\Horizun.Server\Targets.cs" Link="Targets.cs" />
+    <Compile Include="..\..\src\Horizun.Server\WindowFocus.cs" Link="WindowFocus.cs" />
+    <Compile Include="..\..\src\Horizun.Server\TargetMemory.cs" Link="TargetMemory.cs" />
+    <Compile Include="..\..\src\Horizun.Server\WindowTitleText.cs" Link="WindowTitleText.cs" />
+    <Compile Include="..\..\src\Horizun.Server\DocumentTarget.cs" Link="DocumentTarget.cs" />
     <Compile Include="..\..\src\Horizun.Server\Errors.cs" Link="Errors.cs" />
     <!-- Server-to-client requests (elicitation): ProjectContext's elicit reads the
          per-call ClientContext, and the in-memory client drives McpClientRequests. -->
@@ -217,18 +280,23 @@
     <Compile Include="..\..\src\Horizun.Server\HostFileMutex.cs" Link="HostFileMutex.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptInvocation.cs" />
     <Compile Include="..\..\src\Horizun.Server\Tools.cs" Link="Tools.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ProEdition.cs" Link="ProEdition.cs" />
     <!-- The schema facade (3.0.0): the mode, the three meta-tools and the call unwrap. -->
     <Compile Include="..\..\src\Horizun.Server\SchemaFacade.cs" Link="SchemaFacade.cs" />
-    <!-- HORIZUN_SCHEMA_MODE=compact: the same tools, short descriptions and only the common arguments. -->
-    <Compile Include="..\..\src\Horizun.Server\SchemaCompact.cs" Link="SchemaCompact.cs" />
-    <Compile Include="..\..\src\Horizun.Server\SchemaCompactSpecs.cs" Link="SchemaCompactSpecs.cs" />
+    <Compile Include="..\..\src\Horizun.Server\LocalSchema.cs" Link="LocalSchema.cs" />
+    <!-- 4.0 tool groups and profiles (visibility) and the compact announcement switch. -->
+    <Compile Include="..\..\src\Horizun.Server\ToolVisibility.cs" Link="ToolVisibility.cs" />
+    <Compile Include="..\..\src\Horizun.Server\CompactAnnouncement.cs" Link="CompactAnnouncement.cs" />
     <Compile Include="..\..\src\Horizun.Server\ToolSearch.cs" Link="ToolSearch.cs" />
-    <Compile Include="..\..\src\Horizun.Server\ToolsetActivation.cs" Link="ToolsetActivation.cs" />
-    <Compile Include="..\..\src\Horizun.Server\ToolProfiles.cs" Link="ToolProfiles.cs" />
+    <Compile Include="..\..\src\Horizun.Server\CompactResponse.cs" Link="CompactResponse.cs" />
     <!-- The contract schema check: the advertised-schema equivalence proof and schema_help judge arguments with the same rules. -->
     <Compile Include="..\..\src\Horizun.Server\ContractSchemaCheck.cs" Link="ContractSchemaCheck.cs" />
     <Compile Include="..\..\src\Horizun.Server\ContractVariants.cs" Link="ContractVariants.cs" />
     <Compile Include="..\..\src\Horizun.Server\SchemaHelp.cs" Link="SchemaHelp.cs" />
+    <Compile Include="..\..\src\Horizun.Server\UndeclaredArguments.cs" Link="UndeclaredArguments.cs" />
+    <Compile Include="..\..\src\Horizun.Server\IdentitySchema.cs" Link="IdentitySchema.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ElementIdentityGuard.cs" Link="ElementIdentityGuard.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdentityPrepassCore.cs" Link="IdentityPrepassCore.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" Link="Settings.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ToolPacks.cs" Link="ToolPacks.cs" />
     <!-- The model-data neutraliser and injection marker every tool reply passes through. -->

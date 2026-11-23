@@ -41,15 +41,6 @@ namespace Horizun.Server
             def.Name != "horizun_submit_job" && def.Name != "horizun_execute_python" &&
             def.Name != "horizun_request_python_access";
 
-        /// <summary>
-        /// Supports, AND the durable queue a task rides on is reachable in this session. A task is admitted
-        /// through horizun_submit_job; when the toolset selection hides it (`local` alone) a task would be
-        /// refused at the door, so it is not offered. Only the TOOLSETS are asked here - the permission
-        /// profile keeps deciding what it always decided.
-        /// </summary>
-        public static bool SupportsHere(ToolDef def) =>
-            Supports(def) && !Tools.HiddenByToolsetsOnly("horizun_submit_job");
-
         public static JObject Create(
             JObject toolCall, Func<JObject, CancellationToken, JToken> invokeTool, CancellationToken cancellationToken)
         {
@@ -58,10 +49,6 @@ namespace Horizun.Server
                 throw new McpError(-32602, "Invalid params: task augmentation requires an object 'task'.");
             string tool = RequiredString(toolCall, "name");
             ToolDef def = Tools.Find(tool);
-            if (Supports(def) && !SupportsHere(def))
-                throw new McpError(-32602,
-                    "'" + tool + "' cannot run as an MCP task in this session: tasks are admitted through " +
-                    "horizun_submit_job, which the active toolsets do not include. Call it normally.");
             if (!Supports(def))
                 throw new McpError(-32602,
                     "'" + tool + "' does not support MCP task augmentation. Host-resident tools, execute_python, " +
@@ -155,6 +142,8 @@ namespace Horizun.Server
         {
             public bool Removed;
             public string State;
+            /// <summary>A running Python script was asked to stop at its next checkpoint.</summary>
+            public bool InterruptRequested;
         }
 
         /// <summary>
@@ -234,15 +223,7 @@ namespace Horizun.Server
                 JObject record = ReadRequired(taskId);
                 if (IsTerminal((string)record["status"])) return;
                 record["cancellation_answer"] = answer == null ? "unanswered" : answer.State;
-                record["status_message"] =
-                    answer == null
-                        ? "Cancellation was requested, but Revit could not confirm removing the job (no answer from the " +
-                          "bridge - Revit closed, an older add-in, or a timeout). It may still run; nothing is claimed."
-                    : answer.Removed
-                        ? "Removed from Revit's queue before it started, on request. Nothing ran."
-                        : "Cancellation was requested, but the job was no longer waiting in Revit's queue (" + answer.State +
-                          "): it is running or has finished, and work on Revit's UI thread cannot be interrupted. It will " +
-                          "reach a terminal state on its own.";
+                record["status_message"] = CancelAnswerMapping.Meaning(answer);
                 record["last_updated_at"] = DateTimeOffset.UtcNow.ToString("O");
                 Write(record);
             }
@@ -516,6 +497,10 @@ namespace Horizun.Server
                         case "running": status = "working"; message = "Running on Revit's UI thread."; break;
                         case "ok": status = "completed"; message = "The Revit tool completed and its result is available."; break;
                         case "cancelled": status = "cancelled"; message = "The queued Revit job was cancelled before execution."; break;
+                        case "cancelled_running":
+                        case "timed_out":
+                            status = TaskStatusFor(state, out message); break;
+                        case "cancelled_after_start": status = "cancelled"; message = "The Revit job was cancelled between callbacks after it started; earlier progress is partial."; break;
                         default: status = "failed"; message = JobFailureText(job); break;
                     }
                     string jobPath = Path.Combine(Horizun.Revit.Core.HorizunPaths.JobsDir(), jobId + ".jsonl");
@@ -583,6 +568,18 @@ namespace Horizun.Server
                     string error = "Error: " + JobFailureText(job) + RevitSaidText(job["revit_said"]);
                     response = McpResult.Error(error, job["fallback"] as JObject,
                         job["capability_gaps"] as JArray, job["detail"] as JObject);
+                    // A started continuation may have left an immutable snapshot before
+                    // cancellation or failure. Keep the error verdict, but do not throw
+                    // away the evidence that job_status has already recovered.
+                    string state = (string)job["state"];
+                    if ((state == "cancelled_after_start" || state == "failed") &&
+                        job["result"] != null && job["result"].Type != JTokenType.Null)
+                    {
+                        var structured = response["structuredContent"] as JObject ?? new JObject();
+                        structured["partial_result"] = job["result"].DeepClone();
+                        structured["partial_result_complete"] = false;
+                        response["structuredContent"] = structured;
+                    }
                 }
             }
 
@@ -590,6 +587,20 @@ namespace Horizun.Server
             meta["io.modelcontextprotocol/related-task"] = new JObject { ["taskId"] = taskId };
             response["_meta"] = meta;
             return response;
+        }
+
+        /// <summary>The MCP task status and message for a job a running script was stopped on.</summary>
+        internal static string TaskStatusFor(string jobState, out string message)
+        {
+            if (jobState == "cancelled_running")
+            {
+                message = "The running Python script was interrupted at a checkpoint after a cancellation request; the " +
+                          "transactions it had open were rolled back, work it had already committed stays.";
+                return "cancelled";
+            }
+            message = "The Python script was stopped because its timeout_s passed; the transactions it had open were " +
+                      "rolled back, work it had already committed stays. Re-read the model before resending.";
+            return "failed";
         }
 
         private static string JobFailureText(JObject job)

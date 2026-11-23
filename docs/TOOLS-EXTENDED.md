@@ -104,7 +104,7 @@ set `HORIZUN_UPDATE_TOOLS_LEDGER=1`, run `dotnet test tests/Horizun.Server.Tests
 -c Release --filter "FullyQualifiedName~ToolsListLedger"`, then review and commit the diff
 with the change that caused it (the rewrite fails once, and refuses under `CI`).
 
-**The `local` toolset** (`HORIZUN_TOOLSETS=local`) is the selection for local or short-context models: ten tools - `horizun_health`, `get_document_info`, `horizun_list_elements`, `horizun_query_model`, `horizun_capture_view` and five typed writes (`horizun_write_params_verified`, `horizun_create_elements`, `horizun_transform_elements`, `horizun_delete_verified`, `horizun_undo`). When it is the whole selection the core tools `horizun_target`, `horizun_job_status` and `horizun_submit_job` are not offered either (the one exception to "core is welded on"; any other toolset brings them back). It is self-contained (no pack dependencies) and never carries the Python surface: `Local_never_carries_the_python_surface` fails the day a tool riding in `unsafe_code` is added to it. Measured 2026-10-31 at `safe_write`: 9 tools (capture_view is hidden by the profile), 60,219 characters; `Local_tools_list_stays_within_its_budget` fails above that + 10 %. `horizun_activate_toolset` (server-only, session-scoped) opens another toolset without a restart. How to set it per client: docs/CLIENTS.md.
+**The `local` toolset** (`HORIZUN_TOOLSETS=local`) is the selection for local or short-context models: core, reading (`get_document_info`, `horizun_list_elements`, `horizun_query_model`, `horizun_model_scan`, `horizun_quantities`, `horizun_capture_view`, `horizun_navigate`, `horizun_model_diff`) and six typed writes (`horizun_write_params_verified`, `horizun_create_elements`, `horizun_transform_elements`, `horizun_delete_verified`, `horizun_manage_views`, `horizun_undo`). It is self-contained (no pack dependencies) and never carries the Python surface: `Local_never_carries_the_python_surface` fails the day a tool riding in `unsafe_code` is added to it. Historically measured on the 2.2.0 candidate at `safe_write`: 17 tools (capture_view is hidden by the profile), 99,771 characters; `Local_tools_list_stays_within_its_budget` fails above that + 10 %. How to set it per client: docs/CLIENTS.md.
 
 **Reserve levers** (measured on the prototype, not implemented): defer the
 discriminated branches behind the variant template plus a host-resident describe
@@ -528,7 +528,7 @@ this tool's rules, not a COBie QC certification.
   and XML, no dependency; inline strings, numbers, a bold frozen header row), then puts
   it in place - replacing a file only with `overwrite: true`; with `overwrite: false` an
   existing file refuses in the rehearsal, and again if one appears before the move.
-- It then **re-reads the file from disk** (`Core/XlsxWorkbookReader.cs`) and compares
+- It then **re-reads the file from disk** (its own XLSX reader in `Core/`) and compares
   sheet names and order, every sheet's row count and every cell - kind and exact text,
   a number being the text of its `<v>` - with the plan. `files_verified: 1` only when
   everything matches; otherwise the differing cells are named and success is not
@@ -604,6 +604,20 @@ the type has other instances the call must say `scope`:
 - `this_instance`: only the reference moves to a new type named `name`; the other
   instances stay on the old type, untouched.
 
+For `add_members`, `type` is an alias for `all_instances`. To propagate an
+addition, supply `relative_rotations_degrees` with the known counterclockwise
+angle from the reference to each copy, in ascending copy group id order. Use
+copies with the same handedness. When angles are missing or the count is wrong,
+the precondition lists `copy_group_ids`. Revit's public model-group API reads
+the origin but does not supply the group frame. Member directions may vary
+independently and curve endpoints may be reversed. Rehearsal and apply compare
+positions, family orientations, and the paths of bounded lines and circular
+arcs with their pre-regeneration readings. An unreadable or unsupported path
+prevents verification of the addition. The confirmation binds the declared
+angles and those readings. `check_variation` uses the same angle field in
+`group_ids` order after the reference. If some geometry cannot be measured, the
+read still reports any measurable height difference.
+
 A type with attached detail group types is refused: the regroup would orphan them.
 
 The dry run of deletion and member recreation enumerates dependent tags and
@@ -650,133 +664,13 @@ commit.
 
 
 
-## MEP routing and sizing
+## MEP routing, sizing and joint QA
 
-`horizun_mep_routing` is one multi-operation tool over the routing preferences and
-size catalogs of pipes, ducts, conduits and cable trays. It is separate from
-`horizun_manage_system_types` on purpose: that tool duplicates types and writes their
-parameters; a routing rule is not a parameter, a size catalog is not an element type,
-and a resize is an instance write whose side effects land on other elements.
+MEP routing, sizing and joint QA (`horizun_mep_routing`, `horizun_audit_mep_connectivity`) are in the Pro edition.
 
-| operation | writes | what it does | what is re-read after commit |
-|---|---|---|---|
-| `read` | no | `type_id`: the type's rules per `RoutingPreferenceRuleGroupType` (part, description, size ranges), preferred junction and the fittings a rule can name. Conduit/cable-tray types carry no routing preferences; their elbow/tee/cross/transition/union are listed instead. `segment_id`: material, schedule, roughness, every nominal/inner/outer size. `element_ids`: kind, size, catalog and whether the size is in it. Nothing: every MEP type, every pipe segment, and the duct (round/rectangular/oval), conduit (per standard) and cable-tray catalogs. | - |
-| `set_rules` | yes | Ordered `add` / `remove` / `move` edits per group on a pipe or duct type, plus optional `junction` (Tee/Tap). An add without `min_size`/`max_size` covers all sizes. Indexes refer to the list as the previous edit left it. | Every touched group equals the list computed from the list read before plus the edits; every untouched group is unchanged; the junction. |
-| `add_sizes` / `remove_sizes` | yes | `catalog` = `segment` (with `segment_id`), `conduit` (with `conduit_standard`), `duct_round`, `duct_rectangular`, `duct_oval` or `cable_tray`. Segment and conduit sizes need `inner` and `outer`; conduit sizes also `bend_radius`. A size already present (add) or absent (remove) is refused; a size still used by an element is refused before any write, naming the elements. | Each size present with its inner/outer/bend, or absent; every other size unchanged. |
-| `resize` | yes | `element_ids` or `system_id` (piping or duct network), to `diameter` or `width`+`height`. Each value must be a size of that element's own catalog (the pipe's segment, the duct shape's list, the conduit type's standard, the cable-tray list). Runs already at that size are skipped and listed. | Each run's size parameters equal the request, and every connector connected before is still connected. The fittings Revit removed/replaced, retyped or inserted (transitions) are reported in `result`. |
-| `size_by_flow` | no | Per pipe or round/rectangular duct: the smallest catalog size (`used_in_sizing`) whose free area carries the flow at or below `max_velocity` (m/s). Flow is the element's calculated flow, or `flow` (L/s) for all. Pipes use the segment's inner diameter; rectangular ducts hold the current `height` (or the one given) and pick the width. `resize_calls` groups the proposals into ready `resize` requests. | - |
-| `route` | yes | `kind` (pipe/duct/conduit/cable_tray), `type_id`, `system_type_id` (pipe/duct), `level_id`, size (`diameter` for pipes, conduits and round ducts; `width`+`height` for rectangular/oval ducts and cable trays - a mismatch is refused before any write), `start`/`end` ([x,y,z]; points and sizes in `units`, default mm), `clearance_mm` (default 50), `grid_mm` (default 100, minimum 10), `max_nodes` (default 20000, maximum 200000), optional `preferred_elevation` ({min_mm, max_mm}; a missing side is unbounded). A pure 3-D orthogonal A* (`RouteSearch`, Revit-free, in `Core/RouteSearch.cs`) finds a polyline around every physical host element and every loaded-link element near the search box (a rotated link's boxes from all eight corners), inflated by `clearance_mm` plus half the run's OUTSIDE size (a pipe's outer diameter from its type's segment; `size_basis` says when the nominal was used). The end is snapped toward the start and its off-grid remainder absorbed into the last leg along that axis - no stub legs, never doubling back. Every leg keeps a minimum length (first/last: one outside size; between two bends: two) so each elbow has room; a path that cannot is `no_route` naming the short leg in mm. The search box (6 grid steps around start/end) grows to x3 and x9 before refusing, and the refusal says when the box, not `max_nodes`, was binding. The dry run declares the N segments and N-1 elbows it will create, and the token binds the rounded polyline: a route that changed by apply time is refused as stale. | Free ends (the route's own start/end) on their points (1 mm); at each bend, where the elbow trims both runs back, the elbow's nominal junction (intersection of its connector axes) on the planned vertex (1 mm), the physical end on the planned leg's axis pulled back toward the other end, and connected to that elbow; each segment's size re-read from the same parameters `resize` uses (1 mm; a size Revit snapped to its catalog fails, named), every elbow's connector count, and a `SpatialCoherence` check against every created element - any error against a physical host or link, or a check left partial (budget or cap hit, links not examined), throws and rolls back the whole route, named. |
+## Styles and units
 
-| `hangers` | yes | `element_ids` of straight pipes, ducts, cable trays or conduits; `hanger_type_id` (a level-based generic model, pipe/duct accessory or specialty equipment type you supply; work-plane- and face-based families are refused before anything is placed); `spacing_mm` (maximum gap) and `end_offset_mm` (clearance from each run end and each tap fitting), both required; `max_rod_mm` (default 3000); `rod_length_parameter` (optional instance length parameter); `attach` = `structure_above`. Stations: each tap owns a clearance zone of `end_offset_mm` either side; the span between the end clearances is cut at those zones and every free segment gets a station at each edge plus an even split, so no gap inside it exceeds `spacing_mm`. End stations obey the tap clearance too (moved inward, `end_stations_moved_mm`). A gap that cannot be closed - across a zone wider than `spacing_mm`, or where a station has nothing above - is listed per run in `gaps_above_spacing` with its cause. Stations are counted before any ray: more than 1000 refuses. Each station casts a ray up from the run's top (centreline + half its outside height) against floors, structural framing and roofs of the host and of loaded links, in a temporary 3D view that is rolled back (no template, filters or section box; structure, links and open worksets visible; the run's phase with demolished hidden); closed worksets are listed, not searched. The nearest hit within `max_rod_mm` is the support (`source` host/linked, element id, link instance id) and its distance the rod length; `rod_length_parameter` must be an instance Length parameter. Stations with nothing above are listed as `no_support_above` and not placed; a ray that cannot be cast refuses the call; runs shorter than 2 x `end_offset_mm` get none. The instance goes on the run's centreline, turned to its horizontal direction. Risers are skipped and reported; only flex runs are refused with the Python fallback grant (wires and other curves are plain errors). | Each hanger's type, position (1 mm; Z from its level plus the offset that governs it), rotation (0.5 degree) and rod parameter (1 mm), and `count`: placed equals planned. |
-
-Writes follow the bridge's two-step flow: the dry run (default) applies the change in
-a transaction, verifies it, rolls it back and returns a `confirmation_token`; the apply
-spends the token, re-verifies inside a TransactionGroup and rolls everything back on
-any mismatch. Units are `mm` (default), `in` or `feet`; catalog sizes match at
-1e-5 ft (about 0.003 mm).
-
-**Limits.** `size_by_flow` claims velocity only: no friction, pressure drop or fluid
-properties, because Revit's duct/pipe sizing dialog has no public API and a
-friction-based size would be a guess. Oval ducts, conduits and cable trays are not
-sized by flow. Flex pipes and flex ducts are outside `resize` and carry the Python
-fallback grant. Moving a rule whose criterion is not a size range is refused rather
-than dropping the criterion. The API members used (`RoutingPreferenceManager`,
-`RoutingPreferenceRule`, `PrimarySizeCriterion`, `Segment`/`PipeSegment` sizes,
-`DuctSizeSettings`, `ConduitSizeSettings`, `CableTraySizes`) read identically in the
-2023-2027 API documentation, so there is no per-year branch.
-
-**`route` example** (mm, apply after a `dry_run` returns a `confirmation_token`):
-
-```json
-{
-  "operation": "route", "target_document": "...", "kind": "pipe",
-  "type_id": 123456, "system_type_id": 234567, "level_id": 345678,
-  "diameter": 100, "start": [0, 0, 3000], "end": [8000, 0, 3000],
-  "clearance_mm": 75, "grid_mm": 150,
-  "dry_run": false, "confirmation_token": "..."
-}
-```
-
-The reply's `result` carries `length_mm`, `bends`, `polyline_mm`, `segment_ids` and
-`elbow_ids`; a failed search returns `no_route: <reason> (blocking region: <name>)`
-instead of a token, naming the obstacle that closed every path.
-
-**`slope` (gravity pipe runs).** `element_ids` names the run's pipes (the fittings
-joining them come along), or one seed pipe with `walk: true` follows the connected
-network through pipe fittings (by category, OST_PipeFitting), up to 200 pipes plus
-fittings. Accessories, fixtures, equipment and unnamed pipes are boundaries, never
-walked through; their connections are listed as `external_connections` and must
-still be connected afterwards, and a plan that would MOVE an end connected to one is
-refused by name (hold that end, name the element, or disconnect it). A pipe with a
-tap (a connection along its length) is refused. `slope_percent` is the grade (2.0 = 2%).
-`fixed_end` holds one open end at its current elevation:
-
-- `upstream` / `downstream` - only for a run with exactly two open ends, and only
-  when a connector reports flow direction (a calculated system); otherwise refused.
-  Readings that contradict each other (both ends In, or both Out) are refused.
-- `<element_id>` - the pipe (or fitting) owning one open end. Direction comes from
-  flow; when flow does not read (or contradicts the other end) it is refused - high
-  and low give opposite slopes, so the bridge does not guess.
-- `<element_id>:high` / `<element_id>:low` - the caller states whether the held end
-  is the upstream end or the outlet. A branched run held at a high end needs flow
-  to name the one outlet; otherwise hold the outlet with `:low`.
-
-Every point sits slope x its horizontal path length to the outlet above the outlet,
-so a tee's branch drains toward the main whichever end is held. Fittings move as
-rigid bodies (their legs keep their rise), so pipes carry the whole drop at exactly
-the target slope. Pipes steeper than 45 degrees are risers and keep their rise
-(`risers_kept`). `min_clearance` (in `units`) refuses the run, naming the point, if
-any point would land below the highest level at or below the held end plus that
-clearance; without it, a point the re-grade would drag from above that level to
-below it is refused. The rehearsal shows the held end, the outlet, target
-elevations of every pipe end and fitting centre. Apply moves each fitting
-vertically by its target minus its centre re-read at that moment, sets each pipe's
-LocationCurve, regenerates, and reconnects a connector pair that separated but still
-coincides (listed in `reconnected`); then it re-reads, in `units`, the held end,
-every pipe end against its planned elevation, every pipe's signed slope (outlet
-side lower, within 0.05 percentage points), every fitting centre, `min_clearance`,
-every connector pair recorded before and every fitting's connected count, and rolls
-back naming the element otherwise. The confirmation token binds every pipe's and
-fitting's geometry and connections: a change between dry run and apply is
-`stale_plan`. Revit has no pipe slope API (no `SlopeType` for pipes;
-`PipeSettings.GetPipeSlopes` only lists preset slopes). AutoRouteFailures has an
-`AttemptToConnectNonSlopingElementToSlopedPipeWarning` and an `...Error`; the
-Warning does not fail a commit, so a separated fitting is caught only by the
-post-commit connector re-read, and how elbows follow moved ends is measured by the
-`pipe-slope` live probe (connector origins).
-
-**Resumen (español).** `slope` da pendiente a una red de tubería por gravedad desde
-un extremo fijo (`fixed_end`), con los accesorios siguiendo a los tubos; cada punto
-queda a pendiente x distancia horizontal hasta la salida, un ramal de tee drena hacia
-la principal, y la aplicación relee pendientes y conexiones o revierte nombrando el
-elemento.
-
-**Resumen (español).** `horizun_mep_routing` lee y edita las preferencias de
-enrutamiento (reglas por grupo con rangos de tamaño, unión preferida), los segmentos
-de tubería y los catálogos de tamaños de ducto, conduit y bandeja; cambia el tamaño de
-tubos, ductos, conduits y bandejas solo a tamaños de su propio catálogo, verifica
-releyendo tras el commit y reporta los accesorios que Revit reemplazó o insertó; y
-propone tamaños por caudal con un límite de velocidad (solo velocidad, sin fricción:
-el dimensionamiento de Revit no tiene API pública) sin escribir nada. `route` traza
-una ruta ortogonal en 3D que evita obstáculos (elementos físicos y de vínculos
-cargados, con el margen de `clearance_mm`) entre dos puntos, crea los tramos y codos,
-y solo confirma si la relectura de extremos/conexiones y el chequeo espacial salen
-limpios; si no hay camino dentro de `max_nodes` se niega nombrando la zona que bloquea.
-
-el dimensionamiento de Revit no tiene API pública) sin escribir nada. `hangers` coloca un tipo de soporte que da quien llama (modelo genérico,
-accesorio o equipo especial, no alojado) en estaciones a `end_offset_mm` de cada extremo y
-cada derivación y a no más de `spacing_mm` entre sí (repone estaciones en el borde de la
-zona de cada derivación; el hueco que no se puede cerrar lo nombra en `gaps_above_spacing`);
-mide con un rayo hacia arriba, en una vista 3D temporal que se revierte, la losa, viga o
-cubierta más cercana (del modelo o de un vínculo cargado) dentro de `max_rod_mm`, escribe
-la longitud de varilla si se nombra un parámetro de longitud, y no coloca las estaciones sin
-nada encima: las reporta como `no_support_above`. Los montantes verticales se omiten y se reportan.
-
-
-
-## Styles, units and electrical
-
-Three multi-operation tools share one write ritual (`Commands/VerifiedModelEdit.cs`):
+Two multi-operation tools share one write ritual (`Commands/VerifiedModelEdit.cs`):
 `dry_run` (the default) applies the edit inside a transaction, regenerates, re-reads
 every requested property through a `PostconditionCheck` and rolls back, reporting
 Revit's rollback status and a single-use `confirmation_token` bound to the measured
@@ -817,24 +711,11 @@ needs ownership of the shared coordinates. Only the project coordinator should
 decide it; the extra `confirm_shared_coordinates` flag exists so a token alone
 cannot do it.
 
-### `horizun_electrical`
-
-| operation | what it does |
-|---|---|
-| `list_panels` | Electrical equipment: panel name, family/type, distribution system and its voltage, circuits fed, summed apparent load (VA), Revit's total connected load and demand current strings. |
-| `list_circuits` | Every `ElectricalSystem` (optionally `panel_id`): type, panel, number, load name, member ids, apparent (VA) and true (W) load, voltage, poles, length (m), voltage drop (V up to 2025; Revit's own parameter string on 2026–2027, where the API property was deprecated and then removed). |
-| `create_circuit` | `element_ids` (MEP family instances), `system_type` (default PowerCircuit), optional `panel_id`. Re-reads members, type and panel. |
-| `assign_panel` | `circuit_id` + `panel_id` via `SelectPanel`; re-reads the base equipment. |
-| `add_to_circuit` / `remove_from_circuit` | `circuit_id` + `element_ids`; re-reads the member set. Emptying a circuit is refused (delete it instead). |
-| `panel_schedule` | `panel_id` (+ optional `template_id`): `PanelScheduleView.CreateInstanceView`; re-reads the view's panel. Refused when the panel already has one. |
-
-Voltage, poles and distribution-system compatibility are Revit's decisions: the
-rehearsal performs the real call, so a refusal returns Revit's message with nothing
-committed.
+Electrical circuits and panels (`horizun_electrical`) are in the Pro edition.
 
 ### Resumen (español)
 
-Tres herramientas multi-operación con el mismo rito de escritura: ensayo en una
+Dos herramientas multi-operación con el mismo rito de escritura: ensayo en una
 transacción que se revierte (dry_run por defecto), token de un solo uso, aplicación
 dentro de un TransactionGroup y relectura de cada valor pedido tras el commit; si
 algo no se verifica, el grupo se revierte. `horizun_manage_styles` lista y edita
@@ -843,9 +724,7 @@ relleno (no borra: eso es `horizun_delete_verified`). `horizun_manage_units` lee
 cambia el formato de unidades por spec (ForgeTypeId, 2023–2027), lee/escribe
 Información de proyecto y lee los puntos base; escribir coordenadas compartidas
 exige además `confirm_shared_coordinates=true`, porque mueve el modelo respecto de
-vínculos, exportaciones y topografía. `horizun_electrical` lista tableros y
-circuitos, crea circuitos, asigna tablero, agrega/quita elementos y crea la tabla
-de tablero.
+vínculos, exportaciones y topografía.
 
 
 
@@ -879,8 +758,12 @@ refused by Revit; the refusal and the rollback are reported.
 `element_id` is a floor or a roof. `read` lists vertices `[x, y, z, type]`, creases
 and the slab top. `add_point` takes `points: [[x, y, offset]]`; `modify_subelement`
 takes `points` for existing vertices, or `start`/`end` (`[x, y]`) plus `offset` for
-one crease; `add_split_line` takes `start`/`end` and adds a missing interior end
-point first; `reset_shape` erases the shape points.
+one crease; `add_split_line` takes `start`/`end` and adds missing interior vertices
+first. Revit 2023–2025 can insert missing boundary vertices with `DrawPoint`.
+Revit 2026–2027 use `PickSupport` for an edge-to-edge split on a flat floor with
+shape editing initially disabled. The split must cover the requested segment
+and preserve the top elevation when using `PickSupport`.
+`reset_shape` erases the shape points.
 
 The API changed between years, measured from each year's `RevitAPI.xml`:
 2023 has only the `SlabShapeEditor` property and `DrawPoint`/`DrawSplitLine`;
@@ -926,11 +809,10 @@ con token y rollback si la relectura no coincide.
 
 
 
-## Smaller replies: `response_mode: "summary"` for `horizun_create_elements` and `horizun_clash`
+## Smaller replies: `response_mode: "summary"` for `horizun_create_elements`
 
 Course dry run 2026-09-30 (defect #17): `horizun_create_elements` of 75 walls answered
-262-276 kB and `horizun_clash` with 165 interferences 58 kB, over the client's limit, so
-the reply was truncated to a file. Both now take the `response_mode` the reads already
+262-276 kB, over the client's limit, so the reply was truncated to a file. It now takes the `response_mode` the reads already
 use (`full`, the default, changes nothing). It is presentation only: the measured verdict,
 counts, coverage and headline are untouched, and every shortened array is named in
 `response_omissions` (`json_pointer`, `returned_items_before_summary`, `shown`,
@@ -945,175 +827,19 @@ counts, coverage and headline are untouched, and every shortened array is named 
   `horizun_query_model element_ids`. Shaped by the dispatcher after the spatial check,
   so the rows it names are known. The confirmation token does not bind
   `response_mode`: a summary rehearsal can be applied in full, and the other way round.
-- **clash**: `clash_summary` with totals by category pair and source model
-  (`by_pair`), the total intersection volume and the cross-model count, plus the 10
-  largest clashes by volume in full, each with its `clash_index` in the full list. The
-  rest: `horizun_coordination` (with `record_findings: true`) or the same request with
-  `response_mode: "full"` - `expand` names which. Refused with `plan_penetrations`,
-  whose plan cites clashes by index.
-
 MEASURED offline on synthetic replies shaped like the real ones
-(`ResponseSummaryRulesTests`): 75 clean walls 198,370 -> 1,444 bytes; 165 clashes in the
-course run's category mix 51,545 -> 5,041 bytes. Not yet measured on a live reply.
+(`ResponseSummaryRulesTests`): 75 clean walls 198,370 -> 1,444 bytes. Not yet measured on a live reply.
 
-## Clash resolution and batch undo
+## Batch undo
 
-### horizun_resolve_clash
-
-Detection is common; resolving a clash **with a verification** is the point of this tool.
-It works on findings of the ledger that `horizun_clash record_findings=true` maintains
-(see `horizun_coordination list`).
-
-**propose** (read-only, default). For each `finding_ids` entry:
-
-1. Roles. Pipes, ducts, conduits, cable trays and flex runs are *movable*. Structure
-   (structural framing/columns/foundations, structural walls and floors) and
-   architecture are never moved: the row is `report_only` with
-   `report_only_no_movable_side`. When both sides are runs, the smaller cross section
-   moves; equal sections are `ambiguous_both_movable` (a design decision).
-2. Safety and scope. A run in a linked model (`linked_element_not_writable`) or a
-   pinned run (`pinned`) is reported, not moved. A run with any connected connector
-   is no longer refused outright: its whole connected network (pipes/ducts/conduits/
-   cable trays and their fittings/accessories, walked through live connectors, capped
-   at 60 elements) is collected and re-checked fresh every time - propose AND apply -
-   never trusted from an earlier call. It moves as one rigid body (`mode: "run_shift"`)
-   only when EVERY member is a host element, unpinned and outside any group, AND every
-   connector at the network's boundary is open (not connected to equipment, fixtures or
-   terminals outside the set); otherwise it stays report-only, naming what blocks it:
-   `network_exceeds_cap`, `member_in_group`, `boundary_connector_blocked` (with the
-   blocking element), or `linked_element_not_writable`/`pinned` for a bad member.
-3. Geometry (`Core/ClashResolveRules.cs`). The mover's centreline and exact section are
-   compared with the fixed element's bounding box projected on each escape direction:
-   `shift` perpendicular to the run in plan, and `elevation` (vertical) for horizontal
-   runs only. The run's own axis is never an escape. Distances are whole millimetres,
-   rounded away from the clash, and include `clearance_mm` (default 50). Candidates over
-   `max_move_mm` (default 600) are rejected.
-4. Third elements, HOST AND LINKS. A candidate whose moved box would reach any other
-   host model element is rejected (`would_touch_other_elements`, `contacts`); the same
-   box, carried into the coordinates of every LOADED Revit link (the link instance's
-   total transform, inverted), is checked against that link's elements too
-   (`link_contacts`). For a run_shift EVERY member's box is checked, not just the
-   mover's - a fitting far from the clash that would land on something is caught too.
-   An unloaded link is named in `links_skipped` - it is never silently counted as
-   clear. If no candidate survives, the finding is report-only.
-
-Each proposal carries `kind`, `mode` (`single` or `run_shift`), `distance_mm`,
-`affected_elements` (every member for a run_shift), a `prediction`, and the ready
-`next_arguments` for apply.
-
-**apply**. `dry_run` defaults to true and issues a token bound to the proposals; the
-`element_id`/`vector_mm` of each proposal is re-resolved and re-validated fresh against
-the LIVE model (pinned/connected/network eligibility all re-derived, never trusted from
-propose - a network that changed since propose is refused, not moved on stale
-information). Inside one TransactionGroup: the neighbourhood (every host model element
-whose box meets the swept region of every MEMBER, grown by the clearance) is measured on
-solids BEFORE the move; every member of every move is moved together in one
-`ElementTransformUtils.MoveElements` call (a run_shift moves rigidly, never one segment at
-a time); positions are re-read (1 mm tolerance); the same neighbourhood is measured AFTER -
-AND, in both passes, every member's solid is carried into every loaded link's coordinates
-and intersected there too (`ElementIntersectsSolidFilter` + `BooleanOperationsUtils`,
-exactly like `SpatialCoherence.AgainstLinks`; the pair key is
-`link:<name>:<hostId>~<linkElementId>`, distinct from a host-host pair). For a run_shift,
-every internal connector pair recorded at propose time is also re-read
-(`connections:<idA>-<idB>`) - a rigid translation should never drop one, and the contract
-re-reads rather than assumes. The group is kept only when every position, every internal
-connection, the targeted pair, and "no new clash" (host OR link) all measure clean.
-Anything else - including a boolean that failed, so the result is unmeasured - rolls the
-whole group back and returns `new_clashes` (naming the link when that is what grew back)
-and the `postconditions` checklist. Two proposals whose networks share a member are
-refused as a batch, before anything moves (moving one would silently disturb the other).
-An unloaded link is listed in `links_skipped` on every reply (propose and apply) and never
-treated as measured-clear, but it does not by itself block an apply whose host-side pairs
-are otherwise clean - the same convention `SpatialCoherence.AgainstLinks` already uses. A
-kept apply records an undo batch covering EVERY member (not just the primary mover, so
-`horizun_undo` moves the whole network back together) and marks each finding
-`resolved_by_model` with the measurement written into its history.
-
-**propose_opening / apply_opening** (sleeves and structural openings). For a clash that
-moving cannot fix - an MEP run (pipe, duct, conduit, cable tray, flex run) through a
-wall, floor, roof, ceiling, structural framing or column - the run keeps its line and
-the HOST gets an opening, or a sleeve. Pure geometry lives in `Core/SleeveRules.cs`.
-
-- **propose_opening** (read-only). Both sides must be host elements (a linked side is
-  `linked_element_not_writable`), exactly one an MEP run. The crossing is where the run's
-  centreline passes through the host's SOLID (`Solid.IntersectWithCurve`, segments
-  inside; entry, exit, `crossing_point_mm` = their midpoint); the host's bounding box is
-  only a prefilter, so a rotated wall or a sloped roof gets the real crossing. A run that
-  no longer enters the solid (it already passes through an opening) is
-  `run_does_not_cross_host`. The size uses the run's OUTER section (`outer_section`): the
-  outside diameter (`RBS_PIPE_OUTER_DIAMETER` / conduit outer diameter) when larger than
-  the connector's nominal size, plus twice the thickest insulation; a rectangular/oval
-  section is squared to its larger side on the connector's axes (unreadable axes: sized
-  for every rotation). That section is projected through the host's MEASURED thickness
-  along the run, so a skewed crossing is sized `section/cos + thickness*tan`
-  (`SleeveRules.FootprintHalfExtent`), then `clearance_mm` (default 50, half per side) is
-  added. Routes by host kind: wall -> `wall_opening` (`NewOpening(wall, pt1, pt2)`, always
-  rectangular, straight walls only - a curved wall is `curved_wall_not_supported`, a run
-  steeper than |z| 0.85 is `run_too_steep_for_wall_opening`); floor/roof/ceiling ->
-  `floor_opening` (`NewOpening(host, CurveArray, false)`: a VERTICAL cut, circular for a
-  vertical round run; a run flatter than |z| 0.5 is `run_too_flat_for_floor_opening`);
-  framing/column -> `sleeve_only` with `cut_refused.code = member_cut_not_offered`. The API
-  CAN cut a beam, brace or column (`NewOpening(member, profile, eRefFace)`); this operation
-  deliberately does not, because a structural member's penetration is an engineer's sized
-  decision - only a sleeve family is placed. A STRUCTURAL wall/floor
-  (`WALL_STRUCTURAL_SIGNIFICANT` / `FLOOR_PARAM_IS_STRUCTURAL`) is refused as
-  `structural_host_requires_opt_in` unless `allow_structural=true` records that a person
-  approved the cut; the same flag is required to place a sleeve on any structural host,
-  since a sleeve's void may cut it. Any other host category is `host_kind_not_supported`.
-- **apply_opening**. `dry_run` (default) -> `confirmation_token` -> one TransactionGroup.
-  Each proposal carries its `crossing_point_mm`, `opening_width_mm`,
-  `opening_height_mm` and `shape`, so the token binds the geometry the person saw; apply
-  re-derives everything from the live model and refuses a drift beyond 1 mm as
-  `geometry_changed_since_propose`. Before writing, the run must still meet the host on
-  solids (`nothing_to_cut` otherwise - a second pass over a finding that stays open never
-  stacks a second opening). Without `sleeve_type_id` a wall/floor/roof/ceiling is cut; a
-  framing/column proposal is refused by name. With `sleeve_type_id` (a family type the
-  caller loaded - nothing is compiled in) the family is placed by its own placement type:
-  hosted on the host at the crossing; face-based on the host face the run enters (an
-  instance host such as a steel beam is walked through `GetSymbolGeometry()` with its
-  transform, because instance-geometry references cannot host new elements); level-based
-  (`OneLevelBased`, e.g. a generic model) with `NewFamilyInstance(XYZ, symbol, Level, ...)`
-  on the run's reference level; line-based along entry->exit; anything else at the
-  crossing point. Point placements are rotated about Z to a horizontal run.
-  `approval_parameter` + `approval_value` write a text mark (e.g. `pending structural
-  approval`) on the created element; a missing, read-only or non-text parameter rolls
-  everything back.
-- **Postconditions**, re-read inside the group before it is kept: `created:<finding>`;
-  `clearance:<finding>` - a clearance envelope (the run's outer section grown by
-  `clearance_mm/2`, less 0.5 mm tolerance, from before the entry to past the exit) is
-  intersected with the cut host's solid and the sleeve's own solid and must meet no
-  material; nothing measurable (an uncut, void-only sleeve) is unreadable and rolls back;
-  `host_cleared:<finding>` (openings) - a solid re-detection must find the run no longer
-  meeting the host; `host_cut:<finding>` (sleeves) - MEASURED the same way, never assumed,
-  so a hosted sleeve whose void cuts on hosting reports `host_cut: true`;
-  `level:<finding>` and `at_crossing:<finding>` for a level-based or point-placed sleeve;
-  `approval:<finding>`; and `no_new_clash` around the crossing (the sleeve inside its own
-  host is the design, not a new clash; the sleeve against the run, a third element or a
-  loaded link is; an unreadable sleeve geometry makes detection incomplete). Any failure
-  rolls the whole group back and reports the rollback status read from Revit. A kept
-  apply records an undo batch (`created`) for `horizun_undo`, and the finding gets an
-  `opening_requested` history entry (with the measured host_cut) but STAYS OPEN: only a
-  later `horizun_clash record_findings=true` measurement can resolve it.
-- To measure live: the orientation of a point-placed sleeve depends on how its family
-  was modelled (caught by the clearance envelope, not predicted); whether a rectangular
-  duct connector's `CoordinateSystem` BasisX/BasisY are its section axes (the opening is
-  squared to the larger side either way); face-based placement on a sloped or curved host
-  face is not built (it fails with the reason).
-- Live probe: `scripts/live-probes/sleeves-openings.probes.ps1` (offline test
-  `sleeves-openings.tests.ps1`) stages an own level with a pipe through a wall, a vertical
-  pipe through a floor and a vertical pipe through a beam; it applies the wall and floor
-  cuts (with `allow_structural=true` as the fixture's recorded approval), reads the finding
-  back as still `open` with its `opening_requested` entry, checks the beam refusal by name
-  in propose and in the apply rehearsal, deletes everything and closes the probe's own
-  findings (`closed_by_decision`). The sleeve family path is not staged (no sleeve family
-  ships with the fixtures).
+Clash resolution, the Navisworks handoff and BCF import (`horizun_resolve_clash`, `horizun_coordination`) are in the Pro edition.
 
 ### horizun_undo
 
 Revit exposes no Undo through its API. After a verified commit,
 `horizun_transform_elements` (move, copy, rotate, mirror, pin/unpin, change_type,
-set_curve on a line, move_tag_head), `horizun_write_params_verified`,
-`horizun_create_elements` and `horizun_resolve_clash` record an inverse in
+set_curve on a line, move_tag_head), `horizun_write_params_verified`
+and `horizun_create_elements` record an inverse in
 `<data root>/undo/<document hash>.json` (last 20 batches) and report it as an `undo`
 block. Operations without an inverse (set_tag_leader, wall_join, a non-line set_curve,
 a parameter whose previous value was unreadable) record the batch as **not undoable** by
@@ -1131,221 +857,7 @@ name, so `undo_last` never skips past it to an older batch.
 
 ### Resumen (español)
 
-`horizun_resolve_clash propose` convierte hallazgos abiertos del ledger en correcciones
-candidatas conservadoras: solo mueve tramos MEP del modelo anfitrión, sin conexiones ni
-pin, el mínimo más la holgura (desplazamiento perpendicular o cambio de elevación);
-estructura, arquitectura, vínculos, tramos conectados o movimientos que tocarían a un
-tercero quedan como "solo informar". `apply` mueve dentro de un TransactionGroup y
-vuelve a detectar sobre sólidos: el par debe desaparecer sin clashes nuevos o se revierte
-todo; solo entonces el hallazgo pasa a `resolved_by_model`. `horizun_undo` deshace el
-último lote Horizun registrado, y se niega si el documento se guardó o sincronizó desde
-entonces o si esos elementos cambiaron.
-
-### Handoff from naviscoord-mcp (Navisworks coordination)
-
-naviscoord-mcp's `navis_handoff` writes `coordination_handoff.json` (schema
-`naviscoord.coordination/1`) and `revit_worklist.json` (schema
-`naviscoord.coordination.worklist/1`) after a Navisworks clash analysis. The Revit
-side of that handoff is two `horizun_coordination` operations plus the existing
-`horizun_resolve_clash`/`horizun_verify_changes` - no new tool, because the ledger
-they read and write is the same one `horizun_clash record_findings=true` already
-maintains:
-
-```
-navis_handoff (Navisworks)
-   -> coordination_handoff.json
-   -> horizun_coordination operation=import_navisworks   (RE-DETECTS, then records)
-   -> horizun_resolve_clash propose / apply               (moves the responsible side)
-      -or- horizun_coordination operation=show             (paints the pair in a persistent view)
-   -> horizun_verify_changes                               (picture + spatial check of the result)
-   -> re-run the clash test in Navisworks
-```
-
-**`operation=import_navisworks`** never takes Navisworks' word for a clash. Every
-issue's `targets` (each an `{side, revit_element_id, source_file, discipline, ...}`)
-are matched against the ACTIVE document and every LOADED rvt link by `source_file`,
-normalized (extension and NWC/export/copy decoration stripped, case-insensitive -
-`Core/NavisworksHandoff.cs`), then the pair is **RE-DETECTED here**: a solid
-intersection (volume reported), or a measured bounding-box gap when it does not
-reproduce. Only a REPRODUCED pair becomes or refreshes a ledger finding, tagged
-`external_source=navisworks` with the issue's `priority`, `responsible`,
-`immovable_side` (resolved to the ledger's A/B letter from the issue's own
-`side_a_discipline`/`side_b_discipline`) and `suggested_action` carried along - and
-`runComplete` is always false, so an import never marks anything `resolved_by_model`
-by itself; that stays a measured, complete `horizun_clash` run's job, exactly as
-`CoordinationRules.Merge` already enforces for every other source. `revit_worklist.json`
-keeps only the responsible side per issue (naviscoord's own filter), so it carries no
-fixed-side element to pair against; imported anyway, every one of its issues reports
-`not_traceable` naming that reason rather than inventing a one-sided finding. Reports
-`issues_total`/`traceable`/`matched`/`reproduced`/`not_reproduced`/`not_traceable`
-(the last covering both "no Element Id" and "Element Id resolves in no loaded
-document"), dry run by default.
-
-**`horizun_resolve_clash`** needs no change to accept these findings: `propose` reads
-the imported `immovable_side` off the finding and enforces it ON TOP of its own
-natural choice (`Core/ClashResolveRules.EnforceImmovableSide`) - unchanged when the
-natural mover already respects it, inverted to the other side when that side is
-itself a movable host run, and refused (`immovable_side_blocks_resolution`) when the
-marked-immovable side is the only one that could move. `apply` re-detects on solids
-exactly as it does for a `horizun_clash`-detected finding.
-
-**`operation=show`** creates a PERSISTENT 3D view (section box around the selected
-findings; the side that must move painted red, the immovable side orange, an unknown
-preference blue) so a coordinator can see what a proposal is about to move without
-leaving Revit. This is the one `horizun_coordination` operation that writes the
-model - `dry_run` -> token -> apply, verified by re-reading the view, its section box
-and a bounded sample of the overrides - the ledger file itself stays untouched by it.
-A finding side that lives in a link is painted at the LINK INSTANCE level (Revit has
-no per-element override across a link boundary) and `link_level_overrides` says so.
-
-**Measured end to end on 2026-09-26** (Navisworks Manage 2026 + Revit 2026, one pipe
-Ø150 through one 457x475 column): Navisworks found the clash (112 mm penetration),
-`navis_handoff` named Revit ids 1352627/1352136, `import_navisworks` reproduced it
-here (8.66 L shared), `show` painted it, `resolve_clash` moved the pipe 363 mm with the
-column kept immovable, re-detection on solids cleared the pair with no new clash, and
-the SAME Navisworks test re-run against the saved `.rvt` (through the `.nwf` that keeps
-the sets and tests) reported the result Resolved - 0 active issues. Two traps it cost:
-
-- **Detail level decides what Navisworks sees.** Navisworks reads a `.rvt` through its
-  3D view; at Coarse a pipe is a single LINE (1 primitive) and a Hard test between
-  solids reports **zero** clashes against it. The same pipe at Fine was 1587 triangles
-  and clashed. Before a model goes to Navisworks, its 3D view (`{3D}`, or the one named
-  `Navisworks`) must be Fine - otherwise "0 clashes" means "MEP was never tested".
-- **A view camera is not an obstacle.** Revit files every 3D view's camera under the
-  MODEL category `OST_Cameras`, with a bounding box the size of the view. The resolver
-  counted three of them as elements a move "would touch" and refused every lateral
-  shift; cameras, viewers, section boxes and MEP system elements are now outside what
-  both the spatial check and the resolver treat as physical.
-- **Navisworks reads a view named with "Navisworks" before `{3D}`.** With `{3D}` at
-  Fine and a 3D view called "HZ Navisworks b3b1d996" at Medium, both pipes arrived as
-  lines again and the Hard test found nothing. Renaming only that view brought them
-  back as solids (1587 and 1787 triangles). `show` named its own view
-  "Horizun - Navisworks <date>" by default, so the product planted the view that
-  spoiled the next export. Now:
-  - `show` defaults to "Horizun - Coordination <date>" and refuses any `view_name`
-    containing "Navisworks";
-  - `navisworks_readiness` judges every 3D view whose name contains "Navisworks"
-    (listed in `candidate_views`);
-  - `prepare_navisworks` sets every one of those views to Fine.
-
-**The loop, closed without re-running Navisworks (measured the same day).** Second
-round on the same model:
-1. `navisworks_readiness` caught the Medium view (`not_ready`, naming it).
-2. `prepare_navisworks` set it to Fine and re-read it.
-3. A new pipe through the column was detected in Navisworks (76 mm), handed off,
-   imported (reproduced), shown in "Horizun - Coordination <date>", and moved 338 mm
-   by `resolve_clash`.
-4. `navisworks_status` suggested `resolved` for it.
-5. `navis_set_status` applied that suggestion in Navisworks, verified by re-reading
-   the document. The analysis then held zero active issues.
-
-The status travels from Revit's measured verdict back to the coordination model;
-nobody types it.
-
-#### Resumen (español)
-
-`navis_handoff` de naviscoord-mcp escribe `coordination_handoff.json`;
-`horizun_coordination operation=import_navisworks` empareja cada elemento por
-`source_file` normalizado contra el documento activo y los vínculos cargados, y
-**vuelve a medir el choque aquí mismo** (intersección de sólidos, o la distancia
-medida si no se reproduce) antes de tocar el ledger - solo un par REPRODUCIDO entra
-o se refresca como hallazgo, con origen `navisworks` y `runComplete=false` siempre,
-así que nunca resuelve un hallazgo por sí solo. `horizun_resolve_clash` no cambió:
-ya respeta el `immovable_side` importado (invierte el lado que mueve o se niega si
-el lado inmóvil es el único que podría moverse) sobre su propia elección natural.
-`horizun_coordination operation=show` crea una vista 3D persistente con el lado que
-debe moverse en rojo y el inmóvil en naranja, para mirar antes de aplicar; es la
-única operación de `horizun_coordination` que escribe el modelo, con el mismo
-dry_run -> token -> apply -> verificación releída del resto del producto.
-
-Probado de punta a punta el 2026-09-26 (Navisworks 2026 + Revit 2026): choque
-detectado en Navisworks, reproducido en Revit, tubería movida 363 mm con la columna
-inmóvil, y el mismo test de Navisworks lo marcó Resuelto al re-correrlo. Ojo: la vista
-3D que Navisworks lee debe estar en detalle **Fino**; en Grueso la tubería llega como
-una línea y el test Hard reporta cero choques contra ella.
-
-### BCF import from any tool, and Navisworks readiness
-
-`horizun_coordination operation=import` used to stop at "unmatched" for any topic
-that was not this ledger's own export (matched by the guid `BcfTopicGuid` mints for
-each finding). A `.bcfzip` a coordinator actually gets back - from Navisworks, ACC,
-Solibri, BIMcollab - names its clash by the topic's viewpoint **Components**
-(`IfcGuid` and/or `AuthoringToolId`), never by that internal guid. Those topics are
-now resolved and re-detected exactly like `operation=import_navisworks` does beside
-it, instead of merely being reported:
-
-```
-somebody's coordination tool
-   -> a .bcfzip (BCF 2.1 or 3.0 - both viewpoint shapes are read, Core/BcfMarkupReader.cs)
-   -> horizun_coordination operation=import
-        - topic matches THIS ledger's own guid  -> status/comments only (unchanged)
-        - topic from ANY OTHER tool             -> resolve Components, RE-DETECT, fold in
-   -> only a REPRODUCED pair becomes a finding (origin `bcf`, runComplete=false always)
-```
-
-**Resolving a Component**, in `Core/CoordinationImportBcfExternal.cs`, two
-independent paths tried in this order:
-
-- **`AuthoringToolId`** - tried as a Revit Element Id (an integer), then as a Revit
-  UniqueId (`Document.GetElement(string)`), against the active document and every
-  LOADED link.
-- **`IfcGuid`** - the compressed 22-character IFC GlobalId. First the `IFC_GUID`
-  parameter (a native `ElementParameterFilter`, so this never walks the model to find
-  it); when nothing was ever stored there, Revit's own **computed** default -
-  `ExportUtils.GetExportId(doc, id)` - is what a fresh export actually writes, so the
-  incoming compressed guid is decoded back to that same .NET `Guid` (`Core/IfcGuidCodec.cs`,
-  a Revit-free port of the buildingSMART IFC2x3 compression algorithm) and matched
-  against an index built once per document per import, capped defensively - a model
-  too large to scan in one call falls back to the parameter path alone rather than
-  hanging.
-
-A topic resolving fewer than two DISTINCT elements is reported `external_not_traceable`
-with the reason, never invented; one that resolves two but does not reproduce lands in
-`external_not_reproduced`. A reproduced pair's row in `external_reproduced` carries the
-topic's `topic_guid`/`title`/`priority`/`assigned_to`/`status`, and its status/AssignedTo/
-comments are folded onto the (possibly brand-new) finding through the SAME
-conflict-aware logic a matched topic already uses.
-
-**`operation=navisworks_readiness`** (read-only) finds the 3D view Navisworks' own
-Revit exporter reads - one named exactly `Navisworks`, else the default `{3D}` - and
-reports its detail level, section box, visual phase, and every MODEL category **with
-elements in the model** that is hidden in it. Verdict `not_ready` when detail level is
-not Fine (see the measured Coarse-vs-Fine trap two sections up - it is the same one)
-or when an MEP category with elements is hidden (it will never reach Navisworks at
-all, regardless of detail level). **`operation=prepare_navisworks`** is the fix -
-`dry_run` -> token -> apply - setting that view's detail level to Fine and, only with
-`unhide=true`, unhiding the named categories; `View.CanCategoryBeHidden` is checked
-BEFORE ever opening a transaction (a view template governing category visibility, or
-a dependent view, refuses there), and `DetailLevel`/`GetCategoryHidden` are re-read
-after commit to decide success - never the calls not throwing.
-
-**`operation=navisworks_status`** (read-only) reports, for every ledger finding with
-`external_source=navisworks`, its own `revit_status` and `resolved_by_model_at` plus
-a `navis_set_status` suggestion list (`resolved` only when a complete detection run
-measured the pair gone, `active` otherwise - including a human `closed_by_decision`
-or `accepted_risk`, which is a decision, not a measurement) ready to feed to
-naviscoord-mcp's `navis_set_status`; `path`+`overwrite` optionally write it to a JSON
-file, re-read and row-count verified. It writes nothing to Navisworks itself.
-
-#### Resumen (español)
-
-`operation=import` ya no se detiene en "unmatched" para un topic que no es de este
-ledger: cada Component de su viewpoint (`IfcGuid`/`AuthoringToolId`) se resuelve
-contra el documento activo y los vínculos cargados - por Element Id o UniqueId, o por
-el parámetro `IFC_GUID` y, si no está guardado, por el id de exportación calculado de
-Revit decodificado del mismo guid comprimido (`Core/IfcGuidCodec.cs`) - y el par se
-**vuelve a medir** exactamente como `import_navisworks`. Solo un par reproducido entra
-como hallazgo (origen `bcf`, `runComplete=false` siempre); uno que resuelve menos de
-dos elementos se reporta `external_not_traceable` con la razón, nunca se inventa.
-
-`navisworks_readiness` (solo lectura) busca la vista 3D `Navisworks` o `{3D}` y
-reporta su nivel de detalle, caja de sección, fase visual y qué categorías MEP con
-elementos están ocultas - `not_ready` si el detalle no es Fino o si hay una categoría
-MEP oculta. `prepare_navisworks` (escritura, dry_run -> token -> apply) pone el
-detalle en Fino y, solo con `unhide=true`, desoculta las categorías nombradas,
-verificado por relectura tras el commit. `navisworks_status` (solo lectura) reporta
-el estado propio de cada hallazgo de origen `navisworks` y sugiere qué mandarle a
-naviscoord-mcp - nunca escribe en Navisworks.
+`horizun_undo` deshace el último lote Horizun registrado, y se niega si el documento se guardó o sincronizó desde entonces o si esos elementos cambiaron.
 
 ## Parameters and classification
 
@@ -1746,50 +1258,109 @@ Routes egress per room with Revit's own `PathOfTravel` service (same members in 
 `operation`: `import` (file only), `match` (read), `write` and `status_view`
 (MutatingUnlessDryRun: dry run by default, `confirmation_token`, `idempotency_key`).
 
-- Formats by extension: `.xml` MS Project MSPDI (summary tasks and UID 0 skipped;
-  `Id` is the UID), `.csv`/`.txt` with header `id,name,start,finish[,wbs,percent_complete,actual_start,actual_finish]`
+- Formats by extension: `.xml` MS Project MSPDI (summary tasks and UID 0 skipped),
+  `.csv`/`.txt` with header `id,name,start,finish[,wbs,percent_complete,actual_start,actual_finish]`
   (Spanish aliases accepted; `,` `;` or TAB), `.xer` Primavera P6 (TASK rows, WBS
   path from PROJWBS without the project node, WBS summary rows skipped). Dates must
   be ISO (`yyyy-MM-dd`…): `05/02/2026` is rejected by line, never guessed. A DTD in
   the XML is refused.
+  MSPDI uses the integer UID as `id` and falls back to the integer ID when UID is
+  absent. A malformed integer is rejected by line. Equivalent spellings such as
+  `17`, ` 17 ` and `+0017` identify the same task in the import, ID match and rule
+  activity references. The reply uses the canonical integer text.
+  When valid rows share an activity ID, the import rejects every row with that
+  ID and lists the source lines. An ID or WBS key or a rule pointing to any of
+  those rows leaves the element in `ambiguous`. A single duplicated activity
+  reports its `activity` and `schedule_lines`. A conflict between distinct IDs
+  reports `activities` and lists every implicated duplicate with all its source
+  lines in `duplicate_activities`. Other activities can still link.
 - `match`: `{parameter, key: id|wbs}` — candidates are the model elements that carry
   the parameter; or `{rules:[{activity, category, level?, parameter?, value?}]}`.
-  An element whose key names two activities, or that two rules assign differently,
-  is `ambiguous` and linked to neither. Reply lists links, elements without activity
-  and activities without elements.
-- `write`: `{activity_parameter, start_parameter?, finish_parameter?}` — TEXT INSTANCE
-  parameters only; a missing, read-only, non-text parameter or a group member is an
-  unresolved row. A refused `Set` rolls the batch back; every row is re-read.
-- `status_view`: `view_id`, `as_of`. Duplicates the view (the source is untouched),
+  A named key must identify one instance parameter. When the instance has no
+  parameter with that name, the same check applies to its type. A BuiltInParameter
+  token identifies a built-in directly. An element with a repeated or unreadable
+  key in an applicable match rule, a key naming two activities, or conflicting rules
+  appears in `ambiguous` and remains unlinked. The reply also lists links, elements
+  without activity and activities without elements.
+- `write`: `{activity_parameter, activity_field?, start_parameter?, finish_parameter?, allow_unmarked?}`.
+  Each element gets the value from its linked activity. Set `activity_field` to
+  `name`, `id` or `wbs`. Omission uses `name` and reports a `SUPUESTO`. A missing
+  activity value, an unavailable writable text instance parameter or a group member
+  leaves the row unresolved. A row also stays unresolved when the element has neither
+  a trusted Horizun ownership mark for the current user nor a recorded creation by
+  Horizun in this session. Set `write.allow_unmarked: true` in the rehearsal to include
+  elements with a confirmed absence of any Horizun ownership mark, using `HRZ_*`
+  output parameters. The rehearsal reports `rows_unmarked`, `rows_unmarked_ready`
+  and `rows_unmarked_override_ready`. `rows_unmarked` counts only rows with a
+  confirmed absence of a mark. The ownership check skips ambiguous matches, so
+  they count as unresolved and their marks are unmeasured. The override count
+  covers all ready rows that require it, even when `max_rows` limits the preview. A foreign or
+  unreadable mark blocks the override. If several instance parameters share an
+  output name, use a unique name or a BuiltInParameter token for a built-in.
+  An output resolving to a parameter used by the match for that element leaves
+  the row unresolved. Choose a separate output parameter to preserve the match key.
+  Elements in `ambiguous` also count once in `rows_unresolved` and in
+  `application.unresolved` in both rehearsal and apply. The write plan includes
+  only ready rows. Totals cover all rows, independently of `max_rows`. A rehearsal
+  with both ready and unresolved rows reports `application.state: "partially_rehearsed"`
+  and issues a `confirmation_token` only for the ready rows. If those rows commit
+  and verify while others remain unresolved, the outcome is `partial`. With only
+  unresolved rows, the rehearsal reports `rejected` without a token and an apply
+  fails before opening a transaction. With no rows to write, the rehearsal reports
+  `no_op` without a token.
+  The token binds the flag, the elements admitted by it, and each element and
+  parameter identity. Apply and verification resolve elements by `unique_id`,
+  including in collaborative models. Matching text is left as is and verified with the
+  rest of the row after commit. If setting a value fails, the reply reports the rollback
+  status and whether the model may have changed. A commit with an uncertain outcome,
+  such as `Pending`, reports the same uncertainty and leaves those writes unverified.
+  If a committed write fails verification, `changes_applied: true` preserves the
+  sync blocker for the observed changes in a collaborative model. In both write
+  operations, an exception while closing a committed transaction returns an error
+  with `transaction_cleanup_error`, `transaction_status: "Committed"`, `changes_applied: true`
+  and the available read-back evidence. The sync blocker covers the observed changes.
+  A fully verified row counts in both `application.applied` and `application.verified`.
+  A row with a measured mismatch counts in `application.failed`. If another parameter on that
+  row changed to its requested value, the row also counts in `application.applied`
+  and contributes to a `partial` outcome. A row whose read-back throws counts in
+  `application.unknown` and makes the outcome `uncertain`, even if some changes were confirmed.
+  Unreadable values stay null. The affected row reports lookup exceptions in `element_read_error`
+  and parameter exceptions by name in `parameter_read_errors`.
+- `status_view`: `view_id`, `as_of` (yyyy-MM-dd), `include_as_of_day?`. Duplicates the view,
   detaches the copy from its template and colours each linked element: done green,
   in_progress amber, future grey, late red. `late` needs percent complete or actual
-  dates; without them the status is the planned one. Each override is re-read.
-  The token binds the schedule file's SHA-256: an edited file is a stale plan.
+  dates. Where available, actual dates determine when the activity started or
+  finished. Percent complete without a corresponding actual date comes from the
+  schedule snapshot. Without progress data, colours use planned dates. Omission of
+  `include_as_of_day` includes that day and reports a `SUPUESTO`. Set it to `false`
+  to stop at the end of the previous day. The reply shows `last_included_day`.
+  In `status_basis`, `done_from_undated_progress_activity_count` counts activities
+  reported as done using 100% progress from the snapshot without an actual finish.
+  `done_from_undated_progress_activity_ids` lists their IDs up to the reply row limit.
+  After commit, the command re-reads the copy and each override's surface and cut
+  patterns and colors, and projection line color. The token binds the cutoff,
+  the file's SHA-256 and the resolved plan, including `source_view_unique_id`.
+  If the transaction fails after starting, the reply reports `transaction_status`,
+  `rollback_attempted`, `rollback_status` and `rollback_confirmed`. Only `RolledBack`
+  confirms the reversal. With `Pending`, the transaction is uncertain and
+  `model_may_have_changed` is true. The existence of the copy is unmeasured in
+  `postcondition`, and the copy and its resolved overrides count in `application.unknown`.
+  Check the model before retrying. A committed view that fails verification
+  reports `changes_applied: true`. An unreadable
+  copy or override counts in `application.unknown` and makes the outcome
+  `uncertain`. Overrides with a measured difference count in `application.failed`.
+  Per-element read exceptions appear in `override_read_errors` with `element_id`,
+  `unique_id` and `error`, up to `max_rows`. Copy read errors appear in `postcondition`.
+  In a collaborative model the unverified change blocks sync under the usual
+  verification rules. Ambiguous matches count in `application.unresolved` in
+  rehearsal and apply. With linked
+  and ambiguous elements, the rehearsal reports `partially_rehearsed` and the token covers
+  the copy and its resolved overrides. If these verify, the apply reports
+  `partial`. With only ambiguous matches, the rehearsal reports `rejected`.
+  With neither linked nor ambiguous elements, it reports `no_op`. Both
+  cases return without a token and an apply opens no transaction.
 
-### `horizun_federation_check` — federation QA (read-only)
-
-`rules`: `models:[{match, discipline?, allowed_categories?, forbidden_categories?}]`
-(`match` is a regex on the model title, `$host` for the host; a model no rule claims
-is `unclassified`, two rules make it `ambiguous`), `expected_links:[{name_matches,
-count?=1, workset_matches?}]` (missing / fewer / duplicated / wrong workset, and
-links no entry expected), `same_site` (default true). Same site is measured: three
-points of each link are taken to shared coordinates through the link's own
-project location and through the instance transform plus the host's; the largest
-disagreement is compared with `tolerance_mm` (default 10). An unloaded link is
-`not_decidable`. Link workset and phase are reported.
-
-`levels_match` (`true` or `{tolerance_mm}`; default the call's `tolerance_mm`)
-compares every level of every LOADED link, taken into host coordinates through
-the instance's total transform (`ProjectElevation`, so the Elevation Base setting
-does not matter), with the host's levels. Per link: `matches`, `differs` or
-`not_read` (unloaded or unreadable - never counted as matching). Each mismatch is
-`elevation_differs` (same name, height beyond tolerance), `name_differs` (a host
-level at that height under another name; names compare ordinally, so a case
-change counts) or `no_host_level`. Host levels the link does not carry are listed
-in `host_levels_not_in_link` and not judged. Any `differs` fails the verdict; any
-`not_read` makes it `not_decidable`, and so does a host with no link instance: zero links
-compared (`summary.links_compared`) is never a pass. `levels_match: false` (like
-`same_site: false`) asks for nothing, so alone it is refused as declaring nothing.
+The federation check (`horizun_federation_check`) is in the Pro edition.
 
 ### Resumen (español)
 
@@ -1799,9 +1370,108 @@ compared (`summary.links_compared`) is never a pass. `levels_match: false` (like
 - `horizun_link_schedule`: 4D con MS Project XML, CSV o XER; empareja por parámetro
   o reglas sin elegir nunca entre dos actividades; escribe actividad/fechas y
   colorea una vista duplicada por estado, con ensayo, token y relectura.
-- `horizun_federation_check`: categorías fuera de lugar por modelo, vínculos
-  esperados/faltantes/duplicados, workset y fase, y coordenadas compartidas
-  coherentes medidas en tres puntos.
+
+## Dimensions on paper: links, level planes, tile joints, printability (5.2)
+
+Field feedback (Revit 2024, workshared model with links, 2026-11-17): the API accepted the
+dimension and re-read the requested value, but the sheet showed something else. These checks
+hold the dimension to what the paper shows. API surface measured by reflection on the five
+`RevitAPI.dll` (2023-2027): every call below exists with the same signature in all of them,
+so nothing here is year-guarded.
+
+**References**
+
+- `horizun_get_dimension_references`: a family instance's faces read from its SYMBOL geometry
+  are wrapped into Revit's instance form `<instance uid>:0:INSTANCE:<symbol reference>`
+  before they are serialised and, inside a link, lifted with `CreateLinkReference`; the row
+  carries `symbol_reference_wrapped` (or `symbol_reference_not_wrapped` when the wrapped form
+  does not parse). Nested families keep their symbol reference.
+- Levels are offered as their plane (`Level.GetPlaneReference()`): functional heights are
+  measured from the level, not from the finish face of a floor. In `horizun_annotate`,
+  `references` and `reference` also accept `level:<id>` (a host level) for the same plane.
+- Linked grids and levels are still marked `linked_datum_rejected_by_dimension_api`.
+  `NewDimension` either refuses them or, as in the field on 2024, IGNORES them in silence. A
+  dimension that comes back with fewer references than requested is refused (rehearsal not
+  constructible; apply rolled back) with the check `references_dropped_by_revit` and a reason
+  naming each dropped `references[i]`.
+
+**Tile joints (surface patterns)**
+
+- A joint is `<face stable>/k`, and `k` is not predictable. `<face stable>/?` plus one point
+  per such entry in `pattern_points` picks the joint nearest the point, measured along the
+  dimension line. The search runs in a transaction group that is always rolled back: a
+  temporary reference plane OUTSIDE the face (so the joint under the point is an ordinary
+  probe, not a zero-length one), one probe dimension per `k` (0..255, stopping after 64
+  consecutive indices Revit will not dimension), commit, regenerate, read, roll back. Each
+  joint's position comes from its probe's midpoint and its distance is measured from that
+  position: a point ON a joint is an exact hit (`exact: true`). Indices at the same position
+  are one physical joint (`same_joint_indices`), never a tie; two DIFFERENT joints equally
+  near are refused as ambiguous. An unconfirmed rollback, or a search that fails, refuses the
+  call naming `search_rollback_status`. The chosen `k`, the distance, the joint's point and
+  the rollback status travel in `pattern_resolutions`; after the commit the joint must be
+  where a segment ends (`pattern_joint_is_segment_end`), read from the committed dimension's
+  own segment ends, so it is measured also on family and linked faces.
+- A joint is an infinite line: Revit measures to it also beyond the tiled element. After the
+  commit, every segment end that no measurable reference accounts for must fall inside the
+  patterned face's extent along the dimension (`pattern_lines_inside_element`); outside rolls
+  the batch back. A linked or family-instance face reports `unavailable`, never a pass.
+  Pattern references are no longer held to the face plane by the geometry check
+  (`pattern_line_geometry_not_measured`).
+
+**Will it print**
+
+- Every dimension row (rehearsal and apply) carries `will_print` with `reasons` and `unknown`.
+  Reasons: a reference in a link instance hidden in the view, the RVT Links category hidden, a
+  hidden referenced element or category, the dimension outside the crop (also with
+  `allow_outside_crop`), the dimension itself hidden, its category hidden in the view or by the
+  view template (only when the template controls V/G Annotation), its workset hidden (workshared models) and - after the commit only - no
+  bounding box in the view. Not evaluated, so listed in `unknown`: enabled view filters and
+  per-link custom display settings. Any unknown makes `will_print` null, never true.
+  With enabled view filters the refusal says they cannot be evaluated.
+  `require_printable: true` refuses a `false` and, after the commit, anything but a confirmed
+  `true`; in the rehearsal (no box yet) it refuses a `false` or any unknown.
+  `horizun_query_dimensions` reports the same reference visibility per row (no box: it can
+  answer `false` or `null`, never a promised `true`).
+
+**Printed text**
+
+- `Dimension.ValueString` formats with the PROJECT units; the sheet prints with the dimension
+  TYPE's format when the type does not use the project settings. Rows now carry
+  `printed` (`printed_text`, or `printed_segments` for chains; `format_source`
+  `dimension_type`/`project`; `value_string_project_format`) built with
+  `UnitFormatUtils.Format` and the type's `FormatOptions`, with prefix/suffix around the value
+  and a value override replacing it. Radial and diameter dimensions (the type's R / diameter
+  symbol), equalised chains (EQ text) and types with alternate units get `printed_text` null
+  with "prefix/alternate units not composed", never a partial text.
+- Spots have no `Value`/`ValueString` (null, measured live on 2025). Their `printed` carries the
+  measured point (`point_source`: the requested point carried along the view onto a host planar
+  face, else `Dimension.Origin`), `by_base` (internal origin, project base point, survey point
+  and, when the type is relative, the level) formatted in the type's units, the type's base
+  name and `printed_text` (elevation, with the single/upper prefix and suffix) or
+  `printed_lines` (north/east) for the recognised base; an unrecognised base name gives `null`
+  and the caller picks from `by_base`.
+- A dimension aimed at a view that is not the active one is refused, and the refusal carries the
+  exact call to open it: `horizun_navigate {"operation":"open_view","view_id":<id>}`.
+
+**Spot elevation**
+
+- `NewSpotElevation` fails when the point is on the edge of the face, off the face, or where
+  the view does not see the face. For a host planar face the plan checks it first and refuses
+  with the fix: point within 1 mm of the face boundary, point not projecting inside the face,
+  beyond a section's far clip, or outside a plan's view range (view depth to top; on a
+  reflected ceiling plan, cut plane to view depth - when the view type and its direction do not
+  agree the plan is not pre-checked). `Face.Project` finding no point is unknown: no pre-check, the rehearsal decides. Anything it
+  cannot measure is left to the rehearsal, whose failure message now names the same causes.
+- `spot_slope` stays refused: no Revit 2023-2027 has a creation API (only `NewSpotElevation`
+  and `NewSpotCoordinate`, checked by reflection). The refusal now gives the alternative: two
+  `spot_elevation` on the same face, or one placed by hand and read with
+  `horizun_query_dimensions`.
+
+Already covered and unchanged: aligned dimensions in any direction (`line_start`/`line_end`),
+chains of up to 32 references (per-segment overrides through `horizun_edit_dimensions`
+`segments`), angular, radial/diameter/arc length (2025+) and spot coordinates, each verified
+after the commit (class, view, type, references, segments, values against the rehearsal and,
+for linear, against the references' geometry).
 
 ## Spatial coherence after every write (`spatial_check`, `horizun_verify_changes`)
 
@@ -2143,31 +1813,6 @@ maps to it, so a universal finding cannot cite it.
   (`detail_level_unchanged` / `discipline_unchanged`). The audit then re-runs and
   reports the cited finding as resolved or persistent.
 
-## horizun_deliver_ifc: telling an empty parameter apart from a dropped mapping
-
-`model_comparison` (inside the `pset_mapping` gate's evidence) merges a
-BEFORE-export read of the model with the AFTER-export coverage check, per
-declared property: `exported`, `empty_in_model`, `not_applied`,
-`parameter_missing`. The model-side read resolves each mapping row's IFC
-classes to a Revit category through a built-in table
-(`DeliverIfcCommand.IfcClassCategories`) covering common architecture,
-structure and MEP classes (walls, slabs, columns, beams, doors, windows,
-stairs, railings, spaces, ducts, pipes, cable trays, flow terminals,
-electrical appliances...). A class outside that table makes the ROW
-`category_unmapped` - the model is not read for it, and only the file's own
-coverage (unaffected) is known.
-
-`exported` and `not_applied` are **aggregate** counts, not element-matched: no
-IFC GlobalId correlates a specific model element to its file entity without
-recomputing the exporter's own GUID algorithm (this bridge does not carry
-that algorithm). The arithmetic (`not_applied = max(0, has_value - carrying)`)
-holds as long as the model census and the file's coverage check are counting
-the SAME population; a `population_mismatch_note` on the row says so whenever
-the heuristic category resolution and the file's own IFC-class count disagree,
-rather than trusting the aggregate silently. `PsetMapping.CombineWithModel`
-(Revit-free) does the merge; `DeliverIfcCommand.ComputeModelCensus` (Revit-
-side) builds the per-row model counts.
-
 ## horizun_health: the verification catalog and modal-dialog detail
 
 `include_verification_catalog=true` adds a `verification_catalog` block: for
@@ -2214,7 +1859,7 @@ The arguments the schema keeps terse:
 | argument | meaning |
 |---|---|
 | `issue` | the issue fields, every value a string: `title`, `description`, `issue_type_id` (the ACC **subtype** id - `issues_list` returns `issue_types` with their subtypes), `status` (`draft`, `open`, `pending`, `in_progress`, `completed`, `in_review`, `not_approved`, `in_dispute`, `closed`), `assigned_to`, `assigned_to_type` (`user` default, `company`, `role`), `due_date` and `start_date` (`YYYY-MM-DD`), `location_id`, `root_cause_id`. In `issues_list` only `status`, `issue_type_id` and `assigned_to` are accepted, as filters. |
-| `finding` | one coordination-ledger row: a row of this bridge's own ledger (the `horizun_coordination` CSV columns or JSON keys) as it is, or another tool's row. Column aliases (case-insensitive, spaces read as `_`, first present wins): title ← `title`, `name`, `summary`, `clash_name`, `check`, else `Clash: <category_a> vs <category_b>` (the ledger has no title column); description ← `description`, `detail`, `details`, `comment`, `message`, `reason`, `note`, plus a `column: value` line for each context column (`category_a`, `category_b`, `side_a`, `side_b`, `point_mm`, `priority`, `responsible`, `immovable_discipline`, `suggested_action`, `scope`, `severity`, `discipline`, `category`, `test`, `level`, `grid`, `location`, `zone`, `element_a`, `element_b`, `element_ids`, `elements`, `distance`, `point`, `x`, `y`, `z`, `source`, `model`); key ← `external_key`, `finding_id`, `clash_id`, `issue_key`, `guid`, `id`. `issue` overrides the finding. |
+| `finding` | one coordination-ledger row: a row of a coordination ledger (the Pro edition's coordination CSV columns or JSON keys) as it is, or another tool's row. Column aliases (case-insensitive, spaces read as `_`, first present wins): title ← `title`, `name`, `summary`, `clash_name`, `check`, else `Clash: <category_a> vs <category_b>` (the ledger has no title column); description ← `description`, `detail`, `details`, `comment`, `message`, `reason`, `note`, plus a `column: value` line for each context column (`category_a`, `category_b`, `side_a`, `side_b`, `point_mm`, `priority`, `responsible`, `immovable_discipline`, `suggested_action`, `scope`, `severity`, `discipline`, `category`, `test`, `level`, `grid`, `location`, `zone`, `element_a`, `element_b`, `element_ids`, `elements`, `distance`, `point`, `x`, `y`, `z`, `source`, `model`); key ← `external_key`, `finding_id`, `clash_id`, `issue_key`, `guid`, `id`. `issue` overrides the finding. |
 | `external_key` | 1-100 characters of `A-Z a-z 0-9 . _ : -`, stored as `[horizun-key:<key>]` on the last line of the description. Required on create (or a finding id). An `issue_update` naming a key the issue does not carry yet WRITES the marker (its text kept) - it is part of the plan and of `changes`. In `issues_list` it selects the issues carrying it. |
 | `issue_id` | the ACC issue id (UUID). `issue_update` also finds the issue by its key when `issue_id` is absent. |
 | `dry_run`, `confirmation_token` | the writes rehearse by default; the apply sends the same arguments with `dry_run=false` and the rehearsal's token. |
@@ -2897,61 +2542,11 @@ fase y nada de opciones de diseño secundarias), con `prefix`, `start`, `step`, 
 generación entera se rechaza. Los valores se muestran en el ensayo, el token los ata y cada
 uno se relee tras el commit.
 
-## MEP and structural analysis reads (read-only)
+## Structural and energy analysis reads (read-only)
 
-Three reads of numbers Revit already holds. None of them calculates anything,
+MEP system analysis (`horizun_plan_mep`) is in the Pro edition. These reads of numbers Revit already holds. None of them calculates anything,
 and none of them carries a limit, factor or standard of its own: limits and
 tolerances are arguments.
-
-### horizun_plan_mep operation=system_analysis
-
-Reads the critical path of duct (`MechanicalSystem`) and pipe (`PipingSystem`)
-systems as Revit computed it: `MEPSystem.GetCriticalPathSectionNumbers()` in flow
-order, then per `MEPSection` the flow (l/s), velocity (m/s), total pressure loss
-(Pa), friction (Pa/m) and curve length (mm), all through `UnitUtils`.
-
-- **Scope**: `element_ids` are system ids (anything else is refused by name).
-  Without them, `kind` (`pipe`/`duct`, omitted = both) and `classification`
-  (ONE exact `MEPSystemClassification` name such as `SupplyAir`,
-  `DomesticColdWater`; comma lists and numbers are refused, because
-  `Enum.TryParse` would OR `SupplyAir,ReturnAir` into `ExhaustAir`) select every
-  matching system. More than 100 systems per call is refused, and so is an
-  empty `element_ids` (omit it to read every system) - an empty selection is
-  never widened to the whole model.
-- **Limits**: `limits = { max_velocity_m_s, max_pressure_loss_pa,
-  max_friction_pa_per_m }`. An unknown key is refused, not ignored. Sections
-  beyond a limit are listed under `beyond_limits` with up to 50 element ids.
-- **The calculation level decides what may be judged.** `None`, `Performance`
-  and `Volume` are `not_calculated`: the section numbers are NOT read, because
-  they read as zero and would pass any limit, and the system's coverage word is
-  `unreadable` - so a call mixing judged and unjudged systems is `partial`,
-  never the whole truth. `Flow` claims flow only (the API: "System calculation
-  is only for flow"): velocity, pressure and friction limits on such a system
-  are listed in `unmeasured_limits` until a live run proves Revit fills them.
-  Only `All` claims all four. A claimed quantity that comes back null is named
-  in `unread_quantities` (and makes the row `partial`) even with no limits.
-- **Connectivity is read second.** RevitAPI.xml (2023 and 2026) on
-  `IsWellConnected`: "If the system is not well connected, parameters which
-  need to be calculated are invalid." Invalid, not understated - so a system
-  with `is_well_connected` false (`not_well_connected`) or unreadable
-  (`connectivity_unreadable`) is neither read nor judged: no critical path (it
-  is the path of greatest pressure loss, chosen from those values), no pass and
-  no breach, every limit listed in `unmeasured_limits`, and the row is
-  `unreadable`.
-- **Verdicts per system**: `beyond_limits`, `within_limits` (every limit measured
-  on every critical-path section), `limits_partly_unmeasured` (not a pass),
-  `no_limits_given` (its meaning says on how many critical-path sections the
-  numbers were read), `not_well_connected`, `connectivity_unreadable`,
-  `not_calculated`, `unreadable`, `no_critical_path` (a calculated, well-connected
-  system with no base equipment) and `critical_path_unreadable` (the path would
-  not read, or none of its sections did). None of them is "ok".
-- **Coverage per system**: each row carries its `coverage` word and
-  `coverage_reason` - its own cause (`flow_only`, sections or quantities that
-  would not read, unmeasured limits, `not_calculated`, `not_well_connected`...),
-  null when complete. The call's coverage reasons repeat that cause per system.
-- `critical_path_pressure_loss_pa` is the sum of the critical-path section losses,
-  published only when every one of them was read; null on a system nothing was
-  read from.
 
 ### horizun_query_structure mode=analytical
 
@@ -3154,8 +2749,7 @@ the one the flex kinds use, and its `maxItems` is 100), all finite, one height p
 (two points closer than ~0.3 mm in plan are refused), not all on one plan line.
 
 `type_id` is required - the type is never "the first one": a row without it is refused with
-the document's toposolid types listed by name and id (copy one in with
-`horizun_copy_between_documents` when there is none).
+the document's toposolid types listed by name and id (load one in Revit when there is none).
 
 **Verified after the commit** by re-reading the solid, not the call that did not throw: at up
 to 50 sampled input points (every point when there are fewer; the lowest and the highest
@@ -3247,7 +2841,7 @@ another model plus a new level, which modified 172 unrelated elements. Live prob
 ## horizun_document_session — operation `sync_with_central`
 
 Synchronizes a workshared **local** with its central: `target_document` (required),
-`comment`, `relinquish` (`all` default | `keep_borrowed` | `none`), `compact`.
+`comment`, `relinquish` (`all` default | `keep_borrowed` | `borrowed_only` | `none`), `compact`.
 
 **Off by default, owner-gated like `horizun_execute_python`.** Only the machine owner
 turns it on, inside Revit: *Horizun Hub tab > Advanced options > Synchronize with
@@ -3321,7 +2915,7 @@ saved or reloaded before the lock was needed). Any other exception from the call
 API documents that an ElementId may change across a sync, so `element_id` values in the
 report are for display. Ownership is re-counted and held against the choice (`all`:
 nothing owned; `keep_borrowed`: no workset owned and exactly the previously borrowed,
-still existing elements owned; `none`: worksets and owned elements unchanged). The same
+still existing elements owned; `borrowed_only`: worksets still owned and only the elements borrowed one by one released; `none`: worksets and owned elements unchanged). The same
 sample is re-read, `HasAllChangesFromCentral()` - read FIRST, right after the call
 returns - must read true, and a save must be witnessed:
 `is_modified_after` false (SaveLocalAfter) or, for a file-based central,
@@ -3339,98 +2933,55 @@ reload brought into a workset this user still owns read as owned; they are liste
 Central and other add-ins are not intercepted (see the prevention gate's
 `not_interceptable` list).
 
-## horizun_manage_links: acquire_coordinates, point clouds, IFC links, scan_deviation
+## horizun_save_document — operation `sync_with_central` under the sync-only option (M10)
 
-**acquire_coordinates** (`link_instance_id` required: a loaded `RevitLinkInstance` or a
-LINKED CAD `ImportInstance`). `Document.AcquireCoordinates` runs inside a transaction, so
-the dry run is a REAL rehearsal: it acquires, re-reads and rolls back, and the reply
-carries the rollback status. The token binds the host's shared position at the project
-base point and the source instance. After the commit the checklist re-reads:
+**Experimental option, off by default. It is not a finished feature.**
+`permission_profile=safe_write` plus the owner's *Synchronize with
+central* grant already opens this operation through `horizun_save_document` (that is the
+behaviour `int/4.2` had before this option; against 4.1, which needed `full_write`, it is new:
+CT-P1-2 in the CHANGELOG). The owner may additionally turn on **Sync only
+(strict)** in *Horizun Hub tab > Advanced options*; it is stored as `allow_sync_only_grant`
+in `%USERPROFILE%\.horizun\settings.json`, no MCP call writes it and a malformed file reads
+as OFF. `horizun_health` shows it as `operational_controls.sync_only_grant_enabled`.
 
-- RVT link: `link_same_site_delta_mm`, measured with the very method
-  `horizun_federation_check` uses for `same_site` (three link points taken to shared
-  coordinates through the link and through the host), must be <= 1 mm;
-- CAD link: `cad_wcs_delta_mm` - three import points must sit at the DWG's own
-  coordinates in the host's shared system (the WCS rule RevitAPI documents);
-- `host_shared_position_changed` must be true.
+With it ON the flag is itself the grant for `safe_write`, `full_write` and `unsafe_code`
+(the other grant is not needed; *Protect shared models* still wins) and every sync through
+`horizun_save_document` passes this precheck, in the dry run and again in the apply. If the
+older grant is also on, `safe_write` is still strict. Both the sync and the `pending_sync`
+reminder take their authorisation from `SyncOnlyGrantRules.Decide`, fed by ONE read of
+`settings.json` per call (profile, the owner's grant and the flag together). The two grants are plain
+booleans in `settings.json`; a process with the user's rights can edit them, and the bridge only tells the person when a
+`horizun_execute_python` run left either one different (`settings_changed` in the script's reply: see AGENTS.md, "What protects
+the owner's settings"). A refusal carries `detail.code` and `write_started: false`:
 
-The reply publishes `project_position_before` / `project_position_after` in mm and
-degrees - the units `horizun_manage_units operation=base_points project_position` takes,
-so a caller can restore. The token also binds where the source instance sits (its total
-transform) and, for an RVT, the link's own same_site delta: a link moved or reloaded
-between the dry run and the apply refuses as a changed plan. Refused by name before Revit
-is asked: a link that already shares the host's site (delta <= 1 mm) and an unloaded link.
-A type placed more than once is NOT pre-refused, because the instance is always named:
-the rehearsal asks Revit, whose own answer ("Cannot acquire coordinates from a model
-placed multiple times" per RevitAPI) is what the caller hears; the plan lists
-`placements_of_type`. The API always overwrites the host's geolocation with the link's,
-unlike the UI; the warning says so. `publish_coordinates` is a later step.
+| Check | Code |
+|---|---|
+| comment non-empty | `sync_only_comment_required` |
+| `accept_findings` is not accepted | `sync_only_no_accept_findings` |
+| `relinquish` is `all` or `borrowed_only` | `sync_only_relinquish` |
+| pending verification blockers | `sync_blocked_unverified`; `blocker_kinds` names each remaining kind; failed checks can be accepted by naming all their IDs |
 
-**add kind=point_cloud** (`.rcp` / `.rcs`; `kind` defaults from the extension).
-`PointCloudType.Create` + `PointCloudInstance.Create` with the identity transform, inside a
-transaction: the dry run is a real rehearsal with rollback. Refused by name when
-`PointCloudEngineRegistry.GetSupportedEngines()` lacks the engine
-(`point_cloud_engine_unavailable`) or the path is already linked (compared with each
-`PointCloudType.GetPath()`: a point cloud is not an ExternalFileReference). Verified: type and
-instance re-read, instance of that type, and an engine identifier Revit reports (published as
-`engine` beside `engine_requested`; not compared with the extension: RevitAPI documents the
-built-in engine's identifier as "pcg", and the value for .rcp/.rcs is still to be measured).
+The dry run adds `sync_only`: `active`, the `relinquish` chosen, the borrowed elements
+(`borrowed`: count, sample ids and unique ids), the owned elements (`owned_elements`) and
+worksets (`owned_worksets`: count and names), how many elements others hold (`held_by_others`,
+never touched) and what the token binds (`token_binds`). That the comment, the relinquish choice
+and the session's own diff passed is not a field of the block: a request that fails them is
+refused BEFORE the preview exists, so reaching the preview is the proof. The token binds the
+comment (plan hash) and digests of the borrowed list, the owned elements and the owned worksets
+(model fingerprint): if either moves between preview and apply the apply is refused naming the
+field. After the sync the model is read again into `sync_only_postcheck`: borrowed
+elements left, owned elements and worksets left (for `all`), pending local changes
+(`IsModified`) and the update status against the central; `others_no_longer_hold` lists
+what others held before and no longer hold (information, not a failure: the re-read cannot
+tell whose act it was). That only the user's own is given back is guaranteed by Revit's
+`RelinquishOptions`. A leftover or a pending change makes `sync_verified` false; an
+unreadable value makes it null. `relinquish_own` already frees only what the current
+user owns. With the option OFF the decision is the one `int/4.2` had before M10 (safe_write plus the
+owner's grant, or full_write/unsafe_code); against 4.1 it is new (CT-P1-2).
 
-**add kind=ifc**. The importer's own Link branch, aimed at the host:
-`Application.OpenIFCDocument(path, IFCImportOptions{Action=Open, Intent=Reference})`
-imports the IFC by reference into a NEW document, which is saved as `<file>.ifc.RVT` and
-closed; then `RevitLinkType.CreateFromIFC` + `RevitLinkInstance.Create` link it in the
-host. (`Action=Link` is not used: with it the importer links the intermediate into the
-document OpenIFCDocument returns, never into the host.) The dry run is a measured preview
-(the import and the save happen outside any transaction); its token binds the path AND
-the intermediate's state on disk (absent, or size and last write), so an `.ifc.RVT` that
-appears or changes before the apply refuses as a changed plan. Failures are named by step:
-`ifc_importer_unavailable` only when `Revit.IFC.Import` is neither loaded, nor beside
-RevitAPI.dll, nor in an ApplicationPlugins IFC bundle built for the running year (its path names the
-year; `importer_looked_in` says where) - refused by the dry run already, before a token;
-`ifc_import_failed` (importer present, Revit refused the file); `intermediate_save_failed`;
-`link_failed` (host transaction rolled back). None touches the host model, and each
-reports `intermediate_before` / `intermediate_after` / `disk_changed`. Verified: type
-Loaded, instance present and of that type, the linked model holds DirectShape elements
-(`linked_direct_shapes` > 0, what a Reference import builds) and does not link to itself.
-Instance type, DirectShapes and self-link are read before the commit, so a link failing them
-is rolled back (`link_failed`); only an unreadable linked document leaves them to the re-read.
+## Links, shared coordinates and point clouds
 
-**scan_deviation** (read-only): `link_instance_id` names the `PointCloudInstance`,
-`element_ids` (<= 200) the walls, floors and columns, `tolerance_mm` (default 10). For
-each planar face (<= 60 per element) a convex slab - two planes at +/- band around the
-face (band = max(3 x tolerance, 30 mm)) and four around its UV rectangle - is the
-multi-plane filter for `GetPoints(filter, averageDistance, maxPoints = 5000)`, averageDistance
-being the face's own (`average_distance_mm`): 20 mm, coarsened on a large face to
-sqrt(area / (0.8 x 5000)) so a fully scanned face stays under the cap and what returns is the
-whole face, never a subset the cap chose.
-Points that project inside the face give signed distances; a face is `ok` when the 95th
-percentile of |distance| is within tolerance, else `deviates`, and `not_measured` with
-fewer than 20 points (`too_few_points`), or when its points occupy under `min_coverage_share`
-(0.5) of the cells of a grid over the face (cells of 4 spacings, at most 24 per axis, counted
-when their centre lies on the face; `low_coverage`, with `coverage_share` and `coverage_grid`
-published; `coverage_undetermined` when no cell centre lies on it) - never `ok`. Coverage is
-measured where the points are, not by counting them: a large face seen in one corner returns
-as many points as a small face seen whole. The slab reaches `band_mm` outward but only
-`band_inward_mm` = min(band, 0.4 x the thickness behind the face, from the element's
-nearest antiparallel face) inward, so the element's own opposite face is never taken for
-this face's deviation. Non-planar faces and faces beyond 60 per element count as
-not_measured in the element's state and in `faces_not_measured`. The point frame (raw or
-through the instance's total transform) is taken per face from where the points actually
-fall inside the filter; a face where neither frame holds, or where both do (a transform
-smaller than the band), is `not_measured`, `point_frame_undetermined`. A cloud whose file
-is not found (`FoundStatus` NotFound) is refused, `cloud_not_found`; an element without
-readable solids is `geometry_unreadable` / `no_solid_geometry`. The reply declares its
-application outcome as not started (read-only). Elements: `ok` only when every face is ok,
-`partially_measured`, `not_measured` or `deviates`; the verdict passes only when every
-element is ok. Deviations beyond the band are not visible, and the reply says so.
-
-Live probes: `scripts/live-probes/links-survey.probes.ps1`. Point-cloud cases read
-`PointCloudPath` (and, for the positive scan, `PointCloudFloor`) from
-`%USERPROFILE%\.horizun\live-fixtures.json` and are `not_covered`, named, without them.
-The IFC case uses `IfcLinkSource` when given and otherwise exports its own IFC of the
-write document, so every year is measured; a refusal passes only as
-`ifc_importer_unavailable` AND with that year's `Revit.IFC.Import.dll` really absent.
+Link management, shared coordinates, point clouds, IFC links and scan deviation (`horizun_manage_links`) are in the Pro edition.
 
 ## Elements inside links, and inside links of links
 
@@ -3452,12 +3003,12 @@ element with that pair selects and verifies it by reference (`linked_elements_ve
   no element with that id the call is refused ("no element with this id inside linked
   document 'B'"); when B happens to have one, B's element is selected - which is what was
   asked, and not what was meant.
-- **Only attached links nest.** A link added by `horizun_manage_links add` is an Overlay, and
-  Revit never carries an overlay into the model that links its host.
+- **Only attached links nest.** Revit never carries an overlay link into the model that links
+  its host.
 - **An unloaded link is a link state, not a missing element.** A selection through an
   instance whose document is not loaded is refused before anything is selected.
-- **Changing a link's load state drops the selection inside it.** `unload`, `reload` and
-  `change_path` first remove the selection references INTO that link and report how many in
+- **Changing a link's load state drops the selection inside it.** The Pro edition's link
+  management first removes the selection references INTO that link and report how many in
   `selection_references_cleared`: MEASURED in Revit 2026, a linked element held by reference
   while its link was unloaded or reloaded crashed Revit a few seconds later.
 
@@ -3687,24 +3238,13 @@ when another add-in loads a different Microsoft.Scripting version. Only the
 owner can authorize Python; a successful script is self-reported, never host
 verified.
 
-`horizun_cad_extract` can provide a paged `detail_plan` from Revit import
-geometry, including nested block paths, lines, arcs, polylines, layer mapping
-and gaps. `read_dwg_text` requires a readable source DWG and AutoCAD; source
-TEXT/MTEXT is refused by name when either is unavailable. Compare converted
-and source entity counts before declaring a detail complete. See
-[CAD-DETAIL-TRANSFER.md](CAD-DETAIL-TRANSFER.md).
-
 `horizun_manage_groups` previews dependent tags and dimensions by view before
 deletions and member recreation. `find_duplicates`, `set_group_level`,
 `change_group_type`, `place_group`, and `annotation_report` expose the measured
 result; dimensions that cannot be restored are reported. The session report
 currently covers type changes in the process.
 
-`horizun_manage_links operation=visible_elements` scans a linked document
-without the three-argument `FilteredElementCollector` overload. It reports
-candidates, exclusions and uncertain elements; `visibility_proven=false` when
-crop, phases, design options or link display settings remain unresolved.
-`horizun_execute_python` preflight warns about that overload, and
+`horizun_execute_python` preflight warns about Revit's three-argument
+`FilteredElementCollector(document, viewId, linkId)` overload, and
 `horizun_job_status` distinguishes a working Revit process from one that died
-with recent Windows crash-dump evidence. See
-[LINK-VISIBILITY-3.0.md](LINK-VISIBILITY-3.0.md).
+with recent Windows crash-dump evidence.

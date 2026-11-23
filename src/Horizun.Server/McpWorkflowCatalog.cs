@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP - the procedure catalogue. Original Horizun code.
 //
 // G13 of the 2026-09-14 competitive inventory: "20 workflows prioritarios con
@@ -483,136 +483,6 @@ namespace Horizun.Server
                 }
             },
 
-            new Procedure
-            {
-                Id = "family-recipe",
-                Title = "Family Recipe",
-                Version = 2,
-                Permission = "full_write",
-                Outcome = "A parametric family compiled from an explicit recipe and inspected before acceptance.",
-                Tools = new[] { "horizun_create_family", "horizun_query_model" },
-                Inputs = new[] { "the recipe, with its fixed footprint and its parametric dimension",
-                                 "the family template, which exists per Revit year and per language",
-                                 "the flex values to test" },
-                Scope = "One family document. The project is not touched until the family is loaded.",
-                Output = "A .rfa, its parameter census, and a PNG of the flexed result.",
-                Errors = new[]
-                {
-                    "a 2D template - create_family does not support one, and says so rather than producing " +
-                    "something that opens and cannot be used",
-                    "a flex that does not move geometry - reported as a failed flex, never as a pass"
-                },
-                DependsOn = new string[0],
-                Acceptance = "The family reopens with the declared parameters and types, and the flex changes " +
-                             "the geometry in the direction the recipe predicted.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_health",
-                        // No arguments: horizun_health's schema declares none and
-                        // refuses extras. An empty template is what makes this step
-                        // EXECUTABLE rather than merely described.
-                        ArgumentsJson = @"{}",
-                        Purpose = "establish the Revit YEAR, which decides which family templates exist.",
-                        Needs = "nothing",
-                        Preconditions = "Revit is running.",
-                        OnError = "stop. A family template path is per year AND per installed language, and a template " +
-                                  "that does not exist fails in a way that reads like a bad recipe.",
-                        ReadsBack = "the Revit year, the document title and the bridge version."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_create_family",
-                        // THE RECIPE IS THE THING BEING DESIGNED.
-                        //
-                        // Its dimensions and its type table are the component, and a
-                        // catalogue that supplied them would be designing somebody's
-                        // family. So it arrives as a decision, and the rehearsal and
-                        // the apply share the SAME one.
-                        RequiresDecision = true,
-                        DecisionNeeded = "the recipe: name, width, depth, height parameter and the type " +
-                                         "table, plus the template to author from. These are the component, " +
-                                         "not settings for producing it.",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""template_path"": { ""$input"": ""template_path"" },
-  ""output_path"": { ""$input"": ""output_path"" },
-  ""recipe"": { ""$decision"": ""recipe"" },
-  ""dry_run"": true
-}",
-                        Purpose = "rehearse the recipe without producing a file.",
-                        Needs = "the Revit year from step 1, plus the recipe and the template, which arrive as " +
-                                "inputs.",
-                        Preconditions = "the template is a 3D family template. A 2D one is not supported, and the refusal " +
-                                        "says so rather than producing a file that opens and cannot be used.",
-                        OnError = "a refusal names the template and the part of the recipe it could not satisfy. Change " +
-                                  "the recipe; do not retry the same call.",
-                        ReadsBack = "what it would create: the parameters, the types and the geometry the recipe " +
-                                    "describes."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_create_family",
-                        // The SAME recipe as the rehearsal, by reference. A second
-                        // ask is a second chance to change what step 2 rehearsed.
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""template_path"": { ""$input"": ""template_path"" },
-  ""output_path"": { ""$input"": ""output_path"" },
-  ""recipe"": { ""$decision"": ""recipe"", ""from_step"": 2 },
-  ""dry_run"": false
-}",
-                        Purpose = "build it.",
-                        Needs = "the rehearsed recipe from step 2, unchanged.",
-                        Preconditions = "step 2 rehearsed clean. This step writes a file.",
-                        OnError = "a partial family is still a file on disk. The reply names what it built; delete it " +
-                                  "before retrying rather than loading a half-built family into a project.",
-                        ReadsBack = "the .rfa path and the parameter census re-read from the REOPENED document, not from " +
-                                    "the builder own idea of what it wrote."
-                    },
-                    new Step
-                    {
-                        N = 4, Tool = "horizun_query_model",
-                        ArgumentsJson = @"{
-  ""categories"": { ""$input"": ""categories"" },
-  ""response_mode"": ""summary""
-}",
-                        Purpose = "flex it: prove the parametric dimension actually moves the geometry.",
-                        Needs = "the family and type from step 3, plus the flex values from the recipe.",
-                        Preconditions = "the family is loaded, or the flex is measured in the family document itself.",
-                        OnError = "a flex that does not move geometry is a FAILED flex. It is never reported as a pass " +
-                                  "because the call returned without throwing.",
-                        ReadsBack = "the measured dimension at each flex value, against what the recipe predicted."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""document"", ""template_path"", ""output_path"", ""categories""],
-  ""properties"": {
-    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document the family is loaded into."" },
-    ""template_path"": { ""type"": ""string"",
-      ""description"": ""Absolute existing .rft. The TEMPLATE decides the category and the hosting behaviour, which is why it is an input and not a detail of the recipe: the same recipe on a face-based template and on a free-standing one produces two different components."" },
-    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute .rfa destination in an existing directory."" },
-    ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-      ""description"": ""Read back in step 4 to confirm the family arrived in the project with its types."" }
-  },
-  ""additionalProperties"": false
-}",
-                Example = "health (note the year) then create_family(recipe, dry_run=true) then " +
-                          "create_family(same, dry_run=false) then query_model(measure the flexed dimension at " +
-                          "each test value).",
-                Limits = new[]
-                {
-                    "A family that reopens is not a family that works. Only step 4 distinguishes the two, " +
-                    "and it is the step people skip.",
-                    "Family templates ship with the Revit installation and differ by language. A recipe " +
-                    "that names a template by an English path fails on a Spanish install for a reason " +
-                    "that looks like a bad recipe.",
-                    "Nothing here loads the family into a project. That is a separate, reversible " +
-                    "decision."
-                }
-            },
 
             new Procedure
             {
@@ -964,6 +834,165 @@ namespace Horizun.Server
                     "overlap test against the title block can pass while the text is plainly over the " +
                     "border. The real paper is SHEET_WIDTH and SHEET_HEIGHT, which is what step 2 reads.",
                     "This route measures. It changes nothing, which is why planimetry-review exists."
+                }
+            },
+
+            new Procedure
+            {
+                Id = "sheet-issue",
+                Title = "Sheet issue with a traffic light",
+                Version = 1,
+                Permission = "documentation",
+                Outcome = "A sheet set issued as a versioned PDF with a manifest, after the sheets were audited and saved, with the PDF read back.",
+                Tools = new[] { "horizun_audit_planimetry", "horizun_model_scan", "horizun_query_planimetry", "horizun_model_diff", "horizun_save_document", "horizun_export" },
+                Inputs = new[] { "the sheets, by id", "where the PDFs go (a folder that exists)", "the file name pattern, with {version}", "the font families the set must use" },
+                Scope = "The sheets named. It changes no model element: the only write is the local save.",
+                Output = "The PDFs of this version, the older versions moved to the archive folder, a manifest with hashes and page counts, and a QA of each PDF.",
+                Errors = new[]
+                {
+                    "a sheet audit that could not read part of the set is not a clean audit",
+                    "a PDF QA with findings is reported, not hidden: the files exist as exported and a person decides"
+                },
+                DependsOn = new string[0],
+                Acceptance = "The semaphore is green when: the sheet audit lists no overlap and covers every sheet; the local save is verified; " +
+                             "the export is verified (page counts re-read, version resolved, older versions moved and re-read, manifest written); " +
+                             "and the PDF QA reports no blank page, no text over text, no text outside the frame and no substituted font. " +
+                             "The borrowed elements are read in step 3 (workset status). Where the ownership and notes fronts are installed, " +
+                             "also require: horizun_query_planimetry mode=annotation_staleness on the sheets' views lists no stale note, and the own-changes diff " +
+                             "is 0 before horizun_save_document operation=sync_with_central; this route does not claim what it did not read.",
+                Steps = new[]
+                {
+                    new Step
+                    {
+                        N = 1, Tool = "horizun_health",
+                        ArgumentsJson = @"{}",
+                        Purpose = "establish WHICH document every step below acts on.",
+                        Needs = "nothing",
+                        Preconditions = "Revit is running with the intended model in front.",
+                        OnError = "stop. Naming the wrong document works on somebody else's project.",
+                        ReadsBack = "the document title, the Revit year and the bridge version."
+                    },
+                    new Step
+                    {
+                        N = 2, Tool = "horizun_audit_planimetry",
+                        ArgumentsJson = @"{
+  ""scope"": ""sheets"",
+  ""sheet_ids"": { ""$input"": ""sheet_ids"" },
+  ""units"": ""mm"",
+  ""include_passed_checks"": true
+}",
+                        Purpose = "no overlap and nothing off the sheet before the set goes out.",
+                        Needs = "the sheet ids.",
+                        Preconditions = "the tolerance is declared in millimetres.",
+                        OnError = "findings are findings: fix them (horizun_sheet_layout, horizun_pack_sheets) and audit again.",
+                        ReadsBack = "overlaps and off-sheet text per sheet, and whether the whole set was covered."
+                    },
+                    new Step
+                    {
+                        N = 3, Tool = "horizun_model_scan",
+                        ArgumentsJson = @"{
+  ""target_document_title"": { ""$input"": ""document"" },
+  ""sections"": [""worksharing""]
+}",
+                        Purpose = "read what is borrowed before the set goes out: a set issued over elements somebody else holds is not yours to issue.",
+                        Needs = "the document from step 1.",
+                        Preconditions = "none; a read.",
+                        OnError = "borrowed elements are findings: give them back (relinquish) or tell their owner.",
+                        ReadsBack = "the worksets, who owns them and what this user has checked out."
+                    },
+                    new Step
+                    {
+                        N = 4, Tool = "horizun_query_planimetry",
+                        ArgumentsJson = @"{
+  ""mode"": ""annotation_staleness"",
+  ""sheet_ids"": { ""$input"": ""sheet_ids"" },
+  ""view_ids"": { ""$input"": ""view_ids"" }
+}",
+                        Purpose = "no note on the issued sheets still says what the model no longer says (notes front, 4.2).",
+                        Needs = "the ids of the views placed on the sheets.",
+                        Preconditions = "a read; where the notes front is not installed the mode is refused and the step is skipped, said aloud.",
+                        OnError = "a stale note is a finding: refresh it and read again. An unknown note is not a clean one (clean is false while any is unknown).",
+                        ReadsBack = "stale, current and unknown per note, and whether the answer is clean."
+                    },
+                    new Step
+                    {
+                        N = 5, Tool = "horizun_model_diff",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""operation"": ""compare"",
+  ""before"": { ""$input"": ""baseline_snapshot"" },
+  ""after"": ""active""
+}",
+                        Purpose = "separate what this session changed (origin=horizun_session) from the rest before issuing and before sync_with_central (ownership front, 4.2).",
+                        Needs = "a snapshot id taken before the work (horizun_model_diff operation=snapshot).",
+                        Preconditions = "a read. Rows with origin not_in_session_record are not called anyone's; session_record_complete=false is said as it is.",
+                        OnError = "unexpected own changes are findings: explain them before the set goes out. assessed=false means it was not measured.",
+                        ReadsBack = "added, deleted and modified per origin, and whether the session record is complete."
+                    },
+                    new Step
+                    {
+                        N = 6, Tool = "horizun_save_document",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""operation"": ""save_local""
+}",
+                        Purpose = "the file on disk is the file that was audited.",
+                        Needs = "the document from step 1.",
+                        Preconditions = "steps 2, 4 and 5 are clean. save_local never synchronizes.",
+                        OnError = "an unsaved model issues a set nobody can reproduce. Stop.",
+                        ReadsBack = "the saved file, re-read from disk."
+                    },
+                    new Step
+                    {
+                        N = 7, Tool = "horizun_export",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""format"": ""pdf"",
+  ""output_path"": { ""$input"": ""output_path"" },
+  ""view_ids"": { ""$input"": ""sheet_ids"" },
+  ""pdf_combine"": false,
+  ""pdf_name_pattern"": { ""$input"": ""pdf_name_pattern"" },
+  ""pdf_version"": ""auto"",
+  ""pdf_archive_previous"": true,
+  ""emit_manifest"": true,
+  ""pdf_qa"": { ""expected_fonts"": { ""$input"": ""expected_fonts"" } }
+}",
+                        Purpose = "issue the set: one file per sheet, the next version, the older ones archived, the manifest, the PDF read back.",
+                        Needs = "the sheet ids and the folder.",
+                        Preconditions = "rehearsal first (dry_run defaults to true): it names the version and the files it would move. " +
+                                        "Apply with dry_run=false and its token.",
+                        OnError = "export_in_background returns BEFORE the file exists. Re-read the path; a reply is not a file.",
+                        ReadsBack = "each file's hash and page count, the version used, the archive moves, and the QA per file."
+                    }
+                },
+                InputSchemaJson = @"{
+  ""type"": ""object"",
+  ""required"": [""document"", ""sheet_ids"", ""view_ids"", ""baseline_snapshot"", ""output_path"", ""pdf_name_pattern"", ""expected_fonts""],
+  ""properties"": {
+    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document."" },
+    ""sheet_ids"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""integer"" }, ""description"": ""The sheets issued."" },
+    ""output_path"": { ""type"": ""string"", ""description"": ""A folder that exists; the files take their names from the pattern."" },
+    ""pdf_name_pattern"": { ""type"": ""string"", ""description"": ""Must contain {version} so that versions can be counted and the older ones archived."" },
+    ""expected_fonts"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Font families the set must use. Empty: fonts are reported, not judged."" },
+    ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""Views placed on the sheets, for the annotation_staleness read."" },
+    ""baseline_snapshot"": { ""type"": ""string"", ""description"": ""Snapshot id taken before the work, for the own-changes diff."" }
+  },
+  ""additionalProperties"": false
+}",
+                Checks = new[]
+                {
+                    new AcceptanceCheck
+                    {
+                        Step = 2, Path = "coverage_complete", Expect = "true",
+                        Why = "an audit that could not read part of the set has not measured it."
+                    }
+                },
+                Example = "health, then audit_planimetry(sheets), then manage_worksets(status), then save_document(save_local), then export(pdf, pdf_combine=false, pdf_version=auto, pdf_archive_previous, emit_manifest, pdf_qa).",
+                Limits = new[]
+                {
+                    "The PDF QA reads text, fonts and drawing operators; it does not render, so a hatch that did not print is not seen.",
+                    "Embedding is not judged: the report names the fonts the content selects, not whether the program is embedded.",
+                    "annotation_staleness (steps 4) and the own-changes diff (step 5) need the notes and ownership fronts of 4.2; on an older build those reads are refused and are reported as not read."
                 }
             },
 
@@ -1378,1137 +1407,7 @@ namespace Horizun.Server
                 }
             },
 
-            new Procedure
-            {
-                Id = "dwg-to-bim-review",
-                Title = "DWG to BIM",
-                Version = 2,
-                Permission = "read_only_to_safe_write",
-                Outcome = "Native elements built from a CAD drawing against an explicit requirement set.",
-                Tools = new[] { "horizun_query_cad", "horizun_plan_from_cad", "horizun_apply_cad_plan",
-                                "horizun_audit_cad_model" },
-                Inputs = new[] { "the CAD link, by id", "the layer-to-category mapping, as an input",
-                                 "the level and the wall/floor types to build with" },
-                Scope = "Only the layers the mapping names.",
-                Output = "Native elements with recorded CAD provenance, and an audit of what was not converted.",
-                Errors = new[]
-                {
-                    "an ambiguous run - two parallel polylines with no closure are reported for review BEFORE " +
-                    "anything is written, never guessed",
-                    "a layer whose name does not match its content - the mapping is the caller's, and the " +
-                    "mismatch is reported rather than corrected"
-                },
-                DependsOn = new string[0],
-                Acceptance = "Every converted element carries its CAD provenance, and every unconverted entity " +
-                             "is listed with the reason.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_health",
-                        // No arguments: horizun_health's schema declares none and refuses
-                        // extras. An empty template is what makes this step EXECUTABLE
-                        // rather than merely described.
-                        ArgumentsJson = @"{}",
-                        Purpose = "establish WHICH document every step below acts on.",
-                        Needs = "nothing",
-                        Preconditions = "Revit is running with the intended model in front.",
-                        OnError = "stop. Every step names a target_document, and naming the wrong one works on somebody " +
-                                  "else project.",
-                        ReadsBack = "the document title, the Revit year and the bridge own version and commit."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_query_cad",
-                        ArgumentsJson = @"{ ""mode"": ""layers"", ""instance_id"": { ""$input"": ""instance_id"" } }",
-                        Purpose = "read what the CAD link actually contains, layer by layer.",
-                        Needs = "the document from step 1 and the CAD link id, which arrives as an input.",
-                        Preconditions = "the link is LOADED. An unloaded link reads as an empty drawing.",
-                        OnError = "a layer whose name does not match its content is reported. The mapping is the caller " +
-                                  "decision and this step does not correct it.",
-                        ReadsBack = "per layer: entity counts by type, and the geometry that is not closed."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_plan_from_cad",
-                        // The requirement set travels as ONE input. It is the caller's
-                        // artefact and this catalogue compiles no organisation's layer
-                        // convention into itself - a template that filled in a mapping
-                        // here would convert the next office's drawing wrong, into a
-                        // model that looked entirely plausible.
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""requirement_set"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""level_name"": { ""$input"": ""level_name"" }
-}",
-                        Purpose = "work out what would be built, without building it.",
-                        Needs = "the layer inventory from step 2, plus the layer-to-category mapping, the level and " +
-                                "the types to build with.",
-                        Preconditions = "the mapping names layers that step 2 actually found. A mapping entry matching " +
-                                        "nothing is a finding about the mapping.",
-                        OnError = "an ambiguous run - two parallel polylines with no closure - is reported for REVIEW. " +
-                                  "It is never resolved by guessing which pair is a wall.",
-                        ReadsBack = "per planned element: its geometry, its type, its level, and the CAD entity it came " +
-                                    "from."
-                    },
-                    new Step
-                    {
-                        N = 4, Tool = "horizun_apply_cad_plan",
-                        // EVERY BINDING FIELD COMES FROM STEP 3'S OWN REPLY, by
-                        // reference. Re-deriving them here would be a second opinion
-                        // about what the plan said, and the whole point of the binding
-                        // is that the apply refuses when the two differ.
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""requirement_set"" },
-  ""apply_binding"": { ""$ref"": { ""step"": 3, ""path"": ""apply_binding"" } },
-  ""actions"": { ""$ref"": { ""step"": 3, ""path"": ""execute_plan_request.actions"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 3, ""path"": ""candidate_index"" } },
-  ""dry_run"": false
-}",
-                        Purpose = "build them.",
-                        Needs = "the plan from step 3, unchanged, after somebody read the ambiguities.",
-                        Preconditions = "dry_run first. This is the first step that writes to the model.",
-                        OnError = "the reply names what landed. Re-run the remainder with the same idempotency_key; " +
-                                  "re-sending the whole plan builds the successful part twice.",
-                        ReadsBack = "each created element id with its recorded CAD provenance, re-read after the commit."
-                    },
-                    new Step
-                    {
-                        N = 5, Tool = "horizun_audit_cad_model",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""requirement_set"" }
-}",
-                        Purpose = "measure what was NOT converted, which is the half that gets forgotten.",
-                        Needs = "the layer inventory from step 2 and the created elements from step 4.",
-                        Preconditions = "the apply committed.",
-                        OnError = "an unconverted entity with no reason is a defect in this route, not an acceptable " +
-                                  "result.",
-                        ReadsBack = "every CAD entity accounted for: converted with its element id, or unconverted with " +
-                                    "its reason."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""document"", ""instance_id"", ""requirement_set"", ""level_name""],
-  ""properties"": {
-    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document. Every write below names it."" },
-    ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD instance. List them with horizun_query_cad mode='instances'; there is no default drawing."" },
-    ""requirement_set"": { ""type"": ""object"", ""description"": ""The versioned DWG-to-BIM mapping. The caller's artefact: no layer convention is compiled into this bridge, and one that was would convert the next office's drawing wrong into a model that looked plausible."" },
-    ""level_name"": { ""type"": ""string"", ""description"": ""The storey to build on, for rules that do not declare one. A 2D drawing carries no level, and without this the plan REFUSES rather than choosing a storey in somebody's building. REQUIRED by this route: step 3 references it, and a step whose input nobody supplied blocks the run rather than falling back."" }
-  },
-  ""additionalProperties"": false
-}",
-                Checks = new[]
-                {
-                    new AcceptanceCheck
-                    {
-                        Step = 4, Path = "stages_failed", Expect = "zero",
-                        Why = "a non-zero stages_failed means part of the conversion did not land. It is not " +
-                              "the whole criterion: that one is about every converted element carrying its " +
-                              "provenance and every unconverted entity having a reason, and reading those is " +
-                              "still somebody's job."
-                    }
-                },
-                Example = "health then query_cad(link) then plan_from_cad(mapping, level, types) then " +
-                          "apply_cad_plan(dry_run=true, then false) then audit_cad_model(link).",
-                Limits = new[]
-                {
-                    "The layer-to-category mapping is the caller judgement about somebody else drawing. " +
-                    "This route reports where the drawing disagrees with it and does not silently repair " +
-                    "either one.",
-                    "CAD provenance is what makes a second run able to tell a re-import from a duplicate. " +
-                    "An element created outside this route has none."
-                }
-            },
 
-            new Procedure
-            {
-                Id = "dwg-to-bim-update",
-                Title = "DWG to BIM, a unit brought to a new revision of its drawing",
-                Version = 1,
-                Permission = "read_only_to_safe_write",
-                Outcome = "A unit built by dwg-to-bim-unit brought to a new revision: what the update can decide " +
-                          "alone is applied, what it holds waits for ONE grouped decision per set, and nothing is " +
-                          "asked twice.",
-                Tools = new[] { "horizun_plan_cad_update", "horizun_apply_cad_update", "horizun_audit_cad_model" },
-                Inputs = new[] { "the document, the CAD link id (already pointing at the new revision), the level",
-                                 "the new drawing path and the hash of the revision it supersedes",
-                                 "the walls set and the devices set of the unit" },
-                Scope = "The unit's elements with provenance from this link.",
-                Output = "The automatic changes applied, the decided ones applied, two audits.",
-                Errors = new[]
-                {
-                    "a held change is never applied without the decision naming it",
-                    "an apply whose reply never arrived holds the run; it is never sent twice",
-                    "a decision that cannot stand refuses the plan that carries it; nothing is skipped"
-                },
-                DependsOn = new[] { "dwg-to-bim-unit" },
-                Acceptance = "Both final plans have nothing automatic left, every held change was decided or is " +
-                             "listed, and both audits read the model against the new drawing.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_health", ArgumentsJson = @"{}",
-                        Purpose = "establish which document and which build every step below acts on.",
-                        Needs = "nothing", Preconditions = "the unit's model is in front.",
-                        OnError = "stop.", ReadsBack = "the document and the bridge build."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_plan_cad_update",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""walls_set"" },
-  ""level_name"": { ""$input"": ""level_name"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" },
-  ""dwg_read_timeout_seconds"": 1800,
-  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
-  ""supersedes_requirement_set_sha256"": { ""$input"": ""supersedes_walls_set_sha256"", ""when_missing"": ""omit"" }
-}",
-                        Purpose = "what the new revision changes in the walls.", Needs = "step 1.",
-                        Preconditions = "the link points at the new revision.",
-                        OnError = "a refusal names what is missing; nothing was written.",
-                        ReadsBack = "the automatic actions, the held rows, the origins and the pairings offered."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_apply_cad_update",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""actions"": { ""$ref"": { ""step"": 2, ""path"": ""actions"" } },
-  ""apply_binding"": { ""$ref"": { ""step"": 2, ""path"": ""apply_binding"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 2, ""path"": ""candidate_index"" } },
-  ""provenance"": { ""$ref"": { ""step"": 2, ""path"": ""provenance"" } },
-  ""dry_run"": false
-}",
-                        Purpose = "apply what the walls update decided alone (nothing_to_apply when it decided nothing).",
-                        Needs = "step 2, unchanged.", Preconditions = "nothing else changed the model.",
-                        OnError = "the reply names what landed per action; the run holds rather than resending.",
-                        ReadsBack = "each applied action, re-read, and the provenance re-stamped."
-                    },
-                    new Step
-                    {
-                        N = 4, Tool = "horizun_plan_cad_update",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""devices_set"" },
-  ""level_name"": { ""$input"": ""level_name"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" },
-  ""dwg_read_timeout_seconds"": 1800,
-  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
-  ""supersedes_requirement_set_sha256"": { ""$input"": ""supersedes_devices_set_sha256"", ""when_missing"": ""omit"" }
-}",
-                        Purpose = "what the new revision changes in the devices, after the walls moved.",
-                        Needs = "step 3.", Preconditions = "the walls update is applied.",
-                        OnError = "a refusal names what is missing; nothing was written.",
-                        ReadsBack = "the automatic actions, the held rows, the origins and the pairings offered."
-                    },
-                    new Step
-                    {
-                        N = 5, Tool = "horizun_apply_cad_update",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""actions"": { ""$ref"": { ""step"": 4, ""path"": ""actions"" } },
-  ""apply_binding"": { ""$ref"": { ""step"": 4, ""path"": ""apply_binding"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 4, ""path"": ""candidate_index"" } },
-  ""provenance"": { ""$ref"": { ""step"": 4, ""path"": ""provenance"" } },
-  ""dry_run"": false
-}",
-                        Purpose = "apply what the devices update decided alone.",
-                        Needs = "step 4, unchanged.", Preconditions = "nothing else changed the model.",
-                        OnError = "the reply names what landed per action; the run holds rather than resending.",
-                        ReadsBack = "each applied action, re-read, and the provenance re-stamped."
-                    },
-                    new Step
-                    {
-                        N = 6, Tool = "horizun_plan_cad_update", RequiresDecision = true,
-                        DecisionUnlessJson = @"{ ""step"": 2, ""path"": ""awaiting_a_decision"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [], ""dependent_decisions"": [] } }",
-                        DecisionNeeded = "for the WALLS, one grouped decision from the held rows of step 2: " +
-                                         "accept_pairings [{element_id, candidate_id}], reject_pairings [candidate_id], " +
-                                         "resolve [{element_id, decision}] - each an array, empty when there is nothing " +
-                                         "to say - and, optionally, dependent_decisions [{element_id, decision, piece, " +
-                                         "decision_key}] for the dependents a split held. A held row left out stays held " +
-                                         "and is listed again.",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""walls_set"" },
-  ""level_name"": { ""$input"": ""level_name"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" },
-  ""dwg_read_timeout_seconds"": 1800,
-  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
-  ""supersedes_requirement_set_sha256"": { ""$input"": ""supersedes_walls_set_sha256"", ""when_missing"": ""omit"" },
-  ""accept_pairings"": { ""$decision"": ""accept_pairings"" },
-  ""reject_pairings"": { ""$decision"": ""reject_pairings"" },
-  ""resolve"": { ""$decision"": ""resolve"" },
-  ""dependent_decisions"": { ""$decision"": ""dependent_decisions"", ""when_missing"": ""omit"" }
-}",
-                        Purpose = "the walls update again, with a person's decisions on what it held.",
-                        Needs = "steps 2-5 and the decision.", Preconditions = "the decision names rows step 2 listed.",
-                        OnError = "a decision that cannot stand refuses the plan; nothing is skipped.",
-                        ReadsBack = "the decided actions and what is still held."
-                    },
-                    new Step
-                    {
-                        N = 7, Tool = "horizun_apply_cad_update",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""actions"": { ""$ref"": { ""step"": 6, ""path"": ""actions"" } },
-  ""apply_binding"": { ""$ref"": { ""step"": 6, ""path"": ""apply_binding"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 6, ""path"": ""candidate_index"" } },
-  ""provenance"": { ""$ref"": { ""step"": 6, ""path"": ""provenance"" } },
-  ""dry_run"": false
-}",
-                        Purpose = "apply the decided walls changes.", Needs = "step 6.",
-                        Preconditions = "nothing else changed the model.",
-                        OnError = "the reply names what landed per action; the run holds rather than resending.",
-                        ReadsBack = "each applied action, re-read."
-                    },
-                    new Step
-                    {
-                        N = 8, Tool = "horizun_plan_cad_update", RequiresDecision = true,
-                        DecisionUnlessJson = @"{ ""step"": 4, ""path"": ""awaiting_a_decision"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [] } }",
-                        DecisionNeeded = "for the DEVICES, one grouped decision from the held rows of step 4, in " +
-                                         "the same shape as step 6.",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""devices_set"" },
-  ""level_name"": { ""$input"": ""level_name"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" },
-  ""dwg_read_timeout_seconds"": 1800,
-  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
-  ""supersedes_requirement_set_sha256"": { ""$input"": ""supersedes_devices_set_sha256"", ""when_missing"": ""omit"" },
-  ""accept_pairings"": { ""$decision"": ""accept_pairings"" },
-  ""reject_pairings"": { ""$decision"": ""reject_pairings"" },
-  ""resolve"": { ""$decision"": ""resolve"" }
-}",
-                        Purpose = "the devices update again, with a person's decisions on what it held.",
-                        Needs = "step 7 and the decision.", Preconditions = "the decision names rows step 4 listed.",
-                        OnError = "a decision that cannot stand refuses the plan; nothing is skipped.",
-                        ReadsBack = "the decided actions and what is still held."
-                    },
-                    new Step
-                    {
-                        N = 9, Tool = "horizun_apply_cad_update",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""actions"": { ""$ref"": { ""step"": 8, ""path"": ""actions"" } },
-  ""apply_binding"": { ""$ref"": { ""step"": 8, ""path"": ""apply_binding"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 8, ""path"": ""candidate_index"" } },
-  ""provenance"": { ""$ref"": { ""step"": 8, ""path"": ""provenance"" } },
-  ""dry_run"": false
-}",
-                        Purpose = "apply the decided devices changes.", Needs = "step 8.",
-                        Preconditions = "nothing else changed the model.",
-                        OnError = "the reply names what landed per action; the run holds rather than resending.",
-                        ReadsBack = "each applied action, re-read."
-                    },
-                    new Step
-                    {
-                        N = 10, Tool = "horizun_audit_cad_model",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""walls_set"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" }
-}",
-                        Purpose = "the walls, against the new drawing.", Needs = "step 7.",
-                        Preconditions = "the walls committed.", OnError = "a finding is read, not retried.",
-                        ReadsBack = "matched, differing and not-built walls, by code."
-                    },
-                    new Step
-                    {
-                        N = 11, Tool = "horizun_audit_cad_model",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""devices_set"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" }
-}",
-                        Purpose = "the devices, against the new drawing.", Needs = "step 9.",
-                        Preconditions = "the devices committed.", OnError = "a finding is read, not retried.",
-                        ReadsBack = "matched, differing and not-built devices, by code."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""document"", ""instance_id"", ""level_name"", ""dwg_path"", ""supersedes_sha256"", ""walls_set"", ""devices_set""],
-  ""properties"": {
-    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document."" },
-    ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD link placement, already repointed to the new revision."" },
-    ""level_name"": { ""type"": ""string"", ""description"": ""The storey the unit is on."" },
-    ""dwg_path"": { ""type"": ""string"", ""description"": ""The NEW revision of the drawing, readable on this machine."" },
-    ""supersedes_sha256"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""The revision(s) this one replaces."" },
-    ""walls_set"": { ""type"": ""object"", ""description"": ""The walls requirement set of the unit."" },
-    ""devices_set"": { ""type"": ""object"", ""description"": ""The devices requirement set of the unit."" },
-    ""supersedes_walls_set_sha256"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Optional: earlier versions of the walls set the model was built under (a rules change)."" },
-    ""supersedes_devices_set_sha256"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Optional: earlier versions of the devices set the model was built under (a rules change)."" }
-  },
-  ""additionalProperties"": false
-}",
-                Checks = new[]
-                {
-                    new AcceptanceCheck
-                    {
-                        Step = 3, Path = "actions_failed", Expect = "zero",
-                        Why = "part of the automatic walls update did not land."
-                    },
-                    new AcceptanceCheck
-                    {
-                        Step = 5, Path = "actions_failed", Expect = "zero",
-                        Why = "part of the automatic devices update did not land."
-                    },
-                    new AcceptanceCheck
-                    {
-                        Step = 7, Path = "actions_failed", Expect = "zero",
-                        Why = "part of the decided walls update did not land."
-                    },
-                    new AcceptanceCheck
-                    {
-                        Step = 9, Path = "actions_failed", Expect = "zero",
-                        Why = "part of the decided devices update did not land."
-                    }
-                },
-                Example = "health; walls: plan, apply; devices: plan, apply; walls decided: plan, apply; devices " +
-                          "decided: plan, apply; two audits.",
-                Limits = new[]
-                {
-                    "A decision is the person's: this route asks once per set and never supplies one itself.",
-                    "apply_cad_update is atomic per action, not per route; a partial reply names what landed."
-                }
-            },
-new Procedure
-            {
-                Id = "dwg-to-bim-unit",
-                Title = "DWG to BIM, one unit, end to end",
-                Version = 1,
-                Permission = "read_only_to_safe_write",
-                Outcome = "One unit's walls and devices built from a CAD drawing, audited, with the drawing's " +
-                          "whole symbol inventory reconciled - the route a batch runs once per unit.",
-                Tools = new[] { "horizun_query_cad", "horizun_plan_from_cad", "horizun_apply_cad_plan",
-                                "horizun_audit_cad_model" },
-                Inputs = new[] { "the document, the CAD link id, the level", "the drawing path",
-                                 "the walls set and the devices set, both bounded to the unit" },
-                Scope = "The unit the two sets' extent names. Everything outside it is counted, not built.",
-                Output = "Walls and devices with provenance; two audits; the reconciled inventory.",
-                Errors = new[]
-                {
-                    "an inventory that does not reconcile - every placement must have exactly one outcome",
-                    "a rehearsal that does not come back clean stops the run before anything is written",
-                    "a step whose reply never arrived holds the run; it is never sent twice"
-                },
-                DependsOn = new string[0],
-                Acceptance = "Both applies report zero failed stages, the inventory reconciles, and each audit " +
-                             "matches what was built. What the audits report as not built is read by a person.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_health", ArgumentsJson = @"{}",
-                        Purpose = "establish which document and which build every step below acts on.",
-                        Needs = "nothing", Preconditions = "Revit is running with the unit's model in front.",
-                        OnError = "stop.", ReadsBack = "the document title, the Revit year and the bridge build."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_query_cad",
-                        ArgumentsJson = @"{
-  ""mode"": ""blocks"",
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""devices_set"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" },
-  ""dwg_read_timeout_seconds"": 1800,
-  ""max_rows"": 1
-}",
-                        Purpose = "the whole symbol inventory, so what is not built is counted as well as what is.",
-                        Needs = "the document from step 1.",
-                        Preconditions = "the drawing is readable on this machine.",
-                        OnError = "an inventory that does not reconcile is a defect in the reading: stop.",
-                        ReadsBack = "total rows, rows by outcome, and the reconciliation."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_plan_from_cad",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""walls_set"" },
-  ""level_name"": { ""$input"": ""level_name"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" },
-  ""dwg_read_timeout_seconds"": 1800
-}",
-                        Purpose = "the unit's walls, planned.", Needs = "step 1.",
-                        Preconditions = "the walls set is bounded to the unit.",
-                        OnError = "a refusal names what is missing; nothing was written.",
-                        ReadsBack = "the actions, what was withdrawn and what waits for review."
-                    },
-                    new Step
-                    {
-                        N = 4, Tool = "horizun_apply_cad_plan",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""walls_set"" },
-  ""apply_binding"": { ""$ref"": { ""step"": 3, ""path"": ""apply_binding"" } },
-  ""actions"": { ""$ref"": { ""step"": 3, ""path"": ""execute_plan_request.actions"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 3, ""path"": ""candidate_index"" } },
-  ""dry_run"": true
-}",
-                        Purpose = "rehearse the walls: Revit builds them provisionally and rolls back.",
-                        Needs = "the plan from step 3, unchanged.", Preconditions = "nothing else changed the model.",
-                        OnError = "a failed rehearsal stops the run; nothing was written.",
-                        ReadsBack = "each stage's rehearsal and the tokens by action key."
-                    },
-                    new Step
-                    {
-                        N = 5, Tool = "horizun_apply_cad_plan",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""walls_set"" },
-  ""apply_binding"": { ""$ref"": { ""step"": 3, ""path"": ""apply_binding"" } },
-  ""actions"": { ""$ref"": { ""step"": 3, ""path"": ""execute_plan_request.actions"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 3, ""path"": ""candidate_index"" } },
-  ""confirmation_tokens"": { ""$ref"": { ""step"": 4, ""path"": ""rehearsal.tokens_by_key"" } },
-  ""dry_run"": false
-}",
-                        Purpose = "build the walls, with the tokens the rehearsal issued.",
-                        Needs = "steps 3 and 4.", Preconditions = "step 4 rehearsed cleanly.",
-                        OnError = "the reply names what landed; the run holds rather than sending it again.",
-                        ReadsBack = "created and verified elements, and the provenance written."
-                    },
-                    new Step
-                    {
-                        N = 6, Tool = "horizun_plan_from_cad",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""devices_set"" },
-  ""level_name"": { ""$input"": ""level_name"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" },
-  ""dwg_read_timeout_seconds"": 1800
-}",
-                        Purpose = "the unit's devices, planned against the walls step 5 built.",
-                        Needs = "step 5.", Preconditions = "the walls are in the model.",
-                        OnError = "a refusal names what is missing; nothing was written.",
-                        ReadsBack = "the actions, and every symbol by what became of it."
-                    },
-                    new Step
-                    {
-                        N = 7, Tool = "horizun_apply_cad_plan",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""devices_set"" },
-  ""apply_binding"": { ""$ref"": { ""step"": 6, ""path"": ""apply_binding"" } },
-  ""actions"": { ""$ref"": { ""step"": 6, ""path"": ""execute_plan_request.actions"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 6, ""path"": ""candidate_index"" } },
-  ""dry_run"": true
-}",
-                        Purpose = "rehearse the devices.", Needs = "step 6, unchanged.",
-                        Preconditions = "nothing else changed the model.",
-                        OnError = "a failed rehearsal stops the run; nothing was written.",
-                        ReadsBack = "each stage's rehearsal and the tokens by action key."
-                    },
-                    new Step
-                    {
-                        N = 8, Tool = "horizun_apply_cad_plan",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""devices_set"" },
-  ""apply_binding"": { ""$ref"": { ""step"": 6, ""path"": ""apply_binding"" } },
-  ""actions"": { ""$ref"": { ""step"": 6, ""path"": ""execute_plan_request.actions"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 6, ""path"": ""candidate_index"" } },
-  ""confirmation_tokens"": { ""$ref"": { ""step"": 7, ""path"": ""rehearsal.tokens_by_key"" } },
-  ""dry_run"": false
-}",
-                        Purpose = "build the devices.", Needs = "steps 6 and 7.",
-                        Preconditions = "step 7 rehearsed cleanly.",
-                        OnError = "the reply names what landed; the run holds rather than sending it again.",
-                        ReadsBack = "created and verified elements, and the provenance written."
-                    },
-                    new Step
-                    {
-                        N = 9, Tool = "horizun_audit_cad_model",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""walls_set"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" }
-}",
-                        Purpose = "the walls, against the drawing.", Needs = "step 5.",
-                        Preconditions = "the walls committed.",
-                        OnError = "a finding is a finding: it is read, not retried.",
-                        ReadsBack = "matched, differing and not-built walls, by code."
-                    },
-                    new Step
-                    {
-                        N = 10, Tool = "horizun_audit_cad_model",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""requirement_set"": { ""$input"": ""devices_set"" },
-  ""dwg_path"": { ""$input"": ""dwg_path"" }
-}",
-                        Purpose = "the devices, against the drawing.", Needs = "step 8.",
-                        Preconditions = "the devices committed.",
-                        OnError = "a finding is a finding: it is read, not retried.",
-                        ReadsBack = "matched, differing and not-built devices, by code."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""document"", ""instance_id"", ""level_name"", ""dwg_path"", ""walls_set"", ""devices_set""],
-  ""properties"": {
-    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document."" },
-    ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD link placement."" },
-    ""level_name"": { ""type"": ""string"", ""description"": ""The storey to build on."" },
-    ""dwg_path"": { ""type"": ""string"", ""description"": ""The drawing the link shows, readable on this machine."" },
-    ""walls_set"": { ""type"": ""object"", ""description"": ""The walls requirement set, bounded to the unit."" },
-    ""devices_set"": { ""type"": ""object"", ""description"": ""The devices requirement set, bounded to the same unit."" }
-  },
-  ""additionalProperties"": false
-}",
-                Checks = new[]
-                {
-                    new AcceptanceCheck
-                    {
-                        Step = 2, Path = "reconciles", Expect = "true",
-                        Why = "every placement in the drawing has exactly one outcome, or the counts below mean nothing."
-                    },
-                    new AcceptanceCheck
-                    {
-                        Step = 5, Path = "stages_failed", Expect = "zero",
-                        Why = "part of the walls did not land."
-                    },
-                    new AcceptanceCheck
-                    {
-                        Step = 8, Path = "stages_failed", Expect = "zero",
-                        Why = "part of the devices did not land."
-                    }
-                },
-                Example = "health, inventory, walls (plan, rehearse, build), devices (plan, rehearse, build), two audits.",
-                Limits = new[]
-                {
-                    "What the audits report as not built - withdrawn symbols, walls held for review - is a " +
-                    "person's reading; finishing the steps is not accepting the unit.",
-                    "One unit per run. A batch is a list of runs, and a run that holds is resumed by id."
-                }
-            },
-
-            new Procedure
-            {
-                Id = "dwg-mep-unit-conversion",
-                Title = "DWG MEP Units to a Connected Model",
-                Version = 1,
-                Permission = "read_only_to_safe_write",
-                Outcome = "MEP built from a unit drawing as a CONNECTED network, with the repeated layouts " +
-                          "recognised rather than converted one by one.",
-                Tools = new[] { "horizun_health", "horizun_cad_extract", "horizun_cad_networks",
-                                "horizun_cad_unit_instances", "horizun_plan_from_cad", "horizun_apply_cad_plan",
-                                "horizun_cad_connect", "horizun_audit_cad_model", "horizun_cad_review" },
-                Inputs = new[] { "the CAD link, by id",
-                                 "the requirement set: what each layer MEANS, with system, bore and elevation",
-                                 "the unit boundaries, as regions the caller draws",
-                                 "the level to build on",
-                                 "OPTIONAL, and required for anything that drains: the outfall - where the " +
-                                 "network leaves - and its invert. Without it every run is built LEVEL, " +
-                                 "which for sanitary or storm is the whole design missing" },
-                Scope = "Only the layers the requirement set names, inside the regions the caller gave.",
-                Output = "MEP curves with recorded CAD provenance, joined at their junctions, plus the list of " +
-                         "junctions, crossings and gaps that were deliberately NOT joined.",
-                Errors = new[]
-                {
-                    "a crossing with no shared endpoint is never joined - in a plan that is two services at " +
-                    "different heights, and a tee there routes waste through a water main",
-                    "a junction whose runs were declared at different elevations is a riser, not an elbow, " +
-                    "and it holds for a person",
-                    "a region that matches a unit type's signature and fits no rigid transform is a VARIANT " +
-                    "and is read on its own, never instantiated from the type"
-                },
-                DependsOn = new string[0],
-                Acceptance = "Every automatic junction is joined and re-read from the model; the review in " +
-                             "step 9 reports no junction as not_made; every junction, crossing and gap that " +
-                             "was not joined is listed with its reason; every unit occurrence marked " +
-                             "exact reproduces its region's geometry; and where an outfall was named, the " +
-                             "review's invert check reports no junction as disagreeing - both sides of that " +
-                             "comparison being inverts, not centrelines.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_health",
-                        ArgumentsJson = @"{}",
-                        Purpose = "establish WHICH document every step below acts on.",
-                        Needs = "nothing",
-                        Preconditions = "Revit is running with the intended model in front.",
-                        OnError = "stop. Every write below names a target_document.",
-                        ReadsBack = "the document title, the Revit year, and the bridge's own version and commit."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_cad_extract",
-                        ArgumentsJson = @"{ ""instance_id"": { ""$input"": ""instance_id"" } }",
-                        Purpose = "find out what this reading of the drawing can and cannot reach, BEFORE " +
-                                  "anything depends on it.",
-                        Needs = "the CAD instance, which arrives as an input.",
-                        Preconditions = "the link is LOADED. An unloaded link reads as an empty drawing, and " +
-                                        "an empty drawing and an unreadable one look the same to everything " +
-                                        "downstream.",
-                        OnError = "a reader blind to an axis a later step needs is a reason to stop here, not " +
-                                  "to run the later step and read its zero as a finding.",
-                        ReadsBack = "per axis - geometry, layers, text, block names, handles, units and the " +
-                                    "rest - supplied, absent from the drawing, partial, or unavailable from " +
-                                    "this reader, each with its evidence. Read blind_to first."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_cad_networks",
-                        // THE REQUIREMENT SET, NOT A SECOND SET OF DECLARATIONS.
-                        // What a layer's system, bore and height are is said once,
-                        // in the artefact the conversion will build from - otherwise
-                        // a run is BUILT at one height by step 5 and CONNECTED at
-                        // another by this one, and both replies look correct because
-                        // each agrees with its own input.
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""layers"": { ""$input"": ""mep_layers"" },
-  ""requirement_set"": { ""$input"": ""requirement_set"" }
-}",
-                        Purpose = "read the drawing as runs and junctions, and find out how much of it can be " +
-                                  "connected without a person.",
-                        Needs = "the instance and the requirement set, which is where what each layer IS " +
-                                "is said ONCE. Nothing is inferred from a layer name here or anywhere in " +
-                                "this bridge.",
-                        Preconditions = "the declarations name a system for every layer that will be built. " +
-                                        "Revit will not create a pipe or a duct without a system type, and a " +
-                                        "drawn line carries no width.",
-                        OnError = "a component with two declared systems is a contradiction Revit cannot hold. " +
-                                  "It is named, not resolved: either the declarations are wrong or the " +
-                                  "drawing joins two things that are separate.",
-                        ReadsBack = "runs, junctions by kind, connection intents, and - the half that matters " +
-                                    "- crossings_not_connected, unresolved_gaps and " +
-                                    "connections_needing_review."
-                    },
-                    new Step
-                    {
-                        N = 4, Tool = "horizun_cad_unit_instances",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""regions"": { ""$input"": ""regions"" },
-  ""layers"": { ""$input"": ""mep_layers"" }
-}",
-                        Purpose = "find which regions are the SAME layout, so one careful reading covers many " +
-                                  "apartments instead of one.",
-                        Needs = "the regions, which the caller draws. This step does not invent them: where " +
-                                "one unit stops and the corridor begins is a reading of the building.",
-                        Preconditions = "the regions enclose the geometry being compared. A boundary that " +
-                                        "encloses nothing compares as empty and may match another empty one.",
-                        OnError = "a NEAR MISS - same signature, no fitting transform - is two apartments that " +
-                                  "differ. It is reported, never rounded to a match.",
-                        ReadsBack = "types with their signatures, occurrences with their exact rigid " +
-                                    "transform, near misses, and unrecognised regions. Types are UNNAMED: the " +
-                                    "name lives in the drawing's text, which step 2 says whether this reader " +
-                                    "can reach."
-                    },
-                    new Step
-                    {
-                        N = 5, Tool = "horizun_plan_from_cad",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""requirement_set"" },
-  ""target_document"": { ""$input"": ""document"" },
-  ""level_name"": { ""$input"": ""level_name"" },
-  ""outfall"": { ""$input"": ""outfall"", ""when_missing"": ""omit"" },
-  ""outfall_invert_mm"": { ""$input"": ""outfall_invert_mm"", ""when_missing"": ""omit"" }
-}",
-                        Purpose = "work out what would be built, without building it - and, where an outfall " +
-                                  "is given, at what HEIGHT each run would be built.",
-                        Needs = "the same requirement set step 3 read. That is the point of passing it to " +
-                                "both: the network reading and the plan resolve every layer through one " +
-                                "artefact, by one precedence, so they cannot disagree about a layer. FOR A " +
-                                "SYSTEM THAT DRAINS, supply 'outfall' and 'outfall_invert_mm' as inputs to " +
-                                "the run - the same two the network reading takes. They are OPTIONAL: the " +
-                                "template omits them when the run does not carry them, so the same " +
-                                "procedure converts a pressure system, which has no outfall, without " +
-                                "refusing.",
-                        Preconditions = "the network reading in step 3 was looked at. The plan builds runs; " +
-                                        "it does not know which junctions a person has accepted. For a " +
-                                        "system that drains, the outfall is named here and every layer that " +
-                                        "falls declares a slope: without the outfall the runs are built " +
-                                        "LEVEL, and a level drain is connected, passes every other check in " +
-                                        "this procedure, and drains nowhere. A run whose bore is not " +
-                                        "declared takes no fall either - an invert cannot be turned into a " +
-                                        "centreline without one.",
-                        OnError = "an ambiguous reading is deferred for review and NOT planned. That is the " +
-                                  "difference between a route you can leave running and one you must watch.",
-                        ReadsBack = "the staged actions, the deferred candidates with their reasons, and the " +
-                                    "apply binding that ties this plan to these bytes of this drawing."
-                    },
-                    new Step
-                    {
-                        N = 6, Tool = "horizun_apply_cad_plan",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""requirement_set"" },
-  ""apply_binding"": { ""$ref"": { ""step"": 5, ""path"": ""apply_binding"" } },
-  ""actions"": { ""$ref"": { ""step"": 5, ""path"": ""execute_plan_request.actions"" } },
-  ""candidate_index"": { ""$ref"": { ""step"": 5, ""path"": ""candidate_index"" } },
-  ""dry_run"": false
-}",
-                        Purpose = "build the runs, each stamped with the drawing it came from.",
-                        Needs = "step 5's plan, unchanged. A caller that edits a coordinate is refused: the " +
-                                "binding covers the exact actions emitted.",
-                        Preconditions = "this is the first step that writes.",
-                        OnError = "the reply names which stages landed. Re-run the remainder with the same " +
-                                  "idempotency_key; re-sending the whole plan builds the successful part twice.",
-                        ReadsBack = "each created element id with its CAD provenance, re-read after the commit."
-                    },
-                    new Step
-                    {
-                        N = 7, Tool = "horizun_cad_connect",
-                        // THIS USED TO BE A DECISION STOP, AND THE REASON FOR IT IS GONE.
-                        //
-                        // The junctions of step 3 name RUNS and the elements exist only
-                        // after step 6, so somebody had to map one to the other by
-                        // reading two replies side by side - on the one step where a
-                        // wrong match joins the wrong two pipes invisibly.
-                        //
-                        // A run now carries the SAME semantic id the conversion stamps
-                        // on what it builds: same merge, same tolerance, same identity
-                        // function. So step 3's connections array IS this command's
-                        // junctions array, and the translation nobody could check is not
-                        // performed at all. Step 3 is passed the requirement set, which
-                        // is what makes the two tolerances agree; when they do not, its
-                        // reply says run_identity.matches_the_conversion is false and
-                        // these ids resolve to nothing rather than to the wrong thing.
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""junctions"": { ""$ref"": { ""step"": 3, ""path"": ""connections"" } },
-  ""dry_run"": false
-}",
-                        Purpose = "turn pipes that touch into a network.",
-                        Needs = "step 3's connections, unchanged, resolved against the elements step 6 built.",
-                        Preconditions = "step 6 committed, and step 3 reported " +
-                                        "run_identity.matches_the_conversion. A junction naming a run that " +
-                                        "was deferred for review and never built is SKIPPED with that " +
-                                        "reason - not refused, because the junctions that can be made are " +
-                                        "still the ones the drawing shows.",
-                        OnError = "an ambiguous connector - two of one element's connectors almost equally " +
-                                  "near - is refused, not guessed. On a fitting that is the run outlet and " +
-                                  "the branch outlet, and the wrong one flows wrong while looking right.",
-                        ReadsBack = "per junction: joined, skipped or refused, with the connection RE-READ " +
-                                    "from the model for every direct join - plus skipped_unresolved, which " +
-                                    "counts the junctions whose runs the conversion deliberately did not " +
-                                    "build."
-                    },
-                    new Step
-                    {
-                        N = 8, Tool = "horizun_audit_cad_model",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""requirement_set"" }
-}",
-                        Purpose = "measure what was NOT converted, which is the half that gets forgotten.",
-                        Needs = "the same drawing and the same rules the plan used.",
-                        Preconditions = "the apply committed.",
-                        OnError = "an unconverted entity with no reason is a defect in this route, not an " +
-                                  "acceptable result.",
-                        ReadsBack = "every CAD entity accounted for: converted with its element id, or " +
-                                    "unconverted with its reason."
-                    },
-                    new Step
-                    {
-                        N = 9, Tool = "horizun_cad_review",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""requirement_set"": { ""$input"": ""requirement_set"" },
-  ""layers"": { ""$input"": ""mep_layers"" }
-}",
-                        Purpose = "ask the MODEL whether what was built is a network, which no step before " +
-                                  "this one answers.",
-                        Needs = "the same drawing and rules every step above used.",
-                        Preconditions = "step 7 ran. Reviewing before connecting reports every junction as " +
-                                        "not_made, which is true and useless.",
-                        OnError = "a junction reported not_made is the finding: the elements are there, they " +
-                                  "meet, and their connectors are open. One reported not_proposed is NOT a " +
-                                  "finding - the reading refused that junction and an open connector there " +
-                                  "is correct.",
-                        ReadsBack = "per junction: made, not_made, nothing_built or not_proposed, each with " +
-                                    "the distance from the drawing's point to the nearest connector - plus " +
-                                    "open connectors on elements this drawing built that sit nowhere near " +
-                                    "anything it shows."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""document"", ""instance_id"", ""requirement_set"", ""mep_layers"", ""regions"", ""level_name""],
-  ""properties"": {
-    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document."" },
-    ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD instance. List them with horizun_query_cad mode='instances'."" },
-    ""requirement_set"": { ""type"": ""object"", ""description"": ""The versioned DWG-to-BIM mapping. It is the ONE place this route learns what a layer means: step 3 reads the network through it and step 5 plans through it, so the two cannot disagree about a layer's system, bore or height."" },
-    ""mep_layers"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1, ""description"": ""GLOBS limiting the network and unit readings. REQUIRED: without them the network is read over the title block too, and a step referencing an input nobody supplied blocks the run rather than reading everything."" },
-    ""layer_declarations"": { ""type"": ""array"", ""items"": { ""type"": ""object"" }, ""description"": ""RESERVED. This route derives what each layer is from the requirement set, so that the network reading and the conversion resolve every layer through one artefact. Declarations are for a caller reading a drawing BEFORE a requirement set exists, which is not this route."" },
-    ""regions"": { ""type"": ""array"", ""items"": { ""type"": ""object"" }, ""minItems"": 1, ""description"": ""The unit boundaries to compare, each with an id and a closed ring. REQUIRED, because step 4 references it: horizun_cad_unit_instances refuses an empty list rather than inventing outlines, and a drawing with no repeated units belongs on a route without step 4 rather than on this one with a hole in it."" },
-    ""level_name"": { ""type"": ""string"", ""description"": ""The storey to build on, for rules that do not declare one. REQUIRED by this route: steps 5 and 6 reference it."" },
-    ""outfall"": { ""type"": ""array"", ""items"": { ""type"": ""number"" }, ""minItems"": 2, ""maxItems"": 3, ""description"": ""OPTIONAL, and required for anything that drains: [x, y] in millimetres in the drawing's own coordinates, the point the network leaves by. Give it and step 5 plans every run at the heights its declared slopes imply; leave it out and step 5 omits it entirely - the same procedure converts a pressure system, which has no outfall, without refusing. A drainage layout built level is connected, drains nowhere, and passes every other check in this procedure."" },
-    ""outfall_invert_mm"": { ""type"": ""number"", ""description"": ""OPTIONAL: the INVERT - inside bottom - at that point, in the datum the requirement set's elevations use. Every other invert is this plus the fall along the network, and each run is then placed on its CENTRELINE at the invert plus half its declared bore."" }
-  },
-  ""additionalProperties"": false
-}",
-                Checks = new[]
-                {
-                    new AcceptanceCheck
-                    {
-                        Step = 3, Path = "summary.crossing_check_skipped", Expect = "false",
-                        Why = "a network reading whose crossing check was skipped reports zero crossings, " +
-                              "which reads as 'nothing crosses' and is the opposite of what happened. Raise " +
-                              "crossing_check_limit or read in layer-filtered passes."
-                    },
-                    new AcceptanceCheck
-                    {
-                        Step = 6, Path = "stages_failed", Expect = "zero",
-                        Why = "a non-zero stages_failed means part of the conversion did not land, so the " +
-                              "junctions of step 7 name elements that may not exist."
-                    },
-                    new AcceptanceCheck
-                    {
-                        Step = 9, Path = "summary.not_made", Expect = "zero",
-                        Why = "a junction the drawing shows, whose elements exist and meet, and whose " +
-                              "connectors are open. This is the one number that says whether the model is a " +
-                              "network rather than a picture of one - and it is measured from the MODEL, " +
-                              "after the fact, not from the reply that wrote it."
-                    },
-                    new AcceptanceCheck
-                    {
-                        Step = 7, Path = "refused", Expect = "zero",
-                        Why = "a refused junction is a place where two pipes touch and are not joined. It is " +
-                              "not a failure of the route - it is usually correct - but it is never a " +
-                              "connected network, and a run that reports success with refusals in it would " +
-                              "say the model is finished when it is not."
-                    }
-                },
-                Example = "health, cad_extract(link), cad_networks(link, requirement_set), " +
-                          "cad_unit_instances(link, regions), plan_from_cad, apply_cad_plan(dry_run false), " +
-                          "decide the junctions, cad_connect, audit_cad_model, cad_review.",
-                Limits = new[]
-                {
-                    "THE UNIT TYPES HAVE NO NAMES. A unit's name is text in the drawing, and whether text " +
-                    "is reachable is a property of the reader - step 2 reports which. A type called 'A1' " +
-                    "because it was found first is the kind of plausible wrong answer nobody checks.",
-                    "ELEVATION COMES FROM THE DECLARATIONS OR FROM NOWHERE. A plan is drawn flat. A run " +
-                    "with no declared elevation is a run whose height nobody stated, which is not the same " +
-                    "as one at zero, and this route never fills that in.",
-                    "STACKING A UNIT ONTO OTHER FLOORS IS NOT PART OF THIS ROUTE. Which storeys repeat is a " +
-                    "fact about the building - a podium with a different core is not a typical floor - and " +
-                    "the transform is published so somebody who knows can repeat it deliberately.",
-                    "THE RUN IDENTITIES ONLY MATCH THE CONVERSION'S WHEN THE TOLERANCES DO. Step 3 takes " +
-                    "them from the requirement set for exactly this reason. Override them and the " +
-                    "connections of step 3 name nothing the model holds - which step 3 says outright " +
-                    "rather than leaving step 7 to discover.",
-                    "A CROSSING IS NEVER JOINED. Two lines crossing in a plan without a shared end are two " +
-                    "services at different heights. If one of them should be a tee, the drawing has to say " +
-                    "so by breaking the line.",
-                    "THE FALL IS NOT PART OF THIS ROUTE, and it is available beside it. " +
-                    "horizun_cad_networks computes every invert from a declared OUTFALL and the slope each " +
-                    "layer declares - which is the only honest source of direction, because a drawn line " +
-                    "has a first point and a second point and that is drawing order. It is not templated " +
-                    "here because an outfall is a POINT with no sensible default, and a step referencing an " +
-                    "input nobody supplied blocks the run. Call it separately when the drawing is drainage - " +
-                    "and give the same outfall to horizun_cad_review, which then checks the model's heights " +
-                    "against it. JOINED IS NOT THE SAME AS CORRECT: a drainage network laid perfectly level " +
-                    "is connected, flows nowhere, and passes step 9 without that comparison."
-                }
-            },
-
-            new Procedure
-            {
-                Id = "dwg-electrical-symbols",
-                Title = "DWG Symbols to Family Instances",
-                Version = 1,
-                Permission = "read_only_to_safe_write",
-                Outcome = "Every mark of one symbol placed as the same family, from ONE naming decision.",
-                Tools = new[] { "horizun_health", "horizun_cad_extract", "horizun_cad_symbols",
-                                "horizun_create_elements", "horizun_query_model" },
-                Inputs = new[] { "the CAD link, by id",
-                                 "the symbol layers, as globs",
-                                 "how large a piece of connected line work may be and still be a symbol",
-                                 "a family type for each symbol type the reading finds" },
-                Scope = "Only the layers named, and only the groups that fit inside the declared footprint.",
-                Output = "Family instances at each mark's centre, rotated as the mark is, each re-read after " +
-                         "the commit - plus every group that was rejected, with its reason.",
-                Errors = new[]
-                {
-                    "a group that outgrows the footprint is rejected WHOLE - a symbol touching its home run " +
-                    "is connected to the circuit, and half a circuit is not a symbol either",
-                    "a MIRRORED occurrence is reported as not placeable: a mirror is not a rotation of a " +
-                    "family instance, and placing it rotated puts the symbol's face the wrong way round",
-                    "a symbol drawn differently the second time is unrecognised rather than folded in, which " +
-                    "on a real drawing is the interesting finding"
-                },
-                DependsOn = new string[0],
-                Acceptance = "Every placement row sent is created and re-read, every rejected group has a " +
-                             "reason, and no symbol type was named by this route rather than by a person.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_health",
-                        ArgumentsJson = @"{}",
-                        Purpose = "establish WHICH document every step below acts on.",
-                        Needs = "nothing",
-                        Preconditions = "Revit is running with the intended model in front.",
-                        OnError = "stop. Step 4 writes and names a target_document.",
-                        ReadsBack = "the document title, the Revit year, and the bridge's own version and commit."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_cad_extract",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""arc_sagitta_mm"": { ""$input"": ""arc_sagitta_mm"" }
-}",
-                        Purpose = "find out what this reading can reach, and settle the chord tolerance " +
-                                  "BEFORE it matters.",
-                        Needs = "the CAD instance, which arrives as an input.",
-                        Preconditions = "the link is LOADED.",
-                        OnError = "a reader blind to text is the normal case here and is not a reason to " +
-                                  "stop - it is the reason step 4 needs a person. A reader that returned no " +
-                                  "geometry at all IS a reason to stop.",
-                        ReadsBack = "the twelve axes with their verdicts. At symbol scale the chord " +
-                                    "tolerance matters more than anywhere else: a 5 mm sagitta over a 40 mm " +
-                                    "circle is a hexagon, and two instances chorded differently do not match."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_cad_symbols",
-                        ArgumentsJson = @"{
-  ""instance_id"": { ""$input"": ""instance_id"" },
-  ""layers"": { ""$input"": ""symbol_layers"" },
-  ""max_footprint_mm"": { ""$input"": ""max_footprint_mm"" },
-  ""arc_sagitta_mm"": { ""$input"": ""arc_sagitta_mm"" }
-}",
-                        Purpose = "group the marks into types, so one decision covers every occurrence.",
-                        Needs = "the layers and the footprint, both of which arrive as inputs. Neither has a " +
-                                "default: a receptacle is forty millimetres across on one drawing and four " +
-                                "hundred on another.",
-                        Preconditions = "the layers name symbol layers. Grouping over the whole drawing " +
-                                        "makes the wiring one enormous rejected component and buries the " +
-                                        "symbols in it.",
-                        OnError = "a reading where every group was rejected as too large means the footprint " +
-                                  "is too small or the symbols touch their home runs. Both are findings " +
-                                  "about the drawing and neither is fixed by raising the bound until " +
-                                  "something passes.",
-                        ReadsBack = "symbol types with their occurrence counts, the placement rows ready for " +
-                                    "step 5 with type_name empty, every rejected group with its reason, and " +
-                                    "the unrecognised one-offs."
-                    },
-                    new Step
-                    {
-                        N = 4, Tool = "horizun_create_elements",
-                        // THE ONE DECISION, AND IT IS THE POINT OF THE ROUTE.
-                        //
-                        // What a symbol MEANS lives in the drawing's legend, which is
-                        // text, and step 2 reports whether this reader can see text.
-                        // So a person names each type once - and that one sentence
-                        // applies to every occurrence of it, which is the entire
-                        // reason for grouping them in the first place.
-                        RequiresDecision = true,
-                        DecisionNeeded = "the family type for each symbol type step 3 found, and the level " +
-                                         "to place on. Take step 3's placements array, fill in type_name on " +
-                                         "each row from the type it belongs to, add level_name, and drop the " +
-                                         "rows marked placeable:false - those are mirrored, and a mirror is " +
-                                         "not a rotation of a family instance.",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""units"": ""mm"",
-  ""elements"": { ""$decision"": ""elements"" },
-  ""dry_run"": false
-}",
-                        Purpose = "place them.",
-                        Needs = "step 3's placement rows with a type name filled in, and the level.",
-                        Preconditions = "the named family types are LOADED in this document. A type name " +
-                                        "that matches nothing is refused per row rather than substituted.",
-                        OnError = "a refused row names its reason. The batch is atomic, so a refusal leaves " +
-                                  "nothing partial behind.",
-                        ReadsBack = "created_verified, and a row per element with its id, re-read after the " +
-                                    "commit."
-                    },
-                    new Step
-                    {
-                        N = 5, Tool = "horizun_query_model",
-                        ArgumentsJson = @"{
-  ""categories"": { ""$input"": ""categories"" },
-  ""level"": { ""$input"": ""level_name"" },
-  ""response_mode"": ""summary""
-}",
-                        Purpose = "count what is now on that level, from the MODEL rather than from the " +
-                                  "reply that wrote it.",
-                        Needs = "the categories and the level, which arrive as inputs.",
-                        Preconditions = "step 4 committed.",
-                        OnError = "none: this step only reads.",
-                        ReadsBack = "the count per category on that level. It includes anything already " +
-                                    "there, so it is a check that the number MOVED by what was placed - not " +
-                                    "a proof that only this route placed it."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""document"", ""instance_id"", ""symbol_layers"", ""max_footprint_mm"", ""categories"", ""level_name""],
-  ""properties"": {
-    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document."" },
-    ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD instance. List them with horizun_query_cad mode='instances'."" },
-    ""symbol_layers"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-      ""description"": ""GLOBS naming the symbol layers. Required: grouping over the whole drawing makes the wiring one enormous rejected component and buries the symbols in it."" },
-    ""max_footprint_mm"": { ""type"": ""number"", ""minimum"": 0.001,
-      ""description"": ""How large a piece of connected line work may be and still be a symbol. No default anywhere in this route - a receptacle is forty millimetres across on one drawing and four hundred on another."" },
-    ""arc_sagitta_mm"": { ""type"": ""number"", ""minimum"": 0.001, ""default"": 0.5,
-      ""description"": ""How far a chord may depart from the arc it replaces. At symbol scale this is the setting that decides whether two instances match at all: 5 mm over a 40 mm circle is a hexagon."" },
-    ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-      ""description"": ""The categories step 5 counts on the level. They are the caller's because which category a symbol becomes is part of the naming decision."" },
-    ""level_name"": { ""type"": ""string"", ""description"": ""The storey the instances sit on."" }
-  },
-  ""additionalProperties"": false
-}",
-                Checks = new[]
-                {
-                    new AcceptanceCheck
-                    {
-                        Step = 4, Path = "created_verified", Expect = "non_empty",
-                        Why = "the count of instances created AND re-read from the model after the commit. " +
-                              "Zero means the batch placed nothing, which with a decision that supplied rows " +
-                              "means every row was refused - usually a family type name that matches nothing " +
-                              "loaded in this document."
-                    }
-                },
-                Example = "health, cad_extract(link), cad_symbols(link, layers, footprint) → 6 types, 412 " +
-                          "occurrences, 9 rejected → name the 6 types → create_elements(the rows) → " +
-                          "query_model on that level.",
-                Limits = new[]
-                {
-                    "ONE NAMING DECISION, NOT NONE. This route never guesses what a symbol means. The " +
-                    "legend that says so is text, and whether text is reachable is a property of the " +
-                    "reader - horizun_cad_extract reports which.",
-                    "horizun_create_elements takes at most 2000 elements per call. A drawing with more " +
-                    "occurrences than that is sent in batches, and each batch is its own atomic " +
-                    "transaction - so a partial result is possible across batches and is not across one.",
-                    "A MIRRORED occurrence is not placeable as a rotation and is excluded by the decision. " +
-                    "It needs a flipped instance or a different family, and it looks identical on the " +
-                    "drawing.",
-                    "The count in step 5 includes what was already on that level. It checks that the number " +
-                    "MOVED, not that this route placed everything there."
-                }
-            },
 
             new Procedure
             {
@@ -2792,498 +1691,9 @@ new Procedure
                 },
             },
 
-            new Procedure
-            {
-                Id = "architecture-structure-coordination",
-                Title = "Architecture and Structure Coordination",
-                Version = 2,
-                Permission = "read_only",
-                Outcome = "A measured coordination scope with its unresolved parts preserved.",
-                Tools = new[] { "horizun_query_structure", "horizun_query_model", "horizun_clash" },
-                Inputs = new[] { "the two disciplines' models, by id", "the clash tolerance" },
-                Scope = "The declared element sets of both models.",
-                Output = "A clash list with host and link identity per side.",
-                Errors = new[] { "a link that is unloaded - reported as NOT COVERED rather than as zero clashes" },
-                DependsOn = new string[0],
-                Acceptance = "Every clash names both elements with the document each belongs to, and the " +
-                             "coverage statement accounts for every link.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_health",
-                        // No arguments: horizun_health's schema declares none and refuses
-                        // extras. An empty template is what makes this step EXECUTABLE
-                        // rather than merely described.
-                        ArgumentsJson = @"{}",
-                        Purpose = "establish WHICH document every step below acts on.",
-                        Needs = "nothing",
-                        Preconditions = "Revit is running with the intended model in front.",
-                        OnError = "stop. Every step names a target_document, and naming the wrong one works on somebody " +
-                                  "else project.",
-                        ReadsBack = "the document title, the Revit year and the bridge own version and commit."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_query_structure",
-                        // mode is REQUIRED and this route asks for members: the
-                        // schema says outright that there is no honest default
-                        // across eight different questions.
-                        ArgumentsJson = @"{
-  ""mode"": ""members"",
-  ""categories"": { ""$input"": ""structure_categories"" }
-}",
-                        Purpose = "establish what the structural side actually contains.",
-                        Needs = "the document from step 1 and the two model ids, which arrive as inputs.",
-                        Preconditions = "both models are loaded. This is the step where an unloaded link is caught, and it " +
-                                        "has to be caught HERE rather than read as a clean result later.",
-                        OnError = "a link that is unloaded is reported as NOT COVERED. Loading it is a decision with " +
-                                  "consequences for the session, so this route reports and does not load.",
-                        ReadsBack = "the structural element set, with the document each element belongs to."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_query_model",
-                        ArgumentsJson = @"{
-  ""categories"": { ""$input"": ""architecture_categories"" },
-  ""response_mode"": ""summary""
-}",
-                        Purpose = "establish the architectural side the same way.",
-                        Needs = "the document from step 1 and the coverage statement from step 2, so both sides are " +
-                                "described in the same terms.",
-                        Preconditions = "none.",
-                        OnError = "a category that is empty is reported as empty, which is different from a category " +
-                                  "that was not asked for.",
-                        ReadsBack = "the architectural element set, with counts per category."
-                    },
-                    new Step
-                    {
-                        N = 4, Tool = "horizun_clash",
-                        ArgumentsJson = @"{
-  ""categories_a"": { ""$input"": ""architecture_categories"" },
-  ""categories_b"": { ""$input"": ""structure_categories"" },
-  ""clearance_mm"": { ""$input"": ""clearance_mm"" },
-  ""include_links"": true
-}",
-                        Purpose = "measure the intersections between the two declared sets.",
-                        Needs = "the two element sets from steps 2 and 3, and the tolerance.",
-                        Preconditions = "the tolerance is declared. A clash result without one cannot be compared to any " +
-                                        "other run.",
-                        OnError = "a clash between two elements of the SAME document is still a clash and is reported " +
-                                  "rather than filtered as uninteresting.",
-                        ReadsBack = "per clash: both elements, the document each is in, and the measured overlap. Plus " +
-                                    "the coverage statement, which has to account for every link."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""architecture_categories"", ""structure_categories""],
-  ""properties"": {
-    ""architecture_categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-      ""description"": ""One side of the coordination: the architectural categories. Used for BOTH the census in step 3 and side A of the clash test, from this one input - two lists that drift apart would compare something other than what was censused."" },
-    ""structure_categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-      ""description"": ""The structural categories, used for both the member reading and side B of the clash test."" },
-    ""clearance_mm"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 500, ""default"": 0,
-      ""description"": ""How much room around each element counts as occupied. At zero the test finds only what already overlaps; the interesting coordination finding is what will not fit once somebody has to build it. The number comes from a standard, not from this bridge."" }
-  },
-  ""additionalProperties"": false
-}",
-                Example = "health then query_structure(models) then query_model(same scope) then clash(set A, " +
-                          "set B, tolerance_mm=10).",
-                Limits = new[]
-                {
-                    "An unloaded link produces zero clashes, which looks exactly like a coordinated " +
-                    "model. The coverage statement is what tells the two apart, and it travels with the " +
-                    "result for that reason.",
-                    "This route measures and proposes nothing. Deciding which side moves is a " +
-                    "coordination decision between two teams."
-                }
-            },
 
-            new Procedure
-            {
-                Id = "mep-coordination-review",
-                Title = "MEP Coordination Review",
-                Version = 2,
-                Permission = "read_only",
-                Outcome = "Systems, connectivity and clashes measured. Nothing is written and no route "
-                          + "is designed.",
-                Tools = new[] { "horizun_query_model", "horizun_clash", "horizun_plan_mep" },
-                Inputs = new[] { "the categories in scope",
-                                 "the two sides of the clash test",
-                                 "the clearance - it comes from a standard or a contract, not from here",
-                                 "the seeds that bound the connectivity census" },
-                Scope = "Reading only. No step opens a transaction.",
-                Output = "A census by category, the clashes at the declared clearance, and the connected "
-                         + "components with their open connectors.",
-                Errors = new[] { "an open connector is a finding, not an error: a network can be correct and " +
-                                 "incomplete at the same time" },
-                DependsOn = new string[0],
-                Acceptance = "The census reached a non-empty population, the clash test ran at the " +
-                             "clearance the caller declared, and the open-connector count is reported - a " +
-                             "network can be correct and incomplete at the same time, so the number is the " +
-                             "deliverable rather than a target.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_health",
-                        // No arguments: horizun_health's schema declares none and refuses
-                        // extras. An empty template is what makes this step EXECUTABLE
-                        // rather than merely described.
-                        ArgumentsJson = @"{}",
-                        Purpose = "establish WHICH document every step below acts on.",
-                        Needs = "nothing",
-                        Preconditions = "Revit is running with the intended model in front.",
-                        OnError = "stop. Every step names a target_document, and naming the wrong one works on somebody " +
-                                  "else project.",
-                        ReadsBack = "the document title, the Revit year and the bridge own version and commit."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_query_model",
-                        ArgumentsJson = @"{
-  ""categories"": { ""$input"": ""categories"" },
-  ""response_mode"": ""summary""
-}",
-                        Purpose = "census the systems, their elements, and their OPEN connectors.",
-                        Needs = "the document from step 1 and the systems in scope.",
-                        Preconditions = "the systems are named. All systems is a valid scope stated on purpose.",
-                        OnError = "an element whose connectors cannot be read is named. A network that cannot be read " +
-                                  "is not a complete network.",
-                        ReadsBack = "per system: element count, open connector count, and where each open connector is."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_clash",
-                        // THE CLEARANCE IS THE CALLER'S. A clash test at zero
-                        // clearance finds only what already overlaps, and the
-                        // interesting finding in coordination is what will not fit
-                        // once somebody has to install it.
-                        ArgumentsJson = @"{
-  ""categories_a"": { ""$input"": ""categories_a"" },
-  ""categories_b"": { ""$input"": ""categories_b"" },
-  ""clearance_mm"": { ""$input"": ""clearance_mm"" },
-  ""include_links"": true
-}",
-                        Purpose = "measure interferences against the clearance rules.",
-                        Needs = "the system element sets from step 2.",
-                        Preconditions = "the clearance rules arrive as an input. A clearance is a project rule, not a " +
-                                        "property of the geometry.",
-                        OnError = "a clash inside a single system is reported, not filtered. Two branches of the same " +
-                                  "duct run can still collide.",
-                        ReadsBack = "per clash: both elements, the measured overlap and which clearance rule it breaches."
-                    },
-                    new Step
-                    {
-                        N = 4, Tool = "horizun_plan_mep",
-                        // CENSUS, NOT route_run.
-                        //
-                        // route_run needs a pipe or duct type, a system type, a
-                        // level and the points of the route. A REVIEW has decided
-                        // none of those, and a template that supplied them would be
-                        // this catalogue designing somebody's pipework. What a
-                        // review can do is measure connectivity: which components
-                        // exist and where they are still open.
-                        ArgumentsJson = @"{
-  ""operation"": ""network_census"",
-  ""element_ids"": { ""$input"": ""element_ids"" },
-  ""units"": ""mm""
-}",
-                        Purpose = "measure connectivity: which components exist and where they are open. " +
-                                  "Nothing is written.",
-                        Needs = "the open connectors from step 2 and the clashes from step 3.",
-                        Preconditions = "none. plan_mep writes nothing by design.",
-                        OnError = "a route it cannot find is reported as not found, with what blocked it. It is never " +
-                                  "replaced by a straight line that ignores the obstruction.",
-                        ReadsBack = "each proposed route as a create_elements request that HAS NOT been sent."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""categories"", ""categories_a"", ""categories_b"", ""element_ids""],
-  ""properties"": {
-    ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-      ""description"": ""The categories step 2 censuses. Required: 'all the MEP' is not a scope, and a review over the whole model reports interferences nobody asked about alongside the ones they did."" },
-    ""categories_a"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-      ""description"": ""One side of the clash test."" },
-    ""categories_b"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-      ""description"": ""The other side."" },
-    ""clearance_mm"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 500, ""default"": 0,
-      ""description"": ""How much room around each element counts as occupied. At zero the test finds only what already overlaps, and the interesting finding in coordination is what will not fit once somebody has to install it. The number is the caller's: it comes from a standard or a contract, not from this bridge."" },
-    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1, ""maxItems"": 500,
-      ""description"": ""The seeds that bound the connectivity census in step 4. Membership is CONNECTOR connectivity, never geometric coincidence."" }
-  },
-  ""additionalProperties"": false
-}",
-                Checks = new[]
-                {
-                    new AcceptanceCheck
-                    {
-                        Step = 4, Path = "open_connectors_total", Expect = "non_empty",
-                        Why = "this is a REVIEW, and a review's job is to produce the number rather than to " +
-                              "make it zero. non_empty here asserts that the census actually measured " +
-                              "something: a zero from a census that seeded nothing and a zero from a " +
-                              "complete network look identical, and only the first is a defect in the run."
-                    }
-                },
-                Example = "health, query_model(categories, summary), clash(A against B at 50 mm), " +
-                          "plan_mep(network_census over the seeds).",
-                Limits = new[]
-                {
-                    "An open connector is a finding, not an error. A network can be correct and " +
-                    "incomplete at the same time, and this route reports the count either way.",
-                    "STEP 4 MEASURES, IT DOES NOT ROUTE. horizun_plan_mep's route_run needs a pipe or " +
-                    "duct type, a system type, a level and the points of the route, and a review has " +
-                    "decided none of them - a template that supplied them would be this catalogue " +
-                    "designing somebody's pipework. What a review can do is measure connectivity.",
-                    "THE CLEARANCE IS THE CALLER'S. At zero the clash test finds only what already " +
-                    "overlaps, and the interesting finding in coordination is what will not fit once " +
-                    "somebody has to install it. The number comes from a standard or a contract."
-                }
-            },
 
-            new Procedure
-            {
-                Id = "mep-network-completion",
-                Title = "MEP Network Completion",
-                Version = 1,
-                Permission = "safe_write",
-                Outcome = "Segments that merely touch become a connected network, verified connector by connector.",
-                Tools = new[] { "horizun_query_model", "horizun_plan_mep", "horizun_create_elements",
-                                "horizun_connect_mep" },
-                Inputs = new[] { "the open connectors to join, by element and connector id",
-                                 "the tolerance for coincidence, in millimetres",
-                                 "whether a size mismatch at equipment is expected" },
-                Scope = "Only the named connectors. Geometry is never moved to close a gap.",
-                Output = "Fittings where a fitting is needed, direct connections where one is not, and a list " +
-                         "of every connector still open afterwards.",
-                Errors = new[]
-                {
-                    "connectors in different domains - refused with both domains named",
-                    "connectors not at the same point - refused with the measured gap, because closing it " +
-                    "would move somebody's geometry",
-                    "an element with several free connectors and no named one - refused rather than guessed"
-                },
-                DependsOn = new[] { "mep-coordination-review" },
-                Acceptance = "Every requested pair re-reads as connected, and the count of connectors still " +
-                             "open is stated even on success.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_query_model",
-                        ArgumentsJson = @"{
-  ""element_ids"": { ""$input"": ""element_ids"" },
-  ""response_mode"": ""summary""
-}",
-                        Purpose = "scope the network: read back the elements the rest of this run acts on, " +
-                                  "so the scope is a measured set rather than a sentence.",
-                        Needs = "the element ids, which arrive as an input.",
-                        Preconditions = "the scope is named as a set of elements. 'All the pipes' is not a " +
-                                        "scope, and this procedure requires the ids rather than allowing " +
-                                        "the census to seed itself from every MEP curve in the model.",
-                        OnError = "stop; an unscoped completion pass touches the whole model.",
-                        ReadsBack = "the elements in scope and their count."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_plan_mep",
-                        // network_census measures membership through CONNECTORS, never
-                        // through geometric coincidence - which is the whole distinction
-                        // this procedure is about. Seeds bound the walk; without them
-                        // every MEP curve seeds and the command refuses above 2000.
-                        ArgumentsJson = @"{
-  ""operation"": ""network_census"",
-  ""element_ids"": { ""$input"": ""element_ids"" },
-  ""units"": ""mm""
-}",
-                        Purpose = "find the open connectors and the pairs that could be joined.",
-                        Needs = "the element ids from step 1.",
-                        Preconditions = "none.",
-                        OnError = "a connector that cannot be resolved is named. It is a finding.",
-                        ReadsBack = "open connectors with their owner, index and domain, and candidate " +
-                                    "pairs with the measured distance between them."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_connect_mep",
-                        // WHICH OPENS TO JOIN IS NOT ARITHMETIC. The census says which
-                        // connectors are open; some are the end of a run, some are
-                        // equipment nobody has placed yet, and pairing them by proximity
-                        // would connect a vent to a waste stack because they happened to
-                        // be near each other. So the run HOLDS.
-                        //
-                        // This is NOT the same situation as the DWG route, where the
-                        // drawing itself says which ends meet and a run carries the same
-                        // identity the conversion stamps. Here nothing says it.
-                        RequiresDecision = true,
-                        DecisionNeeded = "the pairs to join, each as {key, a_element_id, a_connector, " +
-                                         "b_element_id, b_connector}. Step 2 lists the open connectors per " +
-                                         "component; which of them belong together is a reading of the " +
-                                         "building, not of the model.",
-                        ArgumentsJson = @"{
-  ""target_document"": { ""$input"": ""document"" },
-  ""units"": ""mm"",
-  ""actions"": { ""$decision"": ""pairs"" },
-  ""dry_run"": false
-}",
-                        Purpose = "join the pairs that are unambiguous.",
-                        Needs = "the (element, connector index) pairs from step 2 - NOT a connector object: " +
-                                "connector handles do not survive the rehearsal's rollback, so identity " +
-                                "travels and the connector is re-resolved per phase.",
-                        Preconditions = "dry_run first. The rehearsal measures domain, size and physical " +
-                                        "coincidence and refuses a pair that does not meet them.",
-                        OnError = "an ambiguous pair - several free connectors and none named - is REFUSED " +
-                                  "rather than chosen for you. Name the connector index and re-send.",
-                        ReadsBack = "each connection re-read from the model, plus the connectors still " +
-                                    "open. Connecting what was asked and leaving three loose ends is a " +
-                                    "correct command and an incomplete network, and both are reported."
-                    },
-                    new Step
-                    {
-                        N = 4, Tool = "horizun_plan_mep",
-                        ArgumentsJson = @"{
-  ""operation"": ""network_census"",
-  ""element_ids"": { ""$input"": ""element_ids"" },
-  ""units"": ""mm""
-}",
-                        Purpose = "re-measure. The list of open connectors is the acceptance criterion.",
-                        Needs = "the same scope as step 1.",
-                        Preconditions = "step 3 committed.",
-                        OnError = "none: this step only reads.",
-                        ReadsBack = "the open connectors that remain. Zero is the result; anything else is " +
-                                    "the work left."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""document"", ""element_ids""],
-  ""properties"": {
-    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document. The connection step names it."" },
-    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1, ""maxItems"": 500,
-      ""description"": ""The seeds that bound the census. REQUIRED here even though horizun_plan_mep allows omitting them: 'all the pipes' is not a scope, and an unscoped completion pass measures the whole model and then proposes work across it."" }
-  },
-  ""additionalProperties"": false
-}",
-                Checks = new[]
-                {
-                    new AcceptanceCheck
-                    {
-                        Step = 4, Path = "open_connectors_total", Expect = "zero",
-                        Why = "the count of connectors still open after the pass, measured from the MODEL " +
-                              "through connector connectivity rather than from the reply that wrote it. " +
-                              "Zero is a network with no loose ends IN THE SCOPE MEASURED - it is not a " +
-                              "hydraulic check and not a code check, and a non-zero count is the work left " +
-                              "rather than a failure."
-                    }
-                },
-                Example =
-                    "query_model(system=SAN-01) → plan_mep(those ids) → 12 open, 5 joinable pairs → " +
-                    "connect_mep(the 5 pairs, dry_run=true, then false) → plan_mep again → 2 open, both " +
-                    "named, both needing a fitting nobody has chosen.",
-                Limits = new[]
-                {
-                    "Connecting two connectors does not create a fitting. Where a fitting is needed the " +
-                    "pair is refused with that as the reason.",
-                    "A network reported as complete is a network with no OPEN connectors in the scope " +
-                    "measured. It is not a hydraulic or a code check.",
-                    "Duct and pipe accessories inserted in-line are a different operation with a different " +
-                    "break-and-reconnect path."
-                },
-            },
 
-            new Procedure
-            {
-                Id = "western-forms-concrete-review",
-                Title = "Concrete and Reinforcement Review",
-                Version = 2,
-                Permission = "read_only",
-                Outcome = "Declared concrete and reinforcement requirements audited without applying any.",
-                Tools = new[] { "horizun_query_structure", "horizun_audit_reinforcement" },
-                Inputs = new[] { "the requirement set - covers, spacings, shapes - as an input",
-                                 "the hosts in scope" },
-                Scope = "Reading. No rebar is created.",
-                Output = "A per-host compliance table.",
-                Errors = new[] { "a host with no reinforcement at all is reported apart from one whose " +
-                                 "reinforcement is wrong: the two need different work" },
-                DependsOn = new string[0],
-                Acceptance = "Every host in scope appears exactly once, with a measurement or an explicit " +
-                             "non-coverage.",
-                Steps = new[]
-                {
-                    new Step
-                    {
-                        N = 1, Tool = "horizun_health",
-                        // No arguments: horizun_health's schema declares none and refuses
-                        // extras. An empty template is what makes this step EXECUTABLE
-                        // rather than merely described.
-                        ArgumentsJson = @"{}",
-                        Purpose = "establish WHICH document every step below acts on.",
-                        Needs = "nothing",
-                        Preconditions = "Revit is running with the intended model in front.",
-                        OnError = "stop. Every step names a target_document, and naming the wrong one works on somebody " +
-                                  "else project.",
-                        ReadsBack = "the document title, the Revit year and the bridge own version and commit."
-                    },
-                    new Step
-                    {
-                        N = 2, Tool = "horizun_query_structure",
-                        // mode is REQUIRED: the schema says outright that there is
-                        // no honest default across eight different questions.
-                        ArgumentsJson = @"{
-  ""mode"": ""members"",
-  ""categories"": { ""$input"": ""categories"" }
-}",
-                        Purpose = "resolve the hosts in scope and what reinforcement each one currently has.",
-                        Needs = "the document from step 1 and the hosts in scope, which arrive as an input.",
-                        Preconditions = "the requirement set - covers, spacings, shapes - is explicit. Auditing against an " +
-                                        "unstated requirement measures nothing.",
-                        OnError = "a host that cannot be read is named and stays in the total. Dropping it makes the " +
-                                  "table look complete when it is not.",
-                        ReadsBack = "per host: its geometry, its cover settings, and the rebar it hosts."
-                    },
-                    new Step
-                    {
-                        N = 3, Tool = "horizun_audit_reinforcement",
-                        // The requirement set is REQUIRED by the tool, and rightly:
-                        // an audit with no rules measures nothing and reports a
-                        // clean model.
-                        ArgumentsJson = @"{
-  ""requirement_set"": { ""$input"": ""requirement_set"" }
-}",
-                        Purpose = "measure each host against the requirement set.",
-                        Needs = "the hosts and their rebar from step 2.",
-                        Preconditions = "none. This reads.",
-                        OnError = "a host with NO reinforcement at all is reported apart from one whose reinforcement " +
-                                  "is wrong. The first needs design, the second needs correction, and merging them " +
-                                  "hides which.",
-                        ReadsBack = "per host, exactly once: a measurement or an explicit non-coverage."
-                    }
-                },
-                InputSchemaJson = @"{
-  ""type"": ""object"",
-  ""required"": [""requirement_set""],
-  ""properties"": {
-    ""requirement_set"": { ""type"": ""object"",
-      ""description"": ""A horizun.structural-requirements/1 document - the same one that was applied, or a newer one to audit against. Required by the tool and by sense: an audit with no rules measures nothing and reports a clean model."" },
-    ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1, ""default"": [""OST_StructuralFraming"", ""OST_StructuralColumns""],
-      ""description"": ""The member categories read in step 2. The default is the tool's own, written here so that a step referencing it does not block when the caller leaves it out."" }
-  },
-  ""additionalProperties"": false
-}",
-                Example = "health then query_structure(hosts) then audit_reinforcement(hosts, requirement set).",
-                Limits = new[]
-                {
-                    "No rebar is created anywhere in this route. It measures what exists against what was " +
-                    "declared.",
-                    "Revit does not honour a suppressed FIRST bar in a maximum_spacing layout: it commits " +
-                    "with the bar in place. An audit that trusts the layout parameters rather than the " +
-                    "placed bars will report a spacing the model does not have.",
-                    "A cover setting is per face and per host. A single cover number for an element is " +
-                    "usually a simplification somebody made in the requirement set."
-                }
-            },
 
             new Procedure
             {
@@ -3412,7 +1822,7 @@ new Procedure
                 Version = 1,
                 Permission = "safe_write",
                 Outcome = "Project materials brought to a declared standard without changing anything else.",
-                Tools = new[] { "horizun_manage_materials", "horizun_manage_system_types", "horizun_query_model" },
+                Tools = new[] { "horizun_manage_materials", "horizun_query_model" },
                 Inputs = new[] { "the material standard - names, classes, colours, patterns - as an input",
                                  "whether an appearance asset may be shared between materials" },
                 Scope = "The named materials. Elements referencing them are not edited.",
@@ -3666,11 +2076,6 @@ new Procedure
             /// <summary>What the person has to supply or approve. Required when RequiresDecision.</summary>
             public string DecisionNeeded;
 
-            /// <summary>
-            /// When the decision is not needed: {"step", "path", "equals", "values"} - an earlier
-            /// result that says there is nothing to decide, and the values recorded for it.
-            /// </summary>
-            public string DecisionUnlessJson;
 
             public JObject Arguments() =>
                 string.IsNullOrWhiteSpace(ArgumentsJson) ? null : JObject.Parse(ArgumentsJson);
@@ -3690,7 +2095,6 @@ new Procedure
                     ["requires_decision"] = RequiresDecision,
                     ["decision_needed"] = DecisionNeeded == null ? (JToken)JValue.CreateNull() : DecisionNeeded
                 };
-                if (DecisionUnlessJson != null) json["decision_unless"] = JObject.Parse(DecisionUnlessJson);
                 if (ArgumentsJson != null) json["arguments_template"] = Arguments();
 
                 // DOES THIS TEMPLATE AGREE WITH THE TOOL IT NAMES?

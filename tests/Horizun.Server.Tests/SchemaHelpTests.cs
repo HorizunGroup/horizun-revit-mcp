@@ -75,6 +75,50 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Schema_rejection_carries_a_contract_valid_minimal_call_and_safe_failure_path()
+        {
+            JObject args = new JObject { ["path"] = "private-model-path.rvt" };
+            JObject reply = McpResult.Error("open refused.", null, null, new JObject());
+            JObject help = Help(SchemaHelp.Attach(reply, "horizun_open_document", args));
+            JObject example = (JObject)help["minimal_valid_call"];
+            Assert.Equal("horizun_open_document", (string)example["tool"]);
+            Assert.Empty(ContractSchemaCheck.Validate(example["arguments"], Contract.Find("horizun_open_document").InputSchema));
+            Assert.Equal("/", (string)help["failure_path"]);
+            Assert.Equal("required", (string)help["failure_rule"]);
+            Assert.Equal("/", (string)help["schema_rejection"]["path"]);
+            Assert.Equal("required", (string)help["schema_rejection"]["rule"]);
+            Assert.DoesNotContain("private-model-path", help.ToString(Formatting.None));
+        }
+
+        [Fact]
+        public void Nested_unknown_fields_report_the_exact_schema_path_and_rule()
+        {
+            JObject args = JObject.Parse("{elements:[{kind:'wall',unused_field:'sensitive-value'}]}");
+            JObject attached = (JObject)SchemaHelp.Attach(McpResult.Error("invalid row", null, null, new JObject()),
+                "horizun_create_elements", args);
+            JObject rejection = (JObject)attached["structuredContent"]["schema_help"]["schema_rejection"];
+            Assert.Equal("/elements/0/unused_field", (string)rejection["path"]);
+            Assert.Equal("additional_property", (string)rejection["rule"]);
+            Assert.DoesNotContain("sensitive-value", rejection.ToString(Formatting.None));
+        }
+
+        [Theory]
+        [InlineData("horizun_execute_python")]
+        [InlineData("horizun_query_model")]
+        [InlineData("horizun_list_elements")]
+        [InlineData("horizun_open_document")]
+        [InlineData("horizun_document_session")]
+        [InlineData("horizun_manage_views")]
+        [InlineData("horizun_create_elements")]
+        [InlineData("horizun_save_document")]
+        public void Commonly_misassembled_tools_have_a_valid_minimal_contract_example(string tool)
+        {
+            JObject example = SchemaHelp.ContractExample(tool);
+            Assert.NotNull(example);
+            Assert.Empty(ContractSchemaCheck.Validate(example, Contract.Find(tool).InputSchema));
+        }
+
+        [Fact]
         public void Nothing_is_attached_when_the_contract_finds_nothing_or_nothing_failed()
         {
             JObject failed = Rehearsal(0, 1);
@@ -131,17 +175,22 @@ namespace Horizun.Server.Tests
         [Fact]
         public void An_error_without_structured_content_gains_only_a_line()
         {
-            // No structuredContent is created on a plain error: a reader that judges or
-            // forwards structuredContent (ProcedureRun; clients that send it in place of
-            // the text) would see the advice and lose the error itself.
+            // A plain error now carries the stable cause as structure (error_code) - and
+            // that structure REPEATS the message (`error`), so a reader that judges or
+            // forwards structuredContent in place of the text (ProcedureRun; some clients)
+            // still sees the error itself, not only the advice.
             JObject reply = McpResult.Text("export refused: unknown format.", true);
             JToken attached = SchemaHelp.Attach(reply, "horizun_export", new JObject { ["format"] = "no_such_format" });
-            Assert.Null(attached["structuredContent"]);
             Assert.True((bool)attached["isError"]);
+            Assert.Equal("esquema_invalido", (string)attached["structuredContent"]["error_code"]);
+            Assert.Equal("export refused: unknown format.", (string)attached["structuredContent"]["error"]);
             string text = (string)attached["content"][0]["text"];
-            Assert.StartsWith("export refused: unknown format." + Environment.NewLine + Environment.NewLine +
-                              "Arguments violate the contract at /", text);
-            Assert.EndsWith(". Exact schema: horizun://contract/tools/horizun_export.", text);
+            Assert.StartsWith("export refused: unknown format." + Environment.NewLine + Environment.NewLine, text);
+            Assert.Contains("error_code: esquema_invalido", text);
+            Assert.Contains("Arguments violate the contract at /", text);
+            // The structure now exists (it holds error_code), so the line points at it too.
+            Assert.Contains("exact schema in structuredContent.schema_help (also horizun://contract/tools/horizun_export)", text);
+            Assert.NotNull(attached["structuredContent"]["schema_help"]);
         }
 
         [Fact]

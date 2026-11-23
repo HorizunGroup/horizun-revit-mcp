@@ -81,7 +81,7 @@ namespace Horizun.Revit.Commands
 
             string folder = Path.GetDirectoryName(output);
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
-                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly.");
+                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly: create that folder first, or point output_path (the full path of the file to write) at a folder that exists. Nothing was written.");
             bool overwrite = request.Value<bool?>("overwrite") == true;
             if (!overwrite && File.Exists(output))
                 return CommandResult.Fail("Output already exists and overwrite=false: " + output);
@@ -320,7 +320,7 @@ namespace Horizun.Revit.Commands
             }
 
             // ---- rooms or spaces of the phase ----
-            int otherPhase = 0, phaseUnreadable = 0, unplaced = 0, notEnclosed = 0;
+            int otherPhase = 0, phaseUnreadable = 0, unplaced = 0, notEnclosed = 0, areaUnreadable = 0;
             BuiltInCategory spatialCategory = useSpaces ? BuiltInCategory.OST_MEPSpaces : BuiltInCategory.OST_Rooms;
             foreach (SpatialElement s in new FilteredElementCollector(doc).OfCategory(spatialCategory).WhereElementIsNotElementType().OfType<SpatialElement>())
             {
@@ -331,8 +331,8 @@ namespace Horizun.Revit.Commands
                 if (own == null) { phaseUnreadable++; continue; }
                 if (own != phase.Id) { otherPhase++; continue; }
                 if (s.Location == null) { unplaced++; continue; }
-                double area = 0;
-                try { area = s.Area; } catch { }
+                double area;
+                try { area = s.Area; } catch { areaUnreadable++; continue; }
                 if (!(area > 1e-9)) { notEnclosed++; continue; }
                 var fact = new CobieSpaceFact
                 {
@@ -455,7 +455,7 @@ namespace Horizun.Revit.Commands
                 ["spaces"] = new JObject
                 {
                     ["source"] = m.SpaceSource, ["in_scope"] = f.Spaces.Count, ["other_phase"] = otherPhase, ["phase_unreadable"] = phaseUnreadable,
-                    ["unplaced"] = unplaced, ["not_enclosed"] = notEnclosed, ["area_boundary"] = f.AreaBoundary
+                    ["unplaced"] = unplaced, ["not_enclosed"] = notEnclosed, ["area_unreadable"] = areaUnreadable, ["area_boundary"] = f.AreaBoundary
                 },
                 ["components"] = new JObject
                 {

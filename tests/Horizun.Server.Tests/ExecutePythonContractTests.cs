@@ -26,6 +26,14 @@ namespace Horizun.Server.Tests
         private static JObject Props() => (JObject)ExecutePython().InputSchema["properties"];
 
         [Fact]
+        public void Schema_exposes_output_only_without_hiding_failures()
+        {
+            var response = Props()["response"];
+            Assert.Contains("output_only", response["enum"].Values<string>());
+            Assert.Contains("errors", (string)response["description"]);
+        }
+
+        [Fact]
         public void The_schema_requires_target_document_and_leaves_the_source_to_the_handler()
         {
             var required = ((JArray)ExecutePython().InputSchema["required"]).Select(t => (string)t).ToList();

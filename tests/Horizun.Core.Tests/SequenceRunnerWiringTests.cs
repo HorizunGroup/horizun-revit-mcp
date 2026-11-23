@@ -71,8 +71,9 @@ namespace Horizun.Core.Tests
             // The single-call path is left exactly as it was: the sequence branch is
             // an early return, not a second meaning threaded through every line below.
             Assert.Matches(
-                new Regex(@"if \(work\.Sequence != null && work\.Sequence\.Count > 0\) \{ RunSequence\(app, work\); return; \}"),
+                new Regex(@"if \(!ExitPending\.IsQueued && work\.Sequence != null && work\.Sequence\.Count > 0\) \{ RunSequence\(app, work\); return; \}"),
                 src);
+            Assert.Contains("if (ExitPending.IsQueued) result = CommandResult.RefuseBeforeWrite(\"Revit is exiting\")", src);
         }
 
         [Fact]

@@ -1,8 +1,8 @@
 # Live probes for horizun_transform_elements operation=edit_sketch (TransformElementsCommand.
 # EditSketch.cs). Everything stands on the module's own level at X = 1,170,000 mm (H, the
 # eighth letter, takes slot 7 of the 1,1x0,000 band), far from the real model: an own floor,
-# an own ceiling and an own footprint roof, their types staged BY NAME from the year's
-# DefaultMetric.rte through the typed copy - never the first type of a category. The profiles
+# an own ceiling and an own footprint roof, their types taken BY NAME from the document -
+# never the first type of a category. The profiles
 # sit at the level's own elevation (offset 0), so the sketch plane is there whichever face
 # Revit sketches on; should a plane still lie elsewhere, the tool names it in its off-plane
 # refusal and the edit is re-sent on it once, said in the case detail (a measurement, not a
@@ -15,7 +15,7 @@
 # horizun_query_model read of the same id in the same category after the commit. The
 # rehearsal case sends two dry runs: the second must still read the ORIGINAL boundary, the
 # only outside proof that the first was cancelled. FootPrintRoof is refused by name (no
-# SketchId in 2023-2027). Everything staged, the types copied from the template included, is deleted with horizun_delete_verified
+# SketchId in 2023-2027). Everything staged is deleted with horizun_delete_verified
 # mode='ids'; the document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'sketch-edits'
@@ -59,31 +59,15 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             return $null
         }
-        # Candidates in order, as 'Family: Type': the first the document already carries, else
-        # the first the year's template yields through the typed copy. These are the Autodesk
-        # template's names, NOT measured here - the first live run confirms them (a miss is a
-        # named not_covered, never a silent fallback to another type).
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-        $archTemplates = @('English\DefaultMetric.rte', 'English\Default-Multi-Discipline_Metric.rte')
-        function Bring($category, $names, $key) {
+        # Candidates in order, as 'Family: Type': the first the document carries. These are the
+        # Autodesk template's names, NOT measured here - the first live run confirms them (a miss
+        # is a named not_covered, never a silent fallback to another type).
+        function Bring($category, $names) {
             $have = @(Types $category)
             foreach ($n in $names) {
                 $fam, $typ = $n -split ': ', 2
                 $hit = @($have | Where-Object { [string]$_.family -eq $fam -and [string]$_.type -eq $typ }) | Select-Object -First 1
                 if ($hit) { return $hit }
-            }
-            $tpl = @($archTemplates | ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
-            if (-not $tpl) { return $null }
-            $k = 0
-            foreach ($n in $names) {
-                $k++
-                $fam, $typ = $n -split ': ', 2
-                $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = $category
-                        type_names = @($n); duplicate_types = 'use_destination' } ($run + '-sk-' + $key + $k)
-                if ($cp.stage -ne 'apply' -or $cp.answer.isError) { continue }
-                $hit = @(Types $category | Where-Object { [string]$_.family -eq $fam -and [string]$_.type -eq $typ }) | Select-Object -First 1
-                # Copied here, so this module's to delete at cleanup along with its elements.
-                if ($hit) { [void]$created.Add([long]$hit.element_id); return $hit }
             }
             return $null
         }
@@ -99,9 +83,9 @@ $script:HzProbeModules += [pscustomobject]@{
         $floorNames = @('Floor: Generic 150mm', 'Floor: Generic 300mm')
         $ceilingNames = @('Compound Ceiling: 600 x 600mm Grid', 'Basic Ceiling: Generic')
         $roofNames = @('Basic Roof: Generic - 125mm', 'Basic Roof: Generic - 400mm')
-        $floorType = Bring 'OST_Floors' $floorNames 'floortype'
-        $ceilingType = Bring 'OST_Ceilings' $ceilingNames 'ceilingtype'
-        $roofType = Bring 'OST_Roofs' $roofNames 'rooftype'
+        $floorType = Bring 'OST_Floors' $floorNames
+        $ceilingType = Bring 'OST_Ceilings' $ceilingNames
+        $roofType = Bring 'OST_Roofs' $roofNames
         $level = Create @(@{ kind = 'level'; name = "HZ_SK_$run"; elevation = $E }) 'level'
         $floor = $null; $ceiling = $null; $roof = $null
         if ($level -and $floorType) { $floor = Create @(@{ kind = 'floor'; level_id = $level; type_id = $floorType.element_id; profile = @(, (At (Box $X0 $Y0 6000 4000) $E)) }) 'floor' }

@@ -62,6 +62,9 @@ namespace Horizun.Revit.Core
         /// <summary>The element the reference belongs to: a host id, or a linked element id.</summary>
         public long SubjectId { get; set; }
 
+        /// <summary>Host wall for opening references; null for other candidates.</summary>
+        public long? HostId { get; set; }
+
         /// <summary>Null for host geometry; the RevitLinkInstance id otherwise.</summary>
         public long? LinkInstanceId { get; set; }
 
@@ -113,18 +116,133 @@ namespace Horizun.Revit.Core
         public string Reason { get; }
     }
 
+    public sealed class RoomBoundarySide
+    {
+        public long WallId { get; set; }
+        public double X0 { get; set; }
+        public double Y0 { get; set; }
+        public double X1 { get; set; }
+        public double Y1 { get; set; }
+        public double MidX => (X0 + X1) * 0.5;
+        public double MidY => (Y0 + Y1) * 0.5;
+    }
+
+    public sealed class RectangularRoomSides
+    {
+        public RoomBoundarySide Left { get; set; }
+        public RoomBoundarySide Right { get; set; }
+        public RoomBoundarySide Bottom { get; set; }
+        public RoomBoundarySide Top { get; set; }
+    }
+
     public static class AutoDimensionRules
     {
+        public static bool TryRectangularRoom(IEnumerable<RoomBoundarySide> raw,
+            out RectangularRoomSides rectangle, out string error)
+        {
+            rectangle = null;
+            var sides = (raw ?? Enumerable.Empty<RoomBoundarySide>()).ToList();
+            if (sides.Count != 4 || sides.Select(s => s.WallId).Distinct().Count() != 4)
+            {
+                error = "A complete automatic room plan needs exactly four distinct wall boundary sides.";
+                return false;
+            }
+            double t = CoincidenceToleranceFeet;
+            var horizontal = sides.Where(s => Math.Abs(s.Y0 - s.Y1) <= t &&
+                Math.Abs(s.X0 - s.X1) > t).OrderBy(s => s.MidY).ToList();
+            var vertical = sides.Where(s => Math.Abs(s.X0 - s.X1) <= t &&
+                Math.Abs(s.Y0 - s.Y1) > t).OrderBy(s => s.MidX).ToList();
+            if (horizontal.Count != 2 || vertical.Count != 2 ||
+                horizontal[1].MidY - horizontal[0].MidY <= t ||
+                vertical[1].MidX - vertical[0].MidX <= t)
+            {
+                error = "Room boundary is not a nondegenerate rectangle aligned with the requested view.";
+                return false;
+            }
+            double minX = vertical[0].MidX, maxX = vertical[1].MidX;
+            double minY = horizontal[0].MidY, maxY = horizontal[1].MidY;
+            if (horizontal.Any(s => Math.Abs(Math.Min(s.X0, s.X1) - minX) > t ||
+                                    Math.Abs(Math.Max(s.X0, s.X1) - maxX) > t) ||
+                vertical.Any(s => Math.Abs(Math.Min(s.Y0, s.Y1) - minY) > t ||
+                                  Math.Abs(Math.Max(s.Y0, s.Y1) - maxY) > t))
+            {
+                error = "The four wall segments do not close the same rectangle.";
+                return false;
+            }
+            rectangle = new RectangularRoomSides { Left = vertical[0], Right = vertical[1],
+                Bottom = horizontal[0], Top = horizontal[1] };
+            error = null;
+            return true;
+        }
+
+        public static string RoomOutsideSide(RectangularRoomSides rectangle, RoomBoundarySide wall)
+        {
+            if (rectangle == null || wall == null) throw new ArgumentNullException();
+            if (wall == rectangle.Left || wall == rectangle.Bottom) return "negative";
+            if (wall == rectangle.Right || wall == rectangle.Top) return "positive";
+            throw new ArgumentException("Wall is not one of the room's four boundary sides.");
+        }
+
+        public static bool TryShiftDimensionLine(PlanBox line, IEnumerable<PlanBox> occupied,
+            PlanBox? bounds, string axis, double outward, double separation, int maxSteps,
+            out double shift)
+        {
+            shift = 0;
+            if (!line.Valid || separation <= 0 || maxSteps < 0 || Math.Abs(outward) != 1 ||
+                (axis != "horizontal" && axis != "vertical")) return false;
+            var obstacles = (occupied ?? Enumerable.Empty<PlanBox>()).Where(b => b.Valid).ToList();
+            for (int i = 0; i <= maxSteps; i++)
+            {
+                double delta = i * separation * outward;
+                PlanBox moved = axis == "horizontal"
+                    ? PlanBox.FromCorners(line.MinX, line.MinY + delta, line.MaxX, line.MaxY + delta)
+                    : PlanBox.FromCorners(line.MinX + delta, line.MinY, line.MaxX + delta, line.MaxY);
+                if (bounds.HasValue && !PlanimetryGeometry.Contains(bounds.Value, moved, 0)) continue;
+                if (obstacles.Any(b => PlanimetryGeometry.Overlaps(b, moved, 0))) continue;
+                shift = delta;
+                return true;
+            }
+            return false;
+        }
+        public static List<List<AutoDimensionCandidate>> OpeningWidthPairs(IEnumerable<AutoDimensionCandidate> candidates)
+        {
+            return (candidates ?? Enumerable.Empty<AutoDimensionCandidate>())
+                .Where(c => c.HostId.HasValue && c.StableRepresentation != null)
+                .GroupBy(c => new { c.HostId, c.SubjectId })
+                .OrderBy(g => g.Key.HostId).ThenBy(g => g.Key.SubjectId)
+                .Select(g => g.Where(c => c.Source == "opening_left" || c.Source == "opening_right")
+                    .OrderBy(c => c.Source == "opening_left" ? 0 : 1).ToList())
+                .Where(g => g.Count == 2 && g[0].Source == "opening_left" &&
+                            g[1].Source == "opening_right" &&
+                            Math.Sqrt(Math.Pow(g[0].X - g[1].X, 2) + Math.Pow(g[0].Y - g[1].Y, 2)) > CoincidenceToleranceFeet)
+                .ToList();
+        }
+
+        public static string AxisForOpeningDirection(double dx, double dy)
+        {
+            double length = Math.Sqrt(dx * dx + dy * dy);
+            if (length < 1e-9) return null;
+            dx = Math.Abs(dx / length); dy = Math.Abs(dy / length);
+            if (dx >= Math.Cos(DirectionToleranceDegrees * Math.PI / 180.0)) return "horizontal";
+            if (dy >= Math.Cos(DirectionToleranceDegrees * Math.PI / 180.0)) return "vertical";
+            return null;
+        }
         // ---- the operation vocabulary, closed ------------------------------------
 
         public const string OpGrids = "auto_dimension_grids";
         public const string OpLevels = "auto_dimension_levels";
         public const string OpCurtainWalls = "auto_dimension_curtain_walls";
         public const string OpOpenings = "auto_dimension_openings";
+        public const string OpHeights = "auto_dimension_heights";
+        public const string OpRoom = "auto_dimension_room";
+
+        public static bool IsHeightSelector(string selector)
+            => selector == "top_face" || selector == "bottom_face" ||
+               selector == "opening_head" || selector == "opening_sill";
 
         public static readonly IReadOnlyList<string> KnownOperations = new[]
         {
-            OpGrids, OpLevels, OpCurtainWalls, OpOpenings
+            OpGrids, OpLevels, OpCurtainWalls, OpOpenings, OpHeights, OpRoom
         };
 
         // ---- omission codes -------------------------------------------------------
@@ -141,6 +259,29 @@ namespace Horizun.Revit.Core
         public const string CodeCoincidentReferences = "coincident_references";
         public const string CodeNoSpread = "no_measurable_spread";
         public const string CodeNothingToDimension = "nothing_to_dimension";
+
+        public static string NextStep(string operation, string code, int found, int planned)
+        {
+            if (planned > 0)
+                return "Inspect omitted and refused_groups, correct the named references, then run next_arguments " +
+                       "through horizun_annotate dry_run only after coverage is complete.";
+            if (code == CodeAlreadyDimensioned)
+                return "Inspect the dimensions already in view_id; if a second chain is intentional, replan with skip_existing=false.";
+            if (operation == OpOpenings)
+                return "Inspect the opening family references; use intent_dimension with reference_targets " +
+                       "selecting opening_left and opening_right on each affected opening, then dry-run horizun_annotate.";
+            if (operation == OpLevels && code == CodeGroupTooSmall)
+                return "For one level, use auto_dimension_heights with level_id and a wall top_face, ceiling bottom_face, " +
+                       "opening_head or opening_sill; otherwise select at least two visible levels.";
+            if (code == CodeNoReference || code == CodeUnreadable)
+                return "Call horizun_get_dimension_references for the omitted element ids, choose valid selectors, " +
+                       "then use intent_dimension with explicit reference_targets.";
+            if (found == 0)
+                return "Check view_id and element_ids against elements visible in the active view; add visible targets " +
+                       "and re-run this operation before calling horizun_annotate.";
+            return "Inspect omitted and refused_groups; use intent_dimension with explicit reference_targets " +
+                   "for the affected elements, then dry-run horizun_annotate.";
+        }
 
         // ---- tolerances, named ----------------------------------------------------
 
@@ -361,6 +502,41 @@ namespace Horizun.Revit.Core
                 chain.EndX = across; chain.EndY = alongMax + tail;
             }
             chain.Axis = axis;
+        }
+
+        /// <summary>
+        /// MEASURED LIVE 2026-10-18 (Revit 2024): a grid chain on a cropped detail plan was
+        /// placed past the last grid bubble, outside the crop, and annotate (rightly) refused
+        /// it as invisible. rect = the active crop in the same right/up frame as the chain,
+        /// [minX, minY, maxX, maxY]. A line outside it is moved inside by inset (its "across"
+        /// coordinate) and its ends are clipped to the crop; a dimension's value does not
+        /// depend on where its line sits. Returns true when the line moved. Null rect = no
+        /// active crop: nothing changes.
+        /// </summary>
+        public static bool KeepInsideCrop(AutoDimensionChain chain, double[] rect, double insetFeet)
+        {
+            if (chain == null || rect == null || rect.Length != 4) return false;
+            double minX = rect[0], minY = rect[1], maxX = rect[2], maxY = rect[3];
+            if (maxX - minX <= 2 * insetFeet || maxY - minY <= 2 * insetFeet) insetFeet = Math.Min(maxX - minX, maxY - minY) / 4;
+            bool moved = false;
+            Func<double, double, double, double> clamp = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
+            if (chain.Axis == "horizontal")
+            {
+                double y = chain.StartY;
+                if (y < minY || y > maxY) { y = y > maxY ? maxY - insetFeet : minY + insetFeet; moved = true; }
+                double sx = clamp(chain.StartX, minX, maxX), ex = clamp(chain.EndX, minX, maxX);
+                moved |= sx != chain.StartX || ex != chain.EndX;
+                chain.StartY = chain.EndY = y; chain.StartX = sx; chain.EndX = ex;
+            }
+            else
+            {
+                double x = chain.StartX;
+                if (x < minX || x > maxX) { x = x > maxX ? maxX - insetFeet : minX + insetFeet; moved = true; }
+                double sy = clamp(chain.StartY, minY, maxY), ey = clamp(chain.EndY, minY, maxY);
+                moved |= sy != chain.StartY || ey != chain.EndY;
+                chain.StartX = chain.EndX = x; chain.StartY = sy; chain.EndY = ey;
+            }
+            return moved;
         }
 
         /// <summary>

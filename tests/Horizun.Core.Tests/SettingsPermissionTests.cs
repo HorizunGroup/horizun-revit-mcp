@@ -10,14 +10,19 @@ namespace Horizun.Core.Tests
     public sealed class SettingsPermissionTests
     {
         [Fact]
-        public void SafeWriteAllowsVerifiedModelEditButNotSessionOrExport()
+        public void SafeWriteAllowsVerifiedModelEditButNotSessionOrExternalTools()
         {
             WithSettings(@"{""permission_profile"":""safe_write""}", () =>
             {
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_plan"), out _));
-                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_save_document"), out _));
-                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
-                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_create_family"), out _));
+                // Listed since 2026-10-18 (field feedback, v0.6.0): save_local/relinquish_own and
+                // format=pdf (and a one-view format=image since 2026-10-28) are what safe_write
+                // gets; each command refuses the rest per call.
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_save_document"), out _));
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_open_document"), out _));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_relinquish_all"), out _));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_document_session"), out _));
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_power_bi_push"), out _));
             });
         }
@@ -28,7 +33,6 @@ namespace Horizun.Core.Tests
             WithSettings(@"{""permission_profile"":""full_write""}", () =>
             {
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
-                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_create_family"), out _));
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_power_bi_push"), out _));
             });
         }
@@ -95,8 +99,8 @@ namespace Horizun.Core.Tests
                 Assert.Equal("safe_write", Settings.PermissionProfile);
                 Assert.False(Settings.ExecutePythonEnabled);
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
-                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
-                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_save_document"), out _));
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_save_document"), out _));
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_plan"), out _));
             });
         }
@@ -166,7 +170,6 @@ namespace Horizun.Core.Tests
                 Assert.True(Settings.TryGrantExecutePythonPersistently(out string grantError), grantError);
                 Assert.Equal("safe_write", Settings.PermissionProfile);
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out string reason), reason);
-                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
 
                 JObject persisted = JObject.Parse(File.ReadAllText(HorizunPaths.SettingsPath()));
                 Assert.Equal("safe_write", (string)persisted["permission_profile"]);

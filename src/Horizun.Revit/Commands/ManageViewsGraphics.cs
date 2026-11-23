@@ -130,7 +130,13 @@ namespace Horizun.Revit.Commands
                     // would commit an empty legend, which the post-commit check rightly
                     // refuses - so say it here, in the rehearsal, and issue no token.
                     // (A view created earlier in this same batch is checked at apply.)
-                    if (view != null && DistinctValues(doc, view, categories, parameter).Count == 0)
+                    if (a["empty_color"] != null)
+                    {
+                        if (a["empty_color"].Type != JTokenType.String)
+                            throw new ArgumentException("empty_color must be a #RRGGBB string");
+                        ColourByValueRules.NormalizeColour(a.Value<string>("empty_color"), "empty_color");
+                    }
+                    if (view != null && CensusValues(doc, view, categories, parameter).Count == 0)
                         throw new ArgumentException(NothingToColour(view, categories));
                     break;
                 }
@@ -234,9 +240,9 @@ namespace Horizun.Revit.Commands
                 case "set_element_overrides":
                 {
                     View view = GraphicsViewApply(doc, a, aliases);
-                    OverrideGraphicSettings settings = ReadOverrides(doc, a["overrides"] as JObject);
+                    var wanted = a["overrides"] as JObject;
                     foreach (ElementId id in ReadElementIds(doc, a, "element_ids"))
-                        view.SetElementOverrides(id, settings);
+                        view.SetElementOverrides(id, ReadOverrides(doc, wanted, view.GetElementOverrides(id)));
                     return view;
                 }
 
@@ -268,7 +274,7 @@ namespace Horizun.Revit.Commands
                     View view = GraphicsViewApply(doc, a, aliases);
                     ElementId category = ResolveVisibilityCategory(doc, a);
                     if (a["hidden"] != null) view.SetCategoryHidden(category, a.Value<bool>("hidden"));
-                    if (a["overrides"] != null) view.SetCategoryOverrides(category, ReadOverrides(doc, a["overrides"] as JObject));
+                    if (a["overrides"] != null) view.SetCategoryOverrides(category, ReadOverrides(doc, a["overrides"] as JObject, view.GetCategoryOverrides(category)));
                     a["__category_id"] = Rid.Value(category);
                     return view;
                 }
@@ -287,18 +293,35 @@ namespace Horizun.Revit.Commands
             // THE VALUES COME FROM THE MODEL, NOT FROM THE CALLER. A palette built
             // from a list somebody typed colours the values they remembered and
             // leaves the rest grey, which is exactly the case a reviewer needs to see.
-            List<string> values = DistinctValues(doc, view, categories, parameter);
-            if (values.Count == 0) throw new InvalidOperationException(NothingToColour(view, categories));
-            values.Sort(StringComparer.Ordinal);   // deterministic: same model, same colours
+            ColourByValueRules.Census census = CensusValues(doc, view, categories, parameter);
+            if (census.Count == 0) throw new InvalidOperationException(NothingToColour(view, categories));
+
+            // The empty value is the ABSENCE of a value: it gets its own grey and never a slot
+            // of the palette (a lone "(empty)" used to come out red). Real values sort and walk
+            // the palette from its first colour; max_values counts real values only.
+            string emptyColour = ColourByValueRules.NormalizeColour(a.Value<string>("empty_color"), "empty_color");
+            bool wrapped;
+            int realFound;
+            List<ColourByValueRules.LegendEntry> plan = ColourByValueRules.PlanLegend(
+                census.Values(), max, Palette.Length, emptyColour, out wrapped, out realFound);
 
             var legend = new JArray();
-            int index = 0;
-            bool wrapped = false;
-            foreach (string value in values)
+            foreach (ColourByValueRules.LegendEntry entry in plan)
             {
-                if (index >= max) break;
-                byte[] rgb = Palette[index % Palette.Length];
-                if (index >= Palette.Length) wrapped = true;
+                string value = entry.Value;
+                string hex;
+                Color colour;
+                if (entry.IsEmpty)
+                {
+                    colour = ReadColour(entry.FixedColour, "empty_color");
+                    hex = entry.FixedColour;
+                }
+                else
+                {
+                    byte[] rgb = Palette[entry.PaletteIndex];
+                    colour = new Color(rgb[0], rgb[1], rgb[2]);
+                    hex = ColourByValueRules.Hex(rgb[0], rgb[1], rgb[2]);
+                }
 
                 string name = prefix + " = " + (string.IsNullOrEmpty(value) ? "(empty)" : value);
                 ParameterFilterElement filter = ExistingFilter(doc, name);
@@ -311,7 +334,6 @@ namespace Horizun.Revit.Commands
                         doc, name, categories, new ElementParameterFilter(rule));
                 }
 
-                var colour = new Color(rgb[0], rgb[1], rgb[2]);
                 var settings = new OverrideGraphicSettings();
                 settings.SetProjectionLineColor(colour);
                 settings.SetCutLineColor(colour);
@@ -328,17 +350,27 @@ namespace Horizun.Revit.Commands
                 view.SetFilterOverrides(filter.Id, settings);
                 view.SetFilterVisibility(filter.Id, true);
 
+                ColourByValueRules.Census.Tally tally = census.Of(value);
                 legend.Add(new JObject
                 {
                     ["value"] = value,
                     ["filter_id"] = Rid.Value(filter.Id),
-                    ["rgb"] = string.Format("#{0:X2}{1:X2}{2:X2}", rgb[0], rgb[1], rgb[2])
+                    ["rgb"] = hex,
+                    ["empty"] = entry.IsEmpty,
+                    ["elements"] = tally.Elements,
+                    ["source"] = tally.Source
                 });
-                index++;
             }
 
+            a["__value_sources"] = new JObject
+            {
+                ["instance"] = census.InstanceElements,
+                ["type"] = census.TypeElements,
+                ["empty"] = census.EmptyElements
+            };
+            a["__empty_colour"] = census.Has("") ? emptyColour : null;
+            a["__values_found"] = realFound + (census.Has("") ? 1 : 0);
             a["__legend"] = legend;
-            a["__values_found"] = values.Count;
             a["__values_coloured"] = legend.Count;
             a["__palette_wrapped"] = wrapped;
             return view;
@@ -521,9 +553,15 @@ namespace Horizun.Revit.Commands
                     ["values_found"] = action["__values_found"],
                     ["values_coloured"] = action["__values_coloured"],
                     ["palette_wrapped"] = action["__palette_wrapped"],
+                    ["value_sources"] = action["__value_sources"],
+                    ["empty_color"] = action["__empty_colour"],
                     ["overrides_verified"] = new JObject { ["all_verified"] = allVerified, ["by_value"] = byValue },
                     ["means"] = "values_found counts the distinct values present in this view; " +
-                                "values_coloured is how many got a colour before max_values. When " +
+                                "values_coloured is how many got a colour before max_values (the empty value, " +
+                                "when present, is its own grey row and does not count against max_values). Each " +
+                                "legend row says how many elements carry it and whether the value was read from " +
+                                "the instance, its type or both (source); value_sources totals the elements " +
+                                "by origin. When " +
                                 "palette_wrapped is true, two different values share a colour and the " +
                                 "legend is the only way to tell them apart. overrides_verified RE-READS each " +
                                 "value's filter override colour from the committed view; a template or a stale " +
@@ -575,6 +613,62 @@ namespace Horizun.Revit.Commands
         // Resolution helpers, shared by validation and application.
         // =====================================================================
 
+        /// <summary>The categories hide_outside_crop considers: view markers and base points.</summary>
+        private static readonly BuiltInCategory[] FarCategories =
+        {
+            BuiltInCategory.OST_Elev, BuiltInCategory.OST_Viewers, BuiltInCategory.OST_Sections,
+            BuiltInCategory.OST_Callouts, BuiltInCategory.OST_ProjectBasePoint,
+            BuiltInCategory.OST_SharedBasePoint, BuiltInCategory.OST_VolumeOfInterest
+        };
+
+        /// <summary>
+        /// Resolve hide_outside_crop into the ids it hides: elements of FarCategories
+        /// visible in the view whose view-plane box lies entirely outside the crop grown
+        /// by margin (Core ViewCompositionRules.IsFarOutside). Refuses a view without an
+        /// active crop, an unreadable box, or a sweep that found nothing.
+        /// </summary>
+        internal static string ExpandHideOutsideCrop(Document doc, JObject a, double scale, out JArray ids)
+        {
+            ids = new JArray();
+            long viewId = a.Value<long?>("view_id") ?? -1;
+            View view = Rid.CanRepresent(viewId) ? doc.GetElement(Rid.Make(viewId)) as View : null;
+            if (view == null || view.IsTemplate) return "view_id must identify a non-template view.";
+            if (!view.CropBoxActive) return "the view has no active crop box to measure against; set_crop first.";
+            double margin = (a.Value<double?>("margin") ?? 0) * scale;
+            if (margin < 0 || double.IsNaN(margin)) return "margin must be zero or positive.";
+            XYZ o = view.Origin, r = view.RightDirection.Normalize(), u = view.UpDirection.Normalize();
+            PlanBox Project(BoundingBoxXYZ box)
+            {
+                if (box == null) return PlanBox.Unreadable;
+                Transform t = box.Transform ?? Transform.Identity;
+                double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
+                foreach (double x in new[] { box.Min.X, box.Max.X })
+                    foreach (double y in new[] { box.Min.Y, box.Max.Y })
+                        foreach (double z in new[] { box.Min.Z, box.Max.Z })
+                        {
+                            XYZ d = t.OfPoint(new XYZ(x, y, z)).Subtract(o);
+                            double px = d.DotProduct(r), py = d.DotProduct(u);
+                            x0 = Math.Min(x0, px); y0 = Math.Min(y0, py); x1 = Math.Max(x1, px); y1 = Math.Max(y1, py);
+                        }
+                return PlanBox.FromCorners(x0, y0, x1, y1);
+            }
+            PlanBox crop = Project(view.CropBox);
+            if (!crop.Valid) return "the crop box could not be read.";
+            var filter = new ElementMulticategoryFilter(FarCategories.ToList());
+            var unreadable = new List<long>();
+            foreach (Element e in new FilteredElementCollector(doc, view.Id).WherePasses(filter).WhereElementIsNotElementType())
+            {
+                if (e.IsHidden(view) || !e.CanBeHidden(view)) continue;
+                PlanBox box = Project(e.get_BoundingBox(view));
+                if (!box.Valid) { unreadable.Add(Rid.Value(e.Id)); continue; }
+                if (ViewCompositionRules.IsFarOutside(box, crop, margin)) ids.Add(Rid.Value(e.Id));
+            }
+            if (unreadable.Count > 0)
+                return "elements " + string.Join(", ", unreadable) + " have no readable extent in the view, so " +
+                       "whether they lie outside the crop is unknown; hide them explicitly with hide_elements.";
+            if (ids.Count == 0) return "no marker, base point or scope box lies outside the crop plus margin.";
+            return null;
+        }
         private static View GraphicsView(Document doc, JObject a, Dictionary<string, Type> known)
         {
             string key = a.Value<string>("view_key");
@@ -602,7 +696,7 @@ namespace Horizun.Revit.Commands
         /// and name the template, because "it succeeded and nothing changed" is the worst
         /// answer this command could give.
         /// </summary>
-        private static void RequireOverridesAllowed(View view, string what)
+        internal static void RequireOverridesAllowed(View view, string what)
         {
             if (view == null) return;   // created later in this batch
             if (view.AreGraphicsOverridesAllowed()) return;
@@ -621,7 +715,7 @@ namespace Horizun.Revit.Commands
                 (view.ViewTemplateId != ElementId.InvalidElementId ? " by sending the same action with view_id=" + Rid.Value(view.ViewTemplateId) : "") + ".");
         }
 
-        private static void RequireCategoryHideable(Document doc, View view, ElementId category, string name)
+        internal static void RequireCategoryHideable(Document doc, View view, ElementId category, string name)
         {
             if (view == null) return;
             if (view.CanCategoryBeHidden(category)) return;
@@ -723,7 +817,7 @@ namespace Horizun.Revit.Commands
             return ids;
         }
 
-        private static ElementId ResolveCategory(Document doc, string name)
+        internal static ElementId ResolveCategory(Document doc, string name)
         {
             if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("a category name is required");
 
@@ -735,6 +829,14 @@ namespace Horizun.Revit.Commands
             {
                 Category c = Category.GetCategory(doc, builtIn);
                 if (c != null) return c.Id;
+                foreach (Category s in doc.Settings.Categories)
+                    if (Rid.Value(s.Id) == (long)(int)builtIn) return s.Id;
+                // A real BuiltInCategory with no Category object in this document (measured on Revit 2025: OST_Viewers,
+                // a section's own mark). "Not found" sent callers hunting for a spelling error.
+                throw new ArgumentException(
+                    "category '" + name + "' is a Revit built-in category, but this document exposes no Category object for it, " +
+                    "so it cannot be named here" +
+                    (builtIn == BuiltInCategory.OST_Viewers ? " (a section's own mark is shown or hidden with OST_Sections)." : "."));
             }
             foreach (Category c in doc.Settings.Categories)
                 if (string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)) return c.Id;
@@ -951,11 +1053,18 @@ namespace Horizun.Revit.Commands
                    "that shows these categories, or categories this view shows. Nothing was written.";
         }
 
-        private static List<string> DistinctValues(Document doc, View view, ICollection<ElementId> categories,
-                                                   ElementId parameter)
+        /// <summary>
+        /// The values the view's own elements carry for the parameter, each read from the
+        /// INSTANCE when it holds one and from the element's TYPE when it does not: a
+        /// shared parameter bound to types (a budget code) lives only there, and reading
+        /// the instance alone made every element look empty. Core/ColourByValueRules.cs.
+        /// </summary>
+        private static ColourByValueRules.Census CensusValues(Document doc, View view, ICollection<ElementId> categories,
+                                                              ElementId parameter)
         {
-            var values = new HashSet<string>(StringComparer.Ordinal);
+            var census = new ColourByValueRules.Census();
             var categorySet = new HashSet<long>(categories.Select(Rid.Value));
+            var typeText = new Dictionary<long, string>();   // one read per type, not per element
 
             foreach (Element e in new FilteredElementCollector(doc, view.Id).WhereElementIsNotElementType())
             {
@@ -964,11 +1073,27 @@ namespace Horizun.Revit.Commands
                 if (category == null || !categorySet.Contains(Rid.Value(category.Id))) continue;
 
                 Parameter p = ParameterOf(doc, e, parameter);
-                if (p == null) { values.Add(""); continue; }
-                string text = ValueText(p);
-                values.Add(text ?? "");
+                string instanceText = p == null ? null : ValueText(p);
+                string fromType = null;
+                if (string.IsNullOrEmpty(instanceText))
+                {
+                    ElementId typeId = ElementId.InvalidElementId;
+                    try { typeId = e.GetTypeId(); } catch { }
+                    if (typeId != null && typeId != ElementId.InvalidElementId)
+                    {
+                        long key = Rid.Value(typeId);
+                        if (!typeText.TryGetValue(key, out fromType))
+                        {
+                            Element type = null;
+                            try { type = doc.GetElement(typeId); } catch { }
+                            Parameter tp = type == null ? null : ParameterOf(doc, type, parameter);
+                            typeText[key] = fromType = tp == null ? null : ValueText(tp);
+                        }
+                    }
+                }
+                census.Add(ColourByValueRules.Choose(instanceText, fromType));
             }
-            return values.ToList();
+            return census;
         }
 
         private static Parameter ParameterOf(Document doc, Element e, ElementId parameter)
@@ -1016,34 +1141,71 @@ namespace Horizun.Revit.Commands
             return ElementId.InvalidElementId;
         }
 
+        internal static List<PatternCandidate> FillPatterns(Document doc)
+        {
+            var list = new List<PatternCandidate>();
+            foreach (FillPatternElement f in new FilteredElementCollector(doc).OfClass(typeof(FillPatternElement)).Cast<FillPatternElement>())
+            {
+                FillPattern p = f.GetFillPattern();
+                if (p == null) continue;
+                list.Add(new PatternCandidate { Id = Rid.Value(f.Id), Name = f.Name, IsSolid = p.IsSolidFill, IsDrafting = p.Target == FillPatternTarget.Drafting });
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// The pattern a surface/cut override paints with: the one named by `patternField`, or the solid
+        /// drafting fill when only a colour was given. No such pattern REFUSES (a colour on no pattern
+        /// paints nothing) and the id is recorded on the override for the re-read.
+        /// </summary>
+        private static ElementId ResolveOverridePattern(Document doc, JObject o, string patternField, string colorField, string recordKey)
+        {
+            string raw = o.Value<string>(patternField);
+            if (string.IsNullOrWhiteSpace(raw) && string.IsNullOrWhiteSpace(o.Value<string>(colorField))) return null;
+            OverridePatternRules.Parse(raw, out string kind, out long id, out string name);
+            PatternCandidate chosen = OverridePatternRules.Pick(FillPatterns(doc), kind, id, name);
+            if (chosen == null) throw new ArgumentException(OverridePatternRules.NotFound(patternField, raw));
+            o[recordKey] = chosen.Id;
+            return Rid.Make(chosen.Id);
+        }
+
         // ---- overrides ------------------------------------------------------
 
-        private static OverrideGraphicSettings ReadOverrides(Document doc, JObject o)
+        /// <summary>The overrides asked for. With <paramref name="start"/> (what the view already holds for
+        /// that element or category), only the fields named are changed and the rest are kept: a call that
+        /// sets transparency no longer erases a colour set before.</summary>
+        internal static OverrideGraphicSettings ReadOverrides(Document doc, JObject o, OverrideGraphicSettings start = null)
         {
             if (o == null) throw new ArgumentException("overrides must be an object");
-            var settings = new OverrideGraphicSettings();
+            var settings = start == null ? new OverrideGraphicSettings() : new OverrideGraphicSettings(start);
 
-            Color projection = ReadColour(o.Value<string>("line_color"), "line_color");
-            if (projection != null) { settings.SetProjectionLineColor(projection); settings.SetCutLineColor(projection); }
+            Color projection = ReadColour(o.Value<string>("line_color") ?? o.Value<string>("projection_line_color"), "projection_line_color");
+            if (projection != null)
+            {
+                settings.SetProjectionLineColor(projection);
+                if (o["line_color"] != null) settings.SetCutLineColor(projection);
+            }
 
             Color cut = ReadColour(o.Value<string>("cut_line_color"), "cut_line_color");
             if (cut != null) settings.SetCutLineColor(cut);
 
             Color surface = ReadColour(o.Value<string>("surface_color"), "surface_color");
-            if (surface != null)
+            ElementId surfacePattern = ResolveOverridePattern(doc, o, "surface_pattern", "surface_color", "__surface_pattern_id");
+            if (surfacePattern != null)
             {
-                ElementId solid = SolidFillPattern(doc);
-                if (solid != ElementId.InvalidElementId) settings.SetSurfaceForegroundPatternId(solid);
-                settings.SetSurfaceForegroundPatternColor(surface);
+                settings.SetSurfaceForegroundPatternId(surfacePattern);
+                settings.SetSurfaceForegroundPatternVisible(true);
             }
+            if (surface != null) settings.SetSurfaceForegroundPatternColor(surface);
 
             Color cutFill = ReadColour(o.Value<string>("cut_color"), "cut_color");
-            if (cutFill != null)
+            ElementId cutPattern = ResolveOverridePattern(doc, o, "cut_pattern", "cut_color", "__cut_pattern_id");
+            if (cutPattern != null)
             {
-                ElementId solid = SolidFillPattern(doc);
-                if (solid != ElementId.InvalidElementId) settings.SetCutForegroundPatternId(solid);
-                settings.SetCutForegroundPatternColor(cutFill);
+                settings.SetCutForegroundPatternId(cutPattern);
+                settings.SetCutForegroundPatternVisible(true);
             }
+            if (cutFill != null) settings.SetCutForegroundPatternColor(cutFill);
 
             int? transparency = o.Value<int?>("transparency");
             if (transparency != null)
@@ -1101,13 +1263,13 @@ namespace Horizun.Revit.Commands
         /// compared: an override object carries a value for everything, and comparing
         /// the untouched ones would fail on defaults nobody asked about.
         /// </summary>
-        private static bool OverridesMatch(OverrideGraphicSettings actual, JObject wanted)
+        internal static bool OverridesMatch(OverrideGraphicSettings actual, JObject wanted)
         {
             if (actual == null) return false;
             if (wanted == null) return true;
             try
             {
-                Color line = ReadColour(wanted.Value<string>("line_color"), "line_color");
+                Color line = ReadColour(wanted.Value<string>("line_color") ?? wanted.Value<string>("projection_line_color"), "projection_line_color");
                 if (line != null && !SameColour(actual.ProjectionLineColor, line)) return false;
 
                 Color cutLine = ReadColour(wanted.Value<string>("cut_line_color"), "cut_line_color");
@@ -1118,6 +1280,14 @@ namespace Horizun.Revit.Commands
 
                 Color cutFill = ReadColour(wanted.Value<string>("cut_color"), "cut_color");
                 if (cutFill != null && !SameColour(actual.CutForegroundPatternColor, cutFill)) return false;
+
+                // A colour counts only on the pattern that was asked for and switched on.
+                long? surfacePatternId = wanted.Value<long?>("__surface_pattern_id");
+                if (surfacePatternId != null && !OverridePatternRules.PatternHolds(surfacePatternId.Value,
+                        Rid.Value(actual.SurfaceForegroundPatternId), actual.IsSurfaceForegroundPatternVisible)) return false;
+                long? cutPatternId = wanted.Value<long?>("__cut_pattern_id");
+                if (cutPatternId != null && !OverridePatternRules.PatternHolds(cutPatternId.Value,
+                        Rid.Value(actual.CutForegroundPatternId), actual.IsCutForegroundPatternVisible)) return false;
 
                 int? transparency = wanted.Value<int?>("transparency");
                 if (transparency != null && actual.Transparency != transparency.Value) return false;

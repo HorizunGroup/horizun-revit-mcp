@@ -573,7 +573,7 @@ namespace Horizun.Revit.Commands
                 Transform st = stored.Crop.Transform ?? Transform.Identity;
                 double[] a = FrameExtents(stored.Crop, st.BasisX, st.BasisY), b = FrameExtents(applied.Crop, st.BasisX, st.BasisY);
                 for (int i = 0; i < 4; i++) maxDevFt = Math.Max(maxDevFt, Math.Abs(a[i] - b[i]));
-                if (maxDevFt > tolFt) return "the crop rectangle Revit applied is " + maxDevFt.ToString("0.######") + " ft off the stored one (tolerance " + tolFt.ToString("0.######") + " ft)";
+                if (maxDevFt > tolFt) return "the crop rectangle Revit applied is " + maxDevFt.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture) + " ft off the stored one (tolerance " + tolFt.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture) + " ft)";
             }
             if (stored.Section != null)
             {
@@ -582,7 +582,7 @@ namespace Horizun.Revit.Commands
                 double[] a = WorldAabb(stored.Section), b = WorldAabb(applied.Section);
                 for (int i = 0; i < 6; i++) dev = Math.Max(dev, Math.Abs(a[i] - b[i]));
                 maxDevFt = Math.Max(maxDevFt, dev);
-                if (dev > secTol) return "the section box Revit applied is " + dev.ToString("0.######") + " ft off the stored one (tolerance " + secTol.ToString("0.######") + " ft)";
+                if (dev > secTol) return "the section box Revit applied is " + dev.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture) + " ft off the stored one (tolerance " + secTol.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture) + " ft)";
             }
             return null;
         }

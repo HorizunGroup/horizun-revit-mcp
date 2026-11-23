@@ -252,6 +252,15 @@ namespace Horizun.Revit.Core
                 "Two placed schedules share area on the same sheet."),
             new PlanimetryCheck("sheet.placement-outside-extent", "blocking", "placement",
                 "A placement lies entirely outside the sheet's own extent - it is on the sheet in the database and on no plot."),
+            new PlanimetryCheck("sheet.placement-partly-outside-extent", "blocking", "placement",
+                "A placement (its box plus its title) crosses the edge of the title block or sheet: the part beyond it is cut from the plot. Measured beyond the touch tolerance on each side.",
+                "horizun_sheet_layout"),
+            new PlanimetryCheck("schedule.non-additive-field-summed", "blocking", "placement",
+                "A schedule that is not itemized totals a non-additive field (a diameter or size, an angle or slope, or a length read from the type such as a door width): each grouped row shows the SUM, formatted like a value.",
+                "horizun_manage_schedules"),
+            new PlanimetryCheck("schedule.non-additive-field-in-totals", "advisory", "placement",
+                "An itemized schedule totals a non-additive field: the rows are right, the total rows add up values that are not quantities.",
+                "horizun_manage_schedules"),
             new PlanimetryCheck("viewport.view-missing", "blocking", "placement",
                 "A viewport names a view that is not in this document.", "horizun_manage_views"),
             new PlanimetryCheck("schedule-placement.target-missing", "blocking", "placement",
@@ -371,8 +380,10 @@ namespace Horizun.Revit.Core
                        "sheet.unreadable", "sheet.extent-unreadable");
             Population(tally, snap.Placements.Count, "placement.bounds-unreadable", "sheet.viewport-overlap",
                        "sheet.viewport-schedule-overlap", "sheet.schedule-overlap",
-                       "sheet.placement-outside-extent", "viewport.view-missing",
+                       "sheet.placement-outside-extent", "sheet.placement-partly-outside-extent", "viewport.view-missing",
                        "schedule-placement.target-missing");
+            int schedulePlacements = snap.Placements.Count(p => p.Class == "schedule_placement");
+            Population(tally, schedulePlacements, "schedule.non-additive-field-summed", "schedule.non-additive-field-in-totals");
             Population(tally, snap.Views.Count, "view.placed-on-multiple-sheets", "view.template-unreadable",
                        "view.crop-geometry-unreadable", "view.parent-view-missing", "view.unclassifiable",
                        "view.no-template", "view.not-placed");
@@ -535,6 +546,7 @@ namespace Horizun.Revit.Core
                         p.SheetId, p.SheetNumber, null,
                         new JObject { ["schedule_id"] = p.ScheduleId.HasValue ? (JToken)p.ScheduleId.Value : JValue.CreateNull() },
                         new JObject { ["schedule_exists"] = true }));
+                if (p.Class == "schedule_placement" && p.TargetExists != false) ScheduleTotals(snap, p, r);
             }
 
             foreach (IGrouping<long, PlacementFact> onSheet in snap.Placements.GroupBy(p => p.SheetId))
@@ -548,7 +560,26 @@ namespace Horizun.Revit.Core
                     foreach (PlacementFact p in list)
                     {
                         if (!p.Extent.Valid) continue;
-                        if (!PlanimetryGeometry.Disjoint(sheet.Extent, p.Extent, opt.ToleranceFeet)) continue;
+                        if (!PlanimetryGeometry.Disjoint(sheet.Extent, p.Extent, opt.ToleranceFeet))
+                        {
+                            // Partly outside: on the sheet, but crossing its edge beyond the tolerance.
+                            if (PlanimetryGeometry.Contains(sheet.Extent, p.Extent, opt.ToleranceFeet)) continue;
+                            r.Findings.Add(Fail(snap, "sheet.placement-partly-outside-extent", "placement", p.Id, p.SheetId,
+                                p.SheetNumber, p.ViewId,
+                                new JObject
+                                {
+                                    ["class"] = p.Class,
+                                    ["overhang"] = Overhang(sheet.Extent, p.Extent, opt),
+                                    ["units"] = opt.Units,
+                                    ["placement_extent"] = Box(p.Extent, opt),
+                                    ["sheet_extent"] = Box(sheet.Extent, opt),
+                                    ["sheet_extent_source"] = sheet.ExtentSource,
+                                    ["includes_title"] = p.LabelBox.Valid
+                                },
+                                new JObject { ["inside_sheet_extent"] = true, ["tolerance"] = PlanimetryGeometry.Display(opt.ToleranceFeet, opt.ScaleFromFeet) },
+                                Point(p.Extent, opt), opt));
+                            continue;
+                        }
                         r.Findings.Add(Fail(snap, "sheet.placement-outside-extent", "placement", p.Id, p.SheetId,
                             p.SheetNumber, p.ViewId,
                             new JObject
@@ -1506,7 +1537,10 @@ namespace Horizun.Revit.Core
                 }
 
                 List<UntaggedElement> untagged = cov.Untagged
-                    .Where(u => string.Equals(u.Category, req.Category, StringComparison.OrdinalIgnoreCase))
+                    // By the category the sweep was filtered with, never by the display name:
+                    // a row reads 'Pipes' while the rule asks 'OST_PipeCurves' (MEASURED
+                    // 2026-11-21, Revit 2023-2026: every untagged pipe filtered out).
+                    .Where(u => string.Equals(u.RequestedCategory ?? u.Category, req.Category, StringComparison.OrdinalIgnoreCase))
                     .Where(u => !Excluded(u, req))
                     .OrderBy(u => u.Id)
                     .ToList();
@@ -1848,6 +1882,64 @@ namespace Horizun.Revit.Core
         {
             double[] a = PlanimetryGeometry.ToDisplayArray(b, opt.ScaleFromFeet);
             return a == null ? (JToken)JValue.CreateNull() : new JArray(a.Select(v => (JToken)v));
+        }
+
+        /// <summary>How far the placement passes each edge of the sheet extent (0 where it does not), in display units.</summary>
+        private static JObject Overhang(PlanBox sheet, PlanBox p, PlanimetryRuleOptions opt)
+        {
+            Func<double, double> d = v => PlanimetryGeometry.Display(Math.Max(0, v), opt.ScaleFromFeet);
+            return new JObject
+            {
+                ["left"] = d(sheet.MinX - p.MinX), ["right"] = d(p.MaxX - sheet.MaxX),
+                ["bottom"] = d(sheet.MinY - p.MinY), ["top"] = d(p.MaxY - sheet.MaxY)
+            };
+        }
+
+        /// <summary>
+        /// Totals on a non-additive field of a placed schedule (ScheduleTotalsRules). Not itemized: the grouped
+        /// row shows the sum - blocking. Itemized: only the total rows are wrong - advisory. A definition that
+        /// would not read is unknown, never clean; a title block's revision schedule is not examined.
+        /// </summary>
+        private static void ScheduleTotals(PlanimetrySnapshot snap, PlacementFact p, PlanimetryAuditResult r)
+        {
+            if (p.ScheduleTotalFields == null)
+            {
+                if (!p.ScheduleTotalsUnreadable) return;   // not examined (a title block's revision schedule)
+                r.Findings.Add(Unknown(snap, "schedule.non-additive-field-summed", "schedule_placement", p.Id, p.SheetId,
+                    p.SheetNumber, null, new JObject
+                    {
+                        ["schedule_id"] = p.ScheduleId.HasValue ? (JToken)p.ScheduleId.Value : JValue.CreateNull(),
+                        ["reason"] = "the schedule definition (fields, totals) could not be read"
+                    }));
+                return;
+            }
+            var bad = new JArray();
+            foreach (ScheduleTotalField f in p.ScheduleTotalFields)
+            {
+                string why = ScheduleTotalsRules.NonAdditiveReason(f.SpecTypeId, f.FieldType);
+                if (why != null) bad.Add(new JObject { ["field"] = f.Name, ["spec"] = f.SpecTypeId, ["field_type"] = f.FieldType, ["why"] = why });
+            }
+            if (bad.Count == 0) return;
+            if (p.ScheduleItemized == null)
+            {
+                r.Findings.Add(Unknown(snap, "schedule.non-additive-field-summed", "schedule_placement", p.Id, p.SheetId,
+                    p.SheetNumber, null, new JObject { ["fields"] = bad, ["reason"] = "whether the schedule is itemized could not be read" }));
+                return;
+            }
+            string rule = p.ScheduleItemized == true ? "schedule.non-additive-field-in-totals" : "schedule.non-additive-field-summed";
+            var finding = Fail(snap, rule, "schedule_placement", p.Id, p.SheetId, p.SheetNumber, null,
+                new JObject
+                {
+                    ["schedule_id"] = p.ScheduleId.HasValue ? (JToken)p.ScheduleId.Value : JValue.CreateNull(),
+                    ["schedule"] = p.TargetName, ["itemized"] = p.ScheduleItemized, ["fields"] = bad
+                },
+                new JObject
+                {
+                    ["totals"] = false,
+                    ["fix"] = "horizun_manage_schedules set_field totals=false on each field listed (or itemize the schedule)."
+                });
+            finding.EntityKind = "schedule_placement";
+            r.Findings.Add(finding);
         }
 
         private static double[] Point(PlanBox b, PlanimetryRuleOptions opt)

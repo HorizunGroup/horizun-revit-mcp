@@ -51,6 +51,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\Horizun.Revit\Core\TemplateKitRules.cs" />
     <SourceRoot Include="$(MSBuildThisFileDirectory)..\..\" />
   </ItemGroup>
 
@@ -78,10 +79,25 @@
          %LOCALAPPDATA%. Linked for the same reason Settings.cs is: the server and the
          add-in must not be able to disagree about it. -->
     <Compile Include="..\Horizun.Revit\Core\HorizunPaths.cs" />
+    <Compile Include="../Horizun.Revit/Core/OutputPages.cs" />
+    <Compile Include="..\Horizun.Revit\Core\RevitAvailabilityRules.cs" />
+    <!-- Revit-free geometry rules; the add-in compiles the same files. -->
+    <Compile Include="..\Horizun.Revit\Core\LevelSpanRules.cs" />
+    <Compile Include="..\Horizun.Revit\Core\GeometryInput.cs" />
+    <Compile Include="..\Horizun.Revit\Core\LoopHealthRules.cs" />
+    <Compile Include="..\Horizun.Revit\Core\WallSketchDriftRules.cs" />
     <Compile Include="..\Horizun.Revit\Core\DiscoverySweep.cs" />
     <!-- Host-side external mutations use the same append-only, fail-closed
          idempotency ledger as Revit mutations. -->
     <Compile Include="..\Horizun.Revit\Core\CommandResult.cs" />
+    <Compile Include="..\Horizun.Revit\Core\CreationFieldErrors.cs" />
+    <Compile Include="..\Horizun.Revit\Core\ReadResultCoverage.cs" />
+    <Compile Include="..\Horizun.Revit\Core\CommandDeadlinePolicy.cs" />
+    <Compile Include="..\Horizun.Revit\Core\ErrorCodes.cs" />
+    <Compile Include="..\Horizun.Revit\Core\Ed25519.cs" />
+    <Compile Include="..\Horizun.Revit\Core\ErrorSignature.cs" />
+    <Compile Include="..\Horizun.Revit\Core\HealthState.cs" />
+    <Compile Include="..\Horizun.Revit\Core\ModalDialogKinds.cs" />
     <!-- CommandResult carries the machine-readable permission to fall back to Python,
          so its type travels with it. Revit-free, like everything else linked here. -->
     <Compile Include="..\Horizun.Revit\Core\FallbackSignal.cs" />
@@ -113,7 +129,7 @@
          reads, from outside, exactly like a server with nothing wrong. -->
     <Compile Include="..\Horizun.Revit\Core\ScriptInvocation.cs" />
     <Compile Include="..\Horizun.Revit\Core\ScriptPromotion.cs" />
-    <!-- The IDS reader horizun_validate_ids and horizun_deliver_ifc use. Linked so that
+    <!-- The IDS reader horizun_validate_ids uses. Linked so that
          ids_from_loin proves the file it generates with the SAME reader that will later
          read it, not with a second parser that could disagree. Revit-free. -->
     <Compile Include="..\Horizun.Revit\Core\IdsDocument.cs" />
@@ -130,6 +146,8 @@
     <Compile Include="..\Horizun.Revit\Core\ModelIdentity.cs" />
     <Compile Include="..\Horizun.Revit\Core\ExchangeManifest.cs" />
     <Compile Include="..\Horizun.Revit\Core\ReviewCorrectionPlan.cs" />
+    <!-- P1-4: which tools accept the element-identity fields (UndeclaredArguments, IdentitySchema). Revit-free. -->
+    <Compile Include="..\Horizun.Revit\Core\ElementIdentityGuard.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -154,5 +172,6 @@
   <ItemGroup>
     <!-- The single declaration of every command, shared with the other half. -->
     <Compile Include="..\Horizun.Contracts\Contract.cs" />
+    <Compile Include="..\Horizun.Contracts\Edition.cs" />
   </ItemGroup>
 </Project>

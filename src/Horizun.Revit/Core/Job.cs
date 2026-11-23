@@ -96,6 +96,9 @@ namespace Horizun.Revit.Core
         private bool _running;
         private string _lastLabel;
         private bool _faultPublished;
+        // After the finish line nothing more is appended: job_status reads a checkpoint or a
+        // result after finish as a truncated record (review finding on the late-record path).
+        private bool _finished;
 
         public string Id { get; private set; }
         public string Path { get; private set; }
@@ -127,6 +130,18 @@ namespace Horizun.Revit.Core
         /// has every label, and this is the one that is current.
         /// </summary>
         public string LastCheckpoint { get { lock (_gate) { return _lastLabel; } } }
+
+        /// <summary>done / total of the most recent checkpoint that gave both (null otherwise): the only basis for a remaining-time estimate.</summary>
+        public double? LastDone { get { lock (_gate) { return _lastDone; } } }
+        public double? LastTotal { get { lock (_gate) { return _lastTotal; } } }
+        private double? _lastDone, _lastTotal;
+
+        private static double? ToNumber(object v)
+        {
+            if (v == null) return null;
+            try { double d = Convert.ToDouble(v, CultureInfo.InvariantCulture); return double.IsNaN(d) || double.IsInfinity(d) ? (double?)null : d; }
+            catch { return null; }
+        }
 
         // One constructor, taking the sink: the parameterless one this branch used to
         // carry would leave _sink null, and every call site (Start, StartBestEffort)
@@ -260,12 +275,12 @@ namespace Horizun.Revit.Core
         /// IsDurable is false and WriteFault says why - instead of being a null Path
         /// nobody looked at.
         /// </summary>
-        public static Job StartBestEffort(string tool, IJobSink sink = null)
+        public static Job StartBestEffort(string tool, IJobSink sink = null, bool deferRetention = false)
         {
             var job = new Job(sink);
             try
             {
-                job.OpenRecord(tool);
+                job.OpenRecord(tool, applyRetention: !deferRetention);
                 job.IsDurable = true;
             }
             catch (Exception ex)
@@ -281,28 +296,36 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// The job store's retention, applied once. A record opened with deferRetention (the synchronous
+        /// cooperative clash) never applied it at open, so its owner calls this when the job ends: the
+        /// store cannot grow forever just because the jobs it holds were synchronous (R2-N M3).
+        /// </summary>
+        public static void ApplyStoreRetention(string dir = null)
+        {
+            try
+            {
+                dir = dir ?? Dir();
+                DurableStoreRetentionReport retention = DurableStoreRetention.Apply(
+                    dir, DurableStoreKind.Jobs, Settings.RetentionValue, DateTime.UtcNow);
+                if (retention.RemovedFiles > 0 || retention.Errors.Count > 0 ||
+                    (!string.IsNullOrEmpty(retention.Note) && retention.Note.IndexOf("keeps records forever", StringComparison.Ordinal) < 0))
+                    Log.Info("job retention: " + retention.Summary());
+            }
+            catch (Exception ex) { Log.Warn("job retention failed closed; no record was deleted (" + ex.Message + ")."); }
+        }
+
+        /// <summary>
         /// Create the directory, name the file, write the start line. Every failure
         /// propagates - which of the two Start methods called it decides what that means.
         /// </summary>
-        private void OpenRecord(string tool, JObject resumeContext = null)
+        private void OpenRecord(string tool, JObject resumeContext = null, bool applyRetention = true)
         {
             string dir = Dir();
             _sink.EnsureDirectory(dir);
 
             // Custom sinks exist to prove disk failures and may not write to this
             // directory at all. Retention applies only to the real durable store.
-            if (ReferenceEquals(_sink, FileJobSink.Instance))
-            {
-                try
-                {
-                    DurableStoreRetentionReport retention = DurableStoreRetention.Apply(
-                        dir, DurableStoreKind.Jobs, Settings.RetentionValue, DateTime.UtcNow);
-                    if (retention.RemovedFiles > 0 || retention.Errors.Count > 0 ||
-                        (!string.IsNullOrEmpty(retention.Note) && retention.Note.IndexOf("keeps records forever", StringComparison.Ordinal) < 0))
-                        Log.Info("job retention: " + retention.Summary());
-                }
-                catch (Exception ex) { Log.Warn("job retention failed closed; no record was deleted (" + ex.Message + ")."); }
-            }
+            if (applyRetention && ReferenceEquals(_sink, FileJobSink.Instance)) ApplyStoreRetention(dir);
 
             string id = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
             string path = System.IO.Path.Combine(dir, id + ".jsonl");
@@ -381,18 +404,46 @@ namespace Horizun.Revit.Core
         /// Called from the script as checkpoint("...", done, total).
         /// </summary>
         public void Write(string label, object done, object total)
+            => Write(label, done, total, null);
+
+        /// <summary>
+        /// A checkpoint that happened BEFORE this record existed, written with the time it
+        /// happened: a synchronous call keeps its progress in memory and only gets a record
+        /// when its caller gives up (CallProgress), and those earlier steps must not read as
+        /// if they all happened at the moment of the timeout.
+        /// </summary>
+        public void Write(string label, object done, object total, DateTime? at)
         {
             lock (_gate)
             {
+                if (_finished) return;
                 _checkpoints++;
                 _lastLabel = label;
-                Append("{\"event\":\"checkpoint\",\"n\":" + _checkpoints +
+                double? nd = ToNumber(done), nt = ToNumber(total);
+                if (nd.HasValue && nt.HasValue) { _lastDone = nd; _lastTotal = nt; }
+                string line = "{\"event\":\"checkpoint\",\"n\":" + _checkpoints +
                        ",\"label\":" + Str(label) +
                        ",\"done\":" + Num(done) +
                        ",\"total\":" + Num(total) +
-                       ",\"at\":" + Now() + "}");
+                       ",\"at\":" + (at.HasValue ? Str(at.Value.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)) : Now()) + "}";
+                if (_throttle != null && !_throttle.ShouldWrite(label, (System.Diagnostics.Stopwatch.GetTimestamp() * 1000L / System.Diagnostics.Stopwatch.Frequency), line.Length + 2)) return;
+                Append(line);
             }
         }
+
+        private CheckpointThrottle _throttle;
+
+        /// <summary>
+        /// From now on this job's checkpoints are BOUNDED: every call counts and updates the in-memory
+        /// label, but only a limited number of lines reach the file (first ones whole, then label changes
+        /// or one per interval, up to a ceiling of lines and bytes). The finish line says how many were
+        /// not written, so a short record is never read as a short run (R2-N M3). Used by runs that
+        /// checkpoint every few dozen milliseconds; every other job keeps one line per checkpoint.
+        /// </summary>
+        internal void BoundCheckpoints() { lock (_gate) { if (_throttle == null) _throttle = new CheckpointThrottle(); } }
+
+        /// <summary>Checkpoint lines that were counted but not written.</summary>
+        public int CheckpointsNotWritten { get { lock (_gate) return _throttle?.Suppressed ?? 0; } }
 
         /// <summary>
         /// The job's OUTPUT, kept because an async caller never sees the reply.
@@ -440,6 +491,7 @@ namespace Horizun.Revit.Core
         {
             lock (_gate)
             {
+                if (_finished) return;
                 string said = string.IsNullOrEmpty(revitSaidJson)
                     ? ""
                     : ",\"revit_said\":" + revitSaidJson;
@@ -528,8 +580,11 @@ namespace Horizun.Revit.Core
         {
             lock (_gate)
             {
+                if (_finished) return;
+                _finished = true;
                 Append("{\"event\":\"finish\",\"status\":" + Str(status) +
                        ",\"checkpoints\":" + _checkpoints +
+                       (_throttle != null && _throttle.Suppressed > 0 ? ",\"checkpoints_not_written\":" + _throttle.Suppressed : "") +
                        ",\"note\":" + Str(note) +
                        ",\"at\":" + Now() + "}");
             }

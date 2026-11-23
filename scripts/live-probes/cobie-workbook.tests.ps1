@@ -25,16 +25,14 @@ $columns = @{
 }
 $sheetOrder = @('Facility', 'Floor', 'Space', 'Zone', 'Type', 'Component', 'System')
 
-function New-Ctx([bool]$gate, [bool]$withTemplate = $true) {
+function New-Ctx([bool]$gate, [bool]$withTypes = $true) {
     $state = @{ applies = New-Object System.Collections.Generic.List[string]; nextId = 900; kinds = @{}; walls = New-Object System.Collections.Generic.List[long]
-                deleted = @(); wallCopied = $false; doorCopied = $false
-                copied = New-Object System.Collections.Generic.List[string]; roomNumber = $null; roomName = $null; roomPhase = $null; levelName = $null; door = $null; room = $null
+                deleted = @(); wallCopied = $withTypes; doorCopied = $withTypes
+                roomNumber = $null; roomName = $null; roomPhase = $null; levelName = $null; door = $null; room = $null
                 exportArgs = $null; applyArgs = $null; file = $null; sha = $null
                 wrongSpace = $false; dropCreatedBy = $false; noFinding = $false; mismatch = $false; noPhases = $false; otherFile = $false; truncated = $false }
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('hz-cobie-probe-test-' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Force -Path $root
-    $tplRoot = Join-Path $root 'templates'
-    if ($withTemplate) { $null = New-Item -ItemType Directory -Force -Path (Join-Path $tplRoot 'English'); Set-Content -LiteralPath (Join-Path $tplRoot 'English\DefaultMetric.rte') -Value 'fake' }
     $cols = $columns; $order = $sheetOrder
     $call = {
         param($tool, $arguments)
@@ -102,11 +100,6 @@ function New-Ctx([bool]$gate, [bool]$withTemplate = $true) {
         $state.applies.Add([string]$key)
         $ok = { param($data) @{ stage = 'apply'; answer = @{ isError = $false; data = $data; text = 'ok' } } }
         if ($tool -eq 'horizun_delete_verified') { $state.deleted = @($arguments.ids); return (& $ok ([pscustomobject]@{})) }
-        if ($tool -eq 'horizun_copy_between_documents') {
-            $state.copied.Add([string]$arguments.type_names[0])
-            if ($arguments.category -eq 'OST_Doors') { $state.doorCopied = $true } else { $state.wallCopied = $true }
-            return (& $ok ([pscustomobject]@{}))
-        }
         if ($tool -eq 'horizun_create_elements') {
             $id = $state.nextId; $state.nextId++
             $e = $arguments.elements[0]
@@ -143,7 +136,7 @@ function New-Ctx([bool]$gate, [bool]$withTemplate = $true) {
         }
         return @{ stage = 'apply'; answer = @{ isError = $true; text = 'unexpected apply ' + $tool } }
     }.GetNewClosure()
-    return [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $root; RunId = 'r1abcdefgh'; WriteGate = $gate; Call = $call; Apply = $apply; State = $state; TemplateRoot = $tplRoot }
+    return [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $root; RunId = 'r1abcdefgh'; WriteGate = $gate; Call = $call; Apply = $apply; State = $state }
 }
 
 $fails = 0
@@ -165,7 +158,6 @@ foreach ($n in $catalog) {
     if ($by[$n].Outcome -ne 'pass') { "        $($by[$n].Outcome): $($by[$n].Detail)" }
 }
 $s = $ctx.State
-Check 'the wall type and the door are brought BY NAME from the template' (($s.copied -contains 'Basic Wall: Generic - 200mm') -and ($s.copied -contains 'M_Single-Flush: 0915 x 2134mm'))
 Check 'it stages its own level, four walls, a door and a numbered, named room' ($s.kinds.level -and $s.walls.Count -eq 4 -and $s.door -and $s.room -and $s.roomNumber -eq 'HZC-r1abcdef' -and $s.roomName -eq 'HZ COBIE ROOM')
 Check 'the room is placed by point with no phase_id (Revit gives the last phase) and the export names the LAST phase listed' (($s.roomPhase -eq 'none') -and ($s.exportArgs.cobie.phase -eq 'New Construction') -and ($s.applyArgs.cobie.phase -eq 'New Construction'))
 Check 'the export takes doors as components, no category_parameter, the probe''s own e-mail, a file under the scratch root' (
@@ -173,7 +165,7 @@ Check 'the export takes doors as components, no category_parameter, the probe''s
     $s.exportArgs.cobie.created_by -eq 'cobie-probe@example.com' -and ([string]$s.exportArgs.output_path).StartsWith($ctx.ScratchRoot) -and $s.exportArgs.dry_run -eq $true)
 Check 'the rehearsal is a plain dry run and the apply goes through the token path' (-not $s.applyArgs.ContainsKey('dry_run') -and $s.applies.Contains('cobie-apply'))
 Check 'every idempotency key is used once' (@($s.applies | Group-Object | Where-Object { $_.Count -gt 1 }).Count -eq 0)
-Check 'cleanup deletes the room first and the wall type last, newest first' (($s.deleted[0] -eq $s.room) -and ($s.deleted[1] -eq $s.door) -and ($s.deleted -contains 42) -and ($s.deleted[-1] -eq 41) -and ([array]::IndexOf($s.deleted, [long]42) -lt [array]::IndexOf($s.deleted, $s.walls[3])) -and
+Check 'cleanup deletes the room first and the level last, newest first, never the document''s types' (($s.deleted[0] -eq $s.room) -and ($s.deleted[1] -eq $s.door) -and ($s.deleted -notcontains 42) -and ($s.deleted -notcontains 41) -and ($s.deleted[-1] -eq [long]$s.kinds.level) -and
     ([array]::IndexOf($s.deleted, $s.walls[0]) -lt [array]::IndexOf($s.deleted, [long]$s.kinds.level)))
 Check 'the workbook check names the space and door rows it judged' ($by[$catalog[3]].Detail -match 'same file=True' -and $by[$catalog[3]].Detail -match 'HZC-r1abcdef')
 
@@ -204,8 +196,8 @@ Check 'a workbook read back with another sha256 than the reply named fails the w
 
 $c = New-Ctx $false $false
 $by = Run-Module $c
-Check 'no template: the export cases are unverified and name why, never pass' ((@($catalog[0..4] | Where-Object { $by[$_].Outcome -ne 'unverified' }).Count -eq 0) -and ($by[$catalog[0]].Detail -match 'no Autodesk template'))
-Check 'no template: nothing was staged, so there is nothing to delete' (($by[$catalog[5]].Outcome -eq 'unverified') -and (-not $c.State.applies.Contains('cobie-cleanup')))
+Check 'no types: the export cases are unverified and name why, never pass' ((@($catalog[0..4] | Where-Object { $by[$_].Outcome -ne 'unverified' }).Count -eq 0) -and ($by[$catalog[0]].Detail -match 'in the document'))
+Check 'no types: nothing was staged, so there is nothing to delete' (($by[$catalog[5]].Outcome -eq 'unverified') -and (-not $c.State.applies.Contains('cobie-cleanup')))
 
 $c = New-Ctx $false; $c.State.noPhases = $true
 $by = Run-Module $c

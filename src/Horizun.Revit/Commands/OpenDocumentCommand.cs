@@ -109,27 +109,23 @@ namespace Horizun.Revit.Commands
                      (r.OpenAllWorksets ? " all-worksets" : "") +
                      " - if no result line follows this one, opening this model took Revit down.");
 
+            int raisedBefore = Interference.Current?.Seen?.Count ?? 0;
             Document opened;
+            JObject recoveryEvidence = null;
             try
             {
                 UIDocument uidoc;
-                using (Interference.WithDialogAnswer(r.OnOpenDialog))
-                    uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
+                uidoc = OpenRecoveryRuntime.Open(app, plan, r, out recoveryEvidence);
                 opened = uidoc != null ? uidoc.Document : null;
             }
             catch (Exception ex)
             {
                 Log.Warn("open_document CLOUD refused model=" + plan.CloudModel + ": " + ex.Message);
-                return CommandResult.Fail(
-                    "Revit refused to open the cloud model: " + ex.Message +
-                    " (region '" + plan.Region + "', project " + plan.CloudProject + ", model " + plan.CloudModel +
-                    "). 'The central model is missing' usually means the GUIDs are not this Revit's - the URN " +
-                    "from the ACC web UI is a different identifier and does not convert. Nothing was opened.");
+                return CloudOpenFailure(app, plan, "Revit refused to open the cloud model: " + ex.Message, raisedBefore);
             }
 
             if (opened == null)
-                return CommandResult.Fail(
-                    "Revit returned no document for cloud model " + plan.CloudModel + ". Nothing is confirmed open.");
+                return CloudOpenFailure(app, plan, "Revit returned no document for cloud model " + plan.CloudModel + ".", raisedBefore);
 
             Log.Info("open_document CLOUD opened '" + opened.Title + "' (model " + plan.CloudModel + ")");
 
@@ -167,6 +163,7 @@ namespace Horizun.Revit.Commands
 
             return CommandResult.Ok(new
             {
+                recovery = recoveryEvidence,
                 opened = true,
                 confirmed_active = true,
                 source = "cloud",
@@ -197,6 +194,16 @@ namespace Horizun.Revit.Commands
             });
         }
 
+        private static CommandResult CloudOpenFailure(UIApplication app, OpenPlan plan, string message, int since)
+        {
+            string active = null;
+            try { active = app.ActiveUIDocument?.Document?.Title; } catch { }
+            Interference watcher = Interference.Current;
+            JObject detail = CloudOpenFailureRules.Describe(message, active, plan.Region, plan.CloudProject.ToString(), plan.CloudModel.ToString(),
+                watcher?.Seen, since, watcher?.FullyObserved == true);
+            return CommandResult.FailWithDetail((string)detail["message"], detail);
+        }
+
         // ---------------------------------------------------------------- local
         private static CommandResult OpenLocal(UIApplication app, OpenPlan plan, OpenRequest r)
         {
@@ -212,11 +219,11 @@ namespace Horizun.Revit.Commands
                     "and retry. Nothing was opened.");
 
             Document opened;
+            JObject recoveryEvidence = null;
             try
             {
                 UIDocument uidoc;
-                using (Interference.WithDialogAnswer(r.OnOpenDialog))
-                    uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
+                uidoc = OpenRecoveryRuntime.Open(app, plan, r, out recoveryEvidence);
                 opened = uidoc != null ? uidoc.Document : null;
             }
             catch (Exception ex)
@@ -267,6 +274,7 @@ namespace Horizun.Revit.Commands
 
             return CommandResult.Ok(new
             {
+                recovery = recoveryEvidence,
                 opened = true,
                 confirmed_active = true,
                 source = "local",

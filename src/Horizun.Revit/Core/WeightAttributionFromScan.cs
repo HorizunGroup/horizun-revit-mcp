@@ -186,6 +186,7 @@ namespace Horizun.Revit.Core
         };
 
         public static IReadOnlyCollection<string> Kinds => Sources.Select(s => s.Kind).ToList();
+        public static IReadOnlyCollection<string> SourceSections => Sources.Select(s => s.Section).Distinct().ToList();
 
         /// <summary>
         /// Build the contributor list from the scan's own sections.

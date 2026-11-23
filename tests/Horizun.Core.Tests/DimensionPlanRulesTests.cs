@@ -16,12 +16,87 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Horizun.Revit.Core;
+using Newtonsoft.Json.Linq;
 using Xunit;
+using VerifyStage = Horizun.Revit.Core.DimensionPlanRules.VerifyStage;
 
 namespace Horizun.Core.Tests
 {
     public class DimensionPlanRulesTests
     {
+        [Theory]
+        [InlineData(false, false, false, 12.5, false)]
+        [InlineData(false, true, false, 0.0, false)]
+        [InlineData(false, false, false, 0.0, true)]
+        [InlineData(false, null, false, null, true)]
+        [InlineData(false, false, false, double.NaN, true)]
+        [InlineData(false, false, false, double.PositiveInfinity, true)]
+        [InlineData(false, false, true, null, true)]
+        [InlineData(true, false, false, 0.0, false)]
+        public void Inactive_view_needs_materialised_references_or_a_measured_value_after_commit(
+            bool targetIsActive, bool? referencesAvailable, bool isSpot, double? total, bool missing)
+        {
+            Assert.Equal(missing, DimensionPlanRules.InactiveViewMeasurementMissing(true, targetIsActive, referencesAvailable, isSpot, total));
+        }
+
+        [Theory]
+        [InlineData("RolledBack", "rolled_back", false)]
+        [InlineData("Pending", "uncertain", null)]
+        public void An_inactive_view_passes_the_provisional_measurement_but_an_unmeasurable_committed_row_reverts_the_batch(
+            string groupStatus, string expectedState, bool? inModel)
+        {
+            JObject rehearsal = DimensionPlanRules.RehearseDimension(
+                stage => CheckInactiveView(stage, 0), out bool constructible);
+            Assert.True(constructible);
+            Assert.DoesNotContain(rehearsal["checks"], check => check.Value<string>("field") == "inactive_view_measurement");
+
+            var rows = new JArray();
+            int rollbackCalls = 0;
+            JObject detail = DimensionPlanRules.VerifyCommittedBatch(new[] { 12.5, 0 }, rows,
+                ReadInactiveView, null, () => { rollbackCalls++; return groupStatus; },
+                out int verified, failedRows: Array.Empty<JObject>());
+
+            Assert.Equal(1, verified);
+            Assert.Equal(1, rollbackCalls);
+            Assert.Equal(expectedState, detail.Value<string>("state"));
+            Assert.Equal("Committed", detail.Value<string>("transaction_status"));
+            Assert.Equal(groupStatus, detail.Value<string>("transaction_group_status"));
+            Assert.Equal(inModel == false, detail.Value<bool>("rollback_confirmed"));
+            Assert.All(detail["rows"], row =>
+            {
+                Assert.False(row.Value<bool>("verified"));
+                Assert.Equal(inModel, row.Value<bool?>("in_model"));
+            });
+            Assert.Equal(expectedState, detail["rows"][0].Value<string>("outcome"));
+            Assert.Equal("failed", detail["rows"][1].Value<string>("outcome"));
+            JToken mismatch = Assert.Single(detail["rows"][1]["verification"]["checks"],
+                check => check.Value<string>("field") == "inactive_view_measurement");
+            Assert.False(mismatch.Value<bool>("match"));
+        }
+
+        [Fact]
+        public void An_inactive_view_with_a_measured_committed_dimension_keeps_the_group_open_for_assimilation()
+        {
+            var rows = new JArray();
+            Assert.Null(DimensionPlanRules.VerifyCommittedBatch(new[] { 12.5 }, rows,
+                ReadInactiveView, null, () => throw new InvalidOperationException("Verified batch must not roll back."),
+                out int verified));
+            Assert.Equal(1, verified);
+            Assert.Single(rows);
+            Assert.True(rows[0].Value<bool>("verified"));
+        }
+
+        private static JObject CheckInactiveView(VerifyStage stage, double total) =>
+            DimensionPlanRules.FinishDimensionChecks(new JArray(), true, stage,
+                viewId: 42, targetIsActive: false, referencesAvailable: false, isSpot: false, total: total);
+
+        private static JObject ReadInactiveView(double total, VerifyStage stage, out bool verified)
+        {
+            JObject verification = CheckInactiveView(stage, total);
+            verified = verification.Value<bool>("all_match");
+            return new JObject { ["verification"] = verification };
+        }
+
         // ---- the stored-text rule behind horizun_annotate's text verification -------
         //
         // Measured on Revit 2023 (2026-08-24): TextNote.Create('D7_PROBE') reads back
@@ -556,6 +631,76 @@ namespace Horizun.Core.Tests
             Assert.Contains("spot_slope", text);
             Assert.Contains("Python", text);
             Assert.Contains("Nothing was written", text);
+        }
+        [Fact]
+        public void Linked_references_to_different_elements_in_the_same_instance_are_not_equal()
+        {
+            var wanted = new[] { "link:0:RVTLINK:element-a:0:SURFACE", "host:0:SURFACE" };
+            var read = new[] { "link:0:RVTLINK:element-b:0:SURFACE", "host:0:SURFACE" };
+            Assert.NotEqual(DimensionPlanRules.ReferenceOwnerKeys(wanted), DimensionPlanRules.ReferenceOwnerKeys(read));
+        }
+        [Fact]
+        public void Bare_and_canonical_element_references_match_including_linked_element()
+        {
+            var wanted = new[] { "host", "link:0:RVTLINK:element-a" };
+            var read = new[] { "link:0:RVTLINK:element-a:0:SURFACE", "host:0:SURFACE" };
+            Assert.Equal(DimensionPlanRules.ReferenceOwnerKeys(wanted), DimensionPlanRules.ReferenceOwnerKeys(read));
+        }
+        [Fact]
+        public void Linked_reference_comparison_includes_reference_type()
+        {
+            var reps = new[] { "link:0:RVTLINK:element:0:SURFACE" };
+            Assert.NotEqual(DimensionPlanRules.ReferenceKeysWithTypes(reps, new[] { "SURFACE" }),
+                            DimensionPlanRules.ReferenceKeysWithTypes(reps, new[] { "LINEAR" }));
+        }
+        [Fact]
+        public void A_bare_grid_reference_matches_its_stored_surface_form_with_types()
+        {
+            // Live on 2024: two grids handed in as bare unique ids parse as NONE and read
+            // back as 'uid:0:SURFACE' with SURFACE; the rehearsal refused a correct dimension.
+            var wanted = new[] { "grid-a", "grid-b" };
+            var read = new[] { "grid-a:0:SURFACE", "grid-b:0:SURFACE" };
+            Assert.Equal(
+                DimensionPlanRules.ReferenceKeysWithTypes(wanted, new[] { "REFERENCE_TYPE_NONE", "REFERENCE_TYPE_NONE" }),
+                DimensionPlanRules.ReferenceKeysWithTypes(read, new[] { "REFERENCE_TYPE_SURFACE", "REFERENCE_TYPE_SURFACE" }));
+        }
+        [Fact]
+        public void A_bare_reference_does_not_match_another_element_or_a_linear_reference()
+        {
+            Assert.NotEqual(
+                DimensionPlanRules.ReferenceKeysWithTypes(new[] { "grid-a" }, new[] { "REFERENCE_TYPE_NONE" }),
+                DimensionPlanRules.ReferenceKeysWithTypes(new[] { "grid-b:0:SURFACE" }, new[] { "REFERENCE_TYPE_SURFACE" }));
+            Assert.NotEqual(
+                DimensionPlanRules.ReferenceKeysWithTypes(new[] { "wall:0:SURFACE" }, new[] { "REFERENCE_TYPE_SURFACE" }),
+                DimensionPlanRules.ReferenceKeysWithTypes(new[] { "wall:0:SURFACE" }, new[] { "REFERENCE_TYPE_LINEAR" }));
+            Assert.Equal("REFERENCE_TYPE_SURFACE",
+                DimensionPlanRules.CanonicalReferenceType("wall:3:SURFACE", "REFERENCE_TYPE_SURFACE"));
+        }
+        [Fact]
+        public void A_linked_face_matches_its_stored_form_without_the_link_type_token()
+        {
+            // Live on 2024-2026: requested with the link type's unique id after the slash,
+            // read back without it. Same instance, element and face: same reference.
+            var wanted = new[] { "host", "inst:0:RVTLINK/ltype:2788:6:SURFACE", "inst:0:RVTLINK/ltype:2788:5:SURFACE" };
+            var read = new[] { "host:0:SURFACE", "inst:0:RVTLINK:2788:5:SURFACE", "inst:0:RVTLINK:2788:6:SURFACE" };
+            var types = new[] { "SURFACE", "SURFACE", "SURFACE" };
+            Assert.Equal(
+                DimensionPlanRules.ReferenceKeysWithTypes(wanted, new[] { "NONE", "SURFACE", "SURFACE" }),
+                DimensionPlanRules.ReferenceKeysWithTypes(read, types));
+        }
+        [Fact]
+        public void Dropping_the_link_type_token_keeps_instance_element_and_face()
+        {
+            Assert.NotEqual(
+                DimensionPlanRules.ReferenceOwnerKeys(new[] { "inst:0:RVTLINK/ltype:2788:6:SURFACE" }),
+                DimensionPlanRules.ReferenceOwnerKeys(new[] { "inst:0:RVTLINK:2788:5:SURFACE" }));
+            Assert.NotEqual(
+                DimensionPlanRules.ReferenceOwnerKeys(new[] { "inst:0:RVTLINK/ltype:2788:6:SURFACE" }),
+                DimensionPlanRules.ReferenceOwnerKeys(new[] { "inst:0:RVTLINK:2789:6:SURFACE" }));
+            Assert.NotEqual(
+                DimensionPlanRules.ReferenceOwnerKeys(new[] { "inst:0:RVTLINK/ltype:2788:6:SURFACE" }),
+                DimensionPlanRules.ReferenceOwnerKeys(new[] { "other:0:RVTLINK:2788:6:SURFACE" }));
+            Assert.Equal("inst:0:RVTLINK/grid9", DimensionPlanRules.WithoutLinkTypeToken("inst:0:RVTLINK/grid9"));
         }
     }
 }

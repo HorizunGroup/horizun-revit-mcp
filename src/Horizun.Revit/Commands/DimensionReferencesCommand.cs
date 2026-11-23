@@ -86,6 +86,13 @@ namespace Horizun.Revit.Commands
             public bool IsLinked => Link != null;
 
             /// <summary>
+            /// The family instance being inspected, while it is: references read from its
+            /// SYMBOL geometry name the family type, and are wrapped into Revit's instance
+            /// form before they are lifted or serialised (P4, field 2026-11-17).
+            /// </summary>
+            public FamilyInstance CurrentInstance;
+
+            /// <summary>
             /// The host-document reference for a reference obtained in GeometryDoc.
             /// Identity when there is no link; CreateLinkReference otherwise. Returns
             /// null rather than throwing, because "Revit would not lift it" is a row
@@ -110,6 +117,8 @@ namespace Horizun.Revit.Commands
 
             Document doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
 
             // ---- units: input (probe_point) and output (geometry) share one setting. --
             string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
@@ -140,6 +149,10 @@ namespace Horizun.Revit.Commands
                                           " ('" + SafeName(view) + "'). Model references are enumerated against model " +
                                           "views - the kind a dimension can live in.");
 
+            // ---- explain mode (CT-P2-2f): why a reference cannot carry a dimension in this view. ---
+            if (request["explain_references"] != null || request["dimension_id"] != null)
+                return DimensionReferenceExplain.Run(doc, view, request);
+
             // ---- selectors. Absent = the defaults applicable to each element's class. --
             List<string> requestedSelectors = null;
             if (request["selectors"] != null)
@@ -153,6 +166,13 @@ namespace Horizun.Revit.Commands
                                                                out selectorError))
                     return CommandResult.Fail(selectorError);
             }
+            string referenceName = request.Value<string>("reference_name");
+            if (requestedSelectors != null)
+                foreach (string requested in requestedSelectors)
+                {
+                    string nameError = DimensionReferenceRules.ValidateFamilyReferenceName(requested, referenceName);
+                    if (nameError != null) return CommandResult.Fail(nameError);
+                }
 
             // ---- the probe point, where nearest/farthest make it mandatory. -----------
             XYZ probeFeet = null;
@@ -248,7 +268,7 @@ namespace Horizun.Revit.Commands
                 long id = Rid.Value(element.Id);
                 try
                 {
-                    InspectElement(HostScope(doc), view, element, requestedSelectors, probeFeet, fromFeet, candidates,
+                    InspectElement(HostScope(doc), view, element, requestedSelectors, referenceName, probeFeet, fromFeet, candidates,
                                    topWarnings);
                     inspected++;
                     hostInspected++;
@@ -274,7 +294,7 @@ namespace Horizun.Revit.Commands
                         "view. The references are real and the coordinates are host coordinates; what this read " +
                         "cannot tell you is whether the element is VISIBLE in view " + Rid.Value(view.Id) +
                         " - check that before dimensioning to it there."));
-                    InspectElement(lt.Scope, view, lt.Element, requestedSelectors, probeFeet, fromFeet, candidates,
+                    InspectElement(lt.Scope, view, lt.Element, requestedSelectors, referenceName, probeFeet, fromFeet, candidates,
                                    topWarnings);
                     inspected++;
                     linkedInspected++;
@@ -744,6 +764,7 @@ namespace Horizun.Revit.Commands
         // =====================================================================
 
         private static void InspectElement(Scope scope, View view, Element element, List<string> requestedSelectors,
+                                           string referenceName,
                                            XYZ probeFeet, double fromFeet, List<Candidate> rows, JArray topWarnings)
         {
             // The id a ROW carries is a host-document id: for a linked element that is
@@ -752,12 +773,21 @@ namespace Horizun.Revit.Commands
             // caller's document does not contain.
             long id = scope.IsLinked ? scope.Binding.LinkInstanceId : Rid.Value(element.Id);
             string uniqueId = scope.IsLinked ? Safe(() => scope.Link.UniqueId) : Safe(() => element.UniqueId);
+            scope.CurrentInstance = element as FamilyInstance;
+            try { InspectElementIn(scope, view, element, id, uniqueId, requestedSelectors, referenceName, probeFeet, rows, topWarnings); }
+            finally { scope.CurrentInstance = null; }
+        }
 
+        private static void InspectElementIn(Scope scope, View view, Element element, long id, string uniqueId,
+                                             List<string> requestedSelectors, string referenceName, XYZ probeFeet,
+                                             List<Candidate> rows, JArray topWarnings)
+        {
             var traits = new ElementTraits
             {
                 IsGrid = element is Grid,
                 IsLevel = element is Level,
                 IsReferencePlane = element is ReferencePlane,
+                IsFamilyInstance = element is FamilyInstance,
                 IsHostObject = element is HostObject,
                 HasLocationCurve = (element.Location as LocationCurve)?.Curve != null
             };
@@ -820,6 +850,15 @@ namespace Horizun.Revit.Commands
                     case DimensionReferenceRules.SelectorInteriorFace:
                         ProduceSideFaces(scope, element, id, uniqueId, selector, fellBack, rows, topWarnings);
                         break;
+                    case DimensionReferenceRules.SelectorCoreExteriorFace:
+                    case DimensionReferenceRules.SelectorCoreInteriorFace:
+                    case DimensionReferenceRules.SelectorLayerFace:
+                        ProduceLayerFaces(scope, view, element, id, uniqueId, selector, rows, topWarnings);
+                        break;
+                    case DimensionReferenceRules.SelectorTopFace:
+                    case DimensionReferenceRules.SelectorBottomFace:
+                        ProduceHeightFace(scope, view, id, uniqueId, selector, solids, fellBack, rows, topWarnings);
+                        break;
                     case DimensionReferenceRules.SelectorEdge:
                         ProduceEdges(scope, id, uniqueId, solids, fellBack, rows, topWarnings);
                         break;
@@ -831,8 +870,160 @@ namespace Horizun.Revit.Commands
                         ProduceProbedFaces(scope, id, uniqueId, selector, solids, probeFeet, fellBack, rows,
                                            topWarnings);
                         break;
+                    default:
+                        if (DimensionReferenceRules.IsFamilyReferenceSelector(selector))
+                            ProduceFamilyReference(scope, element as FamilyInstance, id, uniqueId,
+                                                   selector, referenceName, rows, topWarnings);
+                        break;
                 }
             }
+        }
+
+        private static void ProduceFamilyReference(Scope scope, FamilyInstance family, long id,
+            string uniqueId, string selector, string referenceName, List<Candidate> rows, JArray warnings)
+        {
+            if (family == null) return;
+            try
+            {
+                string type = DimensionReferenceRules.FamilyReferenceType(selector);
+                IList<Reference> references;
+                if (type == "named")
+                {
+                    Reference named = family.GetReferenceByName(referenceName);
+                    references = named == null ? new List<Reference>() : new List<Reference> { named };
+                }
+                else
+                {
+                    var apiType = (FamilyInstanceReferenceType)Enum.Parse(typeof(FamilyInstanceReferenceType), type);
+                    references = family.GetReferences(apiType) ?? new List<Reference>();
+                }
+                if (references.Count == 0)
+                {
+                    // Left/Right/Top/Bottom missing: measure the void the opening cuts in
+                    // its host wall instead (Core OpeningVoidRules). A host face is a real,
+                    // associative reference; the candidate says it is the wall's, not the
+                    // family's, so nobody mistakes a rough opening for the leaf.
+                    string voidError = null;
+                    if (!scope.IsLinked && family.Host is Wall &&
+                        (selector == DimensionReferenceRules.SelectorOpeningLeft || selector == DimensionReferenceRules.SelectorOpeningRight ||
+                         selector == DimensionReferenceRules.SelectorOpeningHead || selector == DimensionReferenceRules.SelectorOpeningSill))
+                    {
+                        OpeningVoidResult voids = PlanimetryGeometryReader.OpeningVoid(family.Document, family, out voidError);
+                        WallVoidFace chosen = OpeningVoidRules.ForSelector(voids?.Choice, selector);
+                        if (chosen != null && voids.Faces.TryGetValue(chosen.Stable, out PlanarFace voidFace))
+                        {
+                            var vc = new Candidate(id, uniqueId, selector, "wall_void_face", scope.Binding);
+                            if (TryStable(scope, voidFace.Reference, vc, warnings))
+                            {
+                                ShapeFaceGeometry(vc, voidFace, Transform.Identity);
+                                if (vc.Representative != null)
+                                {
+                                    vc.Warnings.Add(new JObject { ["code"] = "wall_void_fallback",
+                                        ["message"] = "The family exposes no " + type + " reference; this is the face of the void the " +
+                                        "opening cuts in host wall " + Rid.Value(family.Host.Id) + " (rough opening, frame included)." +
+                                        (voids.Choice.Notes.Count > 0 ? " " + string.Join(" ", voids.Choice.Notes) : "") });
+                                    rows.Add(vc);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    warnings.Add(Warning(id, selector, DimensionReferenceRules.WarningCandidateUnreadable,
+                        "Family instance " + id + " exposes no " + (type == "named" ? referenceName : type) +
+                        " reference; no substitute was selected" + (voidError != null ? " (wall void: " + voidError + ")" : "") + "."));
+                    return;
+                }
+                XYZ point = FamilyReferenceEstimate(family, selector, scope.ToHost);
+                foreach (Reference reference in references)
+                {
+                    var c = new Candidate(id, uniqueId, selector, "family_reference", scope.Binding);
+                    if (!TryStable(scope, reference, c, warnings)) continue;
+                    if (point == null)
+                    {
+                        warnings.Add(Warning(id, selector, DimensionReferenceRules.WarningCandidateUnreadable,
+                            "Family reference is stable but its placement could not be estimated from a bounding box; " +
+                            "no dimension plan was offered."));
+                        continue;
+                    }
+                    c.GeometryKind = "estimated_family_plane";
+                    c.Geometry = new JObject { ["kind"] = c.GeometryKind, ["estimate"] = PointToken(point) };
+                    c.Representative = point;
+                    c.Fingerprint = DimensionReferenceRules.GeometryFingerprint(new GeometryFacts()
+                        .Add("kind", c.GeometryKind).Add("selector", selector)
+                        .Add("reference", c.StableRepresentation)
+                        .AddXyz("estimate", point.X, point.Y, point.Z));
+                    c.Warnings.Add(new JObject { ["code"] = "reference_position_estimated",
+                        ["message"] = "The stable family reference is real; its representative point is estimated " +
+                        "from the instance bounds. Rehearse the dimension in horizun_annotate before writing." });
+                    MarkLinkedDatum(scope, c);
+                    rows.Add(c);
+                }
+            }
+            catch (Exception ex)
+            {
+                warnings.Add(Warning(id, selector, DimensionReferenceRules.WarningCandidateUnreadable,
+                    "Family reference could not be read: " + ex.Message));
+            }
+        }
+
+        private static void ProduceHeightFace(Scope scope, View view, long id, string uniqueId,
+            string selector, List<SolidRec> solids, bool fellBack, List<Candidate> rows, JArray warnings)
+        {
+            bool top = selector == DimensionReferenceRules.SelectorTopFace;
+            var found = new List<KeyValuePair<SectionFaceFact, Candidate>>();
+            foreach (SolidRec rec in solids)
+                foreach (Face face in rec.Solid.Faces)
+                {
+                    var planar = face as PlanarFace;
+                    if (planar?.Reference == null) continue;
+                    XYZ normal = rec.Tx.OfVector(planar.FaceNormal).Normalize();
+                    if (top ? normal.Z < 0.1 : normal.Z > -0.1) continue;
+                    var candidate = new Candidate(id, uniqueId, selector, "face", scope.Binding);
+                    if (!TryStable(scope, planar.Reference, candidate, warnings)) continue;
+                    ShapeFaceGeometry(candidate, planar, rec.Tx);
+                    if (candidate.Representative == null) continue;
+                    double cutDistance = Math.Abs(candidate.Representative.Subtract(view.Origin)
+                        .DotProduct(view.ViewDirection.Normalize()));
+                    found.Add(new KeyValuePair<SectionFaceFact, Candidate>(new SectionFaceFact {
+                        CutDistance = cutDistance, Elevation = candidate.Representative.Z,
+                        Stable = candidate.StableRepresentation, NormalZ = normal.Z }, candidate));
+                }
+            SectionFaceFact chosen = DimensionReferenceRules.ChooseSectionFace(found.Select(f => f.Key), top);
+            if (chosen != null && !DimensionReferenceRules.IsLevelParallel(chosen))
+                warnings.Add(Warning(id, selector, "sloped_height_face",
+                    "The only " + selector + " found is sloped: it is not parallel to a level, so a linear dimension " +
+                    "to it will not construct. For a wall, auto_dimension_heights plans the end points of an edge-on " +
+                    "top or a horizontal end edge instead; otherwise use a spot elevation."));
+            if (chosen == null)
+            {
+                warnings.Add(Warning(id, selector, DimensionReferenceRules.WarningCandidateUnreadable,
+                    "No reference-carrying " + selector + " was visible or readable in the requested view."));
+                return;
+            }
+            Candidate selected = found.First(f => f.Key == chosen).Value;
+            if (fellBack) selected.Warnings.Add(FallbackWarning());
+            rows.Add(selected);
+        }
+
+        private static XYZ FamilyReferenceEstimate(FamilyInstance family, string selector, Transform toHost)
+        {
+            BoundingBoxXYZ box = family.get_BoundingBox(null);
+            if (box == null) return null;
+            Transform tx = family.GetTotalTransform();
+            if (tx == null) return null;
+            Transform inverse = tx.Inverse;
+            var local = new List<XYZ>();
+            foreach (double x in new[] { box.Min.X, box.Max.X })
+                foreach (double y in new[] { box.Min.Y, box.Max.Y })
+                    foreach (double z in new[] { box.Min.Z, box.Max.Z })
+                        local.Add(inverse.OfPoint(new XYZ(x, y, z)));
+            XYZ origin = (family.Location as LocationPoint)?.Point ?? box.Min.Add(box.Max).Multiply(0.5);
+            XYZ p = inverse.OfPoint(origin);
+            if (selector == DimensionReferenceRules.SelectorOpeningLeft) p = new XYZ(local.Min(v => v.X), p.Y, p.Z);
+            else if (selector == DimensionReferenceRules.SelectorOpeningRight) p = new XYZ(local.Max(v => v.X), p.Y, p.Z);
+            else if (selector == DimensionReferenceRules.SelectorOpeningHead) p = new XYZ(p.X, p.Y, local.Max(v => v.Z));
+            else if (selector == DimensionReferenceRules.SelectorOpeningSill) p = new XYZ(p.X, p.Y, local.Min(v => v.Z));
+            return toHost.OfPoint(tx.OfPoint(p));
         }
 
         // ---- datums ---------------------------------------------------------
@@ -853,7 +1044,14 @@ namespace Horizun.Revit.Commands
                 else if (element is Level level)
                 {
                     var c = new Candidate(id, uniqueId, selector, "level", scope.Binding);
-                    if (!TryStable(scope, new Reference(element), c, topWarnings)) return;
+                    // The level's PLANE (Level.GetPlaneReference): functional heights are
+                    // measured from it, not from the finish face of a floor (P4).
+                    Reference plane = null;
+                    try { plane = level.GetPlaneReference(); } catch { plane = null; }
+                    if (!TryStable(scope, plane ?? new Reference(element), c, topWarnings)) return;
+                    if (plane == null)
+                        c.Warnings.Add(new JObject { ["code"] = "level_plane_reference_unavailable",
+                            ["message"] = "Level.GetPlaneReference returned nothing; this is the level element's own reference." });
                     // A level IS a horizontal plane at its project elevation; that is
                     // exactly what a spot elevation or a linear dimension measures to.
                     // Through a link the plane travels with the placement: a linked
@@ -1024,6 +1222,186 @@ namespace Horizun.Revit.Commands
                         "side face could not be shaped: " + ex.Message));
                 }
             }
+        }
+
+        // ---- core and layer faces (item 2.3) ------------------------------------
+
+        /// <summary>
+        /// Wall faces at compound-structure boundaries. The boundaries are COMPUTED from
+        /// the type's layer widths, inward from the exterior side face; the faces are READ
+        /// from the view geometry (references on, hidden objects included) and classified
+        /// by their offset. A boundary the geometry does not expose is a negative row with
+        /// core_face_not_exposed and the plane where it would be - never an invented face.
+        /// </summary>
+        private static void ProduceLayerFaces(Scope scope, View view, Element element, long id, string uniqueId,
+                                              string selector, List<Candidate> rows, JArray topWarnings)
+        {
+            var wall = element as Wall;
+            if (wall == null)
+            {
+                topWarnings.Add(Warning(id, selector, DimensionReferenceRules.WarningSelectorNotApplicable,
+                    selector + " is read for walls only (their layers run exterior to interior); element " + id +
+                    " is not a wall. No candidate was produced."));
+                return;
+            }
+            CompoundStructure cs = null;
+            try { cs = wall.WallType?.GetCompoundStructure(); } catch { cs = null; }
+            var widths = new List<double>();
+            int firstCore = -1, lastCore = -1;
+            if (cs != null)
+            {
+                try
+                {
+                    foreach (CompoundStructureLayer layer in cs.GetLayers()) widths.Add(layer.Width);
+                    firstCore = cs.GetFirstCoreLayerIndex();
+                    lastCore = cs.GetLastCoreLayerIndex();
+                }
+                catch (Exception ex)
+                {
+                    topWarnings.Add(Warning(id, selector, DimensionReferenceRules.WarningCandidateUnreadable,
+                        "compound structure could not be read: " + ex.Message));
+                    return;
+                }
+            }
+
+            // The exterior side face is the datum every boundary offset is measured from.
+            PlanarFace extFace = null;
+            try
+            {
+                foreach (Reference r in HostObjectUtils.GetSideFaces(wall, ShellLayerType.Exterior))
+                {
+                    extFace = r == null ? null : element.GetGeometryObjectFromReference(r) as PlanarFace;
+                    if (extFace != null) break;
+                }
+            }
+            catch { extFace = null; }
+            if (extFace == null)
+            {
+                topWarnings.Add(Warning(id, selector, DimensionReferenceRules.WarningCandidateUnreadable,
+                    "the wall's exterior side face could not be read as a plane, so no layer boundary can be located."));
+                return;
+            }
+            XYZ extNormal = scope.ToHost.OfVector(extFace.FaceNormal).Normalize();
+            XYZ extOrigin = scope.ToHost.OfPoint(extFace.Origin);
+            double[] extO = { extOrigin.X, extOrigin.Y, extOrigin.Z }, extN = { extNormal.X, extNormal.Y, extNormal.Z };
+
+            var targets = new List<int>();
+            List<double> boundaries = DimensionGeometryRules.LayerBoundaries(widths);
+            if (selector == DimensionReferenceRules.SelectorLayerFace)
+            {
+                if (widths.Count == 0)
+                {
+                    rows.Add(NegativeLayerFace(scope, id, uniqueId, selector, extOrigin, extNormal, 0, -1,
+                        DimensionGeometryRules.CodeNoCompoundStructure, "the wall type has no compound structure layers."));
+                    return;
+                }
+                for (int i = 0; i < boundaries.Count; i++) targets.Add(i);
+            }
+            else
+            {
+                string code;
+                bool interior = selector == DimensionReferenceRules.SelectorCoreInteriorFace;
+                double? offset = DimensionGeometryRules.CoreBoundaryOffset(widths, firstCore, lastCore, interior, out code);
+                if (!offset.HasValue)
+                {
+                    rows.Add(NegativeLayerFace(scope, id, uniqueId, selector, extOrigin, extNormal, 0, -1, code,
+                        code == DimensionGeometryRules.CodeNoCoreLayers
+                            ? "the wall type's compound structure has no core layers."
+                            : "the wall type has no compound structure layers."));
+                    return;
+                }
+                targets.Add(interior ? lastCore + 1 : firstCore);
+            }
+
+            bool fellBack;
+            GeometryElement ge = ReadGeometry(scope, element, view, includeNonVisible: true, fellBack: out fellBack);
+            var solids = new List<SolidRec>();
+            CollectGeometry(ge, scope.ToHost, solids, new List<CurveRec>(), 0);
+
+            // index -> (face, tx, area, facesExterior)
+            var found = new Dictionary<int, List<Tuple<PlanarFace, Transform, double, bool>>>();
+            foreach (SolidRec rec in solids)
+                foreach (Face f in rec.Solid.Faces)
+                {
+                    var pf = f as PlanarFace;
+                    if (pf == null || pf.Reference == null) continue;
+                    XYZ n = rec.Tx.OfVector(pf.FaceNormal).Normalize();
+                    XYZ o = rec.Tx.OfPoint(pf.Origin);
+                    double? off = DimensionGeometryRules.InwardOffset(extO, extN, new[] { o.X, o.Y, o.Z }, new[] { n.X, n.Y, n.Z });
+                    if (!off.HasValue) continue;
+                    int idx = DimensionGeometryRules.MatchBoundary(off.Value, boundaries, DimensionReferenceRules.EquivalenceToleranceFeet);
+                    if (idx < 0 || !targets.Contains(idx)) continue;
+                    double area = 0; try { area = pf.Area; } catch { }
+                    List<Tuple<PlanarFace, Transform, double, bool>> list;
+                    if (!found.TryGetValue(idx, out list)) found[idx] = list = new List<Tuple<PlanarFace, Transform, double, bool>>();
+                    list.Add(Tuple.Create(pf, rec.Tx, area, n.DotProduct(extNormal) > 0));
+                }
+
+            foreach (int idx in targets)
+            {
+                double inward = boundaries[idx];
+                List<Tuple<PlanarFace, Transform, double, bool>> list;
+                if (!found.TryGetValue(idx, out list) || list.Count == 0)
+                {
+                    rows.Add(NegativeLayerFace(scope, id, uniqueId, selector, extOrigin.Subtract(extNormal.Multiply(inward)),
+                        extNormal, inward, idx, DimensionGeometryRules.CodeCoreFaceNotExposed,
+                        "no face of this wall's geometry in this view lies on layer boundary " + idx + " (" +
+                        (inward * 304.8).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " mm inward from the exterior face). Revit exposes layer " +
+                        "faces only where the view draws the layers (cut plan/section at medium or fine detail)."));
+                    continue;
+                }
+                // The face that BELONGS to the core (or, for a finish boundary, to the outer
+                // layer) faces away from it: toward the exterior up to the core's exterior
+                // boundary, toward the interior beyond it. Then the largest face, then the
+                // ordinal-smallest stable string - one deterministic answer per boundary.
+                bool wantExterior = idx <= Math.Max(firstCore, 0) && selector != DimensionReferenceRules.SelectorCoreInteriorFace;
+                Candidate best = null; double bestArea = -1; bool bestSide = false; int coplanar = list.Count;
+                foreach (var t in list)
+                {
+                    var c = new Candidate(id, uniqueId, selector, "face", scope.Binding);
+                    if (!TryStable(scope, t.Item1.Reference, c, topWarnings)) continue;
+                    bool side = t.Item4 == wantExterior;
+                    bool better = best == null || (side && !bestSide) ||
+                                  (side == bestSide && (t.Item3 > bestArea + 1e-9 ||
+                                   (Math.Abs(t.Item3 - bestArea) <= 1e-9 &&
+                                    string.CompareOrdinal(c.StableRepresentation, best.StableRepresentation) < 0)));
+                    if (!better) continue;
+                    ShapeFaceGeometry(c, t.Item1, t.Item2);
+                    best = c; bestArea = t.Item3; bestSide = side;
+                }
+                if (best == null) continue;
+                best.Layer = LayerInfo(idx, inward, firstCore, lastCore, widths.Count, coplanar);
+                if (fellBack) best.Warnings.Add(FallbackWarning());
+                rows.Add(best);
+            }
+        }
+
+        private static JObject LayerInfo(int boundary, double inwardFeet, int firstCore, int lastCore, int layers, int coplanar)
+        {
+            string role = boundary == 0 ? "exterior_face"
+                : boundary == layers ? "interior_face"
+                : boundary == firstCore ? "core_exterior_face"
+                : boundary == lastCore + 1 ? "core_interior_face" : "finish_boundary";
+            if (boundary == firstCore && boundary == 0) role = "exterior_face+core_exterior_face";
+            if (boundary == lastCore + 1 && boundary == layers) role = "interior_face+core_interior_face";
+            return new JObject
+            {
+                ["boundary_index"] = boundary,
+                ["role"] = role,
+                ["inward_offset_internal_feet"] = inwardFeet,
+                ["coplanar_faces"] = coplanar
+            };
+        }
+
+        private static Candidate NegativeLayerFace(Scope scope, long id, string uniqueId, string selector, XYZ origin,
+                                                   XYZ normal, double inwardFeet, int boundary, string code, string message)
+        {
+            var c = new Candidate(id, uniqueId, selector, "face", scope.Binding);
+            ShapePlaneGeometry(c, origin, normal, null);
+            c.Compatible = false;
+            c.Incompatibility = new IncompatibilityReason(code, message);
+            if (boundary >= 0) c.Layer = new JObject { ["boundary_index"] = boundary, ["inward_offset_internal_feet"] = inwardFeet };
+            return c;
         }
 
         // ---- edges ----------------------------------------------------------
@@ -1387,6 +1765,7 @@ namespace Horizun.Revit.Commands
         /// </summary>
         private static bool TryStable(Scope scope, Reference reference, Candidate c, JArray topWarnings)
         {
+            reference = WrapSymbolReference(scope, reference, c);
             Reference lifted = scope.Lift(reference);
             if (lifted == null)
             {
@@ -1410,6 +1789,42 @@ namespace Horizun.Revit.Commands
                     DimensionReferenceRules.WarningStableRepresentationUnavailable,
                     "a " + c.ReferenceType + " reference could not be serialised: " + ex.Message));
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// A reference read from a family instance's SYMBOL geometry points at the family
+        /// type; dimensioning needs Revit's instance form '&lt;instance&gt;:0:INSTANCE:&lt;symbol ref&gt;'
+        /// (and, in a link, that form lifted with CreateLinkReference). Anything that is
+        /// already an instance reference, or that will not parse wrapped, is left as it
+        /// was - the latter with a warning on the candidate.
+        /// </summary>
+        private static Reference WrapSymbolReference(Scope scope, Reference reference, Candidate c)
+        {
+            FamilyInstance instance = scope.CurrentInstance;
+            if (instance == null || reference == null) return reference;
+            try
+            {
+                if (reference.ElementId == instance.Id) return reference;
+                // Only the instance's OWN symbol: a nested family's symbol needs a deeper
+                // instance path this does not build, and stays as it was.
+                if (reference.ElementId != instance.GetTypeId()) return reference;
+                string symbolStable = reference.ConvertToStableRepresentation(scope.GeometryDoc);
+                string wrapped = DimensionLinkRules.InstanceWrapped(instance.UniqueId, symbolStable);
+                if (wrapped == null) return reference;
+                Reference result = Reference.ParseFromStableRepresentation(scope.GeometryDoc, wrapped);
+                if (result == null) throw new InvalidOperationException("the wrapped form did not parse");
+                c.Warnings.Add(new JObject { ["code"] = "symbol_reference_wrapped",
+                    ["message"] = "Read from the family's symbol geometry; wrapped as an instance reference of element " +
+                                  Rid.Value(instance.Id) + " so a dimension measures THIS placement." });
+                return result;
+            }
+            catch (Exception ex)
+            {
+                c.Warnings.Add(new JObject { ["code"] = "symbol_reference_not_wrapped",
+                    ["message"] = "Symbol-geometry reference could not be wrapped as an instance reference (" + ex.Message +
+                                  "); rehearse the dimension before relying on it." });
+                return reference;
             }
         }
 
@@ -1580,6 +1995,8 @@ namespace Horizun.Revit.Commands
             public bool Ambiguous;
             public string AmbiguityGroup;
             public JArray Warnings = new JArray();
+            /// <summary>Layer-boundary facts for core/layer selectors; null otherwise (and then not emitted).</summary>
+            public JObject Layer;
 
             public CandidateKey Key() => new CandidateKey
             {
@@ -1604,6 +2021,20 @@ namespace Horizun.Revit.Commands
             }
 
             public JObject ToJson(string sourceModel, long viewId, double fromFeet)
+            {
+                JObject row = ToJsonCore(sourceModel, viewId, fromFeet);
+                if (Layer != null)
+                {
+                    var layer = (JObject)Layer.DeepClone();
+                    double? inward = layer.Value<double?>("inward_offset_internal_feet");
+                    layer.Remove("inward_offset_internal_feet");
+                    if (inward.HasValue) layer["inward_offset"] = inward.Value * fromFeet;
+                    row["layer"] = layer;
+                }
+                return row;
+            }
+
+            private JObject ToJsonCore(string sourceModel, long viewId, double fromFeet)
             {
                 return new JObject
                 {

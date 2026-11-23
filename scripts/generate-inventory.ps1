@@ -30,11 +30,12 @@
 [CmdletBinding()]
 param(
     [string]$ServerExe,
-    [string]$OutJson = (Join-Path (Split-Path -Parent $PSScriptRoot) 'docs\inventory.json'),
+    [string]$OutJson,
     [switch]$Check
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
+if (-not $OutJson) { $OutJson = Join-Path $repo 'docs\inventory.json' }
 
 # The properties a command switches on. Each is verified against source below;
 # an unverified entry is REPORTED, never silently trusted.
@@ -67,7 +68,11 @@ $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 $psi.UseShellExecute = $false
 $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
-$psi.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+# Windows PowerShell 5.1 runs on .NET Framework, where this property is absent.
+# The JSON-RPC requests below contain ASCII only and use its default encoding.
+if ($psi.PSObject.Properties.Name -contains 'StandardInputEncoding') {
+    $psi.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+}
 $inventoryDataRoot = Join-Path ([IO.Path]::GetTempPath()) ('horizun-inventory-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $inventoryDataRoot | Out-Null
 $inventorySettings = [ordered]@{

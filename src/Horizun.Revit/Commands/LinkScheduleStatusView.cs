@@ -31,6 +31,9 @@ namespace Horizun.Revit.Commands
             if (!DateTime.TryParseExact(request.Value<string>("as_of") ?? "", "yyyy-MM-dd", CultureInfo.InvariantCulture,
                     DateTimeStyles.None, out DateTime asOf))
                 return CommandResult.Fail("as_of is required as yyyy-MM-dd.");
+            bool? requestedCutoff = request.Value<bool?>("include_as_of_day");
+            bool includeAsOfDay = requestedCutoff ?? true;
+            var assumptions = new[] { ScheduleLinkRules.StatusCutoffAssumption(requestedCutoff) };
             long viewId = request.Value<long?>("view_id") ?? -1;
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
@@ -44,26 +47,20 @@ namespace Horizun.Revit.Commands
             if (!source.CanViewBeDuplicated(ViewDuplicateOption.Duplicate))
                 return CommandResult.Fail("View " + viewId + " cannot be duplicated.");
 
-            ScheduleMatch m = ScheduleLinkRules.Match(spec, schedule.Activities, Facts(doc, spec, null));
-            var status = new Dictionary<long, string>();
-            int fromProgress = 0;
-            foreach (var kv in m.Links)
-            {
-                status[kv.Key] = ScheduleLinkRules.Status(kv.Value, asOf, out bool p);
-                if (p) fromProgress++;
-            }
+            ScheduleMatch m = ScheduleLinkRules.Match(spec, schedule, Facts(doc, spec, null));
+            JObject statusBasis = ScheduleLinkRules.StatusBasis(m, asOf, requestedCutoff, maxRows, out var status);
             string name = UniqueViewName(doc, "HZ 4D " + asOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " - " + source.Name);
 
             head["document"] = doc.Title;
             MatchJson(head, m, maxRows);
             head["as_of"] = asOf.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            head["include_as_of_day"] = includeAsOfDay;
+            head["last_included_day"] = ScheduleImport.Day(ScheduleLinkRules.LastIncludedDay(asOf, requestedCutoff));
             head["status_counts"] = new JObject(ScheduleLinkRules.Statuses.Select(s => new JProperty(s, status.Values.Count(v => v == s))));
-            head["status_basis"] = new JObject
-            {
-                ["from_progress"] = fromProgress, ["planned_only"] = status.Count - fromProgress,
-                ["means"] = "planned_only elements are coloured by planned dates; 'late' needs percent complete or actual dates and is never assigned to them."
-            };
+            head["status_basis"] = statusBasis;
             head["colors"] = new JObject(StatusColors.Select(c => new JProperty(c.Key, "#" + c.Value.Red.ToString("X2") + c.Value.Green.ToString("X2") + c.Value.Blue.ToString("X2"))));
+            head["source_view_id"] = viewId;
+            head["source_view_unique_id"] = source.UniqueId;
             head["view_name"] = name;
 
             var plan = new ResolvedPlan
@@ -71,38 +68,30 @@ namespace Horizun.Revit.Commands
                 Command = Name, DocumentKey = gate.Fingerprint,
                 RevitVersion = app?.Application?.VersionNumber, DocumentFingerprint = gate.Identity?.FingerprintDigest()
             };
-            plan.Elements.Add(new PlannedElement { UniqueId = "view:" + name, Action = PlannedAction.Create, ElementId = viewId });
-            foreach (var kv in status.OrderBy(k => k.Key))
-                plan.Elements.Add(new PlannedElement
-                {
-                    UniqueId = doc.GetElement(Rid.Make(kv.Key))?.UniqueId, ElementId = kv.Key, Action = PlannedAction.Modify,
-                    ProposedValues = new Dictionary<string, string> { { "status", kv.Value } }
-                });
-            string planHash = PlanHash(request, fileSha, "status_view");
+            ScheduleLinkRules.BindStatusViewPlan(plan, m, status, viewId, source.UniqueId, name);
+            string planHash = ScheduleLinkRules.PlanHash(request, fileSha, "status_view");
 
             if (dryRun)
-            {
-                head["dry_run"] = true;
-                DocumentGate.RecordResolvedPlan(plan);
-                DocumentGate.StampConfirmation(head, gate, Name, planHash, true,
-                    "the token binds the schedule file's SHA-256, the match spec, the view and as_of.");
-                ApplicationOutcome.StampRehearsal(head, status.Count + 1, 0, 0, 0);
-                return CommandResult.Ok(head);
-            }
-            if (status.Count == 0) return CommandResult.Fail("No element is linked to an activity; there is nothing to colour. Nothing was changed.");
+                return ScheduleLinkRules.RehearseTargets(head, m.Ambiguous.Count, DocumentGate.Confirmations, gate.Identity,
+                    planHash, plan, "the token binds the schedule SHA-256, match spec, source view identity, date cutoff and resolved overrides.", assumptions);
+            if (status.Count == 0)
+                return ScheduleLinkRules.NoStatusViewTargets(head, m, assumptions);
 
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, plan, null);
             if (refusal != null) return refusal;
 
             ElementId solid = SolidFill(doc);
             if (solid == ElementId.InvalidElementId)
-                return CommandResult.Fail("The document has no solid fill pattern to colour with. Nothing was changed.");
+                return AssumptionNotes.MarkFailure(CommandResult.FailWithDetail(
+                    "The document has no solid fill pattern to colour with. Nothing was changed.", head), "", assumptions);
 
             TransactionStatus commit = TransactionStatus.Uninitialized;
+            string cleanupError = null;
             ElementId dupId = ElementId.InvalidElementId;
             var refused = new List<long>();
-            using (var tx = new Transaction(doc, "Horizun: 4D status view"))
+            try
             {
+                using var tx = new Transaction(doc, "Horizun: 4D status view");
                 tx.Start();
                 try
                 {
@@ -118,53 +107,112 @@ namespace Horizun.Revit.Commands
                     try { commit = Guard.Commit(tx, "4D status view"); }
                     catch (SilentRollbackException ex) { commit = ex.Status; }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    if (tx.GetStatus() == TransactionStatus.Started) Guard.RollBack(tx);
-                    throw;
+                    var failure = ScheduleLinkRules.FailAfterRollback("Revit could not create the status view: " + ex.Message,
+                        () => Guard.RollBack(tx).StatusName, head, status.Count + 1, m.Ambiguous.Count, assumptions,
+                        () => tx.GetStatus().ToString());
+                    failure.Detail["postcondition"] = CheckStatusView(null, name,
+                        StatusViewReadSkipped((string)failure.Detail["transaction_status"])).ToJson();
+                    return failure;
                 }
             }
-            return VerifyStatusView(doc, gate, head, planHash, commit, dupId, name, status, refused, maxRows);
+            catch (Exception ex) when (commit == TransactionStatus.Committed)
+            {
+                cleanupError = ex.Message;
+            }
+
+            var result = VerifyStatusView(doc, gate, head, planHash, commit, dupId, name, solid, m, status, refused, maxRows, assumptions);
+            return ScheduleLinkRules.ReportCommittedCleanupFailure(result, cleanupError);
         }
 
         private CommandResult VerifyStatusView(Document doc, GateResult gate, JObject head, string planHash, TransactionStatus commit,
-                                               ElementId dupId, string name, Dictionary<long, string> status, List<long> refused, int maxRows)
+            ElementId dupId, string name, ElementId solid, ScheduleMatch match, Dictionary<long, string> status,
+            List<long> refused, int maxRows, IEnumerable<JObject> assumptions)
         {
-            View view = commit == TransactionStatus.Committed ? doc.GetElement(dupId) as View : null;
-            var post = new PostconditionCheck("view_exists", "view_name");
-            post.Compare("view_exists", true, view != null);
-            if (view != null) post.Compare("view_name", name, view.Name);
-            else post.Unreadable("view_name", name, "the duplicated view was not found after the commit.");
+            View view = null;
+            string viewReadError = null;
+            if (commit == TransactionStatus.Committed)
+            {
+                try { view = doc.GetElement(dupId) as View; }
+                catch (Exception ex) { viewReadError = ex.Message; }
+            }
+            else
+                viewReadError = StatusViewReadSkipped(commit.ToString());
+            var post = CheckStatusView(view, name, viewReadError);
 
-            int verified = 0, unverified = 0;
+            int verified = 0, mismatched = 0, unverified = 0;
             var mismatches = new JArray();
+            var readErrors = new JArray();
             foreach (var kv in status)
             {
                 if (refused.Contains(kv.Key)) continue;
-                bool ok = false;
-                try
+                // A measured absence of the view also proves its overrides are absent.
+                bool? matches = viewReadError == null ? false : (bool?)null;
+                if (view != null)
                 {
-                    Color c = view?.GetElementOverrides(Rid.Make(kv.Key)).SurfaceForegroundPatternColor;
-                    Color want = StatusColors[kv.Value];
-                    ok = c != null && c.IsValid && c.Red == want.Red && c.Green == want.Green && c.Blue == want.Blue;
+                    string uniqueId = match.LinkedUniqueIds[kv.Key];
+                    try
+                    {
+                        Element target = doc.GetElement(uniqueId);
+                        OverrideGraphicSettings actual = target == null ? null : view.GetElementOverrides(target.Id);
+                        Color want = StatusColors[kv.Value];
+                        matches = actual != null && actual.SurfaceForegroundPatternId == solid && actual.CutForegroundPatternId == solid &&
+                            ColorMatches(actual.SurfaceForegroundPatternColor, want) && ColorMatches(actual.CutForegroundPatternColor, want) &&
+                            ColorMatches(actual.ProjectionLineColor, want);
+                    }
+                    catch (Exception ex)
+                    {
+                        matches = null;
+                        if (readErrors.Count < maxRows)
+                            readErrors.Add(new JObject { ["element_id"] = kv.Key, ["unique_id"] = uniqueId, ["error"] = ex.Message });
+                    }
                 }
-                catch { }
-                if (ok) verified++;
-                else { unverified++; if (mismatches.Count < maxRows) mismatches.Add(kv.Key); }
+                if (matches == true) verified++;
+                else
+                {
+                    if (matches == false) mismatched++;
+                    unverified++;
+                    if (mismatches.Count < maxRows) mismatches.Add(kv.Key);
+                }
             }
-            head["dry_run"] = false;
             head["view_id"] = view == null ? (JToken)JValue.CreateNull() : Rid.Value(view.Id);
             head["postcondition"] = post.ToJson();
             head["overrides_verified"] = verified;
             head["overrides_refused_by_revit"] = new JArray(refused.Take(maxRows));
             head["overrides_not_verified"] = mismatches;
+            if (readErrors.Count > 0) head["override_read_errors"] = readErrors;
             DocumentGate.StampConfirmation(head, gate, Name, planHash, false);
-            ApplicationOutcome.Stamp(head, WriteTally.PerTarget(commit.ToString(), status.Count, 0, verified, unverified + refused.Count));
-            bool all = post.AllVerified && unverified == 0 && refused.Count == 0;
-            return all ? CommandResult.Ok(head)
-                : CommandResult.FailWithDetail("The status view did not fully verify: commit " + commit + ", " + refused.Count +
-                    " override(s) refused, " + unverified + " not re-read as requested. The view, if created, remains.", head);
+            bool viewMeasured = viewReadError == null && (view == null || post.AllMeasured);
+            return ScheduleLinkRules.CompleteStatusView(head, match, commit.ToString(), post.AllVerified,
+                viewMeasured, verified, refused.Count, mismatched, unverified, assumptions);
         }
+
+        private static string StatusViewReadSkipped(string status) =>
+            "The duplicated view was not re-read (transaction status: " + status + ").";
+
+        private static PostconditionCheck CheckStatusView(View view, string name, string viewReadError)
+        {
+            var post = new PostconditionCheck("view_exists", "view_name", "template_detached");
+            if (viewReadError == null) post.Compare("view_exists", true, view != null);
+            else post.Unreadable("view_exists", true, viewReadError);
+            if (view == null)
+            {
+                string reason = viewReadError ?? "the duplicated view was not found after the commit.";
+                post.Unreadable("view_name", name, reason);
+                post.Unreadable("template_detached", true, reason);
+                return post;
+            }
+
+            try { post.Compare("view_name", name, view.Name); }
+            catch (Exception ex) { post.Unreadable("view_name", name, ex.Message); }
+            try { post.Compare("template_detached", true, view.ViewTemplateId == ElementId.InvalidElementId); }
+            catch (Exception ex) { post.Unreadable("template_detached", true, ex.Message); }
+            return post;
+        }
+
+        private static bool ColorMatches(Color actual, Color expected) =>
+            actual != null && actual.IsValid && actual.Red == expected.Red && actual.Green == expected.Green && actual.Blue == expected.Blue;
 
         private static OverrideGraphicSettings Overrides(Color c, ElementId solid)
         {

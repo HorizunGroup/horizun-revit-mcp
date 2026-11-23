@@ -51,10 +51,21 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void No_unique_member_means_no_shift_rather_than_a_guess()
+        public void A_displacement_every_member_agrees_on_is_measured_without_a_unique_member()
+        {
+            // Two identical elbows: no unique member, but only +2 carries both onto theirs.
+            string voted;
+            double[] d = GroupRedefinitionRules.MeasureShift(new List<MemberSignature> { S(1, 10, 0), S(1, 10, 5) },
+                new List<MemberSignature> { S(1, 10, 2), S(1, 10, 7) }, out voted);
+            Assert.NotNull(d);
+            Assert.Equal(2, d[0], 9);
+        }
+
+        [Fact]
+        public void No_unique_member_and_no_agreed_displacement_means_no_shift_rather_than_a_guess()
         {
             var before = new List<MemberSignature> { S(1, 10, 0), S(1, 10, 5) };
-            var after = new List<MemberSignature> { S(1, 10, 2), S(1, 10, 7) };
+            var after = new List<MemberSignature> { S(1, 10, 2), S(1, 10, 3) };
             string why;
             Assert.Null(GroupRedefinitionRules.MeasureShift(before, after, out why));
             Assert.Contains("cannot be measured", why);
@@ -130,7 +141,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("[\"code\"] = \"not_workshared\"", worksets);
             Assert.Contains("CheckoutStatus.OwnedByOtherUser", worksets);
             string groups = Command("ManageGroupsCommand.cs");
-            Assert.Contains("[\"code\"] = \"api_absent\"", groups);
+            Assert.Contains("[\"code\"] = \"api_absent\"", Command("ManageGroupsCommand.Execution.cs"));
             Assert.Contains("GroupRedefinitionRules.ResolveScope", groups);
             Assert.Contains("GetAvailableAttachedDetailGroupTypeIds", groups);
         }
@@ -181,7 +192,7 @@ namespace Horizun.Core.Tests
             string groups = Command("ManageGroupsCommand.cs");
             Assert.Contains("UngroupRules.MembersToCheck", groups);
             Assert.Contains("UngroupRules.TypeHeld", groups);
-            Assert.Contains("RehearsalWhy(rehearsal)", groups);
+            Assert.Contains("RehearsalWhy(rehearsal)", Command("ManageGroupsCommand.Execution.cs"));
         }
     }
 }

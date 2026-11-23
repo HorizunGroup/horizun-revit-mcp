@@ -71,38 +71,18 @@ namespace Horizun.Revit.Commands
         /// </summary>
         private static string PerspectiveName(string name, CameraTriple c, int count) => PerspectiveRules.ViewName(name, c, count);
 
-        internal static void ValidatePerspective(Document doc, JObject a, Dictionary<string, Type> known)
+        internal static void ValidatePerspective(Document doc, JObject a)
         {
-            IList<CameraTriple> cams = PerspectiveCameras(a, UnitsOf(a));
+            PerspectiveCameras(a, UnitsOf(a));
+            Validate3DView(a, false);
             OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional);
-            string name = a.Value<string>("name");
-            if (string.IsNullOrWhiteSpace(name)) return;
-            // Revit refuses a second 3D view of the same name mid-transaction, which rolls
-            // the whole batch back; the rehearsal names the taken name instead.
-            var taken = new HashSet<string>(new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>()
-                .Where(v => !v.IsTemplate).Select(v => v.Name), StringComparer.Ordinal);
-            foreach (CameraTriple c in cams)
-            {
-                string wanted = PerspectiveName(name, c, cams.Count);
-                if (taken.Contains(wanted))
-                    throw new ArgumentException("a 3D view is already named '" + wanted + "'; give create_perspective another name. Nothing was written.");
-                Reserve3DViewName(wanted, known);
-            }
         }
 
-        /// <summary>
-        /// A 3D view name this batch will write, reserved in `known` like the batch's sheet
-        /// numbers: two creates of one name (a perspective, a fan member, a create_3d) each
-        /// pass the check against the document and then roll the whole batch back at apply.
-        /// </summary>
-        internal static void Reserve3DViewName(string wanted, Dictionary<string, Type> known)
+        private static IEnumerable<string> PerspectiveViewNames(JObject action)
         {
-            if (string.IsNullOrWhiteSpace(wanted)) return;
-            string reserved = "view3d-name:" + wanted;
-            if (known.ContainsKey(reserved))
-                throw new ArgumentException("the 3D view name '" + wanted + "' appears twice in this batch; each view " +
-                                            "needs its own. Nothing was written.");
-            known.Add(reserved, typeof(View3D));
+            IList<CameraTriple> cameras = PerspectiveCameras(action, UnitsOf(action));
+            string name = action.Value<string>("name");
+            return cameras.Select(camera => PerspectiveName(name, camera, cameras.Count));
         }
 
         private static JArray Arr3(double[] v) => new JArray(v[0], v[1], v[2]);
@@ -137,12 +117,14 @@ namespace Horizun.Revit.Commands
             ElementId typeId = ResolveVft(doc, a, ViewFamily.ThreeDimensional).Id;
             string name = a.Value<string>("name");
             var made = new JArray();
+            var styleSent = new JObject();
             View3D first = null;
             foreach (CameraTriple c in cams)
             {
                 View3D view = View3D.CreatePerspective(doc, typeId);
                 // ViewOrientation3D takes (eye, up, forward) - in that order.
                 view.SetOrientation(new ViewOrientation3D(Xyz(c.Eye), Xyz(c.Up), Xyz(c.Forward)));
+                Apply3DStyle(view, a, styleSent);
                 string wanted = PerspectiveName(name, c, cams.Count);
                 if (wanted != null) view.Name = wanted;
                 JObject row = CameraJson(c, wanted);
@@ -151,6 +133,7 @@ namespace Horizun.Revit.Commands
                 if (first == null) first = view;
             }
             a["__perspective"] = made;
+            if (styleSent["display_style"] != null) a["__perspective_style"] = styleSent["display_style"];
             return first;
         }
 
@@ -181,13 +164,15 @@ namespace Horizun.Revit.Commands
                         string wanted = row.Value<string>("name");
                         bool named = string.IsNullOrEmpty(wanted) || string.Equals(view.Name, wanted, StringComparison.Ordinal);
                         bool perspective = view.IsPerspective;
+                        bool styled = a["__perspective_style"] == null || string.Equals(view.DisplayStyle.ToString(), (string)a["__perspective_style"], StringComparison.Ordinal);
                         row["reread"] = new JObject
                         {
                             ["eye_internal_feet"] = Arr3(reread.Eye), ["forward"] = Arr3(reread.Forward), ["up"] = Arr3(reread.Up),
                             ["name"] = view.Name, ["is_perspective"] = perspective
                         };
                         row["orientation_verified"] = same;
-                        rowOk = perspective && same && named;
+                        row["display_style_verified"] = styled;
+                        rowOk = perspective && same && named && styled;
                     }
                     else row["reread"] = JValue.CreateNull();
                 }

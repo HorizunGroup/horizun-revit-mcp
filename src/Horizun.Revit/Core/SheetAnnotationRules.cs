@@ -86,21 +86,6 @@ namespace Horizun.Revit.Core
         public bool IsEmpty { get { return ViewportCount + ScheduleInstanceCount == 0; } }
     }
 
-    public sealed class ViewportFact
-    {
-        public long ElementId;
-        public long ViewId;
-        public long SheetId;
-        public string ViewName;
-        public string SheetNumber;
-        public string TypeName;
-        public string DetailNumber;
-        public double? X, Y;
-        public int? Rotation;
-        public bool LabelReadable = true;
-        public HashSet<string> Unreadable = new HashSet<string>(StringComparer.Ordinal);
-    }
-
     /// <summary>
     /// Annotations in one view, counted by kind and kept apart by where they live.
     /// A dimension is view-specific; a door tag is view-specific; the door is not.

@@ -89,6 +89,9 @@ namespace Horizun.Revit.Core
                 if (replyData["spatial_check"] is JObject sc)
                     receipt["spatial_check"] = new JObject { ["status"] = sc["status"]?.DeepClone(), ["errors"] = sc["errors"]?.DeepClone(), ["warnings"] = sc["warnings"]?.DeepClone() };
                 Copy(receipt, "attention", Short(replyData["attention"], 300));
+                // Exceptions a caller DECLARED (a run allowed to cross a level, with its reason): a
+                // decision somebody made, so it belongs in the history next to what it allowed.
+                Copy(receipt, "declared_exceptions", replyData["declared_exceptions"] is JArray de && de.Count > 0 ? de : null);
             }
             if (request != null)
             {

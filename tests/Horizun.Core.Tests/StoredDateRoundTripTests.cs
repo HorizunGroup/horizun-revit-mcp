@@ -85,26 +85,7 @@ namespace Horizun.Core.Tests
             Assert.Equal("later", UndoRules.Last(batches, out _).Id);
         }
 
-        [Fact]
-        public void A_reloaded_coordination_finding_keeps_its_dates_and_the_bcf_date_is_xs_datetime()
-        {
-            string path = Path.Combine(_dir, "coord.json");
-            var findings = new Dictionary<string, CoordinationFinding>
-            {
-                ["0123456789abcdef0123456789abcdef"] = new CoordinationFinding
-                {
-                    Id = "0123456789abcdef0123456789abcdef", SideA = "a", SideB = "b", CategoryA = "Walls", CategoryB = "Ducts",
-                    FirstSeenUtc = "2026-12-31T23:00:00.0000000Z", LastSeenUtc = "2027-01-01T01:00:00.0000000Z", TimesSeen = 2
-                }
-            };
-            CoordinationLedger.Save(path, "doc", findings);
-            CoordinationFinding f = CoordinationLedger.Load(path, out _)["0123456789abcdef0123456789abcdef"];
-            Assert.Equal("2026-12-31T23:00:00.0000000Z", f.FirstSeenUtc);
-            string xml = CoordinationRules.BcfMarkupXml(f, "doc");
-            Match m = Regex.Match(xml, "<CreationDate>([^<]*)</CreationDate>");
-            Assert.True(m.Success);
-            Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", m.Groups[1].Value);
-        }
+        
 
         [Fact]
         public void The_repair_memory_keeps_its_dates_and_trims_oldest_first()

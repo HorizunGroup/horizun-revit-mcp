@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // horizun_quantities — volume takeoff that refuses to pick a number for you.
@@ -60,12 +60,61 @@ namespace Horizun.Revit.Commands
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
+            // A request that names only the keys of ONE mode and no mode runs that mode and says so
+            // (SUPUESTO) instead of refusing for a missing word. See QuantitiesModeInference.
+            // Keys of two modes and no mode: refused, naming the keys of each mode (nothing is deduced).
+            var assumptions = new List<JObject>();
+            string effective = paramsJson;
+            QuantitiesModeDecision decision = null;
+            JObject probe = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(paramsJson)) probe = Horizun.Revit.Core.JsonText.ParseObject(paramsJson);
+            }
+            catch (Exception) { probe = null; }   // ExecuteRequest answers the parse error itself
+            if (probe != null)
+            {
+                // THE DOCUMENT FIRST. A request aimed at another model is refused for THAT, before anything
+                // about its keys is judged: answering "keys of two modes" about a model nobody is looking at
+                // sends the caller to fix the wrong thing.
+                CommandResult wrongDocument = DocumentRefusal(app, probe);
+                if (wrongDocument != null) return wrongDocument;
+                decision = QuantitiesModeInference.Decide(probe);
+                if (decision.Refusal != null) return CommandResult.Fail(decision.Refusal);
+                if (decision.InferredMode != null)
+                {
+                    probe["mode"] = decision.InferredMode;
+                    JObject row = QuantitiesModeInference.AssumptionRow(decision);
+                    // A key the deduced mode does not read, sent as null or false, asks for nothing: it is
+                    // dropped (and said so) instead of turning the deduced run into a refusal.
+                    var dropped = new List<string>();
+                    foreach (string k in QuantitiesModeInference.NotReadByMode(decision.InferredMode))
+                        if (probe[k] != null && !QuantitiesModeInference.IsSent(probe, k)) { probe.Remove(k); dropped.Add(k); }
+                    if (dropped.Count > 0)
+                        row["why"] = (string)row["why"] + " Dropped as asking for nothing (null or false), and not read by that mode: " + string.Join(", ", dropped) + ".";
+                    effective = probe.ToString(Formatting.None);
+                    assumptions.Add(row);
+                }
+            }
+            CommandResult result = ExecuteRequest(app, effective);
+            if (assumptions.Count == 0) return result;
+            // A deduced mode that then refused says so: the refusal is of the deduced mode, not of one the caller chose.
+            return result != null && !result.Success
+                ? AssumptionNotes.MarkFailure(result, QuantitiesModeInference.FailurePrefix(decision), assumptions)
+                : AssumptionNotes.StampResult(result, assumptions);
+        }
+
+        /// <summary>
+        /// Null when the request may be read against the active document; otherwise the refusal (no document,
+        /// target_document naming another model, target_document_title not matching). Pure reads, no side effects:
+        /// run before the mode is judged and again by ExecuteRequest.
+        /// </summary>
+        private CommandResult DocumentRefusal(UIApplication app, JObject request)
+        {
             var doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No document is open.");
-
-            JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
-            catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
 
             var wantedTitle = request.Value<string>("target_document_title");
             if (!string.IsNullOrWhiteSpace(wantedTitle))
@@ -79,6 +128,19 @@ namespace Horizun.Revit.Commands
                         "is a priced bill of quantities for a file nobody looked at. Activate the intended document, " +
                         "or check you are talking to the right Revit host.");
             }
+            return null;
+        }
+
+        private CommandResult ExecuteRequest(UIApplication app, string paramsJson)
+        {
+            var doc = app.ActiveUIDocument?.Document;
+            if (doc == null) return CommandResult.Fail("No document is open.");
+
+            JObject request;
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
+            catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+            CommandResult wrongDocument = DocumentRefusal(app, request);
+            if (wrongDocument != null) return wrongDocument;
 
             var detail = ParseDetail(request.Value<string>("detail_level"));
             double tolPct = request["tolerance_pct"] != null ? request.Value<double>("tolerance_pct") : 1.0;
@@ -94,7 +156,14 @@ namespace Horizun.Revit.Commands
             if (string.IsNullOrWhiteSpace(mode)) mode = "volume";
             string foreignArgument = ForeignModeArgument(mode, request);   // QuantitiesModeArguments.cs
             if (foreignArgument != null) return CommandResult.Fail(foreignArgument);
-            if (mode == "takeoff") return ExecuteTakeoff(doc, request, detail, top);
+            // OPT-IN cooperative reading: volume and takeoff, the two modes that walk elements
+            // and read geometry. The other two modes refuse it instead of accepting and ignoring it.
+            string coopFingerprint = CooperativeOptions.FingerprintOf(request, Name, doc);
+            CooperativeOptions cooperative = CooperativeOptions.Read(request, coopFingerprint);
+            if (cooperative.Refusal != null) return CommandResult.Fail("cooperative: " + cooperative.Refusal);
+            if (cooperative.Requested && (mode == "room_finishes" || mode == "carbon"))
+                return CommandResult.Fail(CooperativePartial.RefuseUnhonoured(Name, mode, "volume, takeoff"));
+            if (mode == "takeoff") return ExecuteTakeoff(doc, request, detail, top, cooperative, coopFingerprint);
             if ((mode == "room_finishes" || mode == "carbon") && request["group_by"] != null)
                 return CommandResult.Fail("group_by is read only in mode 'takeoff' (group_by='room'); here it would be silently ignored. Nothing was measured.");
             if (mode == "room_finishes") return ExecuteRoomFinishes(doc, request, top);
@@ -191,8 +260,18 @@ namespace Horizun.Revit.Commands
             int noQuantityAtAll = 0;
             int rowsWanted = 0;
 
+            // COOPERATIVE: a stable order so a cursor position keeps its meaning, and a scope that
+            // is asked BETWEEN elements. Without the opt-in neither exists and the loop is the
+            // original one.
+            CooperativeRead.Scope coopScope = cooperative.Begin("quantities volume", elements.Count);
+            if (coopScope != null) elements = elements.OrderBy(el => Rid.Value(el.Id)).ToList();
+            var volumeWalk = new PositionWalk(coopScope, cooperative.StartAt, elements.Count);
+
             foreach (var e in elements)
             {
+                WalkStep volumeStep = volumeWalk.Next();
+                if (volumeStep == WalkStep.Skip) continue;
+                if (volumeStep == WalkStep.Stop) break;
                 Measurement mParam = ReadParamVolume(e).Convert(Guard.ToM3);
                 Measurement mGeom = ReadGeometryVolume(e, options).Convert(Guard.ToM3);
                 Measurement mMat = ReadMaterialVolume(e).Convert(Guard.ToM3);
@@ -314,7 +393,7 @@ namespace Horizun.Revit.Commands
                 }
             }
 
-            return CommandResult.Ok(new JObject
+            var volumeBody = new JObject
             {
                 ["detail_level"] = detail.ToString(),
                 ["code_parameter"] = codeParameter,
@@ -362,8 +441,46 @@ namespace Horizun.Revit.Commands
                 ["shown"] = rows.Count,
                 ["top"] = top,
                 ["truncated"] = rowsWanted > rows.Count
-            });
+            };
+            if (coopScope != null)
+            {
+                bool continuation = volumeWalk.From > 0;
+                JObject account = CooperativePartial.Account("elements", volumeWalk.Measured, elements.Count,
+                    RangeOf(volumeWalk.From, volumeWalk.StoppedAt, "element id ascending"),
+                    volumeWalk.Stopped || continuation
+                        ? RangeOutside(volumeWalk.From, volumeWalk.StoppedAt, elements.Count) : null,
+                    "between elements; one element's three volume reads are never split");
+                bool partial = CooperativePartial.Apply(volumeBody, cooperative, coopScope, coopFingerprint, account,
+                    true, volumeWalk.StoppedAt, "");
+                if (!partial && continuation)
+                {
+                    volumeBody["partial"] = true;
+                    volumeBody["coverage_complete"] = false;
+                    volumeBody["partial_reason"] = "elements_of_other_pages_are_not_in_this_reply";
+                }
+                if (partial || continuation)
+                    volumeBody["partial_note"] = "PAGE, NOT THE MODEL: every total, the by_code rollup and the headline " +
+                        "above cover ONLY the element range in cooperative.measured_account.measured. Sum the pages " +
+                        "yourself; do not quote one page as the quantity of the category.";
+            }
+            return CommandResult.Ok(volumeBody);
         }
+
+        /// <summary>The element range a cooperative page measured, in the order a cursor counts.</summary>
+        private static JObject RangeOf(int from, int toExclusive, string order) => new JObject
+        {
+            ["from_position"] = from, ["to_position_exclusive"] = toExclusive,
+            ["count"] = Math.Max(0, toExclusive - from), ["order"] = order
+        };
+
+        /// <summary>What a cooperative page did NOT measure: before its start, and from where it stopped.</summary>
+        private static JObject RangeOutside(int from, int stoppedAt, int total) => new JObject
+        {
+            ["before_this_page"] = RangeOf(0, from, "element id ascending"),
+            ["after_this_page"] = RangeOf(stoppedAt, total, "element id ascending"),
+            ["means"] = "never looked at in THIS reply. The earlier range belongs to a previous page of the same " +
+                        "request; the later one is what cooperative.cursor continues."
+        };
 
         // =====================================================================
         // mode: takeoff - the caller-named quantities, per element, for the budget join.
@@ -415,7 +532,8 @@ namespace Horizun.Revit.Commands
             public TakeoffPlacement Placement;      // null: the host
         }
 
-        private CommandResult ExecuteTakeoff(Document doc, JObject request, ViewDetailLevel detail, int top)
+        private CommandResult ExecuteTakeoff(Document doc, JObject request, ViewDetailLevel detail, int top,
+                                             CooperativeOptions cooperative, string coopFingerprint)
         {
             string problem;
             List<TakeoffDefinition> defs = ParseTakeoffDefinitions(request["quantities"], out problem);
@@ -442,6 +560,11 @@ namespace Horizun.Revit.Commands
             if (rowsFileTok != null && rowsFileTok.Type != JTokenType.Boolean)
                 return CommandResult.Fail("rows_file must be true or false. Nothing was measured.");
             bool rowsFile = rowsFileTok != null && (bool)rowsFileTok;
+            if (cooperative.Requested && rowsFile)
+                return CommandResult.Fail("cooperative cannot be combined with rows_file: a budgeted takeoff may stop " +
+                    "with only a prefix of the rows, and that file is exactly what horizun_budget_compare takes as " +
+                    "model_rows_path - a comparison over a prefix prices a smaller building. Run the budgeted pages " +
+                    "without rows_file, or the full takeoff with rows_file and no cooperative. Nothing was measured.");
 
             var idsToken = request["element_ids"] as JArray;
             bool byIds = idsToken != null && idsToken.Count > 0;
@@ -639,8 +762,15 @@ namespace Horizun.Revit.Commands
             bool visibilityComplete = true;
             bool anyLinkMeasured = false;
 
+            // COOPERATIVE: one flat position across the scope entries, elements in id order inside
+            // each, so a cursor keeps its meaning. Without the opt-in none of this exists.
+            CooperativeRead.Scope coopScope = cooperative.Begin("quantities takeoff", requested);
+            var takeoffWalk = new PositionWalk(coopScope, cooperative.StartAt, requested);
+            bool coopStopped = false;
+
             foreach (ScopeEntry entry in scope)
             {
+                if (coopStopped) break;
                 Document owner = entry.Owner;
                 RevitLinkInstance link = entry.Link;
                 string title = SafeTitle(owner);
@@ -680,8 +810,14 @@ namespace Horizun.Revit.Commands
                         DocumentVisibilityCoverage.LinkedDocumentMeans;
                 documents.Add(docJson);
 
-                foreach (Element e in entry.Elements)
+                IEnumerable<Element> entryElements = coopScope == null
+                    ? (IEnumerable<Element>)entry.Elements
+                    : entry.Elements.OrderBy(el => Rid.Value(el.Id)).ToList();
+                foreach (Element e in entryElements)
                 {
+                    WalkStep takeoffStep = takeoffWalk.Next();
+                    if (takeoffStep == WalkStep.Skip) continue;
+                    if (takeoffStep == WalkStep.Stop) { coopStopped = true; break; }
                     string code = ReadCode(owner, e, classificationParameter);
                     TakeoffCodeTally tally;
                     if (!byCode.TryGetValue(code, out tally)) byCode[code] = tally = new TakeoffCodeTally();
@@ -771,7 +907,8 @@ namespace Horizun.Revit.Commands
             }
 
             bool coverageComplete = visibilityComplete && linksNotLoaded.Count == 0 && unreadableReads == 0 && invalidReads == 0 && failed.Count == 0;
-            string headline = requested + " element(s) measured across " + documents.Count + " document(s) for " + defs.Count +
+            int measuredCount = coopScope == null ? requested : takeoffWalk.Measured;
+            string headline = measuredCount + " element(s) measured across " + documents.Count + " document(s) for " + defs.Count +
                               " quantity(ies); " + byCode.Count + " distinct code value(s) under '" + classificationParameter + "'.";
             if (unreadableReads > 0) headline += " " + unreadableReads + " reading(s) could NOT be read - every code they touch is a lower bound.";
             if (invalidReads > 0) headline += " " + invalidReads + " reading(s) were not numbers or not in the declared unit.";
@@ -832,6 +969,32 @@ namespace Horizun.Revit.Commands
                       (rowsFile ? "pass rows_file.path as its model_rows_path: that file holds every row." : "re-run with top >= rows_matching, or with rows_file=true and pass rows_file.path as its model_rows_path.")
                     : null
             };
+            if (coopScope != null)
+            {
+                bool continuation = takeoffWalk.From > 0;
+                JObject account = CooperativePartial.Account("elements", measuredCount, requested,
+                    RangeOf(takeoffWalk.From, takeoffWalk.StoppedAt, "scope entry order, then element id ascending"),
+                    takeoffWalk.Stopped || continuation
+                        ? RangeOutside(takeoffWalk.From, takeoffWalk.StoppedAt, requested) : null,
+                    "between elements; one element's quantity reads are never split");
+                bool partial = CooperativePartial.Apply(takeoffResult, cooperative, coopScope, coopFingerprint, account,
+                    true, takeoffWalk.StoppedAt, "");
+                if (!partial && continuation)
+                {
+                    takeoffResult["partial"] = true;
+                    takeoffResult["coverage_complete"] = false;
+                    takeoffResult["partial_reason"] = "elements_of_other_pages_are_not_in_this_reply";
+                }
+                if (partial || continuation)
+                {
+                    // `truncated` is what horizun_budget_compare refuses: a comparison over one page is a
+                    // comparison of a smaller building.
+                    takeoffResult["truncated"] = true;
+                    takeoffResult["partial_note"] = "PAGE, NOT THE MODEL: by_code, coverage and rows cover ONLY the " +
+                        "element range in cooperative.measured_account.measured. horizun_budget_compare refuses this " +
+                        "reply on purpose. Sum the pages yourself, or run the full takeoff without cooperative.";
+                }
+            }
             if (roomReader != null)
             {
                 // Exact like by_code: every matched element is in one key, rows shown or not.
@@ -1154,7 +1317,22 @@ namespace Horizun.Revit.Commands
                 {
                     // A parameter that is merely NAMED "Volume" is read only when it measures a
                     // volume: a family's own "Volume" text or number is not one (audit 2026-10-08, 6.3).
-                    Parameter named = e.LookupParameter("Volume");
+                    // By name first (English, Spanish); in any other language, the one parameter whose SPEC is a
+                    // volume (review M2: a name list fails again in a third language). Two or more are not guessed.
+                    Parameter named = e.LookupParameter("Volume") ?? e.LookupParameter("Volumen");
+                    if (named == null)
+                    {
+                        var byspec = new List<Parameter>();
+                        foreach (Parameter q in e.Parameters)
+                        {
+                            try { if (q.StorageType == StorageType.Double && q.Definition?.GetDataType() == SpecTypeId.Volume) byspec.Add(q); }
+                            catch { }
+                        }
+                        if (byspec.Count > 1)
+                            return Measurement.NotApplicable("This element has " + byspec.Count + " volume parameters and none named Volume; " +
+                                                             "which one is the element's volume is not guessed.");
+                        named = byspec.Count == 1 ? byspec[0] : null;
+                    }
                     ForgeTypeId namedSpec = null;
                     try { namedSpec = named?.Definition?.GetDataType(); } catch { namedSpec = null; }
                     if (named != null && namedSpec != SpecTypeId.Volume)

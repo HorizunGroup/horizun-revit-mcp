@@ -48,6 +48,10 @@ namespace Horizun.Revit.Core
         [JsonProperty("tu")] public string TypeUniqueId;
         [JsonProperty("lvl")] public string Level;
         [JsonProperty("ws")] public string Workset;
+        [JsonProperty("last_changed_by")] public string LastChangedBy;
+        [JsonProperty("owner")] public string Owner;
+        [JsonProperty("checkout")] public string Checkout;
+        [JsonProperty("worksharing_reason")] public string WorksharingReason = "not recorded in snapshot";
         [JsonProperty("phc")] public string PhaseCreated;
         [JsonProperty("phd")] public string PhaseDemolished;
         /// <summary>minX,minY,minZ,maxX,maxY,maxZ in internal feet, or null.</summary>
@@ -55,12 +59,15 @@ namespace Horizun.Revit.Core
         /// <summary>A point (3 values) or a curve's two end points (6 values), internal feet, or null.</summary>
         [JsonProperty("loc")] public double[] Location;
         [JsonProperty("geo")] public string GeometryHash;
+        /// <summary>HOST_VOLUME_COMPUTED in cubic feet, or null when the element reports none (or the snapshot predates it).</summary>
+        [JsonProperty("vol", NullValueHandling = NullValueHandling.Ignore)] public double? Volume;
         [JsonProperty("p")] public SortedDictionary<string, string> Parameters = new SortedDictionary<string, string>(StringComparer.Ordinal);
     }
 
     public sealed class DiffType
     {
         [JsonProperty("u")] public string UniqueId;
+        [JsonProperty("bic", NullValueHandling = NullValueHandling.Ignore)] public string BuiltInCategory;
         [JsonProperty("cat")] public string Category;
         [JsonProperty("fam")] public string Family;
         [JsonProperty("name")] public string Name;
@@ -108,6 +115,8 @@ namespace Horizun.Revit.Core
         [JsonProperty("unique_id")] public string UniqueId;
         [JsonProperty("before_unique_id", NullValueHandling = NullValueHandling.Ignore)] public string BeforeUniqueId;
         [JsonProperty("element_id")] public long ElementId;
+        /// <summary>The language-independent key (OST_*); Category is its display name in the reading Revit's language.</summary>
+        [JsonProperty("built_in_category")] public string BuiltInCategory;
         [JsonProperty("category")] public string Category;
         [JsonProperty("discipline")] public string Discipline;
         [JsonProperty("family")] public string Family;
@@ -117,6 +126,13 @@ namespace Horizun.Revit.Core
         [JsonProperty("moved_mm", NullValueHandling = NullValueHandling.Ignore)] public double? MovedMm;
         [JsonProperty("type_changed")] public bool TypeChanged;
         [JsonProperty("changes")] public List<DiffChange> Changes = new List<DiffChange>();
+        /// <summary>horizun_session | not_in_session_record; null when the origin was not assessed (ModelDiffOrigin).</summary>
+        [JsonProperty("origin", NullValueHandling = NullValueHandling.Ignore)] public string Origin;
+        [JsonProperty("last_changed_by")] public string LastChangedBy;
+        [JsonProperty("owner")] public string Owner;
+        [JsonProperty("checkout")] public string Checkout;
+        [JsonProperty("worksharing_reason")] public string WorksharingReason;
+        [JsonProperty("worksharing_observed_on")] public string WorksharingObservedOn;
     }
 
     public sealed class DiffResult
@@ -375,7 +391,7 @@ namespace Horizun.Revit.Core
         public static JObject Meta(DiffSnapshot s, string sha256, long bytes)
         {
             var byCategory = new JObject();
-            foreach (var g in s.Elements.GroupBy(e => e.Category ?? "(none)").OrderBy(g => g.Key, StringComparer.Ordinal))
+            foreach (var g in s.Elements.GroupBy(e => CategoryKey(e.BuiltInCategory, e.Category)).OrderBy(g => g.Key, StringComparer.Ordinal))
                 byCategory[g.Key] = g.Count();
             return new JObject
             {
@@ -452,7 +468,7 @@ namespace Horizun.Revit.Core
                 if (changes.Count == 0) continue;
                 r.TypeRows.Add(new DiffRow
                 {
-                    State = Modified, UniqueId = kv.Key, Category = now.Category, Family = now.Family, Type = now.Name,
+                    State = Modified, UniqueId = kv.Key, BuiltInCategory = now.BuiltInCategory, Category = now.Category, Family = now.Family, Type = now.Name,
                     Discipline = null, Changes = changes
                 });
             }
@@ -474,17 +490,23 @@ namespace Horizun.Revit.Core
 
         private static DiffRow Whole(string state, DiffElement e) => new DiffRow
         {
-            State = state, UniqueId = e.UniqueId, ElementId = e.Id, Category = e.Category,
-            Discipline = DisciplineOf(e.BuiltInCategory), Family = e.Family, Type = e.Type, Level = e.Level
+            State = state, UniqueId = e.UniqueId, ElementId = e.Id, BuiltInCategory = e.BuiltInCategory, Category = e.Category,
+            Discipline = DisciplineOf(e.BuiltInCategory), Family = e.Family, Type = e.Type, Level = e.Level,
+            LastChangedBy = e.LastChangedBy, Owner = e.Owner, Checkout = e.Checkout, WorksharingReason = e.WorksharingReason,
+            WorksharingObservedOn = state == Deleted ? "before" : "after"
         };
 
         /// <summary>The row describing what changed between two records of one element, or null when nothing did.</summary>
         public static DiffRow Changed(DiffElement was, DiffElement now, DiffOptions o, bool inferred)
         {
             var changes = new List<DiffChange>();
-            bool typeChanged = !string.Equals(was.TypeUniqueId, now.TypeUniqueId, StringComparison.Ordinal) ||
-                               !string.Equals(was.Family, now.Family, StringComparison.Ordinal) ||
-                               !string.Equals(was.Type, now.Type, StringComparison.Ordinal);
+            // The type's UniqueId decides when both records carry one: a system family's
+            // name is TRANSLATED by the reading Revit ("Basic Wall" / "Muro basico"), so
+            // comparing names reported every wall as re-typed after a language switch.
+            bool typeChanged = !string.IsNullOrEmpty(was.TypeUniqueId) && !string.IsNullOrEmpty(now.TypeUniqueId)
+                ? !string.Equals(was.TypeUniqueId, now.TypeUniqueId, StringComparison.Ordinal)
+                : !string.Equals(was.Family, now.Family, StringComparison.Ordinal) ||
+                  !string.Equals(was.Type, now.Type, StringComparison.Ordinal);
             if (typeChanged)
                 changes.Add(new DiffChange { Field = "type", Before = was.Family + " : " + was.Type, After = now.Family + " : " + now.Type });
             Attr(changes, "level", was.Level, now.Level);
@@ -499,6 +521,8 @@ namespace Horizun.Revit.Core
                                              After = Coords(now.Location ?? Center(now.BoundingBox)) });
             if (!string.Equals(was.GeometryHash, now.GeometryHash, StringComparison.Ordinal))
                 changes.Add(new DiffChange { Field = "geometry", Before = was.GeometryHash, After = now.GeometryHash });
+            if (was.Volume.HasValue && now.Volume.HasValue && Math.Abs(was.Volume.Value - now.Volume.Value) > 1e-6)
+                changes.Add(new DiffChange { Field = "volume_m3", Before = CubicMetres(was.Volume.Value), After = CubicMetres(now.Volume.Value) });
             changes.AddRange(ParamChanges(was.Parameters, now.Parameters, o.ValueTolerance, "param:"));
 
             if (changes.Count == 0 && !inferred) return null;
@@ -507,8 +531,10 @@ namespace Horizun.Revit.Core
             return new DiffRow
             {
                 State = Modified, UniqueId = now.UniqueId, BeforeUniqueId = inferred ? was.UniqueId : null,
-                ElementId = now.Id, Category = now.Category, Discipline = DisciplineOf(now.BuiltInCategory),
+                ElementId = now.Id, BuiltInCategory = now.BuiltInCategory, Category = now.Category, Discipline = DisciplineOf(now.BuiltInCategory),
                 Family = now.Family, Type = now.Type, Level = now.Level, Inferred = inferred,
+                LastChangedBy = now.LastChangedBy, Owner = now.Owner, Checkout = now.Checkout, WorksharingReason = now.WorksharingReason,
+                WorksharingObservedOn = "after",
                 MovedMm = isMove ? Math.Round(moved.Value * 304.8, 2) : (double?)null,
                 TypeChanged = typeChanged, Changes = changes
             };
@@ -610,7 +636,18 @@ namespace Horizun.Revit.Core
             return pairs;
         }
 
-        private static string Key(DiffElement e) => (e.Category ?? "") + "\u001f" + (e.Family ?? "") + "\u001f" + (e.Type ?? "");
+        // Language-independent: the BuiltInCategory and the type's UniqueId, never the
+        // translated category or system-family name. Names only when a record lacks them.
+        private static string Key(DiffElement e) =>
+            CategoryKey(e.BuiltInCategory, e.Category) + "\u001f" +
+            (!string.IsNullOrEmpty(e.TypeUniqueId) ? "tu:" + e.TypeUniqueId : (e.Family ?? "") + "\u001f" + (e.Type ?? ""));
+
+        /// <summary>The OST_* name when known; otherwise the display name, marked as such.</summary>
+        public static string CategoryKey(string builtInCategory, string displayName) =>
+            !string.IsNullOrEmpty(builtInCategory) ? builtInCategory : "name:" + (displayName ?? "(none)");
+
+        private static string CubicMetres(double cubicFeet) =>
+            Math.Round(cubicFeet * 0.028316846592, 6).ToString("0.######", CultureInfo.InvariantCulture);
 
         // ---- reporting --------------------------------------------------------------------
 
@@ -630,7 +667,7 @@ namespace Horizun.Revit.Core
                 ["inferred_pairs"] = r.InferredPairs,
                 ["shared_unique_ids"] = r.Shared,
                 ["unique_id_overlap"] = Math.Round(r.Overlap, 4),
-                ["by_category"] = Group(r.Rows, x => x.Category),
+                ["by_category"] = ByCategory(r.Rows),
                 ["by_discipline"] = Group(r.Rows, x => x.Discipline),
                 ["by_level"] = Group(r.Rows, x => x.Level)
             };
@@ -640,6 +677,32 @@ namespace Horizun.Revit.Core
                     "shared: the model was very likely re-created, so added/deleted here mostly mean 're-identified'. " +
                     "heuristic_match=true pairs elements by category, family, type and location; those pairs are " +
                     "marked inferred=true and are an inference, not identity.";
+            return o;
+        }
+
+        /// <summary>
+        /// Per BuiltInCategory: counts, the display name the reading Revit gave it, and how
+        /// many modified rows changed each field (param:bip:..., location, type...) - "which
+        /// parameter changed" answered per category without paging every row.
+        /// </summary>
+        private static JObject ByCategory(List<DiffRow> rows)
+        {
+            var o = new JObject();
+            foreach (var g in rows.GroupBy(x => CategoryKey(x.BuiltInCategory, x.Category)).OrderBy(g => g.Key, StringComparer.Ordinal))
+            {
+                var fields = new JObject();
+                foreach (var f in g.Where(x => x.State == Modified).SelectMany(x => x.Changes.Select(c => c.Field).Distinct())
+                                   .GroupBy(f => f).OrderBy(f => f.Key, StringComparer.Ordinal))
+                    fields[f.Key] = f.Count();
+                o[g.Key] = new JObject
+                {
+                    ["name"] = g.Select(x => x.Category).LastOrDefault(n => !string.IsNullOrEmpty(n)),
+                    ["added"] = g.Count(x => x.State == Added),
+                    ["deleted"] = g.Count(x => x.State == Deleted),
+                    ["modified"] = g.Count(x => x.State == Modified),
+                    ["changed_fields"] = fields
+                };
+            }
             return o;
         }
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -22,8 +22,8 @@ namespace Horizun.Server.Tests
             // Seven documents (the ISO 19650 project-context schema and horizun://session/toolsets joined the five) and one
             // MCP App. The app lives under ui:// because that is the scheme the Apps
             // extension names; it is as virtual as the rest. The impact preview is the
-            // second app.
-            Assert.Equal(9, resources.Count);
+            // second app. Community edition: the clash viewer app is not in this edition.
+            Assert.Equal(8, resources.Count);
             foreach (JObject resource in resources)
             {
                 string uri = (string)resource["uri"];
@@ -58,8 +58,9 @@ namespace Horizun.Server.Tests
             JArray workflows = (JArray)catalog["workflows"];
 
             Assert.Equal(McpWorkflowCatalog.Schema, (string)catalog["schema"]);
-            Assert.True(workflows.Count >= 20,
-                        "the gap asked for 20 priority procedures; there are " + workflows.Count);
+            // Community edition: the ten Pro procedures (DWG, MEP, coordination, families) are not in this catalogue.
+            Assert.True(workflows.Count >= 15,
+                        "the Community catalogue keeps 15 procedures; there are " + workflows.Count);
 
             // The old key still resolves to the same array, so a reader written against
             // the first shape does not break on the day it changed.
@@ -151,7 +152,19 @@ namespace Horizun.Server.Tests
             foreach (JObject tool in tools)
                 foreach (JToken d in tool["inputSchema"].SelectTokens("$..description"))
                     if (d.Type == JTokenType.String)
+                    {
+                        string name = (string)tool["name"];
+                        string[] complete = name == "horizun_document_session"
+                            ? new[] { "allow_upgrade", "expected_version", "detach", "open_central" }
+                            : name == "horizun_export" ? new[] { "output_path", "pdf_print", "cobie" } : new string[0];
+                        string field = complete.FirstOrDefault(f => ReferenceEquals(d, tool["inputSchema"]?["properties"]?[f]?["description"]));
+                        if (field != null)
+                        {
+                            Assert.Equal((string)Horizun.Contracts.Contract.Find(name).InputSchema["properties"][field]["description"], (string)d);
+                            continue;
+                        }
                         Assert.True(((string)d).Length <= Tools.SchemaDescriptionMax, (string)tool["name"] + ": " + ((string)d).Length);
+                    }
 
             // The compacted copy never changes what a call is validated against, never renames
             // an argument, and the full text is still served by the contract resource.
@@ -206,9 +219,10 @@ namespace Horizun.Server.Tests
             JArray prompts = (JArray)McpPrompts.List(null)["prompts"];
             // Twenty, three procedures added with the 2026-09-15 catalogue, the two
             // DWG procedures that had no prompt behind them, project-intake and framing-from-detail,
-            // and cross-app-coordination (3.0.0 interoperability).
-            Assert.Equal(30, prompts.Count);
-            foreach (var item in new[] { ("room-documentation", "specification"), ("family-recipe", "specification"), ("review-correct-verify", "selection") })
+            // and cross-app-coordination (3.0.0 interoperability), and model-with-template-kit (AI-ready templates).
+            // Community edition: the ten prompts of the Pro procedures are not in this edition.
+            Assert.Equal(22, prompts.Count);
+            foreach (var item in new[] { ("room-documentation", "specification"), ("review-correct-verify", "selection") })
             {
                 Assert.Throws<McpError>(() => McpPrompts.Get(new JObject { ["name"] = item.Item1 }));
                 var prompt = McpPrompts.Get(new JObject { ["name"] = item.Item1, ["arguments"] = new JObject { [item.Item2] = "explicit fixture specification" } });
@@ -248,12 +262,6 @@ namespace Horizun.Server.Tests
             string workflowText = (string)workflow["messages"][0]["content"]["text"];
             Assert.Contains("dry_run=true", workflowText);
             Assert.Contains("Do not apply", workflowText);
-
-            JObject coordination = McpPrompts.Get(new JObject
-            {
-                ["name"] = "architecture-structure-coordination"
-            });
-            Assert.Contains("horizun_clash", (string)coordination["messages"][0]["content"]["text"]);
 
             JObject report = McpPrompts.Get(new JObject
             {

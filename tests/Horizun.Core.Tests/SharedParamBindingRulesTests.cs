@@ -24,6 +24,7 @@ namespace Horizun.Core.Tests
             ExistsAfter = true,
             KindMeasured = true,
             KindMatches = true,
+            DataTypeMatches = true,
             CatsMeasured = true,
             CatsComplete = true,
             CatsHaveUnreadable = false,
@@ -69,6 +70,16 @@ namespace Horizun.Core.Tests
             var f = Clean(typeBinding: false);
             f.VariesAfter = null;
             Assert.Equal(SharedParamBindingRules.Unknown, SharedParamBindingRules.Classify(f));
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData(false)]
+        public void A_binding_with_an_unverified_data_type_is_not_confirmed(bool? matches)
+        {
+            var facts = Clean(typeBinding: true);
+            facts.DataTypeMatches = matches;
+            Assert.Equal(SharedParamBindingRules.Unknown, SharedParamBindingRules.Classify(facts));
         }
 
         [Fact]

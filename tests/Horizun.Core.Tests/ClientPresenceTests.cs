@@ -15,6 +15,15 @@ namespace Horizun.Core.Tests
 {
     public sealed class ClientPresenceTests
     {
+        [Theory]
+        [InlineData(true, false, "parent_alive")]
+        [InlineData(false, true, "parent_exited")]
+        [InlineData(null, null, "parent_unknown")]
+        public void Orphan_status_distinguishes_dead_live_and_unknown_parent(bool? alive, bool? orphan, string reason)
+        {
+            Assert.Equal(orphan, ClientProcessIdentity.IsOrphan(alive));
+            Assert.Equal(reason, ClientProcessIdentity.OrphanReason(alive));
+        }
         private static readonly DateTime T0 = new DateTime(2026, 8, 8, 12, 0, 0, DateTimeKind.Utc);
 
         [Fact]
@@ -112,6 +121,23 @@ namespace Horizun.Core.Tests
             var p = new ClientPresence();
             p.SeenUnidentified(T0 - ClientPresence.Window - TimeSpan.FromSeconds(1));
             Assert.Equal(0, p.Take(T0).UnidentifiedInWindow);
+        }
+        [Fact]
+        public void Concurrent_warning_rows_include_orphan_and_live_clients_together()
+        {
+            var snapshot = new PresenceSnapshot(new[] {
+                new ClientSeen(1, T0), new ClientSeen(2, T0), new ClientSeen(3, T0)
+            }, 0);
+            var others = ConcurrentClientRule.OthersAlive(snapshot, pid => true);
+            var rows = new Newtonsoft.Json.Linq.JArray(
+                new Newtonsoft.Json.Linq.JObject { ["pid"] = 2, ["name"] = "orphan", ["started_utc"] = "time" },
+                new Newtonsoft.Json.Linq.JObject { ["pid"] = 3, ["name"] = "live", ["started_utc"] = "time" });
+            ConcurrentClientRule.AddOrphanStates(rows, snapshot, c => c.Pid == 2 ? false : true);
+            Assert.NotNull(ConcurrentClientRule.Warning(others));
+            Assert.True((bool)rows[0]["orphan"]);
+            Assert.False((bool)rows[1]["orphan"]);
+            Assert.Equal("orphan", (string)rows[0]["name"]);
+            Assert.Equal("live", (string)rows[1]["name"]);
         }
     }
 }

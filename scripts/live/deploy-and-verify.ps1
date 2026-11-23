@@ -42,7 +42,7 @@
   Paths come from this file's own location and from the environment. No personal
   path is written down, and none is published.
 
-    pwsh -File scripts/live/deploy-and-verify.ps1 -Commit HEAD -Harness verify-dwg-architecture
+    pwsh -File scripts/live/deploy-and-verify.ps1 -Commit HEAD -Harness verify-registry-contract
     ... -Harness verify-live -HarnessArgs @{ WriteProbes = $true }   # the big one
     ... -SkipHarness                                                 # deploy and stage only
 #>

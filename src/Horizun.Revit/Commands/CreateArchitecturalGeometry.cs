@@ -46,8 +46,62 @@ namespace Horizun.Revit.Commands
             var faces = HostObjectUtils.GetSideFaces(wall, ShellLayerType.Exterior).Select(r => wall.GetGeometryObjectFromReference(r) as PlanarFace).ToList();
             if (faces.Count != 1 || faces[0] == null) return false;
             var actual = faces[0].GetEdgesAsCurveLoops().SelectMany(l => l).ToList();
-            if (actual.Count != p.WallProfile.Count) return false;
             XYZ Project(XYZ v) => v - p.ProfileNormal * (v - p.ProfileOrigin).DotProduct(p.ProfileNormal);
+            // Revit trims a profile wall to the side faces of adjoining walls.
+            // Measured in Revit 2026: a 150 mm wall loses 75 mm at each end,
+            // while the top vertices still lie on the requested slope. Compare
+            // that clipped silhouette against the requested four-point profile.
+            if (p.WallProfile.Count == 4 && (actual.Count == 4 || actual.Count == 5))
+            {
+                XYZ bottomStart = p.WallProfile[0].GetEndPoint(0);
+                XYZ bottomEnd = p.WallProfile[0].GetEndPoint(1);
+                XYZ topEnd = p.WallProfile[1].GetEndPoint(1);
+                XYZ topStart = p.WallProfile[3].GetEndPoint(0);
+                XYZ direction = bottomEnd - bottomStart;
+                double length = direction.GetLength();
+                if (length > GeometryInput.Tolerance &&
+                    Math.Abs(bottomEnd.Z - bottomStart.Z) <= GeometryInput.Tolerance &&
+                    Math.Abs(topStart.X - bottomStart.X) <= GeometryInput.Tolerance &&
+                    Math.Abs(topStart.Y - bottomStart.Y) <= GeometryInput.Tolerance &&
+                    Math.Abs(topEnd.X - bottomEnd.X) <= GeometryInput.Tolerance &&
+                    Math.Abs(topEnd.Y - bottomEnd.Y) <= GeometryInput.Tolerance)
+                {
+                    direction /= length;
+                    var vertices = actual.Select(c => Project(c.GetEndPoint(0))).ToList();
+                    var stations = vertices.Select(v => (v - bottomStart).DotProduct(direction)).ToList();
+                    double first = stations.Min(), last = stations.Max();
+                    double trimLimit = wall.Width / 2.0 + 5.0 / 304.8;
+                    if (first < -GeometryInput.Tolerance || last > length + GeometryInput.Tolerance ||
+                        first > trimLimit || length - last > trimLimit ||
+                        last - first <= GeometryInput.Tolerance) return false;
+                    foreach (double station in new[] { first, last })
+                    {
+                        var pair = vertices.Where((v, i) => Math.Abs(stations[i] - station) <= GeometryInput.Tolerance).ToList();
+                        if (pair.Count < 2 || pair.Count > 3) return false;
+                        double expectedTop = topStart.Z + (topEnd.Z - topStart.Z) * station / length;
+                        if (!pair.Any(v => Math.Abs(v.Z - bottomStart.Z) <= GeometryInput.Tolerance) ||
+                            !pair.Any(v => Math.Abs(v.Z - expectedTop) <= GeometryInput.Tolerance)) return false;
+                        if (pair.Count == 3)
+                        {
+                            // At a joined end Revit can retain a short vertical
+                            // edge from the original end height to the clipped
+                            // sloping top. It is an extra vertex, not a changed
+                            // wall height or slope.
+                            double originalTop = Math.Abs(station - first) <= GeometryInput.Tolerance
+                                ? topStart.Z : topEnd.Z;
+                            var extra = pair.Where(v => Math.Abs(v.Z - bottomStart.Z) > GeometryInput.Tolerance &&
+                                Math.Abs(v.Z - expectedTop) > GeometryInput.Tolerance).ToList();
+                            if (extra.Count != 1 || Math.Abs(extra[0].Z - originalTop) > 5.0 / 304.8)
+                                return false;
+                        }
+                    }
+                    if (vertices.Where((v, i) =>
+                        (v - (bottomStart + direction * stations[i])).GetLength() > GeometryInput.Tolerance &&
+                        Math.Abs(v.Z - bottomStart.Z) <= GeometryInput.Tolerance).Any()) return false;
+                    return true;
+                }
+            }
+            if (actual.Count != p.WallProfile.Count) return false;
             foreach (var expected in p.WallProfile)
             {
                 bool Near(XYZ a, XYZ b) => a.DistanceTo(Project(b)) <= GeometryInput.Tolerance;
@@ -56,6 +110,31 @@ namespace Horizun.Revit.Commands
                 if (index < 0) return false; actual.RemoveAt(index);
             }
             return true;
+        }
+        private static JToken ProfileWallMismatchDetails(Element e, Plan p)
+        {
+            try
+            {
+                var wall = (Wall)e;
+                var faces = HostObjectUtils.GetSideFaces(wall, ShellLayerType.Exterior)
+                    .Select(r => wall.GetGeometryObjectFromReference(r) as PlanarFace).ToList();
+                var edges = faces.Where(f => f != null)
+                    .SelectMany(f => f.GetEdgesAsCurveLoops()).SelectMany(loop => loop)
+                    .Take(24).Select(curve => new JArray(
+                        new JArray(curve.GetEndPoint(0).X, curve.GetEndPoint(0).Y, curve.GetEndPoint(0).Z),
+                        new JArray(curve.GetEndPoint(1).X, curve.GetEndPoint(1).Y, curve.GetEndPoint(1).Z)));
+                return new JObject {
+                    ["matches"] = false,
+                    ["exterior_face_count"] = faces.Count,
+                    ["wall_width_feet"] = wall.Width,
+                    ["requested_edges_feet"] = new JArray(p.WallProfile.Select(curve => new JArray(
+                        new JArray(curve.GetEndPoint(0).X, curve.GetEndPoint(0).Y, curve.GetEndPoint(0).Z),
+                        new JArray(curve.GetEndPoint(1).X, curve.GetEndPoint(1).Y, curve.GetEndPoint(1).Z)))),
+                    ["actual_exterior_edges_feet"] = new JArray(edges)
+                };
+            }
+            catch (Exception ex) { return new JObject { ["matches"] = false,
+                ["diagnostic_error"] = ex.GetType().Name + ": " + ex.Message }; }
         }
         private static void PlanDisplacement(Document doc, Plan p)
         {

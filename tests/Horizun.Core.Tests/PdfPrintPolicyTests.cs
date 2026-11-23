@@ -229,6 +229,64 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Implicit_fit_reports_proportional_page_size_without_claiming_physical_paper()
+        {
+            double[] firstSheet = { PdfPrintPolicy.MmToPoints(827.1), PdfPrintPolicy.MmToPoints(580.1) };
+            double[] secondSheet = { PdfPrintPolicy.MmToPoints(420), PdfPrintPolicy.MmToPoints(297) };
+            double width = PdfPrintPolicy.MmToPoints(909.9), height = PdfPrintPolicy.MmToPoints(638.2);
+            var policy = PdfPrintPolicy.Parse(null, "mm", 2025);
+            JObject scaled = policy.VerifyPage(width, height, firstSheet, titleblockPoints: firstSheet);
+            JObject exact = policy.VerifyPage(secondSheet[0], secondSheet[1], secondSheet);
+
+            Assert.Equal(PdfPrintPolicy.StatusRequestedUnverifiable, scaled.Value<string>("paper_format"));
+            Assert.Equal(1.1, scaled.Value<double>("page_to_sheet_dimension_ratio"), 3);
+            Assert.Null(scaled.Value<bool?>("page_verified"));
+            Assert.Null(scaled.Value<bool?>("page_exceeds_titleblock"));
+            Assert.Equal(PdfPrintPolicy.StatusVerified, exact.Value<string>("paper_format"));
+            JObject report = policy.Report(Applied(policy), new[] { scaled, exact });
+            Assert.True(report.Value<bool>("verifiable_options_held"));
+            Assert.Null(report["composition"].Value<bool?>("held"));
+
+            JObject distorted = policy.VerifyPage(width, height + 10, firstSheet);
+            JObject failed = policy.Report(Applied(policy), new[] { scaled, distorted });
+            Assert.False(failed.Value<bool>("verifiable_options_held"));
+            Assert.Equal(distorted.Value<string>("paper_format_reason"),
+                failed["options"].Single(row => row.Value<string>("option") == "paper_format").Value<string>("reason"));
+
+            foreach (JObject requested in new[] { new JObject { ["paper_format"] = "Default" },
+                                                  new JObject { ["zoom"] = "fit_to_page" } })
+            {
+                var explicitPolicy = PdfPrintPolicy.Parse(requested, "mm", 2025);
+                JObject mismatch = explicitPolicy.VerifyPage(width, height, firstSheet);
+                Assert.Equal(PdfPrintPolicy.StatusVerifiedMismatch, mismatch.Value<string>("paper_format"));
+                Assert.False(explicitPolicy.Report(Applied(explicitPolicy), new[] { mismatch }).Value<bool>("verifiable_options_held"));
+            }
+        }
+
+        [Theory]
+        [InlineData(0.9)] // The page matches the titleblock.
+        [InlineData(0.8)] // The page is smaller than the titleblock.
+        public void Implicit_fit_reduction_leaves_composition_unverified(double ratio)
+        {
+            double[] outline = { 1000, 800 };
+            double[] titleblock = { 900, 720 };
+            var policy = PdfPrintPolicy.Parse(null, "mm", 2025);
+            JObject page = policy.VerifyPage(outline[0] * ratio, outline[1] * ratio, outline,
+                titleblockPoints: titleblock);
+
+            Assert.Equal(PdfPrintPolicy.StatusRequestedUnverifiable, page.Value<string>("paper_format"));
+            Assert.Equal(ratio, page.Value<double>("page_to_sheet_dimension_ratio"), 4);
+            Assert.Equal(JTokenType.Null, page["page_verified"].Type);
+            Assert.Equal(JTokenType.Null, page["page_exceeds_titleblock"].Type);
+            Assert.Contains("overflow unverified", page.Value<string>("page_exceeds_titleblock_reason"));
+            JObject exact = policy.VerifyPage(titleblock[0], titleblock[1], titleblock, titleblockPoints: titleblock);
+            JObject report = policy.Report(Applied(policy), new[] { exact, page });
+            Assert.True(report.Value<bool>("verifiable_options_held"));
+            Assert.Equal(JTokenType.Null, report["composition"]["held"].Type);
+            Assert.Empty((JArray)report["composition"]["pages_exceeding_titleblock"]);
+        }
+
+        [Fact]
         public void ToleranceIsTwoPointsNotTwoMillimetres()
         {
             PdfPrintPolicy p = PdfPrintPolicy.Parse(new JObject { ["paper_format"] = "ISO_A4" }, "mm", 2026);
@@ -356,5 +414,20 @@ namespace Horizun.Core.Tests
             Assert.Throws<ArgumentException>(() =>
                 PdfPrintPolicy.Parse(new JObject { ["placement"] = "lower_left", ["zoom"] = "zoom", ["zoom_percentage"] = 50, ["origin_offset_x"] = 1, ["origin_offset_y"] = 2 }, "inches", 2026));
         }
-    }
+    
+        [Fact]
+        public void Default_page_at_the_declared_titleblock_is_verified_when_the_outline_is_larger()
+        {
+            // Measured live 2026-10-18, Revit 2024, Snowdon cover G000: outline 938 x 1067 mm,
+            // titleblock 762 x 1067 mm, Revit printed the page at 762 x 1067 mm.
+            const double pt = 72.0 / 25.4;
+            PdfPrintPolicy p = PdfPrintPolicy.Parse(null, "mm", 2024);
+            JObject v = p.VerifyPage(1066.88 * pt, 762.0 * pt, new[] { 938.3 * pt, 1066.8 * pt }, 2.0, new[] { 762.0 * pt, 1066.8 * pt });
+            Assert.Equal("verified", (string)v["paper_format"]);
+            Assert.Contains("titleblock", (string)v["paper_format_reason"]);
+            Assert.DoesNotContain("was not printed", (string)v["paper_format_reason"]);
+            JObject bad = p.VerifyPage(900 * pt, 700 * pt, new[] { 938.3 * pt, 1066.8 * pt }, 2.0, new[] { 762.0 * pt, 1066.8 * pt });
+            Assert.NotEqual("verified", (string)bad["paper_format"]);
+        }
+}
 }

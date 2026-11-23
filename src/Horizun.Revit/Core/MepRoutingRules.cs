@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
-// THE REVIT-FREE HALF OF horizun_mep_routing: unit conversion, the rule-list edit
+// THE REVIT-FREE HALF OF horizun_mep_routing (Pro edition): unit conversion, the rule-list edit
 // that set_rules must reproduce exactly, catalog membership with a stated
 // tolerance, and the velocity sizing that size_by_flow proposes.
 //
@@ -164,7 +164,7 @@ namespace Horizun.Revit.Core
                 if (area + 1e-12 >= r.RequiredAreaSquareFeet)
                     return Done(r, o.Nominal, area, flowCfs);
             }
-            r.Reason = "no catalog size is large enough: the flow needs " + r.RequiredAreaSquareFeet.ToString("G6") +
+            r.Reason = "no catalog size is large enough: the flow needs " + r.RequiredAreaSquareFeet.ToString("G6", System.Globalization.CultureInfo.InvariantCulture) +
                        " sq ft of free area at the velocity limit.";
             return r;
         }
@@ -186,7 +186,7 @@ namespace Horizun.Revit.Core
                 if (area + 1e-12 >= r.RequiredAreaSquareFeet) return Done(r, w, area, flowCfs);
             }
             r.Reason = "no catalog width is large enough at this height: the flow needs " +
-                       r.RequiredAreaSquareFeet.ToString("G6") + " sq ft of free area at the velocity limit.";
+                       r.RequiredAreaSquareFeet.ToString("G6", System.Globalization.CultureInfo.InvariantCulture) + " sq ft of free area at the velocity limit.";
             return r;
         }
 

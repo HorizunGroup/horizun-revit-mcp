@@ -110,7 +110,7 @@ function New-Fake([bool]$persist, [long[]]$inherited = @(150, 151), [string]$dwg
             }
             'vg-dwg-export' {
                 Set-Content -LiteralPath $arguments.output_path -Value 'AC1032'
-                return (& $ok @{ files_verified = 1 })
+                return (& $ok @{ files_verified = 1; files = @([pscustomobject]@{ file = $arguments.output_path }) })
             }
             'vg-dwg-reexport' {
                 Set-Content -LiteralPath $arguments.output_path -Value 'AC1032-2'

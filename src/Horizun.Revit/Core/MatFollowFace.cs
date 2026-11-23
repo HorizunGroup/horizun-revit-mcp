@@ -58,6 +58,8 @@ namespace Horizun.Revit.Core
         public double? CommonCoverMm;
         /// <summary>The cover of its face along face_normal, read when it has no common cover; null otherwise.</summary>
         public double? FaceCoverMm;
+        /// <summary>A foundation (footing or foundation slab): its concrete is cast against the ground, so a cover assumed for it is 75 mm.</summary>
+        public bool AgainstGround;
     }
 
     /// <summary>A planar piece of the face: every facing triangle within planarity_mm of one plane.</summary>

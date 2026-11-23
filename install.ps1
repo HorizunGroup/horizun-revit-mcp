@@ -43,12 +43,16 @@
 param(
     [string[]]$Years,
     [string]$Config = 'Release',
-    [switch]$SkipServer
+    [switch]$SkipServer,
+    # 4.0 tool profile (core + groups a client lists). Omitted, a source install changes
+    # nothing: an existing settings.json keeps its tool_profile or the 3.x full list.
+    [string]$ToolProfile
 )
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 . (Join-Path $repo 'scripts\horizun-deploy.lib.ps1')
 . (Join-Path $repo 'scripts\install-arguments.lib.ps1')
+. (Join-Path $repo 'scripts\backup-retention.lib.ps1')
 
 $serverInstall  = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server'
 $serverExe      = Join-Path $serverInstall 'horizun-mcp.exe'
@@ -99,7 +103,14 @@ try {
     # =========================================================================
     # 0. REFUSE UP FRONT, so nothing is half-done.
     # =========================================================================
-    $revit = @(Get-Process -Name 'Revit' -ErrorAction SilentlyContinue)
+    # Only a Revit of a year being installed holds THAT year's add-in DLL open. A Revit of another
+    # year (another session's batch job, say) is left alone instead of blocking the install. A process
+    # whose path cannot be read still blocks: not knowing its year is not proof it is harmless.
+    $revit = @(Get-Process -Name 'Revit' -ErrorAction SilentlyContinue | Where-Object {
+        $path = $null; try { $path = $_.Path } catch { }
+        if (-not $path -or -not $Years -or $Years.Count -eq 0) { return $true }
+        foreach ($y in $Years) { if ($path -match ('Revit ' + $y + '\\')) { return $true } }
+        return $false })
     if ($revit.Count -gt 0) {
         throw ("Revit is running (pid " + (($revit | ForEach-Object { $_.Id }) -join ', ') +
                "). It holds the add-in DLL open. Close Revit and run this again. Nothing was changed.")
@@ -300,7 +311,7 @@ try {
         # they do in pack.ps1: the step at the end of this script runs it from
         # client-tools, and a helper that was never staged is skipped without a
         # word (backlog #58). install-arguments.tests.ps1 proves the list closed.
-        foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1','install-claude-desktop-extension.ps1','toml-section.lib.ps1','json-member.lib.ps1','client-process.lib.ps1','mcp-legacy-registrations.lib.ps1','mcp-clients.lib.ps1','mcpb-manifest.lib.ps1','mcp-stdio.lib.ps1','integration-status.lib.ps1','process.lib.ps1') {
+        foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1','set-tool-profile.ps1','install-claude-desktop-extension.ps1','toml-section.lib.ps1','json-member.lib.ps1','client-process.lib.ps1','mcp-legacy-registrations.lib.ps1','mcp-clients.lib.ps1','mcpb-manifest.lib.ps1','mcp-stdio.lib.ps1','integration-status.lib.ps1','process.lib.ps1') {
             Copy-Item (Join-Path $PSScriptRoot "scripts\$helper") $clientTools -Force
         }
         Write-Host "    staged  self-contained server"
@@ -532,36 +543,11 @@ try {
     Write-Host ("    all {0} half(s) built from one tree in one run, and every file matches what was staged." -f $installedThings.Count) -ForegroundColor Green
 
     if (-not $SkipServer) {
-        # These directories were created by older source installers after their
-        # transaction had already succeeded. They are not a valid part of the
-        # runtime payload and can otherwise hide stale executable dependencies.
+        # Keep old payloads outside the exact server inventory.
         foreach ($old in @(Get-ChildItem -LiteralPath $serverInstall -Directory -Filter 'replaced-*' -ErrorAction SilentlyContinue)) {
-            try { Remove-Item -LiteralPath $old.FullName -Recurse -Force -ErrorAction Stop }
-            catch {
-                # A client can restart the just-replaced server between the update
-                # stop and this cleanup. Its old DLL then remains locked under a
-                # legacy replaced-* directory. That stale copy is not part of the
-                # installed payload and must not invalidate or roll back a verified
-                # update; the generation-aware finisher retries after the client has
-                # actually exited and held a quiet window.
-                $legacyQuarantine = Join-Path (Split-Path -Parent $serverInstall) `
-                    ('.legacy-backup-' + [guid]::NewGuid().ToString('N'))
-                try {
-                    # Windows permits an in-use image directory to be renamed even
-                    # when it will not permit deleting the loaded DLL. Moving it out
-                    # of server\ is essential: exact payload verification must never
-                    # waive executable extras merely because an old client is alive.
-                    Move-Item -LiteralPath $old.FullName -Destination $legacyQuarantine -ErrorAction Stop
-                    Write-Warning ("Legacy server backup was still in use and was quarantined outside the " +
-                                   "loadable payload until client exit: " + $legacyQuarantine)
-                }
-                catch {
-                    # Leave it visible. The exact verifier below will fail closed
-                    # rather than bless a payload that still contains extra code.
-                    Write-Warning ("Legacy server backup could not be removed or quarantined: " +
-                                   $old.FullName + " (" + $_.Exception.Message + ")")
-                }
-            }
+            if ($old.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing backup reparse point: $($old.FullName)" }
+            $destination = Join-Path (Split-Path -Parent $serverInstall) ('.legacy-backup-' + [guid]::NewGuid().ToString('N'))
+            Move-Item -LiteralPath $old.FullName -Destination $destination -ErrorAction Stop
         }
 
         $installedVerifier = Join-Path $serverInstall 'client-tools\verify-install.ps1'
@@ -574,32 +560,18 @@ try {
         }
         foreach ($line in $installedVerificationOutput) { Write-Host $line }
 
-        # Only the exact rollback image owned by this transaction is disposable.
-        # A failed verification above still has it available to restore from.
+        # Verification has succeeded: preserve the transaction image as a backup.
         if ($serverBackup -and (Test-Path -LiteralPath $serverBackup)) {
-            try { Remove-Item -LiteralPath $serverBackup -Recurse -Force -ErrorAction Stop }
-            catch {
-                # The old server image can remain mapped by a client which raced
-                # the update. The new bytes are already exactly verified, so this
-                # is deferred cleanup, not an installation failure. The
-                # generation-aware finisher retries after the client quiet window.
-                $verifiedQuarantine = Join-Path (Split-Path -Parent $serverInstall) `
-                    ('.legacy-backup-' + [guid]::NewGuid().ToString('N'))
-                try {
-                    Move-Item -LiteralPath $serverBackup -Destination $verifiedQuarantine -ErrorAction Stop
-                    Write-Warning ("Verified update is installed, but its obsolete rollback image is still in use " +
-                                   "and was quarantined for cleanup after client exit: $verifiedQuarantine")
-                    $serverBackup = $verifiedQuarantine
-                }
-                catch {
-                    # Never let the finisher delete an .install-rollback-* name:
-                    # until this rename succeeds it is indistinguishable from an
-                    # active transaction owned by another installer process.
-                    Write-Warning ("Verified update is installed, but its obsolete rollback image could not be " +
-                                   "quarantined and requires manual cleanup after client exit: $serverBackup")
-                }
-            }
+            $destination = Join-Path (Split-Path -Parent $serverInstall) ('.legacy-backup-' + [guid]::NewGuid().ToString('N'))
+            try { Move-Item -LiteralPath $serverBackup -Destination $destination -ErrorAction Stop }
+            catch { Write-Warning "Verified rollback image remains at ${serverBackup}: $($_.Exception.Message)" }
         }
+        try {
+            foreach ($removed in @(Remove-HorizunOldBackups -Root (Split-Path -Parent $serverInstall))) {
+                Write-Host "[Horizun] Removed old server backup: $removed"
+                Add-Content -LiteralPath (Join-Path (Split-Path -Parent $serverInstall) 'backup-retention.log') -Value "$(Get-Date -Format o) removed backup: $removed" -Encoding UTF8
+            }
+        } catch { Write-Warning "Backup retention did not complete: $($_.Exception.Message)" }
     }
 }
 catch {
@@ -648,7 +620,12 @@ $haveCert = $trustedCert.Count -eq 1
 if ((Test-Path -LiteralPath $signScript) -and $haveCert) {
     Write-Host ""
     Write-Host "--- re-signing the fresh binaries (existing certificate; no new trust)" -ForegroundColor Yellow
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $signScript -Thumbprint $trustedCert[0].Thumbprint
+    # Only the years this run installed (and the server only when it installed one): re-signing
+    # every year rewrote their bytes, once under another session's open Revit (2026-11-12).
+    $signArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $signScript,
+                  '-Thumbprint', $trustedCert[0].Thumbprint, '-Years', ($Years -join ','))
+    if ($SkipServer) { $signArgs += '-SkipServer' }
+    & powershell @signArgs
     if ($LASTEXITCODE -eq 3) {
         Write-Host "[Horizun] some files were IN USE and stayed unsigned - close that Revit or MCP client and run scripts\self-sign.ps1 again." -ForegroundColor Yellow
     } elseif ($LASTEXITCODE -ne 0) {
@@ -713,6 +690,12 @@ Write-Host "  git pull, close Revit, run install.ps1 again."
 # it one USER action instead: it registers immediately when possible, otherwise
 # waits for the active client to exit, verifies the config, then completes
 # horizun_health after Revit's first start.
+$toolProfileHelper = Join-Path $serverInstall 'client-tools\set-tool-profile.ps1'
+if ($ToolProfile -and (Test-Path -LiteralPath $toolProfileHelper -PathType Leaf)) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $toolProfileHelper -ToolProfile $ToolProfile -Mode upgrade
+    if ($LASTEXITCODE -ne 0) { Write-Host "[Horizun] tool profile not applied (exit $LASTEXITCODE)." -ForegroundColor Yellow }
+}
+
 $completeInstall = Join-Path $serverInstall 'client-tools\complete-install.ps1'
 if (Test-Path -LiteralPath $completeInstall -PathType Leaf) {
     Write-Host ""

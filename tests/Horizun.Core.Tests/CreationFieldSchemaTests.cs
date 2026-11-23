@@ -70,5 +70,17 @@ namespace Horizun.Core.Tests
             Assert.All(commands, c => Assert.False(string.IsNullOrWhiteSpace(c)));
             Assert.Equal(commands.Count, commands.Distinct().Count());
         }
+
+        [Fact]
+        public void Structural_framing_can_request_unjoined_location_lines()
+        {
+            var row = JObject.Parse(@"{'kind':'structural_framing','start':[0,0,0],
+                'end':[10,0,0],'type_id':1,'level_id':2,'join_rule':'none'}");
+            Assert.Null(ToolInputRules.ValidateCreation(row, "structural_framing"));
+            var variant = Contract.Find("horizun_create_elements").InputSchema;
+            var field = (JObject)variant["properties"]["elements"]["items"]["properties"]["join_rule"];
+            Assert.Contains("none", ((JArray)field["enum"]).Select(x => (string)x));
+            Assert.Contains("structural_framing", (string)field["description"]);
+        }
     }
 }

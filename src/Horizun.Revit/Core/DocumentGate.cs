@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
 // The check every mutating command makes before it touches anything.
@@ -45,6 +45,9 @@ namespace Horizun.Revit.Core
         [ThreadStatic]
         private static int _atomicPlanDepth;
 
+        /// <summary>True inside a confirmed execute_plan: a child command carries no token of its own.</summary>
+        internal static bool InConfirmedAtomicPlan => _atomicPlanDepth > 0;
+
         /// <summary>
         /// A confirmed execute_plan owns one outer TransactionGroup. Typed child
         /// commands retain their document and verification checks, but do not demand
@@ -82,6 +85,8 @@ namespace Horizun.Revit.Core
                 Title = Safe(() => d.Title),
                 Path = Safe(() => d.PathName),
                 IsWorkshared = SafeBool(() => d.IsWorkshared),
+                IsDetached = ReadDetached(d),
+                IsCloud = ReadCloud(d),
                 RevitYear = revitYear,
                 ModelGuid = Safe(() =>
                 {
@@ -89,6 +94,15 @@ namespace Horizun.Revit.Core
                     return p == null ? null : p.GetModelGUID().ToString();
                 })
             };
+        }
+
+        private static bool? ReadDetached(Document d)
+        {
+            try { return d.IsDetached; } catch { return null; }
+        }
+        private static bool? ReadCloud(Document d)
+        {
+            try { return d.IsModelInCloud; } catch { return null; }
         }
 
         /// <summary>
@@ -117,38 +131,98 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static CommandResult ReadGuard(Document active, JObject request, string commandName)
         {
-            string wanted = request?.Value<string>("target_document")
-                            ?? request?.Value<string>("target_document_title");
+            string wanted = ReadDocumentRules.Target(request);
             if (string.IsNullOrWhiteSpace(wanted)) return null;
 
             string actual = Safe(() => active?.Title);
-            if (TitlesMatch(wanted, actual)) return null;
+            if (ReadDocumentRules.Allows(wanted, actual, Safe(() => active?.PathName))) return null;
 
-            return CommandResult.Fail(
+            var openIdentities = new List<DocIdentity>();
+            try { foreach (Document d in active.Application.Documents) if (d != null && !d.IsLinked) openIdentities.Add(IdentityOf(d, null)); }
+            catch { openIdentities.Clear(); }
+            DocMatch match = DocumentMatcher.FindTarget(openIdentities, wanted);
+            if (match.Outcome == DocMatchOutcome.None)
+            {
+                JObject detail = ReadDocumentRules.MissingTarget(wanted, openIdentities);
+                return CommandResult.FailWithDetail((string)detail["message"], detail);
+            }
+            string message =
                 "Refusing to read: '" + commandName + "' was asked for document '" + wanted +
                 "' and the ACTIVE document is '" + (actual ?? "(title unreadable)") + "'. Nothing was read. " +
                 "Two Revit hosts run side by side on machines like this one, and a clean report about a model " +
                 "nobody looked at is worse than no report. Activate the intended document, or check you are " +
-                "talking to the right Revit host.");
+                "talking to the right Revit host.";
+            return match.Outcome == DocMatchOutcome.Matched
+                ? CommandResult.FailWithDetail(message, DocumentActivationSuggestion.Build(openIdentities[match.Index], commandName, request, System.IO.File.Exists(openIdentities[match.Index].Path)))
+                : CommandResult.Fail(message);
         }
 
-        /// <summary>Titles compared without the .rvt a caller may or may not have typed.</summary>
-        private static bool TitlesMatch(string wanted, string actual)
+        /// <summary>
+        /// The gate for a script that PROMISES not to change the model (read_only / rehearsal,
+        /// always rolled back and verified). Naming a target is optional there: reading the
+        /// active document needs no decision about which building to write into. When a target
+        /// IS named it is checked exactly as for a write (4.2-N5, CT-P1-5c).
+        /// </summary>
+        public static GateResult ForReadOnlyScript(UIApplication app, JObject request, string commandName)
         {
-            if (actual == null) return false;
-            return string.Equals(StripExtension(wanted), StripExtension(actual),
-                                 StringComparison.OrdinalIgnoreCase);
-        }
+            string target = request?.Value<string>("target_document");
+            if (string.IsNullOrWhiteSpace(target)) target = request?.Value<string>("expected_document");
+            if (string.IsNullOrWhiteSpace(target)) target = request?.Value<string>("target_document_title");
+            if (!string.IsNullOrWhiteSpace(target)) return ForMutation(app, request, commandName);
 
-        private static string StripExtension(string value)
-        {
-            value = (value ?? "").Trim();
-            if (value.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase))
-                value = value.Substring(0, value.Length - 4);
-            return value;
+            string revitYear = Safe(() => app?.Application?.VersionNumber);
+            Document active = null;
+            try { active = app?.ActiveUIDocument?.Document; } catch { active = null; }
+            if (active == null)
+                return Refuse("No document is active in Revit " + (revitYear ?? "?") + ", so '" + commandName +
+                              "' has nothing to read. Open the model you mean first.");
+            return new GateResult { Document = active, Identity = IdentityOf(active, revitYear) };
         }
 
         public static GateResult ForMutation(UIApplication app, JObject request, string commandName)
+        {
+            GateResult resolved = ResolveDocument(app, request, commandName, true);
+            if (!resolved.Ok) return resolved;
+            Document active = resolved.Document;
+            DocIdentity activeIdentity = resolved.Identity;
+            return VerifyIdentity(active, activeIdentity, request, commandName);
+        }
+
+        /// <summary>
+        /// The identity check, run by the dispatcher BEFORE the command parses its arguments (IdentityPrepass), so that no validator
+        /// of any command ever sees the identity fields and every covered tool accepts them. The document is resolved the way a write
+        /// resolves it (target_document, when sent, must name the active one). On success the request is normalized in place: the
+        /// verified ids are written where the command reads them and the identity fields are gone. Null when all is well.
+        /// </summary>
+        internal static CommandResult CheckIdentityEarly(UIApplication app, JObject request, string tool) =>
+            IdentityPrepassCore.Early(request, tool, () =>
+            {
+                GateResult resolved = ResolveDocument(app, request, tool, false);
+                return resolved.Ok ? Lookups(resolved.Document) : new IdentityLookups { Refusal = resolved.Refusal };
+            });
+
+        private static IdentityLookups Lookups(Document active) => new IdentityLookups
+        {
+            ById = id => Rid.CanRepresentElementId(id) ? IdentityFacts(active, active.GetElement(Rid.Make(id))) : null,
+            ByUniqueId = uid => IdentityFacts(active, active.GetElement(uid)),
+            // Collaborative = workshared, a local file of a central included: the only place where a synchronize renumbers ids and other people's
+            // elements live (R2U). A read that throws counts as collaborative (IdentityPrepassCore.CollaborativeOrUnknown).
+            IsCollaborative = () => active.IsWorkshared
+        };
+
+        private static GateResult VerifyIdentity(Document active, DocIdentity activeIdentity, JObject request, string commandName)
+        {
+            // Typed writes that take element ids may state the identity they expect (unique_id, unique_ids, expected_category,
+            // expected_type). Check the entire request, nested plan actions included, before any child can start a transaction.
+            // A writer that has no ids to check refuses the fields instead of ignoring them (ElementIdentityGuard.RejectUnsupported).
+            CommandResult refusal = IdentityPrepassCore.Verify(request, commandName, Lookups(active));
+            if (refusal != null) return new GateResult { Refusal = refusal };
+            return new GateResult { Document = active, Identity = activeIdentity };
+        }
+
+        internal static CommandResult IdentityRefusal(JObject mismatch) => IdentityPrepassCore.Refusal(mismatch);
+
+        private static GateResult ResolveDocument(UIApplication app, JObject request, string commandName, bool requireTarget)
         {
             string revitYear = Safe(() => app?.Application?.VersionNumber);
 
@@ -165,6 +239,8 @@ namespace Horizun.Revit.Core
             string target = request?.Value<string>("target_document");
             if (string.IsNullOrWhiteSpace(target)) target = request?.Value<string>("expected_document");
             if (string.IsNullOrWhiteSpace(target)) target = request?.Value<string>("target_document_title");
+            if (string.IsNullOrWhiteSpace(target) && !requireTarget)
+                return new GateResult { Document = active, Identity = IdentityOf(active, revitYear) };
             if (string.IsNullOrWhiteSpace(target))
                 return Refuse("'target_document' is required for '" + commandName + "'. A command that CHANGES a " +
                               "model must name the model: 'the active document' is whatever window was in front " +
@@ -189,29 +265,52 @@ namespace Horizun.Revit.Core
             }
             catch { /* the active document below is what actually gates the call */ }
 
-            var wanted = new DocIdentity { Title = target, Path = target, RevitYear = revitYear };
-            DocMatch match = DocumentMatcher.Find(openIdentities, wanted);
+            DocMatch match = DocumentMatcher.FindTarget(openIdentities, target);
 
             if (match.Outcome == DocMatchOutcome.None)
-                return Refuse("No open document matches target_document '" + target + "'. Open documents: " +
-                              Describe(openIdentities) + ". Nothing was changed.");
+            {
+                JObject detail = ReadDocumentRules.MissingTarget(target, openIdentities, isWrite: true);
+                return new GateResult { Refusal = CommandResult.FailWithDetail((string)detail["message"], detail) };
+            }
 
             if (match.Outcome == DocMatchOutcome.Ambiguous)
                 return Refuse("target_document '" + target + "' matches MORE THAN ONE open document and nothing " +
-                              "available distinguishes them. " + match.Explain() + " Nothing was changed - pass a " +
+                              "available distinguishes them. " + match.Explain() + " Open documents: " + Describe(openIdentities) + ". Nothing was changed - pass a " +
                               "full path instead of a title.");
 
             Document resolved = open[match.Index];
             if (!ReferenceEquals(resolved, active) &&
                 resolved.Fingerprint(revitYear) != activeIdentity.Fingerprint())
-                return Refuse("target_document '" + target + "' resolves to '" + Safe(() => resolved.Title) +
+                return new GateResult { Refusal = CommandResult.FailWithDetail("target_document '" + target + "' resolves to '" + Safe(() => resolved.Title) +
                               "', but the ACTIVE document is '" + Safe(() => active.Title) + "'. This command acts " +
                               "on the active document and will NOT switch for you: activating a document changes " +
                               "what the user is looking at, and guessing which one they meant is the mistake this " +
                               "check exists to prevent. Activate the right document in Revit, then call again. " +
-                              "Nothing was changed.");
+                              "Nothing was changed.", DocumentActivationSuggestion.Build(openIdentities[match.Index], commandName, request, !resolved.IsLinked && System.IO.File.Exists(openIdentities[match.Index].Path))) };
 
             return new GateResult { Document = active, Identity = activeIdentity };
+        }
+
+
+        /// <summary>What an identity check knows about an element, read the same way horizun_query_model reports it.</summary>
+        internal static ElementIdentityFacts IdentityFacts(Document doc, Element e)
+        {
+            if (e == null) return null;
+            string category = ElementIdentityGuard.CategoryNameFor(
+                () => e.Category?.Name, e is TextNoteType,
+                () => Category.GetCategory(doc, BuiltInCategory.OST_TextNotes)?.Name);
+            string builtIn = ElementIdentityGuard.BuiltInNameFor(() => e.Category == null ? null : e.Category.BuiltInCategory.ToString(), e is TextNoteType);
+            string type = null, family = null;
+            try
+            {
+                ElementType t = e as ElementType ?? doc.GetElement(e.GetTypeId()) as ElementType;
+                type = t?.Name;
+                family = t?.FamilyName;
+            }
+            catch { }
+            // The Horizun ownership mark; anything that cannot be read counts as "not ours" (the guard fails closed).
+            bool owned = ElementIdentityGuard.SafeOwned(() => HrzOwnership.IsTrustedOwned(doc, e));
+            return new ElementIdentityFacts { Id = Rid.Value(e.Id), UniqueId = e.UniqueId, Category = category, CategoryBuiltIn = builtIn, Type = type, Family = family, Owned = owned };
         }
 
         /// <summary>
@@ -258,7 +357,7 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static CommandResult RequireConfirmation(UIApplication app, GateResult gate, JObject request,
                                                         string commandName, string planHash,
-                                                        ResolvedPlan atApply, ResolvedPlan rehearsed)
+                                                        ResolvedPlan atApply, ResolvedPlan rehearsed, bool checkRequestOnly = false)
         {
             if (_atomicPlanDepth > 0)
                 return StillTheSame(app, gate.Fingerprint, commandName);
@@ -266,10 +365,11 @@ namespace Horizun.Revit.Core
             // The plan object travels down so a stale refusal can name what moved even
             // when the caller did not keep its own rehearsal: the store kept it with the
             // token, and the drift is computed against that.
-            ConfirmationCheck check = Confirmations.Validate(
-                request?.Value<string>("confirmation_token"), commandName, gate.Fingerprint, planHash,
-                atApply,
-                (atApply != null && rehearsed != null) ? ResolvedPlan.DescribeDrift(rehearsed, atApply) : null);
+            string token = request?.Value<string>("confirmation_token");
+            ConfirmationCheck check = checkRequestOnly
+                ? Confirmations.CheckRequest(token, commandName, gate.Fingerprint, planHash)
+                : Confirmations.Validate(token, commandName, gate.Fingerprint, planHash, atApply,
+                    (atApply != null && rehearsed != null) ? ResolvedPlan.DescribeDrift(rehearsed, atApply) : null);
             if (!check.Ok)
                 // The refusal travels as DATA beside the prose. The dimension contracts
                 // promise a closed outcome set - committed_verified, rolled_back, refused,
@@ -280,6 +380,8 @@ namespace Horizun.Revit.Core
                 return CommandResult.FailWithDetail(check.Message + " (Nothing was changed.)",
                     new JObject
                     {
+                        ["error_code"] = string.IsNullOrWhiteSpace(request?.Value<string>("confirmation_token"))
+                            ? ErrorCodes.ConfirmacionRequerida : ErrorCodes.TokenInvalidoOVencido,
                         ["state"] = check.State == ConfirmationState.StalePlan ? "stale_plan" : "refused",
                         ["confirmation_state"] = check.State.ToString()
                     });
@@ -315,46 +417,13 @@ namespace Horizun.Revit.Core
         public static void ClearResolvedPlan() { _pendingPlan = null; }
 
         public static void StampConfirmation(object data, GateResult gate, string commandName,
-                                             string planHash, bool dryRun, string limitNote = null)
+                                             string planHash, bool dryRun, string limitNote = null, TimeSpan? ttl = null)
         {
             var o = data as JObject;
             if (o == null) return;
 
-            o["document"] = gate.Identity?.Describe();
-            o["document_fingerprint"] = gate.Identity?.FingerprintDigest();
-            if (_pendingPlan != null) o["change_preview"] = PlanPreview.Describe(_pendingPlan);
-            if (!dryRun) { _pendingPlan = null; return; }
-
-            Confirmation issued = Confirmations.Issue(commandName, gate.Fingerprint, planHash, null,
-                                                      _pendingPlan?.Fingerprint(), _pendingPlan);
-            if (_pendingPlan != null)
-            {
-                // What was approved, in the answer itself. A count in the reply is what a
-                // person actually reads before saying yes, and it is the same number the
-                // fingerprint is taken over.
-                o["plan_resolved"] = new JObject
-                {
-                    ["elements"] = _pendingPlan.Elements.Count,
-                    ["create"] = _pendingPlan.CreateCount,
-                    ["modify"] = _pendingPlan.ModifyCount,
-                    ["delete"] = _pendingPlan.DeleteCount,
-                    ["expected_cascade"] = _pendingPlan.ExpectedCascadeCount,
-                    ["fingerprint"] = _pendingPlan.Fingerprint()
-                };
-                _pendingPlan = null;
-            }
-            o["confirmation_token"] = issued.Token;
-            o["confirmation_expires_utc"] = issued.ExpiresUtc.ToString("u");
-            o["confirmation_note"] =
-                "To execute this, call again with dry_run=false and this confirmation_token. It is SINGLE USE, it " +
-                "expires, and it is bound to this document and this request - if either changes it is refused and " +
-                "nothing is written." +
-                (o["plan_resolved"] != null
-                    ? " It is ALSO bound to the elements resolved above: if the model moves before you spend it, " +
-                      "the apply is refused as a stale plan rather than applied to a different set."
-                    : " NOTE: it is bound to the REQUEST, not to the resolved element set - this command does not " +
-                      "materialise its plan yet, so a model that moves before you spend it would not be detected.") +
-                (limitNote == null ? "" : " STATED LIMIT: " + limitNote);
+            Confirmations.StampResponse(o, gate.Identity, commandName, planHash, dryRun, _pendingPlan, limitNote, ttl);
+            _pendingPlan = null;
         }
 
         /// <summary>

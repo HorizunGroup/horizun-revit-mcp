@@ -81,7 +81,20 @@ namespace Horizun.Revit.Core
         RolledBack,
 
         /// <summary>Changes were requested and none of them landed.</summary>
-        Failed
+        Failed,
+
+        /// <summary>
+        /// A DRY RUN that refused: some of what it was given did not resolve, so it wrote nothing and issued no
+        /// confirmation. Field 2026-11-09: a refused set_curve rehearsal said "partial: some of what was requested
+        /// landed", which nothing had. Appended last so the values before it keep their numbers.
+        /// </summary>
+        Rejected,
+
+        /// <summary>
+        /// A standalone dry run with ready and unresolved rows. Its confirmation covers
+        /// only the ready rows. Nothing was written and an atomic plan cannot accept it.
+        /// </summary>
+        PartiallyRehearsed
     }
 
     public static class ApplicationOutcome
@@ -104,6 +117,8 @@ namespace Horizun.Revit.Core
         private const string SPartial = "partial";
         private const string SRolledBack = "rolled_back";
         private const string SFailed = "failed";
+        private const string SRejected = "rejected";
+        private const string SPartiallyRehearsed = "partially_rehearsed";
 
         /// <summary>The wire name of a state. One spelling, used by every command and by the plan.</summary>
         public static string Name(ApplicationState state)
@@ -116,6 +131,8 @@ namespace Horizun.Revit.Core
                 case ApplicationState.Partial: return SPartial;
                 case ApplicationState.RolledBack: return SRolledBack;
                 case ApplicationState.Failed: return SFailed;
+                case ApplicationState.Rejected: return SRejected;
+                case ApplicationState.PartiallyRehearsed: return SPartiallyRehearsed;
                 default: return SUncertain;
             }
         }
@@ -136,6 +153,8 @@ namespace Horizun.Revit.Core
                 case SPartial: state = ApplicationState.Partial; return true;
                 case SRolledBack: state = ApplicationState.RolledBack; return true;
                 case SFailed: state = ApplicationState.Failed; return true;
+                case SRejected: state = ApplicationState.Rejected; return true;
+                case SPartiallyRehearsed: state = ApplicationState.PartiallyRehearsed; return true;
                 case SUncertain: state = ApplicationState.Uncertain; return true;
                 default: state = ApplicationState.Uncertain; return false;
             }
@@ -152,21 +171,21 @@ namespace Horizun.Revit.Core
 
         /// <summary>
         /// Whether a dry run may be turned into an executable confirmation. Only a clean
-        /// rehearsal: one that resolved everything it was given and wrote nothing.
+        /// rehearsal: one that resolved everything it was given and left no changes.
         /// </summary>
         public static bool IsValidRehearsal(ApplicationState state)
             => state == ApplicationState.Rehearsed;
 
         /// <summary>
-        /// A DRY RUN's state. It never touched the model, so the only question is whether
+        /// A DRY RUN's state, assuming no changes persisted. It depends on whether
         /// what it was given resolves end to end - a rehearsal that could not resolve half
-        /// its rows has not rehearsed the request, it has rehearsed the half it understood,
-        /// and a token issued on it authorises an apply nobody previewed.
+        /// its rows has only rehearsed the part it understood. A standalone command can
+        /// expressly declare PartiallyRehearsed when its token is bound just to that part.
         /// </summary>
         public static ApplicationState Rehearsal(int unresolved, int failed, int unknown)
         {
             if (unknown > 0) return ApplicationState.Uncertain;
-            if (unresolved > 0 || failed > 0) return ApplicationState.Partial;
+            if (unresolved > 0 || failed > 0) return ApplicationState.Rejected;
             return ApplicationState.Rehearsed;
         }
 
@@ -229,7 +248,7 @@ namespace Horizun.Revit.Core
         /// <summary>
         /// The declaration block, built once so every command spells it the same way.
         /// It carries the counts as well as the verdict, because a plan that refuses an
-        /// action has to be able to say WHICH of the seven states it read and on what.
+        /// action has to be able to say which state it read and on what evidence.
         /// </summary>
         public static JObject Declare(ApplicationState state, string transactionStatus, int requested,
                                       int applied, int verified, int unresolved, int failed, int unknown)
@@ -345,7 +364,7 @@ namespace Horizun.Revit.Core
             // Rehearsed mints the executable confirmation. Every one must be corroborated.
             bool opensGate = IsFullyApplied(declared) || IsValidRehearsal(declared);
             if (!opensGate) return declared;
-            return Corroborated(block, declared) ? declared : ApplicationState.Uncertain;
+            return Corroborated(payload, block, declared) ? declared : ApplicationState.Uncertain;
         }
 
         /// <summary>
@@ -367,7 +386,7 @@ namespace Horizun.Revit.Core
         /// would refuse real results, which is the failure mode opposite to this one and
         /// just as bad.
         /// </summary>
-        private static bool Corroborated(JObject block, ApplicationState declared)
+        private static bool Corroborated(JObject payload, JObject block, ApplicationState declared)
         {
             // A `fully_applied` that disagrees with its own state is a block assembled by
             // something that was not this file.
@@ -392,13 +411,24 @@ namespace Horizun.Revit.Core
 
             if (declared == ApplicationState.Rehearsed)
             {
-                return string.Equals(status, NotStarted, StringComparison.Ordinal) &&
-                       applied == 0 && verified == 0 && unresolved == 0 && failed == 0 && unknown == 0;
+                return applied == 0 && verified == 0 && unresolved == 0 && failed == 0 && unknown == 0 &&
+                       (status == NotStarted || (status == RolledBackStatus && HasVerifiedRehearsalRollback(payload)));
             }
 
             ApplicationState recomputed = Applied(status, (int)requested, (int)applied, (int)verified,
                                                   (int)unresolved, (int)failed, (int)unknown);
             return recomputed == declared;
+        }
+
+        private static bool HasVerifiedRehearsalRollback(JObject payload)
+        {
+            return (payload["dry_run"] as JValue)?.Value is true &&
+                   (payload["transaction_status"] as JValue)?.Value as string == RolledBackStatus &&
+                   payload["api_rehearsal"] is JObject rehearsal &&
+                   (rehearsal["dry_run"] as JValue)?.Value is true &&
+                   (rehearsal["transaction_status"] as JValue)?.Value as string == RolledBackStatus &&
+                   (rehearsal["changes_applied"] as JValue)?.Value is false &&
+                   (rehearsal["provisional_elements_absent"] as JValue)?.Value is true;
         }
 
         /// <summary>
@@ -449,7 +479,7 @@ namespace Horizun.Revit.Core
                     return "verified_applied: every requested change is in the model and was re-read after the " +
                            "commit. This is the only state besides no_op that lets a plan keep its work.";
                 case ApplicationState.Rehearsed:
-                    return "rehearsed: a valid dry run. Everything resolved and NOTHING was written.";
+                    return "rehearsed: a valid dry run. Everything resolved and no changes persisted.";
                 case ApplicationState.NoOp:
                     return "no_op: nothing was requested, so nothing was written. Complete, legitimately.";
                 case ApplicationState.Partial:
@@ -460,6 +490,12 @@ namespace Horizun.Revit.Core
                            "Nothing from it reached the model.";
                 case ApplicationState.Failed:
                     return "failed: changes were requested and none of them landed.";
+                case ApplicationState.Rejected:
+                    return "rejected: a dry run that refused part of what it was given. NOTHING was written and no " +
+                           "confirmation was issued; fix the rows its errors name and rehearse again.";
+                case ApplicationState.PartiallyRehearsed:
+                    return "partially_rehearsed: nothing was written. The confirmation covers only the ready rows; " +
+                           "the unresolved rows are excluded.";
                 default:
                     return "uncertain: what reached the model was not measured. This is NOT 'nothing happened' " +
                            "and NOT 'it worked' - it is the absence of evidence, and no work may be stacked on it.";

@@ -47,7 +47,7 @@
          compiler stamps it into the assembly and Core/Build.cs reads it back. -->
     <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <DefineConstants>REVIT$(RevitYear)</DefineConstants>
+    <DefineConstants>REVIT$(RevitYear)$(HorizunLicenceDefines)</DefineConstants>
     <!-- Library projects don't copy NuGet assemblies to bin by default. IronPython
          is not shipped by Revit, so its DLLs must land in the output to be deployed
          alongside the plugin. (Revit ships Newtonsoft.Json; the Revit API refs are
@@ -110,6 +110,16 @@
     <RevitDir>C:\Program Files\Autodesk\Revit $(RevitYear)</RevitDir>
   </PropertyGroup>
 
+  <!-- Revit 2026.5 (26.5.x) moved its process to .NET 10: its RevitAPI references
+       System.Runtime 10.0 and a net8 compile fails with CS1705 (measured on
+       26.5.10.38). Revit ships no Revit.runtimeconfig.json, but its own Add-In Manager
+       declares the runtime the process loads, so read the TFM from there. Its own
+       lock file keeps this restore graph from overwriting the net8 2026 lock. -->
+  <PropertyGroup Condition="'$(RevitYear)' == '2026' And Exists('$(RevitDir)\AddInManager.runtimeconfig.json') And $([System.IO.File]::ReadAllText('$(RevitDir)\AddInManager.runtimeconfig.json').Contains('&quot;net10.0&quot;'))">
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <NuGetLockFilePath>packages.lock.2026-net10.json</NuGetLockFilePath>
+  </PropertyGroup>
+
   <ItemGroup>
     <Reference Include="RevitAPI">
       <HintPath>$(RevitDir)\RevitAPI.dll</HintPath>
@@ -117,6 +127,10 @@
     </Reference>
     <Reference Include="RevitAPIUI">
       <HintPath>$(RevitDir)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIIFC">
+      <HintPath>$(RevitDir)\RevitAPIIFC.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
@@ -189,6 +203,7 @@
   <ItemGroup>
     <!-- The single declaration of every command, shared with the other half. -->
     <Compile Include="..\Horizun.Contracts\Contract.cs" />
+    <Compile Include="..\Horizun.Contracts\Edition.cs" />
   </ItemGroup>
   <!-- IronPython.StdLib copies distutils' Windows installer stubs (lib\distutils\command\wininst-*.exe,
        7 unsigned executables). bdist_wininst is never run inside Revit, and an unsigned .exe has

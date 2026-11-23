@@ -40,6 +40,14 @@ namespace Horizun.Revit.Commands
                     s["loc"] = new JArray(P(lp.Point));
                     try { s["rot"] = Math.Round(lp.Rotation, 7); } catch { }
                 }
+                else if (e is Instance instance)
+                {
+                    // CAD and Revit links have no LocationPoint. Their placement
+                    // is the total transform origin, which the move verifier also
+                    // samples. Undo must compare that origin before and after.
+                    Transform total = instance.GetTotalTransform();
+                    if (total != null) s["loc"] = new JArray(P(total.Origin));
+                }
             }
             catch { }
             try { s["type"] = Rid.Value(e.GetTypeId()); } catch { }
@@ -113,8 +121,13 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>Record a committed, verified batch. Returns the reply's `undo` block; never throws.</summary>
+        /// <summary>How many batches were recorded (or attempted) in this process: the dispatcher compares it around a
+        /// command to know whether that command, or a child it called, recorded one (Revit API calls are single-threaded).</summary>
+        internal static int RecordCount;
+
         public static JObject Record(Document doc, string tool, List<UndoEntry> entries, string notUndoableReason = null)
         {
+            RecordCount++;
             try
             {
                 string path = UndoJournalStore.PathFor(doc.Title, SafePath(doc));
@@ -133,6 +146,7 @@ namespace Horizun.Revit.Commands
                 return new JObject
                 {
                     ["recorded"] = reread, ["batch_id"] = batch.Id, ["undoable"] = batch.Undoable,
+                    ["created_dependents"] = new JArray(batch.Entries.SelectMany(e => (e.Inverse["created_dependents"] as JArray ?? new JArray()).Select(t => t.DeepClone()))),
                     ["reason"] = batch.NotUndoableReason, ["note"] = "horizun_undo operation=undo_last reverses it while nothing changed it since."
                 };
             }
@@ -147,7 +161,33 @@ namespace Horizun.Revit.Commands
         /// <summary>A transform entry for ids that were moved/rotated/mirrored/pinned/re-typed.</summary>
         public static UndoEntry Entry(Document doc, string op, IEnumerable<long> ids, JObject before, JObject inverse)
         {
-            var list = ids.ToList();
+            var list = ids.Distinct().ToList();
+            if (op == "created")
+            {
+                inverse = inverse ?? new JObject();
+                var dependents = new JArray();
+                var known = new HashSet<long>(list);
+                for (int index = 0; index < list.Count; index++)
+                {
+                    Element owner = doc.GetElement(Rid.Make(list[index]));
+                    if (owner == null) continue;
+                    foreach (ElementId dependentId in owner.GetDependentElements(null))
+                    {
+                        Element dependent = doc.GetElement(dependentId);
+                        if (dependent == null || known.Contains(Rid.Value(dependentId)) ||
+                            !TransformCopyRules.KnownOwnedDependent(dependent.GetType().Name)) continue;
+                        // A system can pre-exist its new member. Admit only a system whose
+                        // entire network was created by this batch, never a shared system.
+                        var system = dependent as MEPSystem;
+                        if (system != null && system.Elements.Cast<Element>().Any(member => !known.Contains(Rid.Value(member.Id)))) continue;
+                        known.Add(Rid.Value(dependentId));
+                        list.Add(Rid.Value(dependentId));
+                        dependents.Add(new JObject { ["element_id"] = Rid.Value(dependentId), ["owner_id"] = Rid.Value(owner.Id),
+                            ["class"] = dependent.GetType().Name, ["category"] = dependent.Category?.Name, ["built_in_category"] = CategoryKey.Of(dependent), ["name"] = dependent.Name });
+                    }
+                }
+                inverse["created_dependents"] = dependents;
+            }
             var e = new UndoEntry { Op = op, ElementIds = list, Before = before ?? new JObject(), Inverse = inverse ?? new JObject() };
             foreach (long id in list)
             {
@@ -199,6 +239,11 @@ namespace Horizun.Revit.Commands
                     break;
                 case "move":
                     ElementTransformUtils.MoveElements(doc, ids, X(inv["vector"]).Negate());
+                    break;
+                case "move_preserve_pin":
+                    foreach (ElementId id in ids) doc.GetElement(id).Pinned = false;
+                    ElementTransformUtils.MoveElements(doc, ids, X(inv["vector"]).Negate());
+                    foreach (ElementId id in ids) doc.GetElement(id).Pinned = true;
                     break;
                 case "rotate":
                     ElementTransformUtils.RotateElements(doc, ids, Line.CreateBound(X(inv["axis_start"]), X(inv["axis_end"])),

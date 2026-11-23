@@ -69,6 +69,8 @@ try {
     $fakeScripts = Join-Path $root 'scripts'
     New-Item -ItemType Directory -Path $fakeScripts | Out-Null
     Copy-Item -LiteralPath $refresher -Destination (Join-Path $fakeScripts 'refresh-install-status.ps1')
+    # The refresher dot-sources the atomic status writer beside it, as installed.
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'integration-status.lib.ps1') -Destination $fakeScripts
 
     $serverPath = Join-Path $root 'horizun-mcp.exe'
     Set-Content -LiteralPath $serverPath -Value 'not a real binary' -Encoding ascii -NoNewline

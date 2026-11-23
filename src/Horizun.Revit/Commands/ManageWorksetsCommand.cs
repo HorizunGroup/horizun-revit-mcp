@@ -35,12 +35,12 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class ManageWorksetsCommand : ICommand
+    public sealed partial class ManageWorksetsCommand : ICommand
     {
         public string Name => "horizun_manage_worksets";
         public string Description => "List, create and rename user worksets, move elements between them, set the active workset and per-view workset visibility, verified by re-reading.";
 
-        private static readonly string[] Writes = { "create", "rename", "move_elements", "set_default", "visibility" };
+        private static readonly string[] Writes = { "create", "rename", "move_elements", "set_default", "visibility", "enable", "create_local", "borrow" };
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -48,11 +48,11 @@ namespace Horizun.Revit.Commands
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             string op = (request.Value<string>("operation") ?? "").Trim().ToLowerInvariant();
-            if (op != "list" && !Writes.Contains(op))
-                return CommandResult.Fail("operation must be list, " + string.Join(", ", Writes) + ".");
+            if (op != "list" && op != "status" && op != "loans" && !Writes.Contains(op))
+                return CommandResult.Fail("operation must be list, status, loans, " + string.Join(", ", Writes) + ".");
 
             Document doc; GateResult gate = null;
-            if (op == "list")
+            if (op == "list" || op == "status" || op == "loans")
             {
                 doc = app.ActiveUIDocument?.Document;
                 if (doc == null) return CommandResult.Fail("No document is open.");
@@ -63,14 +63,20 @@ namespace Horizun.Revit.Commands
             {
                 gate = DocumentGate.ForMutation(app, request, Name); if (!gate.Ok) return gate.Refusal;
                 doc = gate.Document;
+                if (op == "enable") return Enable(app, gate, request);
+                if (op == "create_local") return CreateLocal(app, gate, request);
+                if (op == "borrow") return Borrow(app, gate, request);
             }
+            if (op == "loans" && !doc.IsWorkshared) return CommandResult.Ok(HeldElementsRules.NotApplicable(doc.Title));
             if (!doc.IsWorkshared)
                 return CommandResult.FailWithDetail(
                     "'" + doc.Title + "' is not workshared, so it has no user worksets to " + (op == "list" ? "list" : op) +
-                    ". Enabling worksharing is a project decision this command does not take. Nothing was written.",
+                    ". operation=enable makes it workshared and writes a central. Nothing was written.",
                     new JObject { ["state"] = "refused", ["code"] = "not_workshared", ["operation"] = op, ["write_started"] = false },
                     FallbackSignal.NotAllowed("not_workshared", false), null);
             if (op == "list") return List(doc);
+            if (op == "status") return Status(doc, request);
+            if (op == "loans") return Loans(doc);
 
             string error; Plan plan = MakePlan(doc, request, op, out error);
             if (plan == null)
@@ -207,6 +213,131 @@ namespace Horizun.Revit.Commands
                 return CommandResult.FailWithDetail("The change committed but a postcondition does not re-read as planned; state is uncertain.", done);
             return CommandResult.Ok(done);
         }
+
+        // ---------------------------------------------------------------- status
+        // FIELD FEEDBACK 2.9: per element (and per view - a view is an
+        // element), its workset, who holds it and who created it, read WITHOUT
+        // borrowing anything. GetCheckoutStatus and GetWorksharingTooltipInfo only read.
+        private static CommandResult Status(Document doc, JObject request)
+        {
+            var ids = new List<long>();
+            foreach (string field in new[] { "element_ids", "view_ids" })
+                if (request[field] is JArray arr)
+                    foreach (JToken t in arr) { long v; if (long.TryParse(t.ToString(), out v)) ids.Add(v); else return CommandResult.Fail(field + " must hold integer ids."); }
+            ids = ids.Distinct().ToList();
+            string invalid = WorksharingStatusRules.Validate(ids);
+            if (invalid != null) return CommandResult.Fail(invalid);
+            string me = doc.Application.Username;
+            WorksetTable table = doc.GetWorksetTable();
+            WorksetId active = table.GetActiveWorksetId();
+            var rows = new JArray();
+            var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (long raw in ids)
+            {
+                var row = new JObject { ["element_id"] = raw };
+                Element e = Rid.CanRepresent(raw) ? doc.GetElement(Rid.Make(raw)) : null;
+                if (e == null) { row["error"] = "not an element of this document"; rows.Add(row); continue; }
+                row["built_in_category"] = BicName(e);
+                row["category"] = e.Category?.Name; row["built_in_category"] = CategoryKey.Of(e);
+                if (e is View v) { row["view_name"] = v.Name; }
+                try
+                {
+                    Workset w = table.GetWorkset(e.WorksetId);
+                    row["workset_id"] = e.WorksetId.IntegerValue; row["workset"] = w?.Name; row["workset_kind"] = w?.Kind.ToString();
+                }
+                catch (Exception ex) { row["workset_error"] = ex.Message; }
+                string owner = null, state;
+                try { state = WorksharingStatusRules.State(WorksharingUtils.GetCheckoutStatus(doc, e.Id, out owner).ToString()); }
+                catch (Exception ex) { state = CheckoutState.Unreadable; row["checkout_error"] = ex.Message; }
+                row["checkout"] = state;
+                row["borrowed_by"] = WorksharingStatusRules.BorrowedBy(state, owner);
+                try
+                {
+                    WorksharingTooltipInfo info = WorksharingUtils.GetWorksharingTooltipInfo(doc, e.Id);
+                    row["owner"] = string.IsNullOrEmpty(info.Owner) ? null : info.Owner;
+                    row["creator"] = string.IsNullOrEmpty(info.Creator) ? null : info.Creator;
+                    row["last_changed_by"] = string.IsNullOrEmpty(info.LastChangedBy) ? null : info.LastChangedBy;
+                    var req = info.GetRequesters();
+                    if (req != null && req.Count > 0) row["requested_by"] = new JArray(req);
+                    row["created_by_me"] = WorksharingStatusRules.SameUser(info.Creator, me);
+                }
+                catch (Exception ex) { row["tooltip_error"] = ex.Message; }
+                try { row["model_updates"] = WorksharingUtils.GetModelUpdatesStatus(doc, e.Id).ToString(); } catch { }
+                int had; counts[state] = counts.TryGetValue(state, out had) ? had + 1 : 1;
+                rows.Add(row);
+            }
+            var result = new JObject
+            {
+                ["read_only"] = true,
+                ["document"] = doc.Title,
+                ["current_user"] = me,
+                ["active_workset_id"] = active.IntegerValue,
+                ["active_workset"] = table.GetWorkset(active)?.Name,
+                ["placement_note"] = WorksharingStatusRules.PlacementNote,
+                ["counts"] = JObject.FromObject(counts),
+                ["elements"] = rows,
+                ["note"] = "Read without borrowing: unreadable is unknown, never free. borrowed_by names another user holding the element."
+            };
+            ApplicationOutcome.StampApplied(result, ApplicationOutcome.NotStarted, 0, 0, 0, 0, 0, 0);
+            return CommandResult.Ok(result);
+        }
+
+        // ------------------------------------------------------------------ loans
+        /// <summary>
+        /// Read-only: what this user holds right now (the census the synchronize rehearsal takes), so a person
+        /// or an agent knows what a synchronize would give back BEFORE running it. Borrows nothing. When the census
+        /// cannot be read in full it says so (ownership_census_incomplete, the same finding the sync rehearsal refuses on)
+        /// instead of answering "complete".
+        /// </summary>
+        private static CommandResult Loans(Document doc)
+        {
+            bool detached = false;
+            try { detached = doc.IsDetached; } catch { }
+            if (detached) return CommandResult.Ok(HeldElementsRules.NotApplicable(doc.Title, "detached"));
+
+            string me = null;
+            try { me = doc.Application.Username; } catch { }
+            DocumentSessionCommand.SyncCensus census = DocumentSessionCommand.TakeSyncCensus(doc);
+            WorksetTable table = doc.GetWorksetTable();
+            var owned = new List<HeldWorkset>();
+            var closed = new List<HeldWorkset>();
+            bool worksetsUnreadable = census.OwnedWorksets == null || string.IsNullOrEmpty(me);
+            try
+            {
+                // Every kind of workset a user can own (user, family, view, standard), exactly as the census counts them.
+                foreach (Workset w in new FilteredWorksetCollector(doc))
+                {
+                    if (w == null) continue;
+                    var row = new HeldWorkset { Id = w.Id.IntegerValue, Name = w.Name, IsOpen = w.IsOpen, Kind = w.Kind.ToString() };
+                    if (!w.IsOpen) closed.Add(row);
+                    if (me != null && string.Equals(w.Owner, me, StringComparison.OrdinalIgnoreCase)) owned.Add(row);
+                }
+            }
+            catch { worksetsUnreadable = true; }
+            var rows = new List<HeldRow>();
+            int notListed = 0;
+            foreach (long id in census.BorrowedIds)
+            {
+                try
+                {
+                    Element e = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+                    if (e == null) { notListed++; continue; }
+                    string ws = null;
+                    try { ws = table.GetWorkset(e.WorksetId)?.Name; } catch { }
+                    string uid = null;
+                    census.UidById.TryGetValue(id, out uid);
+                    rows.Add(new HeldRow { ElementId = id, UniqueId = uid, Category = e.Category?.Name, Workset = ws });
+                }
+                catch { notListed++; }
+            }
+            JObject result = HeldElementsRules.Summarize(doc.Title, me, census.AllIds.Count, census.OwnedIds.Count, census.BorrowedIds.Count,
+                                                         census.OthersIds.Count, census.Unreadable, notListed, worksetsUnreadable,
+                                                         rows, owned, closed);
+            ApplicationOutcome.StampApplied(result, ApplicationOutcome.NotStarted, 0, 0, 0, 0, 0, 0);
+            return CommandResult.Ok(result);
+        }
+
+        private static string BicName(Element e) => e.Category == null ? null : ModelDiffCommand.BicName(e.Category);
 
         // ------------------------------------------------------------------ list
         private static CommandResult List(Document doc)

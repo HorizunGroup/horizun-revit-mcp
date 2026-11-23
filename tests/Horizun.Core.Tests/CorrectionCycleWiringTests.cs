@@ -113,8 +113,7 @@ namespace Horizun.Core.Tests
         public void The_rehearsal_is_the_typed_tools_own_dry_run_not_a_generated_argument_object()
         {
             string src = Apply();
-            Assert.Contains("ApplicationOutcome.IsValidRehearsal(state)", src);
-            Assert.Contains("[\"plan_resolved\"]?[\"fingerprint\"]", src);
+            Assert.Contains("CorrectionSelection.RecordRehearsal(action, step, rehearsal)", src);
             // And the token is issued only over a clean rehearsal, together with the plan.
             Assert.Contains("DocumentGate.RecordResolvedPlan(rehearsedCleanly ? plan : null);", src);
             Assert.Contains("DocumentGate.StampConfirmation(preview, gate, Name, planHash, rehearsedCleanly,", src);
@@ -125,8 +124,9 @@ namespace Horizun.Core.Tests
         {
             string src = Apply();
             int confirm = src.IndexOf("DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, plan, null)", StringComparison.Ordinal);
-            int scope = src.IndexOf("using (DocumentGate.EnterConfirmedAtomicPlan())", StringComparison.Ordinal);
-            Assert.True(confirm > 0 && scope > confirm);
+            int apply = src.IndexOf("CorrectionApplyLoop.ConfirmAndApply(Name, actions,", StringComparison.Ordinal);
+            int scope = src.IndexOf("DocumentGate.EnterConfirmedAtomicPlan, step =>", StringComparison.Ordinal);
+            Assert.True(apply > 0 && confirm > apply && scope > confirm);
             // Delete's own fingerprint check rides along, as it does in execute_plan.
             Assert.Contains("args[\"__expected_plan_fingerprint\"] = step.ChildPlanFingerprint;", src);
         }
@@ -147,7 +147,7 @@ namespace Horizun.Core.Tests
             // exercised without a Revit; what this guards is that the command still
             // hands it the typed child's own declaration rather than deciding on
             // Success, and that the executor it supplies is the only way in.
-            Assert.Contains("CorrectionApplyLoop.Apply(actions, step =>", src);
+            Assert.Contains("CorrectionApplyLoop.ConfirmAndApply(Name, actions,", src);
             Assert.Contains("State = ApplicationOutcome.Read(applied.Data)", src);
             Assert.Contains("ApplicationOutcome.IsFullyApplied", Loop());
             int scopeEnd = src.IndexOf("// RE-AUDIT.", StringComparison.Ordinal);
@@ -302,12 +302,24 @@ namespace Horizun.Core.Tests
                 {
                     var attached = Regex.Matches(text, @"\.(\w+)\s*\+=").Cast<Match>().Select(m => m.Groups[1].Value).OrderBy(x => x).ToArray();
                     var detached = Regex.Matches(text, @"\.(\w+)\s*-=").Cast<Match>().Select(m => m.Groups[1].Value).OrderBy(x => x).ToArray();
-                    Assert.Equal(new[] { "DocumentChanged", "DocumentClosing", "DocumentOpened", "DocumentSaved", "DocumentSavedAs", "DocumentSynchronizedWithCentral", "ViewActivated" }.OrderBy(x => x), attached);
+                    Assert.Equal(new[] { "DocumentChanged", "DocumentClosed", "DocumentClosing", "DocumentOpened", "DocumentReloadedLatest", "DocumentReloadingLatest", "DocumentSaved", "DocumentSavedAs", "DocumentSavingAs", "DocumentSynchronizedWithCentral", "DocumentSynchronizingWithCentral", "LinkedResourceOpened", "LinkedResourceOpening", "ViewActivated" }.OrderBy(x => x), attached);
                     Assert.Equal(attached, detached);
-                    Assert.Equal(7, Regex.Matches(text, @"=> Cache\.Invalidate\(\);").Count);
+                    // Handlers only invalidate (the model epoch for content changes, the cache alone for Saved and ViewActivated); the others also keep bookkeeping and read nothing from the model, through DocumentLifecycleRules (tested
+                    // without Revit in ElementIdentityGuardR2VTests): the synchronize with central and "Reload Latest" note that ids handed out before may
+                    // have been renumbered, SavingAs / SavedAs make what is keyed by the document's path follow the document (R2U), and Closed drops
+                    // the notice state of the document (R2V m-c, R2W m-2: only once the close happened; Closing just remembers its key).
+                    Assert.Equal(4, Regex.Matches(text, @"=> Model\(\);").Count);   // Opened, ReloadingLatest and both linked-resource events
+                    Assert.Matches(@"static void Changed\([^\r\n]*\) => DocumentEdited\(e.GetDocument\);", text);
+                    Assert.Matches(@"static void DocumentEdited\(Func<Document> readDocument\)\s*\{\s*Model\(\);", text);
+                    Assert.Equal(2, Regex.Matches(text, @"=> Cache\.Invalidate\(\);").Count);   // Saved and ViewActivated change no model content
+                    Assert.Contains("DocumentLifecycleRules.Synchronized(", text);
+                    Assert.Contains("DocumentLifecycleRules.Reloaded(", text);
+                    Assert.Contains("DocumentLifecycleRules.ClosingBegan(", text);
+                    Assert.Contains("DocumentLifecycleRules.Closed(", text);
                     continue;
                 }
-                if (file.EndsWith("ChangeWatch.cs", StringComparison.Ordinal))
+                if (file.EndsWith("ChangeWatch.cs", StringComparison.Ordinal) || file.EndsWith("RehearsalTracker.cs", StringComparison.Ordinal) ||
+                    file.EndsWith("DocumentationOnlyTracker.cs", StringComparison.Ordinal))
                 {
                     // The spatial check's observer: DocumentChanged only, attached for the
                     // duration of one command by the dispatcher and detached in Dispose.
@@ -317,23 +329,16 @@ namespace Horizun.Core.Tests
                     Assert.Equal(on, off);
                     continue;
                 }
-                if (file.EndsWith("IdleDialogWatcher.cs", StringComparison.Ordinal))
-                {
-                    // Revit's save reminder between commands (v3.0.5 release gate):
-                    // DialogBoxShowing only, for the add-in's lifetime, detached at shutdown.
-                    var on = Regex.Matches(text, @"\.(\w+)\s*\+=").Cast<Match>().Select(m => m.Groups[1].Value).ToArray();
-                    var off = Regex.Matches(text, @"\.(\w+)\s*-=").Cast<Match>().Select(m => m.Groups[1].Value).ToArray();
-                    Assert.Equal(new[] { "DialogBoxShowing" }, on);
-                    Assert.Equal(on, off);
-                    continue;
-                }
                 foreach (string ev in new[] { "DocumentSaving", "DocumentSavingAs", "DocumentSynchronizingWithCentral",
                                               "DocumentClosing", "FileExporting", "DocumentOpened", "DocumentChanged",
                                               "ViewActivated", "Idling" })
                     if (Regex.IsMatch(text, @"\." + ev + @"\s*\+="))
                         offenders.Add(Path.GetFileName(file) + " subscribes to " + ev);
                 foreach (Match m in Regex.Matches(text, @"\.(\w+)\s*\+=\s*On\w+"))
-                    if (!file.EndsWith("Interference.cs", StringComparison.Ordinal))
+                    if (file.EndsWith("DocumentSessionExit.cs", StringComparison.Ordinal) &&
+                        m.Groups[1].Value == "DocumentEditObserved")
+                        Assert.Contains("finally { QueryCacheLifecycle.DocumentEditObserved -= OnDocumentEdited; }", text);
+                    else if (!file.EndsWith("Interference.cs", StringComparison.Ordinal))
                         offenders.Add(Path.GetFileName(file) + " subscribes to " + m.Groups[1].Value);
             }
             Assert.True(offenders.Count == 0, string.Join("; ", offenders));

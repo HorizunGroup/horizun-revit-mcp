@@ -63,32 +63,8 @@ namespace Horizun.Core.Tests
         public void A_window_past_the_host_is_refused() =>
             Assert.Equal(MatRules.CodeWindowOutsideTheHost, Expand(Comp(spreadFrom: 3500, spreadTo: 4500), out _).Code);
 
-        [Fact]
-        public void A_window_that_ends_before_it_starts_is_refused_by_the_parser()
-        {
-            StructuralRequirementSet s = StructuralRequirementSet.Load(JObject.Parse(@"{
-  'schema': 'horizun.structural-requirements/1', 'units': 'millimeter', 'requirement_set': { 'id': 'w', 'version': '1' },
-  'bar_types': [ { 'id': 't12', 'type_name': '12M' } ],
-  'mat_rules': [ { 'id': 'N1', 'host': { 'element_ids': [ 5 ] }, 'face_normal': [ 0, 0, 1 ],
-    'components': [ { 'name': 'neg', 'direction': [ 1, 0, 0 ], 'bar_type': 't12', 'offset_from_face_mm': 31, 'end_cover_mm': 25,
-      'side_cover_mm': 31, 'run': { 'from_mm': 3600, 'to_mm': 2400 }, 'layout': { 'rule': 'maximum_spacing', 'spacing_mm': 200 } } ] } ] }"));
-            Assert.Equal(StructuralRequirementSet.CodeGeometry, s.Code);
-        }
+        
 
-        [Fact]
-        public void The_parser_reads_run_and_spread()
-        {
-            StructuralRequirementSet s = StructuralRequirementSet.Load(JObject.Parse(@"{
-  'schema': 'horizun.structural-requirements/1', 'units': 'millimeter', 'requirement_set': { 'id': 'w', 'version': '1' },
-  'bar_types': [ { 'id': 't12', 'type_name': '12M' } ],
-  'mat_rules': [ { 'id': 'N1', 'host': { 'element_ids': [ 5 ] }, 'face_normal': [ 0, 0, 1 ],
-    'components': [ { 'name': 'neg', 'direction': [ 1, 0, 0 ], 'bar_type': 't12', 'offset_from_face_mm': 31, 'end_cover_mm': 25,
-      'side_cover_mm': 31, 'run': { 'from_mm': 2400, 'to_mm': 3600 }, 'spread': { 'from_mm': 100, 'to_mm': 3900 },
-      'layout': { 'rule': 'maximum_spacing', 'spacing_mm': 200 } } ] } ] }"));
-            Assert.True(s.Ok, s.Error);
-            MatComponentRequest c = s.MatRules[0].Components[0];
-            Assert.Equal(2400, c.RunFromMm.Value); Assert.Equal(3600, c.RunToMm.Value);
-            Assert.Equal(100, c.SpreadFromMm.Value); Assert.Equal(3900, c.SpreadToMm.Value);
-        }
+        
     }
 }

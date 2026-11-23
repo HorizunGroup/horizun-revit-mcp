@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - compact, typed authoring surface for common BIM elements.
 // -----------------------------------------------------------------------------
 using System;
@@ -23,324 +23,13 @@ namespace Horizun.Revit.Commands
         public string Name => "horizun_create_elements";
         public string Description => "Create architectural, structural and MEP BIM elements atomically, then re-read every created id.";
 
-        public CommandResult Execute(UIApplication app, string paramsJson)
-        {
-            JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
-            catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
-            GateResult gate = DocumentGate.ForMutation(app, request, Name);
-            if (!gate.Ok) return gate.Refusal;
-            Document doc = gate.Document;
-            ResponseSummaryRules.ParseMode(request, out string responseModeError);
-            if (responseModeError != null) return CommandResult.Fail(responseModeError);
-            string validationMode = request.Value<string>("validation_mode") ?? "arguments";
-            if (validationMode != "arguments" && validationMode != "revit_rollback") return CommandResult.Fail("validation_mode must be arguments or revit_rollback.");
-
-            JArray input = request["elements"] as JArray;
-            JObject tabularBlock = null;
-            if (request["tabular_source"] is JObject tabularSource)
-            {
-                // A CSV becomes family_instance entries, one per data row, expanded
-                // HERE on every call: a file edited between rehearsal and apply
-                // expands differently, the resolved plans differ, and the token
-                // refuses stale - the same binding the parameter writer proved.
-                if (input != null)
-                    return CommandResult.Fail("give elements OR tabular_source, not both: a batch with two " +
-                        "sources of truth cannot say which file row produced which element.");
-                double preScale;
-                if (!Scale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out preScale))
-                    return CommandResult.Fail("units must be mm, m or feet.");
-                string expandError = ExpandTabularPlacements(doc, tabularSource, preScale, out input, out tabularBlock);
-                if (expandError != null) return CommandResult.Fail(expandError + " Nothing ran.");
-            }
-            // placement='all_enclosed' rows become one room/space row per circuit (CreateElementsEnclosed.cs).
-            JArray enclosedBlock = null;
-            if (input != null)
-            {
-                string enclosedError = ExpandEnclosed(doc, request, ref input, out enclosedBlock);
-                if (enclosedError != null) return CommandResult.Fail(enclosedError + " Nothing ran.");
-                if (enclosedBlock != null && input.Count == 0) return NothingEnclosed(request, enclosedBlock);
-            }
-            if (input == null || input.Count == 0) return CommandResult.Fail("elements is required and must be non-empty.");
-            if (input.Count > 2000) return CommandResult.Fail("elements exceeds the 2000 item atomic-batch limit.");
-            if(input.Count!=1 && input.OfType<JObject>().Any(x=>x.Value<string>("kind")=="stairs"))
-                return CommandResult.Fail("stairs uses StairsEditScope and must be the sole element in its batch.");
-            double scale;
-            string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
-            if (!Scale(units, out scale)) return CommandResult.Fail("units must be mm, m or feet.");
-
-            var plans = new List<Plan>();
-            var errors = new JArray();
-            // Every action's outcome, so the FALLBACK decision is made once, centrally,
-            // over the whole batch - a mixed batch must not inherit one entry's
-            // capability gap as permission for the request. See FallbackDecision.
-            var outcomes = new List<ActionOutcome>();
-            for (int i = 0; i < input.Count; i++)
-            {
-                JObject item = input[i] as JObject;
-                string error = null, reason = null;
-                Plan plan = item == null ? null : PlanItem(doc, i, item, scale, out error, out reason);
-                if (plan == null)
-                {
-                    string message = item == null ? "entry is not an object" : error;
-                    // An all_enclosed row names the caller's own entry too, not only a position the caller never wrote.
-                    int? entry = item?.Value<int?>("enclosed_from");
-                    var rowError = new JObject { ["index"] = i, ["error"] = message };
-                    if (entry != null) rowError["elements_index"] = entry.Value;
-                    errors.Add(rowError);
-                    outcomes.Add(new ActionOutcome { Index = entry ?? i, Error = message, UnsupportedReason = reason });
-                }
-                else plans.Add(plan);
-            }
-
-            bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
-            string planHash = DocumentGate.PlanHash(request, "units", "elements", "tabular_source");
-
-            // ---- The MATERIALISED plan: what the request's NAMES resolved to. -----------
-            // planHash binds the batch as written, and for a creation command the batch is
-            // names and ids: a wall type called "Muro 200", a level called "N.E 10", a
-            // piping system picked by name. None of those meanings is frozen by the
-            // request. Between the rehearsal and the apply somebody can rename a type,
-            // swap what a name resolves to, or move a level's elevation - and the same
-            // batch then creates different elements in different places. The plan records
-            // each row's RESOLVED references: the type's UniqueId and name, the level's
-            // UniqueId and its elevation as measured now. A level that moved 50mm is a
-            // different plan even though its name still matches.
-            //
-            // Elements created do not exist at plan time, so what is fingerprinted is what
-            // the caller actually approved: the recipe plus the resolved ingredients.
-            var resolvedPlan = new ResolvedPlan
-            {
-                Command = Name,
-                DocumentKey = gate.Fingerprint,
-                RevitVersion = app?.Application?.VersionNumber,
-                DocumentFingerprint = gate.Identity?.FingerprintDigest()
-            };
-            foreach (Plan planned in plans)
-            {
-                var row = new PlannedElement
-                {
-                    UniqueId = "create:" + planned.Index,
-                    Category = planned.Kind,
-                    TypeName = SafePlanName(planned.Type),
-                    Action = PlannedAction.Create,
-                    BeforeValues = new Dictionary<string, string>
-                    {
-                        { "type_uid", SafePlanUid(planned.Type) },
-                        { "system_type", SafePlanName(planned.SystemType) },
-                        { "system_type_uid", SafePlanUid(planned.SystemType) },
-                        { "level", SafePlanName(planned.Level) },
-                        { "level_uid", SafePlanUid(planned.Level) },
-                        // The level's measured elevation, to the tenth of a millimetre.
-                        // "Create on N.E 10" approved a HEIGHT, not a name: a level that
-                        // moved is a different creation wearing the same words.
-                        { "level_elev_mm", SafePlanElevation(planned.Level) }
-                    }
-                };
-                if (planned.ExtraPlanFacts != null)
-                    foreach (KeyValuePair<string, string> fact in planned.ExtraPlanFacts)
-                        row.BeforeValues[fact.Key] = fact.Value;
-                row.BeforeValues["top_level_uid"] = SafePlanUid(planned.TopLevel);
-                row.BeforeValues["top_level_elev_mm"] = SafePlanElevation(planned.TopLevel);
-                row.BeforeValues["host_uid"] = SafePlanUid(planned.Host);
-                // WHERE, not only WHAT. A tabular_source batch is expanded from the CSV on
-                // every call, and the request carries only the file's path: without the
-                // placement in the plan, a file whose rows kept their type and level but
-                // moved was applied with the rehearsal's token (backlog P0 #5).
-                row.BeforeValues["start_mm"] = SafePlanPoint(planned.Start);
-                row.BeforeValues["end_mm"] = SafePlanPoint(planned.End);
-                row.BeforeValues["rotation_deg"] = System.Math.Round(planned.RotationRadians * 180.0 / System.Math.PI, 4)
-                    .ToString(System.Globalization.CultureInfo.InvariantCulture);
-                if (planned.DisplacedState != null) row.BeforeValues["displacement_source"] = planned.DisplacedState.ToString(Formatting.None);
-                resolvedPlan.Elements.Add(row);
-            }
-
-            if (dryRun)
-            {
-                CommandResult apiRehearsal = null;
-                if (errors.Count == 0 && validationMode == "revit_rollback")
-                {
-                    apiRehearsal = ApplyPlans(doc, request, plans, input.Count, true);
-                    if (!apiRehearsal.Success) return apiRehearsal;
-                }
-                var result = new JObject
-                {
-                    ["dry_run"] = true, ["tabular"] = tabularBlock, ["enclosed"] = enclosedBlock,
-                    ["transaction_status"] = "not_started", ["requested"] = input.Count,
-                    ["valid"] = plans.Count, ["invalid"] = errors.Count, ["errors"] = errors,
-                    ["plan"] = new JArray(plans.Select(p => p.Summary)),
-                    ["validation_level"] = apiRehearsal == null ? "arguments_and_references" : "revit_construction_rolled_back",
-                    ["api_rehearsal"] = apiRehearsal?.Data == null ? null : JToken.FromObject(apiRehearsal.Data),
-                    ["note"] = apiRehearsal == null ? "No transaction opened; API construction and instance parameters are not rehearsed. Correct every invalid row before apply." : "Provisional elements were verified after an inner commit and the entire group was rolled back. No provisional elements remain."
-                };
-                if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
-                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so
-                // this is the first thing a caller sends; without the block here they
-                // got success=true, invalid=1 and no way to tell a capability gap from
-                // a typo except by sending an apply they had no reason to send.
-                // Invalid entries make this a partial rehearsal, not a clean one: the token
-                // below is already withheld for them, and a plan must read the same fact.
-                ApplicationOutcome.StampRehearsal(result, input.Count, errors.Count, 0, 0);
-                // Stamp before constructing CommandResult. The previous order happened to
-                // work only because Ok retained the mutable JObject reference.
-                CommandResult rehearsal = FallbackDecision.Attach(
-                    CommandResult.Ok(result),
-                    FallbackDecision.Decide(outcomes, writeStarted: false));
-                DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
-                    errors.Count == 0
-                        ? "the token binds this ordered heterogeneous batch, its units, AND what its names resolved " +
-                          "to right now - the types, system types and levels, including each level's measured " +
-                          "elevation. A type renamed, a name re-pointed or a level moved before you apply refuses " +
-                          "as a stale plan instead of creating something else under the approved words."
-                        : "no usable confirmation is issued while any row is invalid");
-                return rehearsal;
-            }
-            if (errors.Count > 0)
-            {
-                string why = errors.Count + " element plan(s) are invalid. Nothing was created: " +
-                             errors.ToString(Formatting.None);
-                // Nothing has been written - no transaction is open at this point - so the
-                // decision is entirely about WHAT failed, and it is made centrally.
-                return FallbackDecision.Refuse(why, FallbackDecision.Decide(outcomes, writeStarted: false));
-            }
-            // Recomputed above by this call's own PlanItem resolution. The rehearsed plan
-            // does not travel in the token, only its fingerprint, so a stale refusal names
-            // the drift generically - still refused, nothing created.
-            CommandResult confirmation = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
-                                                                          resolvedPlan, null);
-            if (confirmation != null) return confirmation;
-            CommandResult moved = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
-            if (moved != null) return moved;
-
-            var applied = ApplyPlans(doc, request, plans, input.Count);
-            if (applied.Data is JObject appliedData) appliedData["tabular"] = tabularBlock;
-            if (enclosedBlock != null && applied.Data is JObject enclosedData) enclosedData["enclosed"] = enclosedBlock;
-            return applied;
-        }
-
-        // ---- CSV rows into family_instance entries. -----------------------------
-        private static string ExpandTabularPlacements(Document doc, JObject source, double scale,
-                                                      out JArray elements, out JObject provenance)
-        {
-            elements = null; provenance = null;
-            string path = source.Value<string>("path");
-            if (string.IsNullOrWhiteSpace(path) || !System.IO.Path.IsPathRooted(path))
-                return "tabular_source.path is required and must be absolute.";
-            if (!System.IO.File.Exists(path)) return "tabular_source file '" + path + "' does not exist.";
-            string decimalSeparator = source.Value<string>("decimal_separator") ?? ".";
-            if (decimalSeparator != "." && decimalSeparator != ",")
-                return "decimal_separator must be '.' or ',' - it is DECLARED, never guessed from the file.";
-            string coordinates = (source.Value<string>("coordinates") ?? "internal").ToLowerInvariant();
-            if (coordinates != "internal" && coordinates != "shared")
-                return "coordinates must be internal or shared.";
-            long typeId = source.Value<long?>("type_id") ?? -1;
-            if (!Rid.CanRepresent(typeId) || !(doc.GetElement(Rid.Make(typeId)) is FamilySymbol))
-                return "tabular_source.type_id must identify the FamilySymbol every row places.";
-            long levelId = source.Value<long?>("level_id") ?? -1;
-            if (!Rid.CanRepresent(levelId) || !(doc.GetElement(Rid.Make(levelId)) is Level))
-                return "tabular_source.level_id must identify the Level every row lands on.";
-
-            byte[] bytes;
-            try { bytes = System.IO.File.ReadAllBytes(path); }
-            catch (Exception ex) { return "tabular_source file could not be read: " + ex.Message; }
-            string sha;
-            using (var hasher = System.Security.Cryptography.SHA256.Create())
-                sha = BitConverter.ToString(hasher.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
-            // BOM tolerated, like the parameter writer's reader: PowerShell's
-            // Set-Content utf8 prepends one, and a header whose first cell reads
-            // \uFEFFx would silently match no column.
-            string text = new System.Text.UTF8Encoding(false).GetString(bytes).TrimStart('\uFEFF');
-            List<string[]> rows = TabularRules.ParseCsv(text);
-            if (rows.Count < 2) return "the file has no data rows under its header.";
-
-            string[] header = rows[0];
-            int xColumn = Array.FindIndex(header, h => string.Equals(h, source.Value<string>("x_column") ?? "x", StringComparison.OrdinalIgnoreCase));
-            int yColumn = Array.FindIndex(header, h => string.Equals(h, source.Value<string>("y_column") ?? "y", StringComparison.OrdinalIgnoreCase));
-            int zColumn = Array.FindIndex(header, h => string.Equals(h, source.Value<string>("z_column") ?? "z", StringComparison.OrdinalIgnoreCase));
-            int rotationColumn = Array.FindIndex(header, h => string.Equals(h, source.Value<string>("rotation_column") ?? "rotation", StringComparison.OrdinalIgnoreCase));
-            if (xColumn < 0 || yColumn < 0)
-                return "the header names no x/y columns (looked for '" + (source.Value<string>("x_column") ?? "x") +
-                       "' and '" + (source.Value<string>("y_column") ?? "y") + "'; header: " + string.Join(", ", header) + ").";
-
-            // shared -> internal: undo the active project position (rotate back, subtract offsets).
-            double angle = 0, eastWest = 0, northSouth = 0, elevation = 0;
-            if (coordinates == "shared")
-            {
-                ProjectPosition position;
-                try { position = doc.ActiveProjectLocation?.GetProjectPosition(XYZ.Zero); }
-                catch { position = null; }
-                if (position == null) return "coordinates=shared, but the active project position could not be read.";
-                angle = position.Angle; eastWest = position.EastWest; northSouth = position.NorthSouth;
-                elevation = position.Elevation;
-            }
-
-            var culture = decimalSeparator == "."
-                ? System.Globalization.CultureInfo.InvariantCulture
-                : System.Globalization.CultureInfo.GetCultureInfo("es-ES");
-            elements = new JArray();
-            for (int r = 1; r < rows.Count; r++)
-            {
-                string[] row = rows[r];
-                double x, y, z = 0, rotation = 0;
-                if (row.Length <= Math.Max(xColumn, yColumn) ||
-                    !double.TryParse(row[xColumn], System.Globalization.NumberStyles.Float, culture, out x) ||
-                    !double.TryParse(row[yColumn], System.Globalization.NumberStyles.Float, culture, out y))
-                    return "row " + (r + 1) + " (cells: " + string.Join(" | ", row) + ") has no numeric x/y under " +
-                           "the declared separator '" + decimalSeparator + "'.";
-                if (zColumn >= 0 && (row.Length <= zColumn ||
-                    !double.TryParse(row[zColumn], System.Globalization.NumberStyles.Float, culture, out z)))
-                    return "row " + (r + 1) + " (cells: " + string.Join(" | ", row) + "): the z value is not " +
-                           "numeric under the declared separator '" + decimalSeparator + "'.";
-                if (rotationColumn >= 0 && row.Length > rotationColumn && row[rotationColumn].Trim().Length > 0 &&
-                    !double.TryParse(row[rotationColumn], System.Globalization.NumberStyles.Float, culture, out rotation))
-                    return "row " + (r + 1) + ": the rotation value is not numeric under the declared separator.";
-                if (coordinates == "shared")
-                {
-                    // The file speaks survey (E, N, Elev) in the REQUEST's units; the
-                    // API's offsets are feet. ProjectPosition: shared = R(angle) *
-                    // internal + T, so internal = R(-angle) * (shared - T) - computed
-                    // entirely in the request's units (offsets divided by scale).
-                    double cos = Math.Cos(-angle), sin = Math.Sin(-angle);
-                    double relativeEast = x - eastWest / scale;
-                    double relativeNorth = y - northSouth / scale;
-                    x = relativeEast * cos - relativeNorth * sin;
-                    y = relativeEast * sin + relativeNorth * cos;
-                    z = z - elevation / scale;
-                }
-                // No Z column means placement on the explicitly selected level.
-                // An explicit Z is absolute in the declared coordinate system.
-                if (zColumn < 0) z = ((Level)doc.GetElement(Rid.Make(levelId))).ProjectElevation / scale;
-                var entry = new JObject
-                {
-                    ["kind"] = "family_instance", ["coordinate_mode"] = "absolute",
-                    ["type_id"] = typeId,
-                    ["level_id"] = levelId,
-                    ["point"] = new JArray(x, y, z),
-                    ["source_row"] = r + 1
-                };
-                if (Math.Abs(rotation) > 1e-9) entry["rotation_degrees"] = rotation;
-                elements.Add(entry);
-            }
-            provenance = new JObject
-            {
-                ["path"] = path, ["sha256"] = sha, ["data_rows"] = rows.Count - 1,
-                ["coordinates"] = coordinates, ["decimal_separator"] = decimalSeparator,
-                ["note"] = "each element row carries source_row; the file was expanded on THIS call, so a file " +
-                           "edited between rehearsal and apply resolves a different plan and the token refuses stale."
-            };
-            return null;
-        }
-
-        private static Plan PlanItem(Document doc, int index, JObject item, double scale, out string error,
+        private static Plan PlanItem(Document doc, int index, JObject item, string kind, double scale, out string error,
                                      out string unsupportedReason)
         {
             error = null; unsupportedReason = null;
-            string kind = (item.Value<string>("kind") ?? "").ToLowerInvariant();
             var p = new Plan { Index = index, Kind = kind, Input = item, Scale = scale };
             try
             {
-                string invalid = Horizun.Contracts.ToolInputRules.ValidateCreation(EnclosedPublicView(item), kind);
-                if (invalid != null) throw new ArgumentException(invalid);
                 switch (kind)
                 {
                     case "stairs": PlanStairs(doc,p); break;
@@ -361,6 +50,16 @@ namespace Horizun.Revit.Commands
                         break;
                     case "grid":
                         p.Start = Point(item["start"], scale, true); p.End = Point(item["end"], scale, true);
+                        p.GridExtent3D = GridExtentRules.Parse(item.Value<string>("extent_3d"), out string gridExtentError);
+                        if (gridExtentError != null) throw new ArgumentException(gridExtentError);
+                        // A grid is a vertical datum plane: Revit keeps only its plan line, so a
+                        // Z on start/end could never read back ("asked 20.5, model has 0"). It is
+                        // flattened to the plan and the plan row says so.
+                        if (GridExtentRules.NeedsFlatten(p.Start.Z, p.End.Z))
+                        {
+                            p.GridFlattenNote = GridExtentRules.FlattenNote(p.Start.Z / scale, p.End.Z / scale, (item.Parent?.Parent as JObject)?.Value<string>("units") ?? "mm");
+                            p.Start = new XYZ(p.Start.X, p.Start.Y, 0); p.End = new XYZ(p.End.X, p.End.Y, 0);
+                        }
                         NonZero(p.Start, p.End);
                         p.WantName = Trimmed(item, "name");
                         break;
@@ -369,39 +68,56 @@ namespace Horizun.Revit.Commands
                         ReadArc(item["arc"], p, scale);
                         p.Structural = item.Value<bool?>("structural");
                         p.Level = Need<Level>(doc, item, "level_id");
-                        p.Type = Optional<WallType>(doc, item, "type_id") ??
-                            new FilteredElementCollector(doc).OfClass(typeof(WallType)).Cast<WallType>()
-                                .FirstOrDefault(w => w.Kind == WallKind.Basic);
-                        if (p.Type == null) throw new ArgumentException("type_id was omitted and the document has no Basic WallType default");
-                        if (item["height"] == null) throw new ArgumentException("height is required for wall");
-                        p.Height = Finite(item.Value<double>("height"), "height") * scale;
+                        p.Type = PickArchitectureType(doc, item,
+                            new FilteredElementCollector(doc).OfClass(typeof(WallType)).Cast<WallType>(), p.Assumptions);
+                        if (item["height"] != null) p.Height = Finite(item.Value<double>("height"), "height") * scale;
+                        else InferWallHeight(doc, p);
                         if (p.Height <= 0) throw new ArgumentException("height must be positive");
                         p.Offset = Finite(item.Value<double?>("offset") ?? 0, "offset") * scale;
                         break;
                     case "floor":
                         p.Structural = item.Value<bool?>("structural");
-                        p.Level = Need<Level>(doc, item, "level_id"); p.Type = Optional<FloorType>(doc, item, "type_id");
-                        if (p.Type == null) p.Type = doc.GetElement(Floor.GetDefaultFloorType(doc, false)) as FloorType;
-                        if (p.Type == null) throw new ArgumentException("type_id was omitted and Revit reports no default architectural FloorType");
+                        p.Level = Need<Level>(doc, item, "level_id");
+                        p.Type = PickArchitectureType(doc, item, new FilteredElementCollector(doc).OfClass(typeof(FloorType)).Cast<FloorType>(), p.Assumptions);
                         p.Loops = Loops(item["profile"], scale, doc.Application.ShortCurveTolerance);
                         RequireHorizontal(p.Loops, "floor");
+                        ReadCeilingSlope(p);   // a sloped floor takes the same arrow + slope as a sloped ceiling
                         break;
                     case "ceiling":
-                        p.Level = Need<Level>(doc, item, "level_id"); p.Type = Optional<CeilingType>(doc, item, "type_id");
-                        if (p.Type == null) p.Type = new FilteredElementCollector(doc).OfClass(typeof(CeilingType)).Cast<CeilingType>().FirstOrDefault();
-                        if (p.Type == null) throw new ArgumentException("type_id was omitted and the document has no CeilingType");
+                        p.Level = Need<Level>(doc, item, "level_id");
+                        p.Type = PickArchitectureType(doc, item, new FilteredElementCollector(doc).OfClass(typeof(CeilingType)).Cast<CeilingType>(), p.Assumptions);
                         p.Loops = Loops(item["profile"], scale, doc.Application.ShortCurveTolerance);
                         RequireHorizontal(p.Loops, "ceiling");
+                        ReadCeilingSlope(p);
                         break;
                     case "roof":
-                        p.Level = Need<Level>(doc, item, "level_id"); p.Type = Optional<RoofType>(doc, item, "type_id");
-                        if (p.Type == null) p.Type = new FilteredElementCollector(doc).OfClass(typeof(RoofType)).Cast<RoofType>().FirstOrDefault();
-                        if (p.Type == null) throw new ArgumentException("type_id was omitted and the document has no RoofType");
+                        p.Level = Need<Level>(doc, item, "level_id");
+                        p.Type = PickArchitectureType(doc, item, new FilteredElementCollector(doc).OfClass(typeof(RoofType)).Cast<RoofType>(), p.Assumptions);
                         p.Loops = Loops(item["profile"], scale, doc.Application.ShortCurveTolerance);
                         RequireHorizontal(p.Loops, "roof");
-                        if (p.Loops.Count != 1) throw new ArgumentException("roof currently requires exactly one closed footprint loop");
                         ReadRoofSlopes(p);
                         break;
+                    case "reference_plane":
+                    {
+                        p.Start = Point(item["start"], scale, true); p.End = Point(item["end"], scale, true);
+                        p.WantName = Trimmed(item, "name");
+                        View refView = Optional<View>(doc, item, "view_id");
+                        if (refView == null || refView.IsTemplate || !(refView is ViewPlan || refView is ViewSection))
+                            throw new ArgumentException("view_id must identify a plan, elevation or section view (not a template or a 3D view): the reference plane is drawn in it.");
+                        XYZ viewDirection = refView.ViewDirection;
+                        double[] cut = ReferencePlaneRules.CutVector(new[] { viewDirection.X, viewDirection.Y, viewDirection.Z });
+                        string refError = ReferencePlaneRules.Validate(p.WantName, new[] { p.Start.X, p.Start.Y, p.Start.Z }, new[] { p.End.X, p.End.Y, p.End.Z },
+                            refView.ViewType.ToString());
+                        if (refError == null && cut == null) refError = "the view's direction could not be read.";
+                        if (refError == null && ReferencePlaneRules.LineAlongCutVector(new[] { p.Start.X, p.Start.Y, p.Start.Z }, new[] { p.End.X, p.End.Y, p.End.Z }, cut))
+                            refError = "start-end runs along the view's direction, so it would be a point in that view, not a line.";
+                        if (refError != null) throw new ArgumentException(refError);
+                        if (new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>().Any(r => string.Equals(r.Name, p.WantName, StringComparison.Ordinal)))
+                            throw new ArgumentException("a reference plane named '" + p.WantName + "' already exists; the name identifies the plane, so pick another.");
+                        p.SeparatorView = refView;
+                        p.RefCut = new XYZ(cut[0], cut[1], cut[2]);
+                        break;
+                    }
                     case "room":
                         p.Level = Need<Level>(doc, item, "level_id"); p.Start = Point(item["point"], scale, false);
                         // A DRAWING CANNOT SUPPLY THESE. Text is unreachable from
@@ -469,6 +185,26 @@ namespace Horizun.Revit.Commands
                         // family cannot live on this host fails Revit's own placement,
                         // atomically, with the batch rolled back.
                         p.InstanceHost = Optional<Element>(doc, item, "host_id");
+                        // find_host: the agent names the KIND of host and a radius; the nearest one is taken
+                        // (walls: by distance to the location line, and the point is moved ONTO that line).
+                        if (p.InstanceHost == null && item["find_host"] is JObject findHost)
+                        {
+                            p.InstanceHost = FindHost(doc, findHost, p.Start, p.Level, scale, out XYZ snapped, out JObject how);
+                            if (snapped != null) p.Start = snapped;
+                            item["host_found"] = how;
+                        }
+                        // The family states its host; a mismatch is refused HERE, before Revit
+                        // improvises (a ceiling-hosted luminaire was accepted on a wall).
+                        string requiredHost = Horizun.Revit.Core.FamilyPlacementInfo.RequiredHost((FamilySymbol)p.Type);
+                        if (requiredHost != null && requiredHost != "face")
+                        {
+                            if (p.InstanceHost == null)
+                                throw new ArgumentException("type_id is a " + requiredHost + "-hosted family: give host_id of a " + requiredHost +
+                                    " (horizun_query_model returns each type's placement.host)");
+                            if (!Horizun.Revit.Core.FamilyPlacementInfo.HostMatches(requiredHost, p.InstanceHost))
+                                throw new ArgumentException("type_id is a " + requiredHost + "-hosted family but host_id " + Rid.Value(p.InstanceHost.Id) +
+                                    " is a " + p.InstanceHost.GetType().Name + "; give a " + requiredHost);
+                        }
                         string hostFace = item.Value<string>("host_face");
                         if (hostFace != null && hostFace != "side" && hostFace != "end")
                             throw new ArgumentException("host_face must be 'side' or 'end'");
@@ -476,7 +212,9 @@ namespace Horizun.Revit.Commands
                             throw new ArgumentException("host_face 'end' needs host_id: the wall whose end the device is on");
                         p.RotationRadians = (item.Value<double?>("rotation_degrees") ?? 0) * System.Math.PI / 180.0;
                         StructuralType parsed;
-                        if (!Enum.TryParse(item.Value<string>("structural_type") ?? "NonStructural", true, out parsed) ||
+                        string defaultStructuralType = InCategory((FamilySymbol)p.Type, BuiltInCategory.OST_StructuralFoundation)
+                            ? "Footing" : "NonStructural";
+                        if (!Enum.TryParse(item.Value<string>("structural_type") ?? defaultStructuralType, true, out parsed) ||
                             !Enum.IsDefined(typeof(StructuralType), parsed))
                             throw new ArgumentException("structural_type is invalid");
                         p.StructuralType = parsed;
@@ -560,6 +298,9 @@ namespace Horizun.Revit.Commands
                         break;
                     case "structural_framing":
                         p.Start = Point(item["start"], scale, true); p.End = Point(item["end"], scale, true); NonZero(p.Start, p.End);
+                        if (item["join_rule"] != null &&
+                            item.Value<string>("join_rule") != "none" && item.Value<string>("join_rule") != "auto")
+                            throw new ArgumentException("structural_framing join_rule must be none or auto.");
                         p.Level = Need<Level>(doc, item, "level_id"); p.Type = Need<FamilySymbol>(doc, item, "type_id");
                         if (!InCategory(p.Type, BuiltInCategory.OST_StructuralFraming))
                             throw new ArgumentException("structural_framing type_id must identify a FamilySymbol in OST_StructuralFraming");
@@ -799,6 +540,25 @@ namespace Horizun.Revit.Commands
                         if (!(foundationType is WallFoundationType))
                             throw new ArgumentException("type_id must identify a WallFoundationType (a bearing-footing type)");
                         p.Type = (ElementType)foundationType;
+                        if (item["top_elevation"] != null)
+                            p.FoundationTop = Finite(item.Value<double>("top_elevation"), "top_elevation") * scale;
+                        if (item["width"] != null)
+                        {
+                            p.FoundationWidth = Finite(item.Value<double>("width"), "width") * scale;
+                            if (p.FoundationWidth <= 0) throw new ArgumentException("wall_foundation width must be positive");
+                            if (!((p.FoundationWall.Location as LocationCurve)?.Curve is Line))
+                                throw new ArgumentException("wall_foundation width requires a straight host wall to measure across its axis");
+                        }
+                        if (item["thickness"] != null)
+                        {
+                            p.FoundationThickness = Finite(item.Value<double>("thickness"), "thickness") * scale;
+                            if (p.FoundationThickness <= 0) throw new ArgumentException("wall_foundation thickness must be positive");
+                        }
+                        p.ExtraPlanFacts = new Dictionary<string, string>();
+                        foreach (Parameter parameter in p.Type.Parameters)
+                            if (parameter.StorageType == StorageType.Double)
+                                p.ExtraPlanFacts["type_double:" + Rid.Value(parameter.Id)] =
+                                    Math.Round(parameter.AsDouble(), 8).ToString(CultureInfo.InvariantCulture);
                         break;
                     }
                     case "shaft":
@@ -889,7 +649,8 @@ namespace Horizun.Revit.Commands
                         // that shape, so a set producing separators could not be
                         // applied at all; and a three-point chain that DID get
                         // through was silently closed into a triangle nobody drew.
-                        p.Chains = Chains(item["profile"] as JArray, scale);
+                        // closed=true now explicitly requests a closing edge.
+                        p.Chains = Chains(item["profile"] as JArray, scale, item.Value<bool?>("closed") == true);
                         if (p.Chains.Count < 1)
                             throw new ArgumentException("room_separator needs at least one chain of curves");
                         RequireHorizontalChains(p.Chains, "room_separator");
@@ -1002,9 +763,15 @@ namespace Horizun.Revit.Commands
                         // are frozen into the plan so pipes moved after the rehearsal
                         // refuse as stale instead of putting the fitting somewhere else.
                         string subtype = (item.Value<string>("fitting") ?? "").ToLowerInvariant();
+                        if (subtype == "cap") { PlanCap(doc, p, item); break; }
+                        // takeoff_or_tee (2026-10-18): a takeoff whose main's type has no Tap
+                        // preference falls back to a TEE - the main is split at the branch point
+                        // and the type's own Tee junction rule is used. Asked for explicitly,
+                        // reported as fallback=tee, the new main piece listed as also created.
+                        if (subtype == "takeoff_or_tee") { subtype = "takeoff"; p.TakeoffTeeFallbackAllowed = true; }
                         if (subtype != "elbow" && subtype != "union" && subtype != "transition" && subtype != "tee" &&
                             subtype != "takeoff" && subtype != "cross")
-                            throw new ArgumentException("fitting must name one of: elbow, union, transition, tee, takeoff, cross");
+                            throw new ArgumentException("fitting must name one of: elbow, union, transition, tee, takeoff, takeoff_or_tee, cross");
                         p.FittingSubtype = subtype;
                         // A CROSS TAKES FOUR. Revit has had NewCrossFitting in every
                         // year this bridge supports, and offering only up to a tee meant
@@ -1104,14 +871,26 @@ namespace Horizun.Revit.Commands
                             // the API never was.
                             MEPCurveType mainCurveType = (planMain as MEPCurve)?.GetTypeId() is ElementId mainTypeId
                                 ? doc.GetElement(mainTypeId) as MEPCurveType : null;
-                            if (mainCurveType?.RoutingPreferenceManager is RoutingPreferenceManager routing &&
+                            bool noTap = mainCurveType?.RoutingPreferenceManager is RoutingPreferenceManager r0 &&
+                                (r0.GetNumberOfRules(RoutingPreferenceRuleGroupType.Junctions) == 0 ||
+                                 r0.PreferredJunctionType != PreferredJunctionType.Tap);
+                            if (noTap && p.TakeoffTeeFallbackAllowed &&
+                                mainCurveType.RoutingPreferenceManager.GetNumberOfRules(RoutingPreferenceRuleGroupType.Junctions) > 0 &&
+                                (planMain is Pipe || planMain is Autodesk.Revit.DB.Mechanical.Duct))
+                            {
+                                p.TakeoffAsTee = true;
+                            }
+                            else if (mainCurveType?.RoutingPreferenceManager is RoutingPreferenceManager routing &&
                                 (routing.GetNumberOfRules(RoutingPreferenceRuleGroupType.Junctions) == 0 ||
                                  routing.PreferredJunctionType != PreferredJunctionType.Tap))
                                 throw new ArgumentException("curve_type_has_no_takeoff_preference: " +
                                     mainCurveType.GetType().Name + " '" + mainCurveType.Name + "' prefers junction type '" +
                                     (routing.PreferredJunctionType.ToString() ?? "(unreadable)") +
-                                    "' and NewTakeoffFitting needs Tap with a configured rule. Set the type's " +
-                                    "junction preference to Tap (with its fitting) or use a type that has it. Nothing ran.");
+                                    "' and NewTakeoffFitting needs Tap with a configured rule. Nothing ran. Two ways on " +
+                                    "(derivación sin regla Tap): (1) in Revit's Routing Preferences of that type set " +
+                                    "Junction = Tap with a tap fitting; or (2) build a TEE instead: split the main at the " +
+                                    "branch point into two runs that meet there, then call fitting 'tee' with the two run " +
+                                    "elements first and the branch last - it uses the type's existing Tee junction rule.");
                         }
                         if (!anyBatchRef && subtype != "takeoff")
                         {
@@ -1122,14 +901,11 @@ namespace Horizun.Revit.Commands
                             members[0].ConnectorId = chosenA.Id; members[0].Fact = chosenA;
                             members[1].ConnectorId = chosenB.Id; members[1].Fact = chosenB;
                             double turn = MepRules.AngleDegrees(chosenA, chosenB);
-                            if (subtype == "elbow" && turn <= 1.0)
-                                throw new ArgumentException("the chosen connectors are collinear (turn " +
-                                    turn.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) +
-                                    " degrees); an elbow needs a corner - use fitting 'union' (same size) or 'transition'.");
-                            if ((subtype == "union" || subtype == "transition") && turn > 1.0)
-                                throw new ArgumentException("the chosen connectors turn " +
-                                    turn.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) +
-                                    " degrees; a " + subtype + " joins collinear runs - use fitting 'elbow'.");
+                            // Collinear ends take a union, a corner takes an elbow, and an elbow whose two curves leave the
+                            // joint on the same side is a 180 degree return no family has (Core/MepGraphRules).
+                            string jointProblem = MepGraphRules.ElbowProblem(subtype, turn);
+                            if (jointProblem != null)
+                                throw new ArgumentException(MepGraphRules.CodeJointTurn + ": the chosen connectors: " + jointProblem);
                             // The same generalisation as at create time: a tee has one
                             // member past the through pair and a cross has two. Handling
                             // only the tee left a cross's members unresolved at plan
@@ -1145,9 +921,20 @@ namespace Horizun.Revit.Commands
                                     throw new ArgumentException(extraCode + " (member " + extra + "): " + extraReason);
                                 members[extra].ConnectorId = extraFact.Id; members[extra].Fact = extraFact;
                             }
+                            // A tee's third port must not lie along the pair that passes straight through, and that pair
+                            // must not return on itself: three ports on one axis have no tee family.
+                            if (subtype == "tee" && members.Count == 3)
+                            {
+                                string teeProblem = MepGraphRules.ExistingJointProblem("tee",
+                                    new[] { chosenA.DirX, chosenA.DirY, chosenA.DirZ }, new[] { chosenB.DirX, chosenB.DirY, chosenB.DirZ },
+                                    new[] { members[2].Fact.DirX, members[2].Fact.DirY, members[2].Fact.DirZ });
+                                if (teeProblem != null)
+                                    throw new ArgumentException(MepGraphRules.CodeTeeCollinear + ": " + teeProblem);
+                            }
                         }
                         p.FittingMembers = members;
                         p.ExtraPlanFacts = new Dictionary<string, string> { { "fitting.subtype", subtype } };
+                        if (p.TakeoffAsTee) p.ExtraPlanFacts["fitting.fallback"] = "tee (no Tap preference on the main's type)";
                         for (int m = 0; m < members.Count; m++)
                         {
                             FittingMember memberPlan = members[m];
@@ -1185,8 +972,16 @@ namespace Horizun.Revit.Commands
                 }
                 NormalizePlan(doc, p);
                 p.Summary = new JObject { ["index"] = index, ["kind"] = kind, ["references_resolved"] = true };
+                if (kind == "wall") p.Summary["height"] = p.Height / scale;
                 if (p.TopoSource != null) p.Summary["landxml"] = p.TopoSource;
-                if (p.Enclosed) p.Summary["elements_index"] = item["enclosed_from"].DeepClone();
+                // A row an expansion produced or moved (all_enclosed, an architectural recipe) names the caller's row too.
+                int? callerIndex = Horizun.Revit.Core.CreationBatch<Plan>.SourceIndex(item);
+                if (callerIndex != null) p.Summary["elements_index"] = callerIndex.Value;
+                if (kind == "grid")
+                {
+                    p.Summary["extent_3d"] = p.GridExtent3D;
+                    if (p.GridFlattenNote != null) p.Summary["note"] = p.GridFlattenNote;
+                }
                 if (p.FittingMembers != null)
                 {
                     // Deferred members (batch_index refs, and a takeoff's branch) have no
@@ -1232,6 +1027,12 @@ namespace Horizun.Revit.Commands
                     return level;
                 case "grid":
                     Grid grid = Grid.Create(doc, Line.CreateBound(p.Start, p.End));
+                    // Without this the grid shows only in the plans whose cut plane falls inside
+                    // its own vertical extent; the rest of the building never sees it.
+                    if (p.GridExtent3D == GridExtentRules.Maximize &&
+                        GridExtentRules.VerticalRange(new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().Select(l => l.Elevation),
+                                                      out double gridBottom, out double gridTop))
+                        grid.SetVerticalExtents(gridBottom, gridTop);   // not Maximize3DExtents: it also moves the ends in plan
                     if (!string.IsNullOrWhiteSpace(p.WantName))
                     {
                         // A DUPLICATE GRID NAME THROWS, and that is the right
@@ -1260,6 +1061,9 @@ namespace Horizun.Revit.Commands
                     Wall wall = Wall.Create(doc, wallAxis, p.Type.Id, p.Level.Id, p.Height,
                         p.Offset,
                         p.Input.Value<bool?>("flip") == true, p.Structural == true);
+                    Parameter wallKey = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM);
+                    if (wallKey == null || wallKey.IsReadOnly || !wallKey.Set((int)WallLocationLine.WallCenterline))
+                        throw new InvalidOperationException("Wall centerline could not be set.");
                     if (p.TopLevel != null)
                     {
                         if (!wall.get_Parameter(BuiltInParameter.WALL_HEIGHT_TYPE).Set(p.TopLevel.Id))
@@ -1282,8 +1086,15 @@ namespace Horizun.Revit.Commands
                     }
                     return wall;
                 case "toposolid": return CreateToposolid(doc, p);
+                case "reference_plane":
+                    ReferencePlane refPlane = doc.Create.NewReferencePlane2(p.Start, p.End, p.RefCut, p.SeparatorView);
+                    refPlane.Name = p.WantName;
+                    return refPlane;
                 case "floor":
-                    Floor madeFloor = Floor.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
+                    // Floor.Create(..., isStructural, slopeArrow, slope) is the same overload in Revit 2023-2027.
+                    Floor madeFloor = p.CeilingArrow == null
+                        ? Floor.Create(doc, p.Loops, p.Type.Id, p.Level.Id)
+                        : Floor.Create(doc, p.Loops, p.Type.Id, p.Level.Id, p.Structural == true, p.CeilingArrow, Math.Atan(p.CeilingSlopeRatio));
                     // THE PARAMETER, not an overload. Floor.Create's structural
                     // argument is not present in every Revit this bridge builds
                     // against; FLOOR_PARAM_IS_STRUCTURAL is, and it is the thing
@@ -1300,12 +1111,15 @@ namespace Horizun.Revit.Commands
                     SetDouble(madeFloor, BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM, p.Offset);
                     return madeFloor;
                 case "ceiling":
-                    Ceiling ceiling = Ceiling.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
+                    Ceiling ceiling = p.CeilingArrow == null
+                        ? Ceiling.Create(doc, p.Loops, p.Type.Id, p.Level.Id)
+                        : Ceiling.Create(doc, p.Loops, p.Type.Id, p.Level.Id, p.CeilingArrow,
+                            Math.Atan(p.CeilingSlopeRatio));
                     SetDouble(ceiling, BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM, p.Offset);
                     return ceiling;
                 case "roof":
                     var footprint = new CurveArray();
-                    foreach (Curve curve in p.Loops[0]) footprint.Append(curve);
+                    foreach (CurveLoop footprintLoop in p.Loops) foreach (Curve curve in footprintLoop) footprint.Append(curve);
                     ModelCurveArray boundaries = new ModelCurveArray();
                     FootPrintRoof roof = doc.Create.NewFootPrintRoof(footprint, p.Level, (RoofType)p.Type, out boundaries);
                     SetDouble(roof, BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM, p.Offset);
@@ -1315,6 +1129,8 @@ namespace Horizun.Revit.Commands
                         int index = MatchEdge(p, edge.GeometryCurve);
                         roof.set_DefinesSlope(edge, p.DefinesSlope[index]);
                         if (p.DefinesSlope[index]) roof.set_SlopeAngle(edge, p.Slopes[index]);
+                        if (p.Overhangs != null && p.Overhangs[index].HasValue) roof.set_Overhang(edge, p.Overhangs[index].Value);
+                        if (p.EdgeOffsets != null && p.EdgeOffsets[index].HasValue) roof.set_Offset(edge, p.EdgeOffsets[index].Value);
                     }
                     return roof;
                 case "room":
@@ -1545,6 +1361,14 @@ namespace Horizun.Revit.Commands
                                         throw new InvalidOperationException(
                                             "the reflection to the drawn face produced no instance. Nothing was built " +
                                             "for this row.");
+                                    // MEASURED 2026-10-16: Revit re-hosts a reflected copy on the first wall it finds at
+                                    // that place, and in a tower that is another storey's wall stacked on the same line.
+                                    if (reflected.Host == null || reflected.Host.Id != hostWall.Id)
+                                        throw new InvalidOperationException(
+                                            "this family has no flip controls, so the only way to put it on the drawn face is to reflect it, and Revit " +
+                                            "re-hosted the reflected copy on another element (" + (reflected.Host == null ? "none" : Rid.Value(reflected.Host.Id).ToString(CultureInfo.InvariantCulture)) +
+                                            ") instead of wall " + Rid.Value(hostWall.Id).ToString(CultureInfo.InvariantCulture) + " - typically a wall of another storey on the same plan line. " +
+                                            "Give the family flip controls (horizun_create_family (Pro edition) flip_controls=['facing']) and place it again. Nothing was built for this row.");
                                     doc.Delete(placed.Id);
                                     doc.Regenerate();
                                     placed = reflected;
@@ -1684,6 +1508,12 @@ namespace Horizun.Revit.Commands
                     FamilySymbol framing = (FamilySymbol)p.Type;
                     if (!framing.IsActive) { framing.Activate(); doc.Regenerate(); }
                     FamilyInstance placedFraming = doc.Create.NewFamilyInstance(Line.CreateBound(p.Start, p.End), framing, p.Level, p.StructuralType);
+                    if (string.Equals(p.Input.Value<string>("join_rule"), "none", StringComparison.Ordinal))
+                    {
+                        StructuralFramingUtils.DisallowJoinAtEnd(placedFraming, 0);
+                        StructuralFramingUtils.DisallowJoinAtEnd(placedFraming, 1);
+                        doc.Regenerate();
+                    }
                     // Revit gives a beam the nearest level BELOW its curve as its Reference Level,
                     // whatever level was passed (MEASURED 2026-09-27 in Revit 2026: asked a level at
                     // 93,000 mm for a beam at 96,000 mm, got the one at 95,000 mm). The caller's level
@@ -2005,6 +1835,7 @@ namespace Horizun.Revit.Commands
                 }
                 case "fitting":
                 {
+                    if (p.FittingSubtype == "cap") return CreateCap(doc, p);
                     // Resolve each member to a live element: by id for pre-existing
                     // ones, from THIS batch's created list for batch_index refs. The
                     // deferred pair selection (batch refs had no geometry at plan time)
@@ -2064,10 +1895,12 @@ namespace Horizun.Revit.Commands
                     if (p.FittingSubtype == "takeoff")
                     {
                         Element main = p.TakeoffMain;
+                        Plan mainPlan = null;
                         if (main == null && p.TakeoffMainBatchIndex != null)
                         {
                             Created earlierMain = createdSoFar.FirstOrDefault(c => c.Index == p.TakeoffMainBatchIndex.Value);
                             main = earlierMain == null ? null : doc.GetElement(earlierMain.Id);
+                            mainPlan = earlierMain?.Plan;
                         }
                         if (!(main is MEPCurve mainCurve))
                             throw new InvalidOperationException("the takeoff main did not resolve to an MEP curve");
@@ -2091,6 +1924,28 @@ namespace Horizun.Revit.Commands
                                 MepRules.Mm(bestDistance) + " from the main curve; a takeoff taps a connector " +
                                 "that TOUCHES the main (within " + MepRules.Mm(MepRules.CoincidenceToleranceFeet * 10) + ").");
                         p.FittingMembers[0].ConnectorId = branchConnector.Id;
+                        // A main created EARLIER IN THIS BATCH did not exist at plan time, so the Tap
+                        // preference is read here too (measured live 2026-10-18, Revit 2024: without
+                        // this, NewTakeoffFitting threw "No routing preference for takeoff" mid-batch).
+                        if (!p.TakeoffAsTee && !HasTapPreference(doc, mainCurve))
+                        {
+                            if (p.TakeoffTeeFallbackAllowed && (mainCurve is Pipe || mainCurve is Autodesk.Revit.DB.Mechanical.Duct))
+                                p.TakeoffAsTee = true;
+                            else
+                                throw new InvalidOperationException("curve_type_has_no_takeoff_preference: the main's type '" +
+                                    (doc.GetElement(mainCurve.GetTypeId())?.Name ?? "?") + "' has no Tap junction preference, which " +
+                                    "NewTakeoffFitting needs. Use fitting='takeoff_or_tee' to place a tee instead, or set Junction = Tap " +
+                                    "in that type's Routing Preferences.");
+                        }
+                        if (p.TakeoffAsTee)
+                        {
+                            FamilyInstance tee = TeeInsteadOfTakeoff(doc, p, mainCurve, mainGeometry, branchConnector, mainPlan);
+                            // A branch created in this batch now ends at the tee's connector, not on the
+                            // main's axis: its end is verified at the tee's junction point.
+                            Plan branchPlan = createdSoFar.FirstOrDefault(c => c.Id == owners[0].Id)?.Plan;
+                            if (branchPlan != null && tee != null) branchPlan.TeeJunction = tee.Id;
+                            return tee;
+                        }
                         return doc.Create.NewTakeoffFitting(branchConnector, mainCurve);
                     }
                     var live = new List<Connector>();
@@ -2111,15 +1966,765 @@ namespace Horizun.Revit.Commands
                     }
                     switch (p.FittingSubtype)
                     {
-                        case "elbow": return doc.Create.NewElbowFitting(live[0], live[1]);
-                        case "union": return doc.Create.NewUnionFitting(live[0], live[1]);
-                        case "transition": return doc.Create.NewTransitionFitting(live[0], live[1]);
-                        case "tee": return doc.Create.NewTeeFitting(live[0], live[1], live[2]);
+                        case "elbow":
+                        case "union":
+                        case "transition": return CreateDiameterCheckedFitting(doc, p, live);
+                        case "tee": return CreatePipeTeeAtDrawnAngle(doc, live, p);
                         case "cross": return doc.Create.NewCrossFitting(live[0], live[1], live[2], live[3]);
                         default: throw new InvalidOperationException("unsupported fitting '" + p.FittingSubtype + "'");
                     }
                 }
                 default: throw new InvalidOperationException("unsupported kind '" + p.Kind + "'");
+            }
+        }
+
+        /// <summary>
+        /// takeoff_or_tee on a main whose type has no Tap preference: split the main where the
+        /// branch connector projects onto it, then join the two pieces and the branch with
+        /// NewTeeFitting (the type's Tee junction rule). Both pieces must keep at least 150 mm
+        /// on each side; the new piece is recorded in AlsoCreated so it is verified and undone
+        /// with the fitting. Runs inside the caller's transaction: any failure rolls it back.
+        /// </summary>
+        private static bool HasTapPreference(Document doc, MEPCurve main)
+        {
+            try
+            {
+                var type = doc.GetElement(main.GetTypeId()) as MEPCurveType;
+                RoutingPreferenceManager r = type?.RoutingPreferenceManager;
+                if (r == null) return true; // unreadable: let Revit decide, as before
+                return r.GetNumberOfRules(RoutingPreferenceRuleGroupType.Junctions) > 0 &&
+                       r.PreferredJunctionType == PreferredJunctionType.Tap;
+            }
+            catch { return true; }
+        }
+
+        private static FamilyInstance TeeInsteadOfTakeoff(Document doc, Plan p, MEPCurve main, Curve mainGeometry, Connector branch,
+                                                          Plan mainPlan = null)
+        {
+            IntersectionResult hit = mainGeometry.Project(branch.Origin);
+            if (hit == null) throw new InvalidOperationException("tee fallback: the branch point does not project onto the main");
+            XYZ at = hit.XYZPoint;
+            double minPiece = 150 / 304.8;
+            if (at.DistanceTo(mainGeometry.GetEndPoint(0)) < minPiece || at.DistanceTo(mainGeometry.GetEndPoint(1)) < minPiece)
+                throw new InvalidOperationException("tee fallback: the branch meets the main less than 150 mm from one of its ends; " +
+                    "use an elbow/tee at the end instead. Nothing was created.");
+            ElementId newPiece = main is Pipe
+                ? Autodesk.Revit.DB.Plumbing.PlumbingUtils.BreakCurve(doc, main.Id, at)
+                : Autodesk.Revit.DB.Mechanical.MechanicalUtils.BreakCurve(doc, main.Id, at);
+            doc.Regenerate();
+            if (newPiece == null || newPiece == ElementId.InvalidElementId)
+                throw new InvalidOperationException("tee fallback: Revit did not split the main");
+            p.AlsoCreated.Add(newPiece);
+            // A main created earlier in this batch is verified against the line it was asked
+            // for; split, that line is the UNION of its two pieces (measured live 2026-10-18).
+            if (mainPlan != null) mainPlan.SplitPiece = newPiece;
+            var ends = new List<Connector>();
+            foreach (ElementId id in new[] { main.Id, newPiece })
+            {
+                ConnectorManager m = MepFacts.ManagerOf(doc.GetElement(id));
+                if (m == null) continue;
+                foreach (Connector c in MepFacts.Ordered(m))
+                    if (!c.IsConnected && c.ConnectorType == ConnectorType.End && c.Origin.DistanceTo(at) <= MepRules.CoincidenceToleranceFeet * 10)
+                    { ends.Add(c); break; }
+            }
+            if (ends.Count != 2)
+                throw new InvalidOperationException("tee fallback: the split main does not expose two open ends at the branch point");
+            return doc.Create.NewTeeFitting(ends[0], ends[1], branch);
+        }
+
+        /// <summary>
+        /// Text of the chain "port -> transition -> ... -> pipe" when the pipe is reached through
+        /// transitions only, else null.
+        /// </summary>
+        private static string ChainToPipe(Connector from, ElementId pipeId, int depth)
+        {
+            foreach (Connector other in from.AllRefs.Cast<Connector>())
+            {
+                if (other.Owner == null) continue;
+                if (other.Owner.Id == pipeId) return "-> pipe " + pipeId;
+                if (depth > 0 && other.Owner is FamilyInstance fi && fi.MEPModel != null)
+                {
+                    string part = "";
+                    try { part = ((PartType)(fi.Symbol.Family.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)?.AsInteger() ?? -1)).ToString(); } catch { }
+                    if (part != "Transition") continue;
+                    foreach (Connector inner in fi.MEPModel.ConnectorManager.Connectors.Cast<Connector>())
+                    {
+                        if (inner.Id == other.Id && inner.Owner.Id == other.Owner.Id) continue;
+                        string rest = ChainToPipe(inner, pipeId, depth - 1);
+                        if (rest != null)
+                            return "-> reducer " + fi.Id + " (" + MepRules.Mm(other.Radius * 2) + " to " + MepRules.Mm(inner.Radius * 2) + ") " + rest;
+                    }
+                }
+            }
+            return null;
+        }
+
+        private static double[] Arr(XYZ p) => new[] { p.X, p.Y, p.Z };
+
+        private static Connector PortOf(FamilyInstance fitting, int id) =>
+            fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>().FirstOrDefault(c => c.Id == id);
+
+        /// <summary>The fitting port that is connected to the given pipe, or null.</summary>
+        private static Connector PortJoinedTo(FamilyInstance fitting, ElementId pipeId) =>
+            fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                .FirstOrDefault(c => c.AllRefs.Cast<Connector>().Any(o => o.Owner != null && o.Owner.Id == pipeId));
+
+        /// <summary>
+        /// Closing check of the oblique wye: both run pipes are joined to a (different) wye port,
+        /// each port and each pipe end is coaxial with the run as drawn, and the pipe end sits on
+        /// its port. Returns the first problem, or null.
+        /// </summary>
+        private static string CheckWyeRunPorts(Document doc, ElementId fittingId, ElementId pipeAId, ElementId pipeBId,
+            double[] runPoint, double[] run)
+        {
+            FamilyInstance fitting = doc.GetElement(fittingId) as FamilyInstance;
+            if (fitting?.MEPModel == null) return "the wye is gone at the final check of the run";
+            double tol = MepRules.CoincidenceToleranceFeet * 2;
+            var seen = new HashSet<int>();
+            foreach (ElementId pipeId in new[] { pipeAId, pipeBId })
+            {
+                Pipe pipe = doc.GetElement(pipeId) as Pipe;
+                Connector port = PortJoinedTo(fitting, pipeId);
+                if (pipe == null || port == null) return "run pipe " + pipeId + " is not connected to the wye";
+                if (!seen.Add(port.Id)) return "both run pipes are joined to the same wye port (" + port.Id + ")";
+                Connector end = port.AllRefs.Cast<Connector>().FirstOrDefault(o => o.Owner != null && o.Owner.Id == pipeId);
+                double off = ObliquePipeTeeRules.ProjectOntoLine(Arr(port.Origin), runPoint, run) is double[] foot
+                    ? new XYZ(port.Origin.X - foot[0], port.Origin.Y - foot[1], port.Origin.Z - foot[2]).GetLength() : double.MaxValue;
+                if (!ObliquePipeTeeRules.IsCoaxialWithRun(run, runPoint, Arr(port.Origin), Arr(port.CoordinateSystem.BasisZ), tol))
+                    return "the wye port " + port.Id + " of run pipe " + pipeId + " is not coaxial with the run (" + MepRules.Mm(off) + " off the run axis)";
+                if (end == null || !ObliquePipeTeeRules.IsCoaxialWithRun(run, runPoint, Arr(end.Origin), Arr(end.CoordinateSystem.BasisZ), tol))
+                    return "the end of run pipe " + pipeId + " is not coaxial with the run";
+                if (end.Origin.DistanceTo(port.Origin) > tol)
+                    return "run pipe " + pipeId + " does not meet its wye port (gap " + MepRules.Mm(end.Origin.DistanceTo(port.Origin)) + ")";
+            }
+            return null;
+        }
+
+        private static void TrimPipeEndTo(Pipe pipe, Connector pipeEnd, XYZ target)
+        {
+            var location = pipe.Location as LocationCurve;
+            var line = location?.Curve as Line;
+            if (line == null) throw new InvalidOperationException("run pipe " + pipe.Id + " is not a straight pipe");
+            XYZ p0 = line.GetEndPoint(0), p1 = line.GetEndPoint(1);
+            bool moveFirst = p0.DistanceTo(pipeEnd.Origin) < p1.DistanceTo(pipeEnd.Origin);
+            XYZ oldEnd = moveFirst ? p0 : p1, other = moveFirst ? p1 : p0;
+            if ((target - other).GetLength() < 1.0 / 304.8 || (target - other).DotProduct(oldEnd - other) <= 0)
+                throw new InvalidOperationException("run pipe " + pipe.Id + " is too short to reach the reversed wye's port");
+            location.Curve = moveFirst ? Line.CreateBound(target, other) : Line.CreateBound(other, target);
+        }
+
+        private static Dictionary<ElementId, double> PipeBoresAround(FamilyInstance fitting)
+        {
+            var bores = new Dictionary<ElementId, double>();
+            foreach (Connector c in fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>())
+                foreach (Connector o in c.AllRefs.Cast<Connector>())
+                    if (o.Owner is Pipe p && !bores.ContainsKey(p.Id))
+                        bores[p.Id] = p.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM)?.AsDouble() ?? 0;
+            return bores;
+        }
+
+        /// <summary>
+        /// Sets a fitting port's bore. A fitting's port size is not settable on the connector: it follows the
+        /// family parameter the family associates with that connector's diameter (or radius), read here, never
+        /// by name. Null when it was set and regenerated, else why not.
+        /// </summary>
+        private static string SetPortBore(Document doc, FamilyInstance fitting, Connector port, double boreFeet)
+        {
+            try
+            {
+                var info = port.GetMEPConnectorInfo() as MEPFamilyConnectorInfo;
+                ElementId diameterId = info?.GetAssociateFamilyParameterId(new ElementId(BuiltInParameter.CONNECTOR_DIAMETER)) ?? ElementId.InvalidElementId;
+                ElementId radiusId = info?.GetAssociateFamilyParameterId(new ElementId(BuiltInParameter.CONNECTOR_RADIUS)) ?? ElementId.InvalidElementId;
+                bool byRadius = diameterId == ElementId.InvalidElementId;
+                ElementId sizeId = byRadius ? radiusId : diameterId;
+                Parameter size = sizeId == ElementId.InvalidElementId ? null
+                    : fitting.Parameters.Cast<Parameter>().FirstOrDefault(x => x.Id == sizeId);
+                if (size == null) return "its port size is not tied to an instance parameter of the fitting";
+                if (size.IsReadOnly) return "its port size parameter '" + size.Definition?.Name + "' is read-only (driven by a formula)";
+                // Before: every other port of the fitting and the bore of every pipe joined to the fitting. A parameter
+                // shared by several ports (one diameter driving the whole fitting) would resize those too, so any
+                // change there refuses instead of leaving a mismatch nobody re-reads.
+                int portId = port.Id;
+                var others = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>().Where(c => c.Id != portId)
+                    .ToDictionary(c => c.Id, c => c.Radius);
+                var pipes = PipeBoresAround(fitting);
+                if (!size.Set(byRadius ? boreFeet / 2 : boreFeet)) return "Revit refused the value for '" + size.Definition?.Name + "'";
+                doc.Regenerate();
+                foreach (Connector c in fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>().Where(c => c.Id != portId))
+                    if (!others.TryGetValue(c.Id, out double was) || Math.Abs(was - c.Radius) > 0.25 / 304.8)
+                        return "its size parameter '" + size.Definition?.Name + "' also resizes port " + c.Id + " (to " +
+                            MepRules.Mm(c.Radius * 2) + "): the fitting's port sizes are not independent";
+                foreach (var kv in PipeBoresAround(fitting))
+                    if (!pipes.TryGetValue(kv.Key, out double was) || Math.Abs(was - kv.Value) > 0.25 / 304.8)
+                        return "setting '" + size.Definition?.Name + "' resized the joined pipe " + Rid.Value(kv.Key) + " (to " + MepRules.Mm(kv.Value) + ")";
+                return null;
+            }
+            catch (Exception ex) { return ex.Message; }
+        }
+
+        /// <summary>
+        /// Reverses a wye along its run: disconnect it from both run pipes, half turn about the
+        /// axis through the run line perpendicular to the run in the run-branch plane
+        /// (<see cref="ObliquePipeTeeRules.FlipAxis"/>), then reconnect pipe A to the port now on its
+        /// side and pipe B likewise (directions opposed, bores equal), trimming the pipe ends to the
+        /// ports. A reducing wye (run ports of different bores) has each run port resized to the pipe it
+        /// will meet (<see cref="SetPortBore"/>). Refuses, throwing, when the run ports are off the run line,
+        /// such a port cannot be resized on its own, the turned branch does not lean as expected, or no port matches a pipe.
+        /// The caller's transaction rolls everything back.
+        /// </summary>
+        private static FamilyInstance FlipWyeAlongRun(Document doc, ElementId fittingId, Connector runA, Connector runB, int branchPortId)
+        {
+            FamilyInstance fitting = doc.GetElement(fittingId) as FamilyInstance;
+            if (fitting?.MEPModel == null) throw new InvalidOperationException("the wye is gone before it could be reversed");
+            double tolLen = MepRules.CoincidenceToleranceFeet * 2, tolBore = 0.5 / 304.8;
+            ElementId pipeAId = runA.Owner.Id, pipeBId = runB.Owner.Id;
+            int connA = runA.Id, connB = runB.Id;
+            Connector portA = PortJoinedTo(fitting, pipeAId), portB = PortJoinedTo(fitting, pipeBId), branchPort = PortOf(fitting, branchPortId);
+            if (portA == null || portB == null || branchPort == null || portA.Id == portB.Id)
+                throw new InvalidOperationException("the wye is not joined to both run pipes, so it cannot be reversed along the run");
+            double[] run = Arr(runA.CoordinateSystem.BasisZ), runPoint = Arr(runA.Origin);
+            foreach (Connector p in new[] { portA, portB })
+                if (!ObliquePipeTeeRules.IsCoaxialWithRun(run, runPoint, Arr(p.Origin), Arr(p.CoordinateSystem.BasisZ), tolLen))
+                    throw new InvalidOperationException("the wye's run port " + p.Id + " is not on the run axis, so it cannot be reversed along the run");
+            // A reducing run: the reversed wye's ports meet the other pipe each, so each is resized to the pipe
+            // it will meet through the family parameter tied to it (below); a wye that cannot be resized is refused.
+            string bore = ObliquePipeTeeRules.FlipBoreProblem(portA.Radius, portB.Radius, runA.Radius, runB.Radius, tolBore);
+            double[] before = Arr(branchPort.CoordinateSystem.BasisZ);
+            double[] axis = ObliquePipeTeeRules.FlipAxis(run, before);
+            if (axis == null) throw new InvalidOperationException("the wye's branch runs along the run: nothing to reverse");
+            XYZ fo = (fitting.Location as LocationPoint)?.Point ?? branchPort.Origin;
+            double[] axisPoint = ObliquePipeTeeRules.ProjectOntoLine(Arr(fo), runPoint, run);
+            double[] expected = ObliquePipeTeeRules.FlipDirection(before, axis);
+            XYZ ap = new XYZ(axisPoint[0], axisPoint[1], axisPoint[2]);
+
+            portA.DisconnectFrom(runA);
+            portB.DisconnectFrom(runB);
+            ElementTransformUtils.RotateElement(doc, fittingId, Line.CreateBound(ap, ap + new XYZ(axis[0], axis[1], axis[2])), Math.PI);
+            doc.Regenerate();
+            fitting = doc.GetElement(fittingId) as FamilyInstance;
+            if (fitting?.MEPModel == null) throw new InvalidOperationException("Revit removed the wye when it was disconnected from the run to be reversed");
+            branchPort = PortOf(fitting, branchPortId);
+            if (branchPort == null || !ObliquePipeTeeRules.FlipLeanMatches(expected, Arr(branchPort.CoordinateSystem.BasisZ)))
+                throw new InvalidOperationException("after the half turn the wye's branch does not lean where expected");
+
+            foreach (var pair in new[] { new KeyValuePair<ElementId, int>(pipeAId, connA), new KeyValuePair<ElementId, int>(pipeBId, connB) })
+            {
+                Pipe pipe = doc.GetElement(pair.Key) as Pipe;
+                Connector end = pipe?.ConnectorManager.Connectors.Cast<Connector>().FirstOrDefault(c => c.Id == pair.Value);
+                if (end == null) throw new InvalidOperationException("run pipe " + pair.Key + " could not be re-read while reversing the wye");
+                Connector port = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                    .Where(c => c.Id != branchPortId && !c.IsConnected &&
+                        ObliquePipeTeeRules.PortsOppose(Arr(end.CoordinateSystem.BasisZ), Arr(c.CoordinateSystem.BasisZ)))
+                    .OrderBy(c => c.Origin.DistanceTo(end.Origin)).FirstOrDefault();
+                if (port == null) throw new InvalidOperationException("no port of the reversed wye faces run pipe " + pair.Key);
+                if (bore != null && Math.Abs(port.Radius - end.Radius) > tolBore)
+                {
+                    int portId = port.Id;
+                    string sized = SetPortBore(doc, fitting, port, end.Radius * 2);
+                    fitting = doc.GetElement(fittingId) as FamilyInstance;
+                    port = fitting?.MEPModel?.ConnectorManager.Connectors.Cast<Connector>().FirstOrDefault(c => c.Id == portId);
+                    if (sized != null || port == null)
+                        throw new InvalidOperationException(bore + " (resizing its port " + portId + ": " + (sized ?? "the port disappeared") + ")");
+                }
+                if (Math.Abs(port.Radius - end.Radius) > tolBore)
+                    throw new InvalidOperationException("the reversed wye's port facing run pipe " + pair.Key + " has a different bore (" +
+                        MepRules.Mm(port.Radius * 2) + " against " + MepRules.Mm(end.Radius * 2) + ")");
+                if (!ObliquePipeTeeRules.IsCoaxialWithRun(run, runPoint, Arr(port.Origin), Arr(port.CoordinateSystem.BasisZ), tolLen))
+                    throw new InvalidOperationException("the reversed wye's port facing run pipe " + pair.Key + " is not on the run axis");
+                try { port.ConnectTo(end); }
+                catch (Exception ex) { throw new InvalidOperationException("the reversed wye could not connect to run pipe " + pair.Key + ": " + ex.Message, ex); }
+                if (end.Origin.DistanceTo(port.Origin) > tolLen) TrimPipeEndTo(pipe, end, port.Origin);
+                doc.Regenerate();
+                fitting = doc.GetElement(fittingId) as FamilyInstance;
+                if (fitting?.MEPModel == null) throw new InvalidOperationException("the wye disappeared while reconnecting the run");
+            }
+            return fitting;
+        }
+
+        /// <summary>
+        /// NewTeeFitting accepts a perpendicular branch but Revit rejects many 45-degree
+        /// branches even when the pipe type's first junction rule is a wye. Build against
+        /// a temporary perpendicular pipe, switch the tee to the wye, reverse the wye along the
+        /// run when its branch leans against the drawn one (half turn, run pipes reconnected),
+        /// then roll and slide it until its branch port lies on the drawn branch axis and attach
+        /// the original branch. This runs inside the caller's atomic transaction; any failed
+        /// connection or read-back rolls the whole fitting back. A last check re-reads that both
+        /// run ports are connected to the run pipes and coaxial with the run.
+        /// </summary>
+        private static FamilyInstance CreatePipeTeeAtDrawnAngle(Document doc, List<Connector> live, Plan plan)
+        {
+            if (live.Count != 3 || !(live[0].Owner is Pipe) || !(live[1].Owner is Pipe) ||
+                !(live[2].Owner is Pipe branchPipe))
+                return doc.Create.NewTeeFitting(live[0], live[1], live[2]);
+
+            var run = live[0].CoordinateSystem.BasisZ;
+            var branch = live[2].CoordinateSystem.BasisZ;
+            double[] r = { run.X, run.Y, run.Z }, b = { branch.X, branch.Y, branch.Z };
+            double angle = ObliquePipeTeeRules.AcuteBranchAngleDegrees(r, b);
+            if (!ObliquePipeTeeRules.NeedsObliqueWorkaround(angle))
+                return doc.Create.NewTeeFitting(live[0], live[1], live[2]);
+            // The run as drawn: a point on its line and the two pipes, for the closing check.
+            double[] runPoint = { live[0].Origin.X, live[0].Origin.Y, live[0].Origin.Z };
+            ElementId[] runPipeIds = { live[0].Owner.Id, live[1].Owner.Id };
+            var startBores = new Dictionary<ElementId, double>();
+            foreach (Connector liveEnd in live)
+                if (liveEnd.Owner is Pipe livePipe) startBores[livePipe.Id] = livePipe.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM)?.AsDouble() ?? 0;
+
+            var mainRouting = (doc.GetElement(live[0].Owner.GetTypeId()) as PipeType)?.RoutingPreferenceManager;
+            if (mainRouting == null || mainRouting.GetNumberOfRules(RoutingPreferenceRuleGroupType.Junctions) == 0)
+                throw new InvalidOperationException("oblique pipe junction needs a configured wye junction rule");
+            // Classify every Junctions rule by the family's Part Type, never by language-dependent names.
+            var ruleInfos = new List<JunctionRuleInfo>();
+            var ruleSymbols = new Dictionary<int, FamilySymbol>();
+            int ruleCount = mainRouting.GetNumberOfRules(RoutingPreferenceRuleGroupType.Junctions);
+            for (int i = 0; i < ruleCount; i++)
+            {
+                FamilySymbol sym = doc.GetElement(mainRouting.GetRule(
+                    RoutingPreferenceRuleGroupType.Junctions, i).MEPPartId) as FamilySymbol;
+                string partType = "";
+                try
+                {
+                    Parameter pt = sym?.Family?.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE);
+                    if (pt != null) partType = ((PartType)pt.AsInteger()).ToString();
+                }
+                catch { }
+                ruleInfos.Add(new JunctionRuleInfo(i, sym == null ? "(not a loaded fitting type)" :
+                    (sym.Family?.Name ?? "") + ": " + sym.Name, partType));
+                if (sym != null) ruleSymbols[i] = sym;
+            }
+            ObliqueJunctionChoice choice = JunctionRuleClassifier.Choose(ruleInfos);
+            if (choice.Problem != null) throw new InvalidOperationException(choice.Problem);
+            FamilySymbol wye = ruleSymbols[choice.WyeIndex];
+            // NewTeeFitting needs a perpendicular TEE for the temporary branch. If the
+            // wye is the first routing rule, Revit tries that wye for the perpendicular
+            // branch and returns "failed to insert tee" before we can rotate it.
+            // Temporarily lead with an existing tee rule, then restore the exact
+            // original order before changing the placed symbol to the selected wye.
+            FamilySymbol perpendicularTee = ruleSymbols[choice.TeeIndex];
+
+            string stage = "reading the original branch";
+            try
+            {
+            var systemId = branchPipe.MEPSystem?.GetTypeId() ?? branchPipe.get_Parameter(BuiltInParameter.RBS_PIPING_SYSTEM_TYPE_PARAM)?.AsElementId();
+            var levelId = branchPipe.ReferenceLevel?.Id;
+            ElementId branchPipeId = branchPipe.Id;
+            int originalConnectorId = live[2].Id;
+            if (systemId == null || systemId == ElementId.InvalidElementId || levelId == null)
+                throw new InvalidOperationException("the oblique branch has no readable piping system or level");
+
+            double[] v = ObliquePipeTeeRules.PerpendicularPipeExtensionFromConnector(r, b);
+            XYZ start = live[2].Origin;
+            XYZ end = start + new XYZ(v[0], v[1], v[2]) * (1000.0 / 304.8);
+            stage = "creating the perpendicular branch";
+            Pipe temporary = Pipe.Create(doc, systemId, branchPipe.GetTypeId(), levelId, start, end);
+            Parameter bore = branchPipe.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
+            Parameter temporaryBore = temporary.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
+            // A reducing junction (branch narrower than the run): the perpendicular tee would take the
+            // narrow branch through a reducer. The temporary branch takes the run's bore instead, and the
+            // wye's branch port is set to the drawn bore once the wye is in place (below).
+            // The larger of the two run pipes, so the result does not depend on which side comes first.
+            double runBore = Math.Max((live[0].Owner as Pipe)?.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM)?.AsDouble() ?? 0,
+                (live[1].Owner as Pipe)?.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM)?.AsDouble() ?? 0);
+            bool reducing = bore != null && runBore > bore.AsDouble() + 0.5 / 304.8;
+            if (bore == null || temporaryBore == null || !temporaryBore.Set(reducing ? runBore : bore.AsDouble()))
+                throw new InvalidOperationException("the temporary branch could not retain the existing pipe diameter");
+            stage = "regenerating the sized perpendicular branch";
+            doc.Regenerate();
+            Connector temporaryEnd = temporary.ConnectorManager.Connectors.Cast<Connector>()
+                .OrderBy(c => c.Origin.DistanceTo(start)).First();
+            stage = "creating the perpendicular tee";
+            var temporaryTeeRule = new RoutingPreferenceRule(perpendicularTee.Id,
+                "Horizun temporary perpendicular tee");
+            temporaryTeeRule.AddCriterion(PrimarySizeCriterion.All());
+            FamilyInstance fitting;
+            bool temporaryRuleInserted = false;
+            try
+            {
+                mainRouting.AddRule(RoutingPreferenceRuleGroupType.Junctions, temporaryTeeRule, 0);
+                temporaryRuleInserted = true;
+                fitting = doc.Create.NewTeeFitting(live[0], live[1], temporaryEnd);
+            }
+            finally
+            {
+                if (temporaryRuleInserted)
+                    mainRouting.RemoveRule(RoutingPreferenceRuleGroupType.Junctions, 0);
+            }
+            ElementId fittingId = fitting.Id;
+            stage = "regenerating the perpendicular tee";
+            doc.Regenerate();
+            stage = "finding the tee branch connector";
+            Connector fittingBranch = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                .FirstOrDefault(c => c.AllRefs.Cast<Connector>().Any(other => other.Owner.Id == temporary.Id));
+            if (fittingBranch == null)
+            {
+                // NewTeeFitting did not link the temporary pipe directly. Follow each port through
+                // transitions (at most 3 deep) to see whether Revit put a reducer between them.
+                string chain = null;
+                foreach (Connector tp in fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>())
+                {
+                    chain = ChainToPipe(tp, temporary.Id, 3);
+                    if (chain != null) { chain = "tee port id " + tp.Id + " (" + MepRules.Mm(tp.Radius * 2) + ") " + chain; break; }
+                }
+                if (chain != null)
+                    throw new InvalidOperationException("this is a reducing junction: Revit joined the " + MepRules.Mm(bore.AsDouble()) +
+                        " branch to the perpendicular tee " + (perpendicularTee.Family?.Name ?? "") + ": " + perpendicularTee.Name +
+                        " through a reducer (" + chain + "). The junction needs a wye with a reducing branch (or reducers around a wye of the larger size), " +
+                        "so nothing was built. Give the pipe type a wye sized for this branch, " +
+                        "or move the size change away from the junction.");
+                var ports = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>().ToList();
+                Connector nearestFree = ports.Where(c => !c.IsConnected)
+                    .OrderBy(c => c.Origin.DistanceTo(temporaryEnd.Origin)).FirstOrDefault();
+                // Only a port of the same bore may take the temporary pipe: a larger or smaller port
+                // would be joined with a size mismatch that the rest of the build would not notice.
+                if (nearestFree != null && nearestFree.Origin.DistanceTo(temporaryEnd.Origin) <= 5.0 / 304.8 &&
+                    Math.Abs(nearestFree.Radius - temporaryEnd.Radius) <= 0.5 / 304.8)
+                {
+                    try { nearestFree.ConnectTo(temporaryEnd); fittingBranch = nearestFree; } catch { fittingBranch = null; }
+                }
+                if (fittingBranch == null)
+                    throw new InvalidOperationException((nearestFree != null && nearestFree.Origin.DistanceTo(temporaryEnd.Origin) <= 5.0 / 304.8 &&
+                        Math.Abs(nearestFree.Radius - temporaryEnd.Radius) > 0.5 / 304.8
+                            ? "bore mismatch: the free tee port nearest the temporary branch (id " + nearestFree.Id + ", " + MepRules.Mm(nearestFree.Radius * 2) +
+                              ") does not match the branch bore (" + MepRules.Mm(temporaryEnd.Radius * 2) + "), so it was not joined. "
+                            : "") + "the temporary branch did not connect to the tee. Tee " +
+                        (perpendicularTee.Family?.Name ?? "") + ": " + perpendicularTee.Name + " ports: " + string.Join("; ",
+                        ports.Select(c => "id " + c.Id + " radius " + MepRules.Mm(c.Radius) + ", " + (c.IsConnected ? "connected" : "free") +
+                            ", " + MepRules.Mm(c.Origin.DistanceTo(temporaryEnd.Origin)) + " from the temporary pipe end")) +
+                        ". Run bores " + MepRules.Mm((live[0].Owner as Pipe)?.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM)?.AsDouble() ?? 0) + " / " +
+                        MepRules.Mm((live[1].Owner as Pipe)?.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM)?.AsDouble() ?? 0) +
+                        ", branch " + MepRules.Mm(bore.AsDouble()) + ".");
+            }
+            Connector joinedTemp = temporary.ConnectorManager.Connectors.Cast<Connector>()
+                .FirstOrDefault(c => c.IsConnectedTo(fittingBranch));
+            if (joinedTemp == null) throw new InvalidOperationException("the temporary branch connection disappeared");
+            stage = "disconnecting the perpendicular branch";
+            fittingBranch.DisconnectFrom(joinedTemp);
+            // Keep the temporary pipe alive until the original branch has taken
+            // its place. Revit may delete an unhosted fitting when its last
+            // branch pipe is deleted during regeneration.
+            stage = "regenerating the disconnected tee";
+            doc.Regenerate();
+            if (doc.GetElement(fitting.Id) == null)
+                throw new InvalidOperationException("the tee disappeared after disconnecting the temporary branch");
+
+            stage = "switching the tee type to wye";
+            if (fitting.GetTypeId() != wye.Id)
+            {
+                // Revit refuses to swap a tee for some manufacturer wyes ("Can't make type"): their
+                // connectors differ from the tee's. Try every wye-like rule of the pipe type, best first,
+                // each inside a SubTransaction so a refusal leaves the tee exactly as it was; only when
+                // all are refused say why (JunctionRuleClassifier.SwitchRefusal).
+                var order = new List<FamilySymbol> { wye };
+                foreach (int candidateIndex in choice.WyeCandidates)
+                    if (ruleSymbols.TryGetValue(candidateIndex, out FamilySymbol alternative) && order.All(o => o.Id != alternative.Id))
+                        order.Add(alternative);
+                var refusals = new List<KeyValuePair<string, string>>();
+                bool switched = false;
+                FamilySymbol preferredWye = wye;
+                foreach (FamilySymbol candidate in order)
+                {
+                    using (var attempt = new SubTransaction(doc))
+                    {
+                        // A sub-transaction that does not open is a fault of the document state, not a
+                        // refusal of the wye's connectors: it is said as such and stops the build.
+                        TransactionStatus opened;
+                        try { opened = attempt.Start(); }
+                        catch (Exception ex)
+                        {
+                            throw new InvalidOperationException("could not open a sub-transaction to try wye " + (candidate.Family?.Name ?? "") + ": " + candidate.Name +
+                                " (" + ex.Message + "). This is the document's transaction state, not the wye's connectors; nothing was tried on this wye.", ex);
+                        }
+                        if (opened != TransactionStatus.Started)
+                            throw new InvalidOperationException("could not open a sub-transaction to try wye " + (candidate.Family?.Name ?? "") + ": " + candidate.Name +
+                                " (Revit returned " + opened + "). This is the document's transaction state, not the wye's connectors; nothing was tried on this wye.");
+                        try
+                        {
+                            fitting.Symbol = candidate;
+                            doc.Regenerate();
+                            Guard.Commit(attempt, "switch the temporary tee to wye " + candidate.Name);
+                            wye = candidate;
+                            switched = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            try { if (attempt.GetStatus() == TransactionStatus.Started) Guard.RollBack(attempt); } catch { }
+                            refusals.Add(new KeyValuePair<string, string>((candidate.Family?.Name ?? "") + ": " + candidate.Name, ex.Message));
+                        }
+                    }
+                    if (switched) break;
+                }
+                if (!switched) throw new InvalidOperationException(JunctionRuleClassifier.SwitchRefusal(refusals));
+                // Another wye than the preferred one was used: said as a SUPUESTO with each refusal in Revit's words.
+                Newtonsoft.Json.Linq.JObject substitution = JunctionRuleClassifier.WyeSubstitution(plan?.Index ?? -1,
+                    (preferredWye.Family?.Name ?? "") + ": " + preferredWye.Name, (wye.Family?.Name ?? "") + ": " + wye.Name, refusals);
+                if (substitution != null && plan != null) plan.Assumptions.Add(substitution);
+            }
+            stage = "finding the wye branch connector";
+            fittingBranch = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                .OrderBy(c => c.Origin.DistanceTo(start)).FirstOrDefault(c => !c.IsConnected);
+            if (fittingBranch == null)
+                throw new InvalidOperationException("the wye exposes no free branch connector");
+            if (reducing)
+            {
+                stage = "sizing the wye branch to the drawn bore";
+                string sized = SetPortBore(doc, fitting, fittingBranch, bore.AsDouble());
+                int sizedId = fittingBranch.Id;
+                fittingBranch = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>().FirstOrDefault(c => c.Id == sizedId);
+                if (sized != null || fittingBranch == null || Math.Abs(fittingBranch.Radius * 2 - bore.AsDouble()) > 0.5 / 304.8)
+                    throw new InvalidOperationException("this is a reducing junction: the wye " + (wye.Family?.Name ?? "") + ": " + wye.Name +
+                        " did not take the " + MepRules.Mm(bore.AsDouble()) + " branch on its branch port (" +
+                        (sized ?? (fittingBranch == null ? "the port disappeared" : "it stayed at " + MepRules.Mm(fittingBranch.Radius * 2))) +
+                        "), so nothing was built. Give the pipe type a wye whose branch size is an instance parameter independent of the run, " +
+                        "or move the size change away from the junction.");
+            }
+            int wyeBranchId = fittingBranch.Id;
+            // The branch port by its id, not "the free one": turning it can land it on the
+            // temporary pipe's end and Revit then connects them, leaving no free port at all
+            // (seen live). Only that accidental link is undone.
+            Connector WyeBranchPort()
+            {
+                Connector port = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                    .FirstOrDefault(c => c.Id == wyeBranchId);
+                if (port == null || !port.IsConnected) return port;
+                foreach (Connector other in port.AllRefs.Cast<Connector>()
+                    .Where(o => o.Owner != null && o.Owner.Id == temporary.Id).ToList())
+                    port.DisconnectFrom(other);
+                return port.IsConnected ? null : port;
+            }
+            stage = "orienting the wye branch towards the drawn pipe";
+            var branchAxis = (branchPipe.Location as LocationCurve)?.Curve as Line;
+            if (branchAxis == null)
+                throw new InvalidOperationException("the original branch is not a straight pipe");
+            XYZ farEnd = branchAxis.GetEndPoint(0).DistanceTo(start) > branchAxis.GetEndPoint(1).DistanceTo(start)
+                ? branchAxis.GetEndPoint(0) : branchAxis.GetEndPoint(1);
+            var triedAngles = new List<string>();
+            Connector alignedBranch = null;
+            XYZ towardsFar = (farEnd - start).Normalize();
+            double[] FarArr() => new[] { towardsFar.X, towardsFar.Y, towardsFar.Z };
+            {
+                Connector leanPort = WyeBranchPort();
+                XYZ ru = live[0].CoordinateSystem.BasisZ;
+                if (leanPort != null && ObliquePipeTeeRules.LeanIsOpposite(new[] { ru.X, ru.Y, ru.Z },
+                    new[] { leanPort.CoordinateSystem.BasisZ.X, leanPort.CoordinateSystem.BasisZ.Y, leanPort.CoordinateSystem.BasisZ.Z }, FarArr()))
+                {
+                    // The branch leans the other way along the run: reverse the wye along the run.
+                    // Any refusal inside rolls the whole fitting back with the caller's transaction.
+                    stage = "reversing the wye along the run";
+                    fitting = FlipWyeAlongRun(doc, fittingId, live[0], live[1], wyeBranchId);
+                    leanPort = WyeBranchPort();
+                    XYZ ru2 = live[0].CoordinateSystem.BasisZ;
+                    if (leanPort == null || ObliquePipeTeeRules.LeanIsOpposite(new[] { ru2.X, ru2.Y, ru2.Z },
+                        new[] { leanPort.CoordinateSystem.BasisZ.X, leanPort.CoordinateSystem.BasisZ.Y, leanPort.CoordinateSystem.BasisZ.Z }, FarArr()))
+                        throw new InvalidOperationException("the wye's branch still leans against the drawn branch after reversing it along the run");
+                    stage = "orienting the wye branch towards the drawn pipe";
+                }
+            }
+            // A port counts as aligned only if it also points along the drawn branch: a 90-degree
+            // port can sit on a 45-degree branch's axis at one point and still be the wrong fitting.
+            bool Faces(Connector c) => ObliquePipeTeeRules.PortFacesBranch(
+                new[] { c.CoordinateSystem.BasisZ.X, c.CoordinateSystem.BasisZ.Y, c.CoordinateSystem.BasisZ.Z }, FarArr());
+            foreach (double candidateDegrees in new[] { angle, 180.0 - angle, 180.0 + angle, 360.0 - angle })
+            {
+                Connector free = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                    .Where(c => !c.IsConnected).OrderBy(c => c.Origin.DistanceTo(start)).FirstOrDefault();
+                if (free == null) { triedAngles.Add(candidateDegrees + ": no free port"); continue; }
+                try { free.Angle = candidateDegrees * Math.PI / 180.0; doc.Regenerate(); }
+                catch (Exception ex) { triedAngles.Add(candidateDegrees + ": " + ex.Message); continue; }
+                free = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                    .Where(c => !c.IsConnected).OrderBy(c => c.Origin.DistanceTo(start)).FirstOrDefault();
+                if (free == null) { triedAngles.Add(candidateDegrees + ": no free port after regeneration"); continue; }
+                double offAxis = branchAxis.Distance(free.Origin);
+                double along = free.Origin.DistanceTo(farEnd);
+                triedAngles.Add(candidateDegrees + ": off_axis_mm=" + MepRules.Mm(offAxis) +
+                    ", from_far_mm=" + MepRules.Mm(along));
+                if (offAxis <= MepRules.CoincidenceToleranceFeet &&
+                    along > MepRules.CoincidenceToleranceFeet && along < farEnd.DistanceTo(start))
+                {
+                    if (!Faces(free)) { triedAngles.Add(candidateDegrees + ": on the axis but not pointing along the drawn branch"); continue; }
+                    alignedBranch = free; break;
+                }
+            }
+            if (alignedBranch == null)
+            {
+                // A wye's branch meets its run where the family says, not where the temporary
+                // tee stood, so the right angle can leave the port BESIDE the drawn branch.
+                // Try each angle again and slide the fitting along the run onto the drawn axis;
+                // the run pipes stay connected and follow. Any failure keeps the refusal.
+                XYZ runDir = live[0].CoordinateSystem.BasisZ;
+                XYZ branchDir = branchAxis.Direction;
+                foreach (double candidateDegrees in new[] { angle, 180.0 - angle, 180.0 + angle, 360.0 - angle })
+                {
+                    Connector free = WyeBranchPort();
+                    if (free == null) { triedAngles.Add(candidateDegrees + " + slide: branch port held by another element"); continue; }
+                    try { free.Angle = candidateDegrees * Math.PI / 180.0; doc.Regenerate(); }
+                    catch (Exception ex) { triedAngles.Add(candidateDegrees + " + slide: " + ex.Message); continue; }
+                    free = WyeBranchPort();
+                    if (free == null) { triedAngles.Add(candidateDegrees + " + slide: branch port held after regeneration"); continue; }
+                    double? slide = ObliquePipeTeeRules.SlideAlongRunToMeetBranch(
+                        new[] { runDir.X, runDir.Y, runDir.Z },
+                        new[] { free.Origin.X, free.Origin.Y, free.Origin.Z },
+                        new[] { farEnd.X, farEnd.Y, farEnd.Z },
+                        new[] { branchDir.X, branchDir.Y, branchDir.Z });
+                    if (slide == null || Math.Abs(slide.Value) > 1000.0 / 304.8)
+                    {
+                        triedAngles.Add(candidateDegrees + " + slide: " + (slide == null
+                            ? "run and branch parallel" : "slide " + MepRules.Mm(slide.Value) + " over 1000 mm"));
+                        continue;
+                    }
+                    stage = "sliding the wye along the run onto the drawn branch";
+                    ElementTransformUtils.MoveElement(doc, fitting.Id, runDir.Normalize() * slide.Value);
+                    doc.Regenerate();
+                    fitting = doc.GetElement(fittingId) as FamilyInstance;
+                    if (fitting == null) throw new InvalidOperationException("the wye disappeared while sliding along the run");
+                    free = WyeBranchPort();
+                    double offAxis = free == null ? double.MaxValue : branchAxis.Distance(free.Origin);
+                    double along = free == null ? 0.0 : free.Origin.DistanceTo(farEnd);
+                    triedAngles.Add(candidateDegrees + " + slide " + MepRules.Mm(slide.Value) + ": " + (free == null
+                        ? "branch port held after sliding"
+                        : "off_axis_mm=" + MepRules.Mm(offAxis) + ", from_far_mm=" + MepRules.Mm(along)));
+                    if (free != null && offAxis <= MepRules.CoincidenceToleranceFeet && along > MepRules.CoincidenceToleranceFeet && Faces(free))
+                    { alignedBranch = free; break; }
+                    ElementTransformUtils.MoveElement(doc, fitting.Id, runDir.Normalize() * -slide.Value);
+                    doc.Regenerate();
+                    fitting = doc.GetElement(fittingId) as FamilyInstance;
+                    if (fitting == null) throw new InvalidOperationException("the wye disappeared while sliding back");
+                }
+            }
+            if (alignedBranch == null)
+            {
+                // Connector.Angle did not move the port (measured live: the same 80 mm off the axis
+                // at every angle, so the slide computed from it was ~0). Roll the whole fitting about
+                // the run axis by the solved angle, then slide it along the run; both are re-read.
+                stage = "rolling the wye about the run onto the drawn branch";
+                Connector port = WyeBranchPort();
+                if (port == null) triedAngles.Add("roll: branch port held by another element");
+                else
+                {
+                    XYZ runAxis = live[0].CoordinateSystem.BasisZ.Normalize();
+                    XYZ fo = (fitting.Location as LocationPoint)?.Point ?? port.Origin;
+                    var sol = ObliquePipeTeeRules.SolveRollAndSlide(
+                        new[] { runAxis.X, runAxis.Y, runAxis.Z }, new[] { fo.X, fo.Y, fo.Z },
+                        new[] { port.Origin.X, port.Origin.Y, port.Origin.Z },
+                        new[] { port.CoordinateSystem.BasisZ.X, port.CoordinateSystem.BasisZ.Y, port.CoordinateSystem.BasisZ.Z },
+                        new[] { start.X, start.Y, start.Z }, FarArr());
+                    if (sol.Problem != null) triedAngles.Add("roll: " + sol.Problem);
+                    else if (sol.ResidualFeet > MepRules.CoincidenceToleranceFeet * 4)
+                        triedAngles.Add("roll " + (sol.RollRadians * 180.0 / Math.PI).ToString("0.##", CultureInfo.InvariantCulture) + " deg + slide " + MepRules.Mm(sol.SlideFeet) +
+                            " would leave the port " + MepRules.Mm(sol.ResidualFeet) + " off the drawn axis");
+                    else
+                    {
+                        ElementTransformUtils.RotateElement(doc, fitting.Id, Line.CreateBound(fo, fo + runAxis), sol.RollRadians);
+                        doc.Regenerate();
+                        fitting = doc.GetElement(fittingId) as FamilyInstance;
+                        if (fitting == null) throw new InvalidOperationException("the wye disappeared while rolling");
+                        ElementTransformUtils.MoveElement(doc, fitting.Id, runAxis * sol.SlideFeet);
+                        doc.Regenerate();
+                        fitting = doc.GetElement(fittingId) as FamilyInstance;
+                        if (fitting == null) throw new InvalidOperationException("the wye disappeared while sliding along the run");
+                        port = WyeBranchPort();
+                        double offAxis = port == null ? double.MaxValue : branchAxis.Distance(port.Origin);
+                        double along = port == null ? 0.0 : port.Origin.DistanceTo(farEnd);
+                        triedAngles.Add("roll " + (sol.RollRadians * 180.0 / Math.PI).ToString("0.##", CultureInfo.InvariantCulture) + " deg + slide " + MepRules.Mm(sol.SlideFeet) + ": " +
+                            (port == null ? "branch port held after rolling" :
+                             "off_axis_mm=" + MepRules.Mm(offAxis) + ", from_far_mm=" + MepRules.Mm(along) + ", faces_branch=" + Faces(port)));
+                        if (port != null && offAxis <= MepRules.CoincidenceToleranceFeet && along > MepRules.CoincidenceToleranceFeet && Faces(port))
+                            alignedBranch = port;
+                    }
+                }
+            }
+            if (alignedBranch == null)
+                throw new InvalidOperationException("no wye angle places its branch port on the drawn pipe: " +
+                    string.Join("; ", triedAngles));
+            fittingBranch = alignedBranch;
+            stage = "finding the original branch connector";
+            Connector original = branchPipe.ConnectorManager.Connectors.Cast<Connector>()
+                .FirstOrDefault(c => c.Id == originalConnectorId);
+            if (original == null || original.IsConnected)
+                throw new InvalidOperationException("the original oblique branch connector changed before attachment");
+            stage = "connecting the original branch";
+            try { fittingBranch.ConnectTo(original); }
+            catch (Exception ex) { throw new InvalidOperationException("the wye branch could not connect to the drawn pipe: " + ex.Message, ex); }
+            doc.Regenerate();
+            stage = "verifying the original branch";
+            fitting = doc.GetElement(fittingId) as FamilyInstance;
+            if (fitting == null)
+                throw new InvalidOperationException("Revit removed the wye when the original branch connected");
+            branchPipe = doc.GetElement(branchPipeId) as Pipe;
+            if (branchPipe == null)
+                throw new InvalidOperationException("Revit removed the original branch when it connected");
+            fittingBranch = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                .OrderBy(c => c.Origin.DistanceTo(start)).FirstOrDefault(c =>
+                    c.AllRefs.Cast<Connector>().Any(other => other.Owner.Id == branchPipeId));
+            original = branchPipe.ConnectorManager.Connectors.Cast<Connector>()
+                .FirstOrDefault(c => c.Id == originalConnectorId);
+            if (fittingBranch == null || original == null)
+                throw new InvalidOperationException("the attached branch connectors could not be re-read");
+            bool joined = fittingBranch.IsConnectedTo(original);
+            double gap = fittingBranch.Origin.DistanceTo(original.Origin);
+            if (joined && gap > MepRules.CoincidenceToleranceFeet)
+            {
+                stage = "trimming the drawn branch to the wye port";
+                var location = branchPipe.Location as LocationCurve;
+                var line = location?.Curve as Line;
+                if (line == null) throw new InvalidOperationException("the connected branch is no longer straight");
+                XYZ a = line.GetEndPoint(0), bEnd = line.GetEndPoint(1);
+                XYZ port = fittingBranch.Origin;
+                location.Curve = a.DistanceTo(original.Origin) < bEnd.DistanceTo(original.Origin)
+                    ? Line.CreateBound(port, bEnd) : Line.CreateBound(a, port);
+                doc.Regenerate();
+                fitting = doc.GetElement(fittingId) as FamilyInstance;
+                branchPipe = doc.GetElement(branchPipeId) as Pipe;
+                if (fitting == null || branchPipe == null)
+                    throw new InvalidOperationException("the wye or branch disappeared after trimming");
+                fittingBranch = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                    .FirstOrDefault(c => c.AllRefs.Cast<Connector>().Any(other => other.Owner.Id == branchPipeId));
+                original = branchPipe.ConnectorManager.Connectors.Cast<Connector>()
+                    .FirstOrDefault(c => c.Id == originalConnectorId);
+                joined = fittingBranch != null && original != null && fittingBranch.IsConnectedTo(original);
+                gap = fittingBranch == null || original == null ? double.MaxValue :
+                    fittingBranch.Origin.DistanceTo(original.Origin);
+            }
+            if (!joined || gap > MepRules.CoincidenceToleranceFeet)
+                throw new InvalidOperationException("the oblique wye did not meet the branch at its drawn endpoint" +
+                    " (connected=" + joined + ", gap_mm=" + MepRules.Mm(gap) +
+                    ", wye_port=" + (fittingBranch == null ? "missing" : fittingBranch.Origin.ToString()) +
+                    ", pipe_port=" + (original == null ? "missing" : original.Origin.ToString()) + ")");
+            stage = "deleting the temporary branch";
+            doc.Delete(temporary.Id);
+            doc.Regenerate();
+            fitting = doc.GetElement(fittingId) as FamilyInstance;
+            branchPipe = doc.GetElement(branchPipeId) as Pipe;
+            if (fitting == null || branchPipe == null)
+                throw new InvalidOperationException("the connected wye did not survive deletion of the temporary pipe");
+            fittingBranch = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>()
+                .FirstOrDefault(c => c.AllRefs.Cast<Connector>().Any(other => other.Owner.Id == branchPipeId));
+            original = branchPipe.ConnectorManager.Connectors.Cast<Connector>()
+                .FirstOrDefault(c => c.Id == originalConnectorId);
+            if (fittingBranch == null || original == null || !fittingBranch.IsConnectedTo(original) ||
+                fittingBranch.Origin.DistanceTo(original.Origin) > MepRules.CoincidenceToleranceFeet)
+                throw new InvalidOperationException("the connected wye did not retain a coincident branch after deleting the temporary pipe");
+            stage = "checking that both run ports are connected and coaxial with the run";
+            string runProblem = CheckWyeRunPorts(doc, fittingId, runPipeIds[0], runPipeIds[1], runPoint, r);
+            if (runProblem != null) throw new InvalidOperationException(runProblem);
+            stage = "checking every wye port's bore against its pipe";
+            fitting = doc.GetElement(fittingId) as FamilyInstance;
+            foreach (Connector wyePort in fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>())
+                foreach (Connector joinedEnd in wyePort.AllRefs.Cast<Connector>().Where(o => o.Owner is Pipe))
+                    if (Math.Abs(wyePort.Radius - joinedEnd.Radius) > 0.5 / 304.8)
+                        throw new InvalidOperationException("the wye's port " + wyePort.Id + " (" + MepRules.Mm(wyePort.Radius * 2) + ") is joined to pipe " +
+                            Rid.Value(joinedEnd.Owner.Id) + " of " + MepRules.Mm(joinedEnd.Radius * 2) + ": the bores do not match");
+            foreach (var started in startBores)
+            {
+                double boreNow = (doc.GetElement(started.Key) as Pipe)?.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM)?.AsDouble() ?? -1;
+                if (Math.Abs(boreNow - started.Value) > 0.25 / 304.8)
+                    throw new InvalidOperationException("pipe " + Rid.Value(started.Key) + " changed size while the wye was built (" + MepRules.Mm(started.Value) + " -> " + MepRules.Mm(boreNow) + ")");
+            }
+            plan.BuiltWyeTypeUniqueId = wye.UniqueId;
+            return fitting;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("oblique wye failed while " + stage + ": " + ex.Message, ex);
             }
         }
 
@@ -2317,6 +2922,7 @@ namespace Horizun.Revit.Commands
                 case "wall_profile": return e is Wall;
                 case "displacement": return e is DisplacementElement;
                 case "level": return e is Level; case "grid": return e is Grid; case "wall": return e is Wall;
+                case "reference_plane": return e is ReferencePlane;
                 case "floor": return e is Floor; case "ceiling": return e is Ceiling; case "roof": return e is FootPrintRoof;
                 case "room": return e is Autodesk.Revit.DB.Architecture.Room;
                 case "space": return e is Autodesk.Revit.DB.Mechanical.Space;
@@ -2367,6 +2973,54 @@ namespace Horizun.Revit.Commands
             }
         }
 
+        private static Element FindHost(Document doc, JObject spec, XYZ point, Level level, double scale, out XYZ snapped, out JObject how)
+        {
+            snapped = null;
+            string kind = ((string)spec["category"] ?? "").ToLowerInvariant();
+            double max = ((double?)spec["max_distance_mm"] ?? 600) * scale;
+            if (point == null) throw new ArgumentException("find_host needs the instance point");
+            if (kind == "wall")
+            {
+                Element best = null; double bestD = double.MaxValue; XYZ bestP = null; bool bestSameLevel = false;
+                foreach (Wall w in new FilteredElementCollector(doc).OfClass(typeof(Wall)).Cast<Wall>())
+                {
+                    if (!(w.Location is LocationCurve lc) || lc.Curve == null) continue;
+                    Curve curve = lc.Curve;
+                    double z0 = curve.GetEndPoint(0).Z;
+                    XYZ flat = new XYZ(point.X, point.Y, z0);
+                    IntersectionResult pr = curve.Project(flat);
+                    if (pr == null) continue;
+                    XYZ q = pr.XYZPoint;
+                    double d = new XYZ(q.X - point.X, q.Y - point.Y, 0).GetLength();
+                    if (d > max) continue;
+                    bool same = level != null && w.LevelId == level.Id;
+                    if (best == null || (same && !bestSameLevel) || (same == bestSameLevel && d < bestD))
+                    { best = w; bestD = d; bestP = new XYZ(q.X, q.Y, point.Z); bestSameLevel = same; }
+                }
+                if (best == null) throw new ArgumentException("find_host: no wall within " + Math.Round(max / scale).ToString(System.Globalization.CultureInfo.InvariantCulture) + " of the point");
+                // NOT snapped by default: the wall-based route projects the point onto the wall line itself AND
+                // reads which side of the line it was drawn on to choose the face. Snapping first erased that
+                // side and put a lavatory on the outside face of its wall (measured).
+                snapped = spec["snap"] != null && (bool)spec["snap"] ? bestP : null;
+                how = new JObject { ["host_id"] = Rid.Value(best.Id), ["category"] = "wall", ["distance"] = Math.Round(bestD / scale, 1),
+                    ["same_level"] = bestSameLevel, ["snapped_to_wall_line"] = snapped != null };
+                return best;
+            }
+            Type cls = kind == "ceiling" ? typeof(Ceiling) : kind == "floor" ? typeof(Floor) : kind == "roof" ? typeof(RoofBase) : null;
+            if (cls == null) throw new ArgumentException("find_host.category must be wall, ceiling, floor or roof");
+            Element hit = null; bool hitSame = false;
+            foreach (Element e in new FilteredElementCollector(doc).OfClass(cls).WhereElementIsNotElementType())
+            {
+                BoundingBoxXYZ bb = e.get_BoundingBox(null);
+                if (bb == null || point.X < bb.Min.X || point.X > bb.Max.X || point.Y < bb.Min.Y || point.Y > bb.Max.Y) continue;
+                bool same = level != null && e.LevelId == level.Id;
+                if (hit == null || (same && !hitSame)) { hit = e; hitSame = same; }
+            }
+            if (hit == null) throw new ArgumentException("find_host: no " + kind + " contains the point in plan");
+            how = new JObject { ["host_id"] = Rid.Value(hit.Id), ["category"] = kind, ["same_level"] = hitSame };
+            return hit;
+        }
+
         private static T Need<T>(Document doc, JObject o, string field) where T : Element
         {
             T value = Optional<T>(doc, o, field);
@@ -2377,9 +3031,9 @@ namespace Horizun.Revit.Commands
         {
             if (o[field] == null) return null;
             long raw = o.Value<long>(field);
-            if (!Rid.CanRepresent(raw)) throw new ArgumentException(field + " is outside ElementId range");
+            if (!Rid.CanRepresent(raw)) throw new ArgumentException(field + " is outside ElementId range" + DocumentContext.Hint<T>(doc, raw.ToString()));
             T value = doc.GetElement(Rid.Make(raw)) as T;
-            if (value == null) throw new ArgumentException(field + "=" + raw + " does not identify a " + typeof(T).Name);
+            if (value == null) throw new ArgumentException(field + "=" + raw + " does not identify a " + typeof(T).Name + DocumentContext.Hint<T>(doc, raw.ToString()));
             return value;
         }
         private static XYZ Point(JToken token, double scale, bool requireZ)
@@ -2405,14 +3059,15 @@ namespace Horizun.Revit.Commands
         /// closed back to the start, because a separator that closed itself would
         /// bound a room the drawing does not show.
         /// </summary>
-        private static IList<List<Curve>> Chains(JArray profile, double scale)
+        private static IList<List<Curve>> Chains(JArray profile, double scale, bool closed = false)
         {
             if (profile == null || profile.Count == 0) throw new ArgumentException("profile requires at least one chain");
             var result = new List<List<Curve>>();
             foreach (JArray chainToken in profile.OfType<JArray>())
             {
                 if (chainToken.Count < 2) throw new ArgumentException("every profile chain needs at least two points");
-                List<XYZ> points = chainToken.Select(t => Point(t, scale, true)).ToList();
+                IList<double[]> declared = chainToken.Select(t => { XYZ q = Point(t, scale, true); return new[] { q.X, q.Y, q.Z }; }).ToList();
+                List<XYZ> points = EnclosedRules.SeparatorChain(declared, closed).Select(q => new XYZ(q[0], q[1], q[2])).ToList();
                 var chain = new List<Curve>();
                 for (int i = 0; i + 1 < points.Count; i++) chain.Add(Line.CreateBound(points[i], points[i + 1]));
                 result.Add(chain);
@@ -2671,8 +3326,6 @@ namespace Horizun.Revit.Commands
 
         private static bool InCategory(Element element, BuiltInCategory category)
         { return element?.Category != null && Rid.Value(element.Category.Id) == (long)category; }
-        private static bool Scale(string units, out double scale)
-        { if (units == "feet") { scale = 1; return true; } if (units == "m") { scale = 1 / 0.3048; return true; } if (units == "mm") { scale = 1 / 304.8; return true; } scale = 0; return false; }
         private static string Safe(Func<string> f) { try { return f(); } catch { return null; } }
         private static double Finite(double value, string field)
         { if (double.IsNaN(value) || double.IsInfinity(value)) throw new ArgumentException(field + " must be finite"); return value; }
@@ -2682,42 +3335,6 @@ namespace Horizun.Revit.Commands
             System.Math.Round(point.X * 304.8, 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + "," +
             System.Math.Round(point.Y * 304.8, 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + "," +
             System.Math.Round(point.Z * 304.8, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
-
-        /// <summary>Guarded reads for the plan: measuring must never be what fails.</summary>
-        private static string SafePlanName(Element e)
-        {
-            try { return e == null ? "" : (e.Name ?? ""); } catch { return "<unreadable>"; }
-        }
-
-        private static string SafePlanUid(Element e)
-        {
-            try { return e == null ? "" : (e.UniqueId ?? ""); } catch { return "<unreadable>"; }
-        }
-
-        /// <summary>
-        /// The level's elevation in tenths of a millimetre. Rounded because Revit's own
-        /// regeneration jitters the last digits, and a fingerprint that changes on its own
-        /// would refuse every apply - the same lesson the transform wiring paid for.
-        /// </summary>
-        private static string SafePlanPoint(XYZ point)
-        {
-            if (point == null) return "";
-            System.Globalization.CultureInfo inv = System.Globalization.CultureInfo.InvariantCulture;
-            return System.Math.Round(point.X * 304.8, 1).ToString(inv) + "," +
-                   System.Math.Round(point.Y * 304.8, 1).ToString(inv) + "," +
-                   System.Math.Round(point.Z * 304.8, 1).ToString(inv);
-        }
-
-        private static string SafePlanElevation(Level level)
-        {
-            try
-            {
-                if (level == null) return "";
-                return System.Math.Round(level.ProjectElevation * 304.8, 1)
-                             .ToString(System.Globalization.CultureInfo.InvariantCulture);
-            }
-            catch { return "<unreadable>"; }
-        }
 
         /// <summary>
         /// DID REVIT BUILD THE CURVE THAT WAS ASKED FOR?
@@ -2747,20 +3364,48 @@ namespace Horizun.Revit.Commands
                                  "exists; its shape is not what was declared.";
                     return o;
                 }
-                double centreOff = arc.Center.DistanceTo(made.ExpectedArcCentre) * 304.8;
+                // In PLAN: Revit keeps a wall's location curve at its level elevation and carries the base
+                // offset as a parameter (verified separately as "offset"), so a centre declared at the wall's
+                // base read "off" by exactly that offset (measured: 141.8 mm on a wall 0.465 ft above its level).
+                double centreOff = Math.Sqrt((arc.Center.X - made.ExpectedArcCentre.X) * (arc.Center.X - made.ExpectedArcCentre.X) +
+                                             (arc.Center.Y - made.ExpectedArcCentre.Y) * (arc.Center.Y - made.ExpectedArcCentre.Y)) * 304.8;
                 double radiusOff = Math.Abs(arc.Radius - made.ExpectedArcRadius) * 304.8;
                 o["centre_off_mm"] = Math.Round(centreOff, 4);
                 o["radius_off_mm"] = Math.Round(radiusOff, 4);
                 o["radius_mm"] = Math.Round(arc.Radius * 304.8, 4);
-                // 1 mm on each, the same bar the rest of this command uses for
-                // "the model came back where we put it".
-                o["verified"] = centreOff <= 1.0 && radiusOff <= 1.0;
+                // THE SHAPE, not the centre: the largest distance from the built curve to the declared circle, sampled
+                // along it, and the declared third point must lie ON the built curve (the complementary arc lies on
+                // the same circle and would otherwise pass). Centre and radius stay in the reply as information: on a
+                // shallow arc they move by millimetres while the wall does not (ArcTolerance.ShapeOffMm).
+                var samples = new List<double[]>();
+                for (int k = 0; k <= 32; k++)
+                {
+                    XYZ q = arc.Evaluate(k / 32.0, true);
+                    samples.Add(new[] { q.X * 304.8, q.Y * 304.8 });
+                }
+                double shapeOff = ArcTolerance.ShapeOffMm(made.ExpectedArcCentre.X * 304.8, made.ExpectedArcCentre.Y * 304.8,
+                    made.ExpectedArcRadius * 304.8, samples);
+                double thirdOff = double.NaN;
+                if (made.ExpectedArcThird != null)
+                {
+                    IntersectionResult hit = arc.Project(new XYZ(made.ExpectedArcThird.X, made.ExpectedArcThird.Y, arc.Center.Z));
+                    if (hit != null) thirdOff = hit.XYZPoint.DistanceTo(new XYZ(made.ExpectedArcThird.X, made.ExpectedArcThird.Y, arc.Center.Z)) * 304.8;
+                }
+                o["shape_off_mm"] = double.IsNaN(shapeOff) ? JValue.CreateNull() : (JToken)Math.Round(shapeOff, 4);
+                o["third_off_mm"] = double.IsNaN(thirdOff) ? JValue.CreateNull() : (JToken)Math.Round(thirdOff, 4);
+                // 1 mm, growing with the radius (0.01 %) up to 5 mm. The tolerance used is in the reply.
+                double tolerance = ArcTolerance.Mm(made.ExpectedArcRadius * 304.8);
+                o["tolerance_mm"] = Math.Round(tolerance, 4);
+                o["tolerance_rule"] = ArcTolerance.Rule;
+                o["check"] = "shape: built curve within tolerance of the declared circle, declared third point on the built curve";
+                o["verified"] = !double.IsNaN(shapeOff) && !double.IsNaN(thirdOff) && shapeOff <= tolerance && thirdOff <= tolerance;
                 if (!(bool)o["verified"])
-                    o["means"] = "the element IS an arc and not the arc that was declared: its centre is " +
-                                 Math.Round(centreOff, 3).ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                                 " mm away and its radius differs by " +
-                                 Math.Round(radiusOff, 3).ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                                 " mm.";
+                    o["means"] = "the element IS an arc and not the arc that was declared: it lies up to " +
+                                 (double.IsNaN(shapeOff) ? "(unmeasured)" : Math.Round(shapeOff, 3).ToString(System.Globalization.CultureInfo.InvariantCulture)) +
+                                 " mm from the declared circle and " +
+                                 (double.IsNaN(thirdOff) ? "(unmeasured)" : Math.Round(thirdOff, 3).ToString(System.Globalization.CultureInfo.InvariantCulture)) +
+                                 " mm from the declared middle point (tolerance " +
+                                 Math.Round(tolerance, 3).ToString(System.Globalization.CultureInfo.InvariantCulture) + " mm).";
             }
             catch (Exception ex)
             {
@@ -2773,8 +3418,14 @@ namespace Horizun.Revit.Commands
 
         private sealed class Plan
         {
+            // Assumptions resolved in planning and those measured during Revit construction share one list.
+            public JArray Assumptions = new JArray();
             public int Index; public string Kind; public JObject Input; public double Scale, Elevation, Height, Offset;
+            /// <summary>A declared level-span exception: the reason, where it came from and the levels it crosses.</summary>
+            public string LevelSpanException, LevelSpanSource; public List<string> LevelsCrossed;
             public XYZ Start, End; public Level Level; public Element Type, SystemType; public IList<CurveLoop> Loops;
+            /// <summary>grid: "maximize" (vertical extent spans every level) or "none"; GridFlattenNote says a Z was dropped.</summary>
+            public string GridExtent3D = GridExtentRules.Maximize, GridFlattenNote;
             /// <summary>Open runs of curves, for the kinds Revit does not take as a boundary.</summary>
             public IList<List<Curve>> Chains;
             /// <summary>Every element this row made BESIDE the one it reports. Carried, never dropped.</summary>
@@ -2822,11 +3473,25 @@ namespace Horizun.Revit.Commands
             public List<ElementId> DisplacedIds;
             public View3D OwnerView;
             public JObject DisplacedState;
-            public List<ManageSystemTypesCommand.Write> ParameterWrites;
+            public List<TypeParameterWrites.Write> ParameterWrites;
             public double Rotation, TopOffset; public Element Host; public double[] Slopes; public bool[] DefinesSlope; public List<ModelCurve> RoofEdges;
+            public Line CeilingArrow; public double CeilingSlopeRatio; public double[] CeilingExpectedElevations;
+            /// <summary>roof: per edge (all contours, perimeter first) the overhang / offset asked for, in feet; null = not asked.</summary>
+            public double?[] Overhangs, EdgeOffsets;
+            /// <summary>reference_plane: the cut vector (the view's own direction).</summary>
+            public XYZ RefCut;
             public StructuralType StructuralType; public JObject Summary;
             public string FittingSubtype; public List<FittingMember> FittingMembers;
+            public SizedFitting DiameterFitting;
+            public ReducerPorts BuiltReducerPorts;
+            public bool KeepNativeConduitDiameter;
+            public string BuiltWyeTypeUniqueId;
             public Element TakeoffMain; public int? TakeoffMainBatchIndex;
+            public bool TakeoffTeeFallbackAllowed, TakeoffAsTee;
+            /// <summary>Set when a later takeoff_or_tee split this curve: its other piece.</summary>
+            public ElementId SplitPiece;
+            /// <summary>Set when takeoff_or_tee joined this branch with a tee: the tee.</summary>
+            public ElementId TeeJunction;
             public Wall OpeningHost; public Element InstanceHost;
 
             /// <summary>
@@ -2851,6 +3516,8 @@ namespace Horizun.Revit.Commands
             public List<XYZ> ProfilePoints; public XYZ BeamDirection;
             public double BeamSpacing; public FamilySymbol BeamType;
             public Wall FoundationWall;
+            /// <summary>Requested physical dimensions in internal feet; nullable means the selected type/host decides.</summary>
+            public double? FoundationTop, FoundationWidth, FoundationThickness;
             public MEPCurve InlineHost; public XYZ InlinePoint;
             /// <summary>flex_pipe/flex_duct: the full path, including its two ends (Start/End mirror the first/last point).</summary>
             public List<XYZ> FlexPoints;
@@ -2882,7 +3549,7 @@ namespace Horizun.Revit.Commands
             public string ExpectedSystemName; public ElementId ExpectedSystemTypeId;
             public List<ElementId> ExpectedMembers;
             /// <summary>An arc the caller DECLARED, null for a straight element. Checked after the commit.</summary>
-            public XYZ ExpectedArcCentre;
+            public XYZ ExpectedArcCentre, ExpectedArcThird;
             public bool? ExpectedStructural;
             public string ExpectedName;
             public string ExpectedNumber;

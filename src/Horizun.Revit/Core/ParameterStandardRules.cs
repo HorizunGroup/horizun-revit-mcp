@@ -136,6 +136,7 @@ namespace Horizun.Revit.Core
 
         public bool Present;
         public bool Readable = true;
+        public string ReadError;
         public string Guid;
         public bool IsShared;
         public string StorageType;
@@ -403,7 +404,7 @@ namespace Horizun.Revit.Core
 
             if (!o.Readable)
                 return Set(v, ParameterOutcome.Unreadable,
-                    "the parameter read threw, so its state is unknown - not missing and not satisfied.");
+                    o.ReadError ?? "the parameter read threw, so its state is unknown - not missing and not satisfied.");
 
             if (!o.Present)
                 return Set(v, r.Required ? ParameterOutcome.Missing : ParameterOutcome.RuleNotRequested,

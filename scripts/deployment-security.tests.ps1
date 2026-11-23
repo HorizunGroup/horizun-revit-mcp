@@ -232,32 +232,35 @@ Check 'Inno parses XML fail-closed and compares semantic GUID identity' `
      $installer -match "CreateOleObject\('Msxml2\.DOMDocument\.6\.0'\)" -and
      $installer -match "setProperty\('ProhibitDTD', True\)" -and
      $installer -match 'resolveExternals := False' -and $installer -match 'TryNormalizeGuid' -and
-     $installer -notmatch 'CompactGuidSearchText|LoadStringFromFile\(Candidate') `
+     $installer -notmatch 'CompactGuidSearchText' -and $installer -match 'RawBytesContainHorizunGuid\(RawBytes\)') `
     'Inno can still compare raw XML bytes or allow DTD/external-entity parsing'
 Check 'Inno distinguishes no matching manifests from enumeration failure' `
     ($installer -match 'YearRootAttributes := Win32GetFileAttributes\(YearRoot\)' -and
      $installer -match '\(EnumerationError = 2\) or \(EnumerationError = 3\) then Result := False' -and
      $installer -match 'EnumerationError := Win32GetLastError\(\)' -and
-     $installer -match '\(EnumerationError <> 0\) and \(EnumerationError <> 2\) and \(EnumerationError <> 18\) then\s+begin\s+AddEvidence\([^;]+;\s+exit;' -and
-     $installer -match 'EnumerationCompleted := EnumerationError = 18' -and
-     $installer -match 'if not EnumerationCompleted then\s+begin\s+AddEvidence\([^;]+;\s+exit;') `
+     $installer -match '\(EnumerationError <> 0\) and \(EnumerationError <> 2\) and \(EnumerationError <> 18\) then\s+begin\s+if EnumerationError = 5 then Kind := ConflictUnreadable' -and
+     $installer -match 'EnumerationCompleted := \(EnumerationError = 0\) or \(EnumerationError = 18\)' -and
+     $installer -match 'if not EnumerationCompleted then\s+begin\s+if EnumerationError = 5 then Kind := ConflictUnreadable') `
     'directory probing or FindFirst can still turn access denied or an I/O error into a false absence'
 Check 'Inno names the file and separates an unreadable manifest from a duplicate AddInId' `
     ($installer -match 'Kind := ConflictDuplicate' -and
      $installer -match 'AddEvidence\(Unreadable, Candidate \+' -and
      $installer -match 'parseError\.reason' -and
-     $installer -match 'if Unreadable <> '''' then exit;' -and
-     $installer -match 'This does not mean Horizun is installed') `
+     $installer -match 'if Unreadable <> '''' then\s+begin\s+Kind := ConflictUnreadable;') `
     'an unreadable manifest is still reported as an existing Horizun install, or the file is not named'
 Check 'source deployment refuses reparse-point payload trees before recursive cleanup' `
     ($sourceInstall -match 'Assert-HorizunNoReparseTree \$serverInstall' -and
      (Get-Content (Join-Path $repo 'scripts/horizun-deploy.lib.ps1') -Raw) -match 'Refusing \$Label through a link or junction') 'source cleanup can traverse an attacker-controlled junction'
-Check 'source install deletes verified replaced-* backups' `
-    ($sourceInstall -match "-Filter 'replaced-\*'" -and $sourceInstall -match 'Remove-Item -LiteralPath \$old\.FullName') 'successful updates retain executable backups'
-Check 'locked transaction rollback images are deferred after exact verification' `
-    ($sourceInstall -match 'obsolete rollback image is still in use' -and
-     $sourceInstall -match "'\.legacy-backup-'" -and
-     $completion -notmatch "foreach \(\$pattern in [^\r\n]*\.install-rollback") 'a finisher can delete a concurrent install rollback image'
+Check 'source install quarantines replaced backups and applies retention after verification' `
+    ($sourceInstall -match "-Filter 'replaced-\*'" -and $sourceInstall -match 'Move-Item -LiteralPath \$old\.FullName' -and
+     $sourceInstall.IndexOf('Remove-HorizunOldBackups') -gt $sourceInstall.IndexOf('Exact installed-payload verification failed')) 'backup retention can precede verification'
+$retentionRunner = Get-Content (Join-Path $repo 'scripts/cleanup-backups.ps1') -Raw
+Check 'rollback cleanup takes the source installer mutex and completion never deletes backups' `
+    ($retentionRunner -match 'Local\\Horizun.Revit.MCP.Install' -and $retentionRunner -match '\$mutex.WaitOne\(0\)' -and
+     $retentionRunner -match 'if \(-not \$held\)' -and $completion -notmatch 'Remove-LegacyServerBackups') 'a finisher can delete a concurrent install rollback image'
+Check 'setup quarantines the previous server during recovery and commit' `
+    ($installer -match "if RequiredFile = '\{#AppExeName\}' then\s+begin\s+if not QuarantineServerBackup\(Backup\)" -and
+     $installer -match "QuarantineServerBackup\(ExpandConstant\('\{app\}'\) \+ '\\server.previous'\)") 'setup could delete a still-running or deferred server backup'
 Check 'source and packaged installs verify exact payloads before discarding rollback images' `
     ($sourceInstall -match 'Exact installed-payload verification failed' -and
      $installer -match 'if VerifyInstalledPayload then CommitDeployment') 'commit can precede exact payload verification'
@@ -275,35 +278,30 @@ Check 'source self-signing refreshes the byte manifest Authenticode changes' `
      $selfSign -match 'tmp-\$\(\[guid\]') 'source manifest can become stale after signing'
 Check 'release signing never places a PFX password on a child process command line' `
     ($sign -match 'PfxPath is no longer accepted' -and $sign -notmatch "@\('/f'.*'/p'") 'PFX password route still exists'
-Check 'completion state and Run values are generation-owned' `
-    ($completion -match 'generationStatusPath' -and $completion -match 'runNamePrefix \+ \$Generation' -and
-     ([regex]::Matches($completion, 'Test-CurrentGeneration\)\) \{ Clear-Resume; exit 0 \}').Count -ge 4) -and
-     $completion -match 'if \(-not \$Detached\) \{ Start-DetachedWorker \$resolved \}' -and
+Check 'completion state is generation-owned and the legacy Run sweep reads value names' `
+    ($completion -match 'generationStatusPath' -and
+     $completion -match 'function Remove-LegacyResumeEntries' -and
      $completion -match '\$_ -eq ''HorizunMCPCompleteInstall''' -and
-     $completion -match '\$_ -ne \$runName' -and
      $completion -match '\.GetValueNames\(\)' -and
-     $completion -notmatch '@\(Get-ItemProperty[^\r\n]*\)\.PSObject\.Properties') 'superseded Run cleanup or immediate retry is incomplete'
-
-# Tool profile on a NEW install (ToolProfiles.cs): decided before Setup writes anything,
-# written only when there was no install and no settings.json, never on an upgrade, with
-# the very profile name the server knows, and before the helpers start the server.
-$serverProfiles = Get-Content (Join-Path $repo 'src/Horizun.Server/ToolProfiles.cs') -Raw
-$essential = if ($serverProfiles -match 'public const string Essential = "([a-z]+)";') { $Matches[1] } else { '' }
-Check 'a new install is told apart before Setup writes anything' `
-    ($installer -match '(?s)function InitializeSetup: Boolean;.*?Result := True;\s*FreshInstall := DetectFreshInstall;') `
-    'FreshInstall is not the first thing InitializeSetup decides'
-Check 'the fresh-install test looks at settings.json, the uninstall key, the server folder and install status' `
-    ($installer -match '(?s)function UninstallKeyExists.*?_is1.*?function DetectFreshInstall.*?FileExists\(UserSettingsFile\) or UninstallKeyExists.*?Programs.Horizun.MCP.server.*?install-status\.json') `
-    'DetectFreshInstall misses one of its four signs of an existing install'
-Check 'the tool profile is written only on a fresh install without settings.json' `
-    ($installer -match "(?s)procedure WriteFirstToolProfile;.*?if \(not FreshInstall\) or FileExists\(Path\) then exit;") `
-    'WriteFirstToolProfile can overwrite or write on an upgrade'
-Check 'the installer writes the profile name the server knows' `
-    ($essential -ne '' -and $installer -match ('"tool_profile": "' + $essential + '"')) `
-    "server Essential='$essential' is not what the installer writes"
-Check 'the tool profile is written after the commit and before the client helpers' `
-    ($installer -match '(?s)if ServerInstalled then WriteFirstToolProfile;\s*if ServerInstalled then StartClientHelpers;') `
-    'WriteFirstToolProfile is not right before StartClientHelpers'
+     $completion -notmatch '@\(Get-ItemProperty[^\r\n]*\)\.PSObject\.Properties') 'superseded Run cleanup is incomplete'
+# Norton IDP.HEUR.26 (2026-11-03): a hidden, policy-bypassing PowerShell re-armed
+# at every sign-in is what a behaviour engine calls malware. The shipped helpers
+# write no Run entry, start no background process and never relaunch PowerShell;
+# the installer uses RemoteSigned and no -WindowStyle Hidden.
+$shipped = @('complete-install.ps1', 'verify-install.ps1', 'uninstall-cleanup.ps1') | ForEach-Object {
+    [pscustomobject]@{ Name = $_; Text = (Get-Content (Join-Path $repo "scripts/$_") -Raw) } }
+$relaunch = @($shipped | Where-Object { $_.Text -match '(?im)^[^#\r\n]*(&\s*\$?powershell|&\s*\$powerShellExe|Start-Process|conhost|-ExecutionPolicy[''",\s]+Bypass)' } | ForEach-Object Name)
+Check 'shipped completion helpers never relaunch PowerShell or start a process' ($relaunch.Count -eq 0) ($relaunch -join ', ')
+Check 'complete-install writes no Run entry and never waits in the background' `
+    ($completion -notmatch 'Set-ItemProperty' -and $completion -notmatch 'New-ItemProperty' -and
+     $completion -notmatch 'Start-Sleep' -and $completion -notmatch 'Start-DetachedWorker') 'a resume entry or a background wait is back'
+Check 'the installer runs PowerShell with RemoteSigned and without -WindowStyle Hidden' `
+    ($installer -notmatch '-ExecutionPolicy Bypass' -and $installer -notmatch '-WindowStyle Hidden' -and
+     $installer -match 'ewWaitUntilTerminated, Code\) then Code := -1' -and $installer -notmatch 'SW_HIDE, ewNoWait') 'Setup still launches a bypassed or hidden PowerShell, or does not wait for the finisher'
+Check 'the installer offers a visible way to finish later' `
+    ($installer -match '\{cm:IcoComplete\}"; Filename:' -and $installer -match 'complete-install\.ps1"" -Pause') 'no Start menu entry for completing the installation'
+Check 'release signing signs the shipped scripts with the binaries' `
+    ($sign -match 'Get-HorizunOwnScripts \$stage' -and $sign -match 'client-tools scripts without a valid signature') 'the client-tools scripts are not in the signing pass'
 
 $locks = @(
     'src/Horizun.Server/packages.lock.json',

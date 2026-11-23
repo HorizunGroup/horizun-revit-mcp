@@ -3,10 +3,10 @@
 //
 // THE tools/list DESCRIPTION BUDGET, pinned at the boundary rather than sampled.
 //
-// Tools.CompactDescription promises a 900-character cap, and it could exceed it.
+// Tools.CompactDescription promises an 800-character cap, and it could exceed it.
 // The ellipsis it appends was not counted against the budget, so a description
-// whose sentence boundary fell exactly on the limit came back at 901, and the
-// `cut += 1` branch could reach 902. Nothing detected it: the only coverage was
+// whose sentence boundary fell exactly on the limit came back one character over,
+// and the `cut += 1` branch could reach two over. Nothing detected it: the only coverage was
 // the aggregate assertion over the descriptions that HAPPEN to exist, and every
 // one of them cut earlier. It surfaced when horizun_fix_planimetry's description
 // landed on the boundary - which is to say, it was waiting for the next tool.
@@ -23,7 +23,22 @@ namespace Horizun.Server.Tests
 {
     public class ToolDescriptionBudgetTests
     {
-        private const int Max = 900;
+        [Fact]
+        public void Schema_text_budget_preserves_full_source_and_the_resource_pointer()
+        {
+            const string original = "Required before a model change. " +
+                "This deliberately long explanation remains available in the exact contract resource, with every original word preserved.";
+            var schema = Newtonsoft.Json.Linq.JObject.Parse("{'type':'object','required':['id'],'properties':{'id':{'type':'integer'}}}");
+            schema["properties"]["id"]["description"] = original;
+            var compact = Tools.CompactSchema("schema-description-budget-regression", schema);
+            string advertised = (string)compact["properties"]["id"]["description"];
+            Assert.True(advertised.Length <= Tools.SchemaDescriptionMax);
+            Assert.Contains("horizun://contract/tools", advertised);
+            Assert.Equal(original, (string)schema["properties"]["id"]["description"]);
+            Assert.Equal(schema["required"].ToString(), compact["required"].ToString());
+            Assert.Equal("integer", (string)compact["properties"]["id"]["type"]);
+        }
+        private const int Max = 800;
         private const string Suffix = " Full installed contract: horizun://contract/tools";
 
         /// <summary>

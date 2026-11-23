@@ -253,15 +253,23 @@ namespace Horizun.Revit.Transport
             // and "other clients" is the distinct count minus one. A pid that cannot
             // be read is counted as unidentified, never dropped. Best effort either
             // way: presence bookkeeping must never cost a request.
-            try
+            // The pid is read now (the connection is open) but COUNTED once the request is parsed, because an instance
+            // probe (ProbeFlag: the MCP server looking at this Revit) is not a client working with it. Still recorded
+            // before any dispatch, so by the time a command runs the asking client is in the registry.
+            bool clientPidKnown = false; uint clientPid = 0; bool presenceRecorded = false;
+            try { clientPidKnown = GetNamedPipeClientProcessId(server.SafePipeHandle.DangerousGetHandle(), out clientPid); }
+            catch { clientPidKnown = false; }
+            Action recordPresence = () =>
             {
-                uint clientPid;
-                if (GetNamedPipeClientProcessId(server.SafePipeHandle.DangerousGetHandle(), out clientPid))
-                    ClientPresence.Default.Seen(clientPid, DateTime.UtcNow);
-                else
-                    ClientPresence.Default.SeenUnidentified(DateTime.UtcNow);
-            }
-            catch { ClientPresence.Default.SeenUnidentified(DateTime.UtcNow); }
+                if (presenceRecorded) return;
+                presenceRecorded = true;
+                try
+                {
+                    if (clientPidKnown) ClientPresence.Default.Seen(clientPid, DateTime.UtcNow);
+                    else ClientPresence.Default.SeenUnidentified(DateTime.UtcNow);
+                }
+                catch { try { ClientPresence.Default.SeenUnidentified(DateTime.UtcNow); } catch { } }
+            };
 
             // Bounded in size and in time. StreamReader.ReadLine() was neither: a peer that
             // connected and said nothing held this thread until Revit closed, and a line
@@ -269,6 +277,7 @@ namespace Horizun.Revit.Transport
             LineResult read = LineReader.Read(server, MaxRequestBytes, RequestReadTimeoutMs);
             if (!read.Ok)
             {
+                recordPresence();
                 // Closed-without-sending is ordinary (a probe, a cancelled client) and gets
                 // no reply because there is nobody to reply to. The rest are worth saying.
                 if (read.Outcome != LineOutcome.Closed)
@@ -291,6 +300,7 @@ namespace Horizun.Revit.Transport
             try
             {
                 JObject req = Horizun.Revit.Core.JsonText.ParseObject(line);
+                if (!ProbeFlag.IsProbe(req)) recordPresence();
                 id = (string)req["id"];
                 string command = (string)req["command"];
                 string token = (string)req["token"];
@@ -323,30 +333,57 @@ namespace Horizun.Revit.Transport
                     // UI thread already claimed is NOT reported cancelled - it runs to the end.
                     // Never enters Revit's UI queue; answered from the pipe thread.
                     string jobId = (string)req["params"]?["job_id"];
-                    AsyncWork removed;
-                    bool cancelled = AsyncQueue.TryRemove(jobId, out removed);
-                    if (cancelled)
+                    var cancellation = AsyncQueue.CancelWaiting(jobId);
+                    bool? recorded = null;
+                    if (cancellation.Cancelled)
                     {
-                        try { removed.Record?.Finish("cancelled", "Removed from the queue before it started, on a cancellation request. Nothing ran."); }
+                        try { cancellation.Work.FinishCancelledWhileWaiting(cancellation.BeforeStart
+                            ? "Removed from the queue before it started, on a cancellation request. Nothing ran."
+                            : cancellation.Work.PartialResultJson == null
+                                ? "Cancelled between callbacks after work started. Earlier progress is partial; no result snapshot is available."
+                                : "Cancelled between callbacks after work started. The result is a partial snapshot."); }
                         catch (Exception ex) { Log.Warn("cancel_job: the record of " + jobId + " could not be finished: " + ex.Message); }
+                        // Review m5: a synchronous cooperative clash keeps a record that need not be durable - its caller gets
+                        // the outcome in its own reply - so "not persisted" is not a failure there; it is "not applicable".
+                        recorded = cancellation.Work.RecordPersisted();
+                        // Review m7: a continuation cancelled while it waited never reaches the dispatcher's closing step,
+                        // so the retention a deferred record owes is applied here (off the pipe thread).
+                        Dispatcher.ScheduleJobRetention();
                     }
+                    // A Python script already RUNNING cannot be removed, but it can be asked to
+                    // stop: the request reaches its run control, and the script stops at its
+                    // next checkpoint()/safe_point(), rolls back what it left open and the job
+                    // finishes as cancelled_running. Nothing is claimed here beyond the request.
+                    string interrupt = cancellation.Cancelled ? null : PythonRunRegistry.Cancel(jobId, "cancellation requested through __horizun_cancel_job");
                     reply = PipeEnvelope.Of(id, true, new JObject
                     {
-                        ["cancelled_before_start"] = cancelled,
+                        ["cancelled_before_start"] = cancellation.BeforeStart,
                         ["job_id"] = jobId,
-                        ["state"] = cancelled ? "removed_before_start" : "not_in_queue"
+                        ["state"] = cancellation.Cancelled
+                                        ? (recorded == false ? "cancelled_record_unavailable" : cancellation.State)
+                                    : interrupt == "interrupt_requested" || interrupt == "already_interrupted" ? interrupt
+                                    : cancellation.State,
+                        // Review m11: a NEW request and one the script had already been given are different facts.
+                        ["interrupt_requested"] = interrupt == "interrupt_requested",
+                        ["already_interrupted"] = interrupt == "already_interrupted",
+                        ["record_persisted"] = recorded.HasValue ? (JToken)new JValue(recorded.Value) : JValue.CreateNull()
                     }, null);
                 }
                 else if (string.Equals(command, "__horizun_cancel_queued", StringComparison.Ordinal))
                 {
                     string target = (string)req["params"]?["wire_id"];
+                    JObject observed = _dispatcher.ObserveRequest(target);
                     string detail;
-                    bool cancelled = _dispatcher.CancelQueued(target, out detail);
+                    // intent "timeout": remove queued work and tell the synchronous planimetry read its caller left.
+                    // Running jobs keep their existing behaviour. Absent/"cancel" requests explicit cancellation.
+                    bool timedOut = string.Equals((string)req["params"]?["intent"], "timeout", StringComparison.Ordinal);
+                    bool cancelled = _dispatcher.CancelQueued(target, out detail, timedOut);
                     reply = PipeEnvelope.Of(id, true, new JObject
                     {
                         ["cancelled_before_start"] = cancelled,
                         ["wire_id"] = target,
                         ["state"] = detail,
+                        ["progress"] = observed?["progress"]?.DeepClone(),
                         // Not found: finished, or not arrived yet - and if it arrives, the gate
                         // refuses it (backlog #36). Said so the server can say it too.
                         ["refused_on_arrival"] = string.Equals(detail, "not_found_or_finished", StringComparison.Ordinal)
@@ -365,6 +402,7 @@ namespace Horizun.Revit.Transport
             }
             catch (Exception ex)
             {
+                if (!presenceRecorded) recordPresence();
                 reply = PipeEnvelope.Of(id, false, null, "Malformed request: " + ex.Message);
             }
 

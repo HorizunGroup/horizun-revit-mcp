@@ -252,7 +252,6 @@ namespace Horizun.Revit.Commands
 
             // ---- What is bound BEFORE. This is the baseline the ReInsert drop is measured against. ----
             var before = MeasureBinding(doc, defGuid, defName);
-            var beforeCats = CategoryIdsOf(before);
 
             // ---- Build the category set that will actually be inserted. ----
             var finalCats = new Dictionary<long, Category>();
@@ -312,38 +311,15 @@ namespace Horizun.Revit.Commands
             //
             // ExpectedCascadeCount carries the categories that would LOSE their binding -
             // the blast radius a person actually weighs before saying yes to a reinsert.
-            var resolvedPlan = new ResolvedPlan
-            {
-                Command = Name,
-                DocumentKey = gate.Fingerprint,
-                RevitVersion = uiapp?.Application?.VersionNumber,
-                DocumentFingerprint = gate.Identity?.FingerprintDigest(),
-                ExpectedCascadeCount = before.Cats == null
-                    ? 0
-                    : before.Cats.Count(c => !finalCats.ContainsKey(Rid.GetId(c.Id)))
-            };
-            resolvedPlan.Elements.Add(new PlannedElement
-            {
-                UniqueId = "binding:" + defGuid.ToString("d"),
-                Category = "ParameterBinding",
-                TypeName = defName,
-                Action = before.Exists == true ? PlannedAction.Modify : PlannedAction.Create,
-                BeforeValues = new Dictionary<string, string>
-                {
-                    { "op", before.Exists == true ? "reinsert" : "insert" },
-                    // Sorted: Revit may enumerate a CategorySet in any order, and that is
-                    // not a change to the binding. Ids, not names - names localise.
-                    { "existing", before.Cats == null
-                        ? (before.CatsMeasured ? "" : "<unmeasured>")
-                        : string.Join(",", before.Cats.Select(c => Rid.GetId(c.Id))
-                                                      .OrderBy(x => x)
-                                                      .Select(x => x.ToString(System.Globalization.CultureInfo.InvariantCulture))) },
-                    { "final", string.Join(",", finalCats.Keys.OrderBy(x => x)
-                                                              .Select(x => x.ToString(System.Globalization.CultureInfo.InvariantCulture))) },
-                    { "kind", kind },
-                    { "group", groupSpec ?? "" }
-                }
-            });
+            // Measure the same definition that Insert or ReInsert will receive.
+            Definition key = before.Key ?? extDef;
+            string dataType = ReadDataType(key, out string dataTypeError);
+            if (dataType == null)
+                return CommandResult.RefuseBeforeWrite("Could not read the data type of '" + defName + "': " + dataTypeError);
+
+            var resolvedPlan = SharedParamBindingRules.ResolvePlan(Name, gate.Fingerprint,
+                uiapp?.Application?.VersionNumber, gate.Identity?.FingerprintDigest(), defGuid, defName, dataType,
+                before.Exists == true, before.CatsMeasured, before.Cats?.Select(c => Rid.GetId(c.Id)), finalCats.Keys, kind, groupSpec);
 
             // ---- Rehearsal. ----
             //
@@ -362,6 +338,7 @@ namespace Horizun.Revit.Commands
                     ["transaction_name"] = txName,
                     ["document"] = SafeTitle(doc),
                     ["parameter_name"] = defName,
+                    ["parameter_data_type"] = dataType,
                     ["parameter_guid"] = defGuid.ToString("d"),
                     ["spf_path"] = spfPath,
                     ["operation_would_be"] = before.Exists == true ? "reinsert" : "insert",
@@ -384,7 +361,7 @@ namespace Horizun.Revit.Commands
                 DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(bspDry, gate, Name, bspPlan, true,
                     "the token binds this OPERATION against this EXISTING binding: if the parameter gets bound or " +
-                    "unbound by somebody else first, or the existing category list moves, the apply is refused as a " +
+                    "unbound, the data type changes or the existing category list moves, the apply is refused as a " +
                     "stale plan instead of turning your insert into a replace. existing_categories is reported only " +
                     "when it could be READ - a null there means unmeasured, never empty.");
                 return CommandResult.Ok(bspDry);
@@ -393,8 +370,9 @@ namespace Horizun.Revit.Commands
             // Recomputed above from this call's own MeasureBinding. The rehearsed plan does
             // not travel in the token, only its fingerprint, so a stale refusal names the
             // drift generically - still refused, still nothing bound.
-            CommandResult bspRefused = DocumentGate.RequireConfirmation(uiapp, gate, request, Name, bspPlan,
-                                                                       resolvedPlan, null);
+            CommandResult bspRefused = resolvedPlan.RefuseChangedChild(
+                request.Value<string>("__expected_plan_fingerprint"), "shared parameter binding") ??
+                DocumentGate.RequireConfirmation(uiapp, gate, request, Name, bspPlan, resolvedPlan, null);
             if (bspRefused != null) return bspRefused;
 
             // ---- Write. ----
@@ -425,11 +403,9 @@ namespace Horizun.Revit.Commands
                     // ReInsert against the key the map already holds, not against our
                     // ExternalDefinition: the bound key is an InternalDefinition and the
                     // map matches on identity.
-                    Definition key = before.Key ?? (Definition)extDef;
-
                     apiReturned = before.Exists == true
                         ? doc.ParameterBindings.ReInsert(key, binding, groupId)
-                        : doc.ParameterBindings.Insert(extDef, binding, groupId);
+                        : doc.ParameterBindings.Insert(key, binding, groupId);
 
                     if (!apiReturned)
                     {
@@ -535,6 +511,8 @@ namespace Horizun.Revit.Commands
 
             // ---- The only evidence that counts: read the model back, after the commit. ----
             var after = MeasureBinding(doc, defGuid, defName);
+            string actualDataType = ReadDataType(after.Key, out string actualDataTypeError);
+            bool? dataTypeMatches = actualDataType == null ? (bool?)null : string.Equals(dataType, actualDataType, StringComparison.Ordinal);
 
             // VariesAcrossGroups re-read from a FRESH probe. Reading probe.Def's property
             // again would be reading the handle we just wrote through, inside a transaction
@@ -605,6 +583,7 @@ namespace Horizun.Revit.Commands
                 ExistsAfter = after.Exists,
                 KindMeasured = after.KindMeasured,
                 KindMatches = kindMatches,
+                DataTypeMatches = dataTypeMatches,
                 CatsMeasured = after.CatsMeasured,
                 CatsComplete = catsComplete,
                 CatsHaveUnreadable = after.CatsUnreadable > 0,
@@ -618,7 +597,7 @@ namespace Horizun.Revit.Commands
             {
                 ["outcome"] = outcome,
                 ["outcome_means"] = "confirmed: the binding was re-read from ParameterBindings after the commit and " +
-                                    "its kind, its categories and VariesAcrossGroups were all MEASURED and are what " +
+                                    "its data type, kind, categories and VariesAcrossGroups were all MEASURED and are what " +
                                     "you asked for (VariesAcrossGroups only for an Instance binding: a Type binding " +
                                     "cannot vary between groups, so there it is not_applicable), and no " +
                                     "previously-bound category was dropped. not_bound: the " +
@@ -650,6 +629,13 @@ namespace Horizun.Revit.Commands
                                                 "NOT evidence of anything. resulting_categories is the measurement.",
                 // (a) — from the Binding object's own type, never from binding_kind.
                 ["resulting_binding_kind"] = KindBlock(after, wantType),
+                ["resulting_data_type"] = new JObject
+                {
+                    ["expected"] = dataType,
+                    ["actual"] = actualDataType,
+                    ["matches"] = dataTypeMatches,
+                    ["error"] = actualDataTypeError
+                },
                 // (b) — read back from ParameterBindings, the drop included.
                 ["resulting_categories"] = CatsBlock(after),
                 ["categories_added_by_merge"] = merge ? new JArray(mergedIn.Select(n => (JToken)n)) : null,
@@ -662,7 +648,7 @@ namespace Horizun.Revit.Commands
                 ["parameter_group"] = GroupBlock(afterProbe.Def, groupSpec),
                 ["note"] = Note(outcome, committed, after, kindMatches, catsComplete, noUnintendedDrop, dropped,
                                 varyOk, allowVary, variesAfter, variesError, varySetError, afterProbe, defName,
-                                kind, restoreError, varyApplies)
+                                kind, restoreError, varyApplies, dataTypeMatches)
             };
 
             // One binding requested. `confirmed` is the only outcome that was measured to be
@@ -676,6 +662,22 @@ namespace Horizun.Revit.Commands
                                             outcome == OUT_NOT_BOUND ? 1 : 0,
                                             outcome == OUT_UNKNOWN ? 1 : 0);
             return CommandResult.Ok(result);
+        }
+
+        private static string ReadDataType(Definition definition, out string error)
+        {
+            try
+            {
+                string typeId = definition?.GetDataType()?.TypeId;
+                if (!string.IsNullOrWhiteSpace(typeId))
+                {
+                    error = null;
+                    return typeId;
+                }
+                error = "Revit returned no data type for this definition.";
+            }
+            catch (Exception ex) { error = ex.Message; }
+            return null;
         }
 
         // ---- Classification lives in Core/SharedParamBindingRules.cs (Revit-free, tested). ----
@@ -914,7 +916,7 @@ namespace Horizun.Revit.Commands
                                    bool catsComplete, bool? noUnintendedDrop, JArray dropped, bool varyOk,
                                    bool allowVary, bool? varies, string variesError, string varySetError,
                                    DefProbe probe, string defName, string kind, string restoreError,
-                                   bool varyApplies)
+                                   bool varyApplies, bool? dataTypeMatches)
         {
             var parts = new List<string>();
             string who = "'" + (defName ?? "the parameter") + "'";
@@ -923,10 +925,10 @@ namespace Horizun.Revit.Commands
             if (outcome == OUT_CONFIRMED)
             {
                 parts.Add(varyApplies
-                    ? who + " is bound as a " + kind + "Binding: the kind, the resulting categories and " +
+                    ? who + " is bound as a " + kind + "Binding: the data type, the kind, the resulting categories and " +
                       "VariesAcrossGroups were each re-read from the model after the commit, and no " +
                       "previously-bound category was dropped."
-                    : who + " is bound as a " + kind + "Binding: the kind and the resulting categories were each " +
+                    : who + " is bound as a " + kind + "Binding: the data type, the kind and the resulting categories were each " +
                       "re-read from the model after the commit, and no previously-bound category was dropped. " +
                       "VariesAcrossGroups does not apply to a type parameter (see varies_across_groups).");
                 // Reachable only with merge=false, where the drop is the request. Said out
@@ -950,6 +952,9 @@ namespace Horizun.Revit.Commands
                     parts.Add(who + " was re-read from ParameterBindings and is NOT bound in this document.");
                 else
                 {
+                    if (dataTypeMatches != true)
+                        parts.Add(dataTypeMatches == null ? "the data type could not be read back; see resulting_data_type." :
+                            "the data type read back differs from the rehearsal; see resulting_data_type.");
                     if (!after.KindMeasured)
                         parts.Add("the binding kind could not be measured (" +
                                   (after.KindError ?? "reason unrecorded") + "), so whether it is an Instance or a " +

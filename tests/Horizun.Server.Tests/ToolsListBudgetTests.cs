@@ -32,7 +32,10 @@ namespace Horizun.Server.Tests
         // Tools.All, Formatting.None, UTF-8 - the same measurement as the ledger's "all".
         // Before the short forms of this change: 475,647 B. Re-measured 2026-10-10 (close) on the
         // 2.2.0 candidate with its own guard-argument wording: 475,800 B before, 473,188 B after.
-        internal const int MeasuredBytes = 473_188;
+        // Reviewed with the planimetry ceiling-slope and wall-attachment contracts:
+        // tools/list is 507,431 B (ledger); the hard 512 KiB ceiling still has 16,857 B.
+        // A reviewed 1 KiB increase for the typed per-level splitter; still below 512 KiB.
+        internal const int MeasuredBytes = 508_431;
         internal const double Allowance = 0.03;
 
         internal const int RepeatedTextMinLength = 100;

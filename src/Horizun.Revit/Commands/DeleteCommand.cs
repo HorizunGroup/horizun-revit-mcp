@@ -124,7 +124,9 @@ namespace Horizun.Revit.Commands
             parts.Add("ids=" + JoinSorted(request["ids"] as JArray));
             parts.Add("protect=" + JoinSorted(request["protect_ids"] as JArray));
             parts.Add("categories=" + JoinSorted(request["categories"] as JArray));
+            if (mode == "query") parts.Add("selector=" + CanonicalSelector(request["selector"]));
             parts.Add("max_passes=" + (request["max_passes"]?.ToString() ?? "-"));
+            if (request.Value<bool?>("allow_foreign_dependents") == true) parts.Add("allow_foreign_dependents");
 
             // id_cap and transaction_name are NOT in the hash. Measured by using this:
             // approving a plan with id_cap=3 and executing it with id_cap=2 was refused as
@@ -133,6 +135,14 @@ namespace Horizun.Revit.Commands
             // option teaches callers to distrust it, and a guard nobody trusts gets worked
             // around. Only fields that change WHAT IS AFFECTED belong here.
             return ConfirmationStore.HashPlan(parts.ToArray());
+        }
+
+        private static string CanonicalSelector(JToken selector)
+        {
+            var o = selector as JObject;
+            if (o == null) return "-";
+            return string.Join("|", o.Properties().OrderBy(p => p.Name, StringComparer.Ordinal)
+                .Select(p => p.Name + "=" + p.Value.ToString(Newtonsoft.Json.Formatting.None)));
         }
 
         private static string JoinSorted(JArray arr)
@@ -244,8 +254,8 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail(
                     "mode is REQUIRED: send 'ids' to delete exactly the explicit ids, or 'purge_unused' to " +
                     "request the broader purge operation. Omission never chooses a destructive scope.");
-            if (mode != "ids" && mode != "purge_unused")
-                return CommandResult.Fail("mode must be 'ids' or 'purge_unused'.");
+            if (mode != "ids" && mode != "purge_unused" && mode != "query")
+                return CommandResult.Fail("mode must be 'ids', 'purge_unused' or 'query'.");
 
             // dry_run defaults to TRUE in BOTH modes now. It used to default to false when
             // ids were supplied, on the reasoning that an explicit list is an explicit act -
@@ -262,7 +272,7 @@ namespace Horizun.Revit.Commands
             int idCap = request["id_cap"] != null ? Math.Max(1, request.Value<int>("id_cap")) : 200;
             var txName = request.Value<string>("transaction_name");
             if (string.IsNullOrWhiteSpace(txName))
-                txName = mode == "ids" ? "Horizun: delete elements" : "Horizun: purge unused";
+                txName = mode == "purge_unused" ? "Horizun: purge unused" : "Horizun: delete elements";
 
             // A protect list we cannot read protects NOTHING. `as JArray` on a bare int
             // or a string yields null, and null means "no protection" — the purge then
@@ -324,9 +334,20 @@ namespace Horizun.Revit.Commands
                         return CommandResult.Fail("mode='ids': none of the " + idsRejected.Count + " id(s) sent could be " +
                             "read as an element id, so there is nothing this call could delete or verify. Nothing was " +
                             "deleted. Rejected: " + idsRejected.ToString(Newtonsoft.Json.Formatting.None));
+                    // permission_profile=documentation: views, sheets, view-owned and
+                    // annotation elements only. One modelled element refuses the whole batch,
+                    // by id, before any transaction opens (DocumentationScope).
+                    string documentationRefusal = DocumentationScope.Refusal(doc, ids, Name);
+                    if (documentationRefusal != null) return CommandResult.Fail(documentationRefusal);
                     return Stamp(DeleteIds(app, gate, request, planHash, doc, ids, protectedIds, dryRun, txName, idCap,
                         Concat(idsRejected, protRejected)), gate, dryRun, planHash);
                 }
+                if (mode == "query")
+                    return DeleteBySelector(app, gate, request, planHash, doc, protectedIds, dryRun, txName, idCap, protRejected);
+                if (DocumentationScope.Active)
+                    return CommandResult.Fail("mode=purge_unused is refused by permission_profile=documentation: a purge " +
+                        "removes unused types and families model-wide. Use mode=ids on views, sheets or annotation. " +
+                        "Nothing was deleted.");
                 return Stamp(PurgeUnused(app, gate, request, planHash, doc, protectedIds, dryRun, maxPasses, txName, idCap,
                     Concat(protRejected)), gate, dryRun, planHash);
             }
@@ -342,7 +363,7 @@ namespace Horizun.Revit.Commands
         // ---------------------------------------------------------------------
         private static CommandResult DeleteIds(UIApplication app, GateResult gate, JObject request, string planHash,
             Document doc, List<long> ids, List<long> protectedIds,
-            bool dryRun, string txName, int idCap, JArray rejected)
+            bool dryRun, string txName, int idCap, JArray rejected, CascadeSink sink = null)
         {
             var before = Census(doc);
             var targets = BuildTargets(doc, ids, protectedIds, rejected);
@@ -355,8 +376,13 @@ namespace Horizun.Revit.Commands
                     ids.Where(Rid.CanRepresent).Select(Rid.Make));
                 var preview = Preview(doc, targets, new HashSet<long>(ids), cascades, txName, ledger);
                 if (preview != null) return preview;   // rollback of a dry run is normal; a throw is not
+                FillCascadeUniqueIds(doc, cascades);
+                if (sink != null) sink.Rehearsal = cascades.ToList();
+                CommandResult foreign = ForeignDependents(doc, request, cascades, new HashSet<long>(ids), out JObject dependents);
+                if (foreign != null) return foreign;
                 JObject report = Report(doc, "ids", true, txName, before, before, targets, cascades,
                     idCap, rejected, null, ledger);
+                if (dependents != null) report["dependents_ownership"] = dependents;
                 report["annotations_at_risk_by_view"] = annotationsAtRisk;
                 if (ApplicationOutcome.IsValidRehearsal(ApplicationOutcome.Read(report)))
                     DocumentGate.RecordResolvedPlan(DeletePlan(app, gate, "ids", targets, cascades));
@@ -371,6 +397,10 @@ namespace Horizun.Revit.Commands
             CommandResult planFailure = Preview(doc, planTargets, new HashSet<long>(ids), planCascades,
                                                 txName, planLedger);
             if (planFailure != null) return planFailure;
+            FillCascadeUniqueIds(doc, planCascades);
+            CommandResult foreignAtApply = ForeignDependents(doc, request, planCascades, new HashSet<long>(ids), out JObject _);
+            if (foreignAtApply != null) return foreignAtApply;
+            if (sink != null) sink.Rehearsal = planCascades.ToList();
             ResolvedPlan atApply = DeletePlan(app, gate, "ids", planTargets, planCascades);
             CommandResult planRefusal = ValidateDeletePlan(app, gate, request, planHash, atApply);
             if (planRefusal != null) return planRefusal;
@@ -402,14 +432,128 @@ namespace Horizun.Revit.Commands
             // ONLY now do the verdicts exist. Everything above was intent.
             ResolveVerdicts(doc, targets);
             ResolveCascades(doc, cascades);
+            CarryCascadeUniqueIds(planCascades, cascades);
             // Runs AFTER the commit, over the SAME targets ResolveVerdicts just settled -
             // a no-op for every target whose ParamKind is null (everything that is not a
             // parameter), and the second confirmation for every one that is.
             VerifyParameterBindingsRemoved(doc, targets);
             var after = Census(doc);
+            if (sink != null) sink.Applied = cascades.ToList();
 
             return CommandResult.Ok(Report(doc, "ids", false, txName, before, after, targets, cascades,
                 idCap, rejected, null, ledger));
+        }
+
+        // ---------------------------------------------------------------------
+        // Mode 3: a selector (query). The selector is resolved to ids at rehearsal and again at
+        // apply; both go through the SAME id path (rehearsal, token bound to the resolved
+        // targets and the measured cascade, re-read after the commit), and the apply then
+        // reads the SAME selector again: zero is the only clean answer.
+        // ---------------------------------------------------------------------
+        private sealed class CascadeSink
+        {
+            public List<Cascade> Rehearsal = new List<Cascade>();
+            public List<Cascade> Applied = new List<Cascade>();
+        }
+
+        private static CommandResult DeleteBySelector(UIApplication app, GateResult gate, JObject request, string planHash,
+            Document doc, List<long> protectedIds, bool dryRun, string txName, int idCap, JArray rejected)
+        {
+            if (!ElementSelectorRules.TryParse(request["selector"], out SelectorSpec spec, out string selectorError))
+                return CommandResult.FailCoded(ErrorCodes.EsquemaInvalido, "mode='query': " + selectorError + " Nothing was deleted.");
+            if (request["ids"] is JArray ignored && ignored.Count > 0)
+                return CommandResult.FailCoded(ErrorCodes.EsquemaInvalido, "mode='query' takes a selector, not ids. Nothing was deleted.");
+            SelectorResolution found = SelectorResolver.Resolve(doc, spec, DeleteSelectorRules.MaxSelected);
+            if (found.Truncated)
+                return CommandResult.FailCoded(ErrorCodes.PrecondicionNoCumplida,
+                    "The selector matches more than " + DeleteSelectorRules.MaxSelected + " elements; a partial delete is never silently chosen. " +
+                    "Narrow the selector (category, family, prefix, parameter or created_since). Nothing was deleted.");
+            if (found.Unknown.Count > 0)
+                return CommandResult.FailCoded(ErrorCodes.PrecondicionNoCumplida,
+                    found.Unknown.Count + " element(s) could not be read against the selector (first ids: " +
+                    string.Join(", ", found.Unknown.Take(10)) + "), so what it matches is not known. Nothing was deleted.");
+
+            List<long> ids = found.Matched;
+            var selectorBlock = new JObject
+            {
+                ["matched_total"] = ids.Count,
+                ["examined"] = found.Examined,
+                ["undatable_without_hrz_mark"] = found.Undatable,
+                ["ids"] = new JArray(ids.Take(idCap)),
+                ["ids_truncated"] = ids.Count > idCap
+            };
+            if (ids.Count == 0)
+            {
+                selectorBlock["note"] = "The selector matches nothing: there is nothing to delete.";
+                var noMatch = new JObject
+                {
+                    ["mode"] = "query", ["dry_run"] = dryRun, ["requested_total"] = 0, ["deleted_total"] = 0,
+                    ["selector"] = selectorBlock,
+                    ["selector_reread"] = new JObject { ["matched_before"] = 0, ["remaining"] = 0, ["cleared"] = true }
+                };
+                if (dryRun) ApplicationOutcome.StampRehearsal(noMatch, 0, 0, 0, 0);
+                else ApplicationOutcome.StampApplied(noMatch, ApplicationOutcome.Committed, 0, 0, 0, 0, 0, 0);
+                return CommandResult.Ok(noMatch);
+            }
+            string documentationRefusal = DocumentationScope.Refusal(doc, ids, "horizun_delete_verified");
+            if (documentationRefusal != null) return CommandResult.FailCoded(ErrorCodes.PermisoInsuficiente, documentationRefusal);
+
+            var sink = new CascadeSink();
+            CommandResult inner = DeleteIds(app, gate, request, planHash, doc, ids, protectedIds, dryRun, txName, idCap, rejected, sink);
+            JObject report = inner.Data as JObject;
+            if (!inner.Success || report == null) return Stamp(inner, gate, dryRun, planHash);
+            report["mode"] = "query";
+            report["selector"] = selectorBlock;
+
+            if (dryRun)
+            {
+                List<CascadeEdge> edges = sink.Rehearsal.Where(c => c.RawId.HasValue)
+                    .Select(c => new CascadeEdge { ParentId = c.ParentRawId, ChildId = c.RawId.Value }).ToList();
+                var suggestions = new JArray();
+                foreach (ProtectSuggestion sug in DeleteSelectorRules.SuggestProtect(ids, edges).Take(50))
+                    suggestions.Add(new JObject
+                    {
+                        ["protect_id"] = sug.ProtectId,
+                        ["would_also_take"] = new JArray(sug.WouldAlsoTake.Take(20)),
+                        ["takes_total"] = sug.WouldAlsoTake.Count
+                    });
+                report["suggested_protect_ids"] = suggestions;
+                report["suggested_protect_note"] = "Selected ids whose deletion takes elements the selector did not name. Nothing is protected for you: " +
+                                                   "add the ones to keep to protect_ids and rehearse again.";
+                report["cascade_rehearsed_total"] = sink.Rehearsal.Count;
+                return Stamp(inner, gate, dryRun, planHash);
+            }
+
+            // Applied: the cascade the rehearsal counted against the cascade that really went, and the
+            // same selector read again.
+            var appliedIds = sink.Applied.Where(c => c.RawId.HasValue && c.Gone == true).Select(c => c.RawId.Value).ToList();
+            var rehearsedIds = sink.Rehearsal.Where(c => c.RawId.HasValue).Select(c => c.RawId.Value).ToList();
+            report["cascade_rehearsed_total"] = rehearsedIds.Count;
+            report["cascade_applied_total"] = appliedIds.Count;
+            report["cascade_agrees_with_rehearsal"] = sink.Applied.All(c => c.Gone.HasValue) &&
+                                                      DeleteSelectorRules.CascadeAgrees(rehearsedIds, appliedIds);
+
+            SelectorResolution again = SelectorResolver.Resolve(doc, spec, DeleteSelectorRules.MaxSelected);
+            SelectorReread reread = DeleteSelectorRules.Reread(ids.Count, again.Matched, protectedIds, again.Unknown.Count);
+            var rereadJson = new JObject
+            {
+                ["matched_before"] = reread.MatchedBefore, ["remaining"] = reread.Remaining,
+                ["remaining_protected"] = reread.RemainingProtected, ["remaining_unprotected"] = reread.RemainingUnprotected,
+                ["unreadable"] = reread.Unreadable, ["cleared"] = reread.Cleared
+            };
+            report["selector_reread"] = rereadJson;
+            if (!reread.Cleared)
+                return CommandResult.FailCoded(ErrorCodes.VerificacionFallida,
+                    "The delete was committed but the same selector still matches " + reread.RemainingUnprotected + " unprotected element(s)" +
+                    (reread.Unreadable > 0 ? " and " + reread.Unreadable + " could not be read" : "") +
+                    ". Do not report this as done: read selector_reread and rehearse again.",
+                    null, null,
+                    new JObject
+                    {
+                        ["selector_reread"] = rereadJson, ["deleted_total"] = report["deleted_total"],
+                        ["remaining_ids"] = new JArray(reread.RemainingUnprotectedIds)
+                    });
+            return Stamp(inner, gate, dryRun, planHash);
         }
 
         // ---------------------------------------------------------------------
@@ -420,7 +564,8 @@ namespace Horizun.Revit.Commands
             int maxPasses, string txName, int idCap, JArray rejected)
         {
             string lookError;
-            var first = GetUnused(doc, out lookError);
+            string purgeSource;
+            var first = GetUnused(doc, out lookError, out purgeSource);
             if (first == null)
             {
                 // NOT "nothing to purge". We could not look. These are different
@@ -436,7 +581,7 @@ namespace Horizun.Revit.Commands
                     ["remaining_purgeable"] = null,
                     ["failed"] = new JArray(),
                     ["residual"] = new JArray(),
-                    ["note"] = "This Revit does not expose Document.GetUnusedElements, so NOTHING WAS EXAMINED. " +
+                    ["note"] = "The available purge candidate source failed, so NOTHING WAS EXAMINED. " +
                                "This is not a clean model; it is an unexamined one. Purge by hand or use mode='ids' " +
                                "with a candidate list you trust. Reporting 0 purged here would be the same lie as " +
                                "reporting 758."
@@ -458,7 +603,7 @@ namespace Horizun.Revit.Commands
                 ApplicationOutcome.Stamp(unexamined, ApplicationOutcome.Declare(
                     ApplicationState.Uncertain, ApplicationOutcome.NotStarted,
                     requested: 1, applied: 0, verified: 0, unresolved: 0, failed: 0, unknown: 1));
-                return CommandResult.Ok(unexamined);
+                return PurgeResponse.Unavailable(unexamined, lookError, false);
             }
 
             var before = Census(doc);
@@ -488,7 +633,7 @@ namespace Horizun.Revit.Commands
                     cascades, txName, ledger);
                 if (preview != null) return preview;
                 var report = Report(doc, "purge_unused", true, txName, before, before, t1, cascades, idCap, rejected, null, ledger);
-                report["purge_supported"] = true;
+                PurgeResponse.StampCoverage(report, purgeSource);
                 report["pass_1_candidates"] = first.Count;
                 report["passes_run"] = 0;
                 report["converged"] = null;
@@ -512,6 +657,7 @@ namespace Horizun.Revit.Commands
                         " No executable confirmation is issued when max_passes>1 because later-pass delete targets " +
                         "cannot be previewed. Use max_passes=1 and repeat the confirmed cycle.";
                 }
+                PurgeResponse.AppendCoverageNote(report, purgeSource);
                 return CommandResult.Ok(report);
             }
 
@@ -602,7 +748,8 @@ namespace Horizun.Revit.Commands
                         if (deletedThisPass == 0) break;
 
                         string err;
-                        candidates = GetUnused(doc, out err);
+                        string passSource;
+                        candidates = GetUnused(doc, out err, out passSource);
                         if (candidates == null)
                         {
                             passes.Add(new JObject
@@ -641,11 +788,12 @@ namespace Horizun.Revit.Commands
             var after = Census(doc);
 
             string residualErr;
-            var leftover = GetUnused(doc, out residualErr);
+            string residualSource;
+            var leftover = GetUnused(doc, out residualErr, out residualSource);
 
             var result = Report(doc, "purge_unused", false, txName, before, after, allTargets, cascades,
                 idCap, rejected, null, ledger);
-            result["purge_supported"] = true;
+            PurgeResponse.StampCoverage(result, purgeSource);
             result["passes_run"] = passesRun;
             result["converged"] = converged;
             result["passes"] = passes;
@@ -655,11 +803,12 @@ namespace Horizun.Revit.Commands
             result["note"] = converged
                 ? (leftover != null && leftover.Count > 0
                     ? "A pass returned no deletable candidates, but Revit still reports " + leftover.Count +
-                      " unused element(s) — those are protected, in use, or refused. Purge is done, the model is not empty."
+                      " unused element(s) — those are protected, in use, or refused. The model is not empty."
                     : null)
                 : (convergenceBlockedBy ??
                    "DID NOT CONVERGE after " + passesRun + " pass(es): the loop stopped on max_passes or on a pass " +
                    "that deleted nothing. More may be purgeable. Do not report this model as fully purged.");
+            PurgeResponse.AppendCoverageNote(result, purgeSource);
             return CommandResult.Ok(result);
         }
 
@@ -852,7 +1001,12 @@ namespace Horizun.Revit.Commands
                 // and promote a collateral element nobody could name to confirmed_gone.
                 if (c.IdUnreadable) continue;
 
-                try { c.Gone = doc.GetElement(c.Id) == null; }
+                try
+                {
+                    Element still = doc.GetElement(c.Id);
+                    c.Gone = still == null;
+                    if (still != null) c.Category = SafeCategory(still);
+                }
                 catch (Exception ex)
                 {
                     // null, not false. `Gone = false` was a claim that this collateral
@@ -1004,9 +1158,10 @@ namespace Horizun.Revit.Commands
         /// returns an empty list there — i.e. "0 to purge" on a model nobody examined.
         /// Returns null (with a reason) when we could not look. Never an empty list.
         /// </summary>
-        private static ICollection<ElementId> GetUnused(Document doc, out string error)
+        private static ICollection<ElementId> GetUnused(Document doc, out string error, out string source)
         {
             error = null;
+            source = "document_get_unused_elements";
             try
             {
                 MethodInfo mi = null;
@@ -1021,9 +1176,26 @@ namespace Horizun.Revit.Commands
                 }
                 if (mi == null)
                 {
-                    error = "Document.GetUnusedElements(ISet<ElementId>) is not available in this Revit version " +
-                            "(it arrived in Revit 2024). No purge candidates could be computed.";
-                    return null;
+                    source = "performance_adviser";
+                    var adviser = PerformanceAdviser.GetPerformanceAdviser();
+                    var wanted = new PerformanceAdviserRuleId(new Guid("e8c63650-70b7-435a-9010-ec97660c1bda"));
+                    var rule = adviser.GetAllRuleIds().FirstOrDefault(id => id.Equals(wanted));
+                    if (rule == null || !adviser.IsRuleEnabled(rule))
+                    {
+                        error = "Performance Adviser unused families and types rule is missing or disabled; candidates unknown.";
+                        return null;
+                    }
+                    var failures = adviser.ExecuteRules(doc, new List<PerformanceAdviserRuleId> { rule });
+                    if (failures == null) throw new InvalidOperationException("Performance Adviser returned a null result.");
+                    var candidates = new HashSet<ElementId>();
+                    foreach (var failure in failures)
+                    {
+                        if (failure == null) throw new InvalidOperationException("Performance Adviser returned a null failure message.");
+                        var failing = failure.GetFailingElements();
+                        if (failing == null) throw new InvalidOperationException("Performance Adviser returned null failing elements.");
+                        foreach (var id in failing) candidates.Add(id);
+                    }
+                    return candidates;
                 }
 
                 var raw = mi.Invoke(doc, new object[] { new HashSet<ElementId>() });
@@ -1043,7 +1215,7 @@ namespace Horizun.Revit.Commands
             }
             catch (Exception ex)
             {
-                error = "Could not call GetUnusedElements: " + ex.Message;
+                error = "Could not obtain purge candidates from " + source + ": " + ex.Message;
                 return null;
             }
         }
@@ -1071,6 +1243,7 @@ namespace Horizun.Revit.Commands
             var rows = new JArray(targets.Take(idCap).Select(t => (JToken)new JObject
             {
                 ["id"] = t.RawId.HasValue ? (JToken)t.RawId.Value : null,
+                ["unique_id"] = t.UniqueId,
                 ["name"] = t.Name,
                 ["category"] = t.Category,
                 ["existed_before"] = t.ExistedBefore,
@@ -1084,13 +1257,20 @@ namespace Horizun.Revit.Commands
                 ["parameter_binding_check_error"] = t.ParamBindingCheckError
             }));
 
-            var casc = new JArray(cascades.Take(idCap).Select(c => (JToken)new JObject
+            var casc = new JArray(cascades.Take(idCap).Select(c =>
             {
-                ["id"] = c.RawId.HasValue ? (JToken)c.RawId.Value : null,
-                ["id_unreadable"] = c.IdUnreadable,
-                ["cascaded_by"] = c.ParentRawId,
-                ["confirmed_gone"] = c.Gone.HasValue ? (JToken)c.Gone.Value : null,
-                ["note"] = c.Note
+                var cascadeRow = new JObject
+                {
+                    ["id"] = c.RawId.HasValue ? (JToken)c.RawId.Value : null,
+                    ["id_unreadable"] = c.IdUnreadable,
+                    ["cascaded_by"] = c.ParentRawId,
+                    ["confirmed_gone"] = c.Gone.HasValue ? (JToken)c.Gone.Value : null,
+                    ["category"] = c.Category,
+                    ["note"] = c.Note
+                };
+                // R2W m-3. unique_id (and verdict "deleted" once confirmed gone) let the sync notice track the cascaded element and stop waiting for it.
+                CascadeRowRules.Mark(cascadeRow, c.UniqueId, c.Gone, dryRun);
+                return (JToken)cascadeRow;
             }));
 
             int cascGone = cascades.Count(c => c.Gone == true);
@@ -1109,6 +1289,7 @@ namespace Horizun.Revit.Commands
                 .Select(t => (JToken)new JObject
                 {
                     ["id"] = t.RawId.HasValue ? (JToken)t.RawId.Value : null,
+                ["unique_id"] = t.UniqueId,
                     ["name"] = t.Name,
                     ["category"] = t.Category,
                     ["verdict"] = t.Verdict,
@@ -1122,6 +1303,7 @@ namespace Horizun.Revit.Commands
                 .Select(t => (JToken)new JObject
                 {
                     ["id"] = t.RawId.HasValue ? (JToken)t.RawId.Value : null,
+                ["unique_id"] = t.UniqueId,
                     ["error"] = t.Reason
                 }));
 
@@ -1131,6 +1313,7 @@ namespace Horizun.Revit.Commands
                 .Select(t => (JToken)new JObject
                 {
                     ["id"] = t.RawId.HasValue ? (JToken)t.RawId.Value : null,
+                ["unique_id"] = t.UniqueId,
                     ["name"] = t.Name,
                     ["category"] = t.Category,
                     ["verdict"] = t.Verdict,
@@ -1200,6 +1383,8 @@ namespace Horizun.Revit.Commands
                 // Three numbers, because "gone", "still here" and "we could not look"
                 // are three facts. A single cascaded_total silently dropped the unknowns
                 // and under-reported the collateral of a delete.
+                ["cascaded_by_category"] = CascadeCensusRules.ByCategory(cascades.Select(c => c.Category)),
+                ["cascaded_rows_note"] = CascadeCensusRules.CapNote(cascades.Count, Math.Min(cascades.Count, idCap)),
                 ["cascaded_confirmed_gone"] = cascGone,
                 ["cascaded_confirmed_surviving"] = cascSurviving,
                 ["cascaded_unknown"] = cascUnknown,
@@ -1460,6 +1645,183 @@ namespace Horizun.Revit.Commands
             public string ParamGuid;
         }
 
+        /// <summary>
+        /// FIELD FEEDBACK 4.4: in a shared model, what a delete takes WITH it
+        /// must be ours too. Every cascaded dependent the rolled-back preview measured is
+        /// judged by OwnershipProbe (mark, this session, worksharing creator); one that is
+        /// not ours refuses the delete - in the dry run (no token) and again at apply -
+        /// unless allow_foreign_dependents=true. Not workshared: nothing to refuse.
+        /// </summary>
+        /// <summary>
+        /// Who a sketch belongs to: Sketch.OwnerId where this Revit's API has it (read by reflection, so the build does not depend on it),
+        /// else the ONE target that lists the sketch among its dependents. Unknown (null) when neither says: unknown is never internal.
+        /// </summary>
+        private static long? SketchOwner(Document doc, Sketch sketch, ISet<long> targetIds)
+        {
+            try
+            {
+                var prop = typeof(Sketch).GetProperty("OwnerId");
+                if (prop != null && prop.GetValue(sketch) is ElementId oid && oid != ElementId.InvalidElementId) return Rid.Value(oid);
+            }
+            catch { }
+            long? found = null;
+            foreach (long t in targetIds)
+            {
+                try
+                {
+                    Element target = doc.GetElement(Rid.Make(t));
+                    if (target == null) continue;
+                    if (target.GetDependentElements(new ElementClassFilter(typeof(Sketch))).Contains(sketch.Id))
+                    {
+                        if (found.HasValue) return null;   // two targets claim it: not decidable
+                        found = t;
+                    }
+                }
+                catch { return null; }
+            }
+            return found;
+        }
+
+        private static CommandResult ForeignDependents(Document doc, JObject request, List<Cascade> cascades, ISet<long> targetIds, out JObject facts)
+        {
+            facts = null;
+            bool workshared = false;
+            try { workshared = doc.IsWorkshared; } catch { }
+            if (!workshared || cascades == null || cascades.Count == 0) return null;
+            HashSet<string> session = OwnershipProbe.SessionAdded(doc);
+            var foreign = new JArray();
+            int own = 0, unreadable = 0, internalSketch = 0, internalDimensions = 0;
+            // LP-P2-10: sketch parts first (they decide which dimensions are internal), then the rest.
+            var sketchParts = new HashSet<long>();
+            var elements = new Dictionary<Cascade, Element>();
+            foreach (Cascade c in cascades)
+            {
+                Element e = null;
+                try { e = c.Id == null ? null : doc.GetElement(c.Id); } catch { e = null; }
+                elements[c] = e;
+            }
+            // INT-6 m-8: a sketch, or a sketch line, is internal only when its OWNER is a target (a sketch's owner is the element
+            // it belongs to; a line's, its sketch). Owners first, then the closure: sketches whose owner is a target, then the
+            // lines of those sketches.
+            var ownerOf = new Dictionary<long, long>();
+            var provenCurves = new HashSet<long>();
+            foreach (Cascade c in cascades)
+            {
+                if (!(elements[c] is Sketch sk) || !c.RawId.HasValue) continue;
+                long? owner = SketchOwner(doc, sk, targetIds);
+                if (owner.HasValue) ownerOf[c.RawId.Value] = owner.Value;
+                try
+                {
+                    foreach (ElementId lineId in sk.GetAllElements())
+                    {
+                        long line = Rid.Value(lineId);
+                        if (!(doc.GetElement(lineId) is CurveElement curve) || !IsSketchBoundary(sk, curve)) continue;
+                        if (ownerOf.ContainsKey(line) && ownerOf[line] != c.RawId.Value) { ownerOf.Remove(line); provenCurves.Remove(line); continue; }
+                        ownerOf[line] = c.RawId.Value;
+                        provenCurves.Add(line);
+                    }
+                }
+                catch { }
+            }
+            bool grew;
+            do
+            {
+                grew = false;
+                foreach (Cascade c in cascades)
+                {
+                    Element e = elements[c];
+                    if (e == null || !c.RawId.HasValue || sketchParts.Contains(c.RawId.Value)) continue;
+                    long? owner = ownerOf.TryGetValue(c.RawId.Value, out long ow) ? ow : (long?)null;
+                    if (InternalDependentRules.Classify(e.GetType().Name, BuiltInCategoryName(e), false, null, targetIds, sketchParts, owner, provenCurves.Contains(c.RawId.Value)) == InternalDependentRules.SketchPart)
+                    { sketchParts.Add(c.RawId.Value); grew = true; }
+                }
+            } while (grew);
+            foreach (Cascade c in cascades)
+            {
+                Element e = elements[c];
+                if (e == null) { unreadable++; foreign.Add(new JObject { ["element_id"] = c.RawId, ["cascaded_by"] = c.ParentRawId, ["evidence"] = OwnershipRules.Unknown, ["reason"] = "the dependent could not be re-read after the preview" }); continue; }
+                if (c.RawId.HasValue && sketchParts.Contains(c.RawId.Value)) { internalSketch++; own++; continue; }
+                if (InternalDependentRules.IsInternalAutomaticSketchDimension(BuiltInCategoryName(e), c.ParentRawId, targetIds, sketchParts))
+                { internalDimensions++; own++; continue; }
+                if (e is Dimension dim)
+                {
+                    List<long> refs = DimensionReferencedIds(dim);
+                    if (InternalDependentRules.Classify(e.GetType().Name, BuiltInCategoryName(e), true, refs, targetIds, sketchParts) ==
+                        InternalDependentRules.ConstrainingDimension) { internalDimensions++; own++; continue; }
+                }
+                JObject row = OwnershipProbe.Row(doc, e, session);
+                if (row.Value<bool>("own")) { own++; continue; }
+                row["cascaded_by"] = c.ParentRawId; row["category"] = e.Category?.Name; row["built_in_category"] = CategoryKey.Of(e);
+                foreign.Add(row);
+            }
+            bool allowed = request.Value<bool?>("allow_foreign_dependents") == true;
+            facts = new JObject { ["checked"] = cascades.Count, ["own"] = own, ["not_own"] = foreign.Count, ["unreadable"] = unreadable,
+                                  ["internal_sketch_parts"] = internalSketch, ["internal_dimensions"] = internalDimensions,
+                                  ["internal_means"] = InternalDependentRules.Means,
+                                  ["allow_foreign_dependents"] = allowed };
+            if (foreign.Count > 0) facts["not_own_dependents"] = foreign;
+            if (foreign.Count == 0 || allowed) return null;
+            return CommandResult.FailWithDetail(
+                foreign.Count + " of " + cascades.Count + " element(s) this delete would take with it are not ours " +
+                "(not marked, not created this session, not created by this Revit user). In a shared model a delete may " +
+                "only take our own elements with it. Nothing was deleted; no token was issued. Delete the dependents' " +
+                "owners' work only with their agreement and allow_foreign_dependents=true.",
+                new JObject { ["code"] = "foreign_dependents", ["write_started"] = false, ["dependents_ownership"] = facts });
+        }
+
+        // Membership alone can include construction geometry; only a curve also present in
+        // the sketch profile is demonstrated to be a boundary.
+        private static bool IsSketchBoundary(Sketch sketch, CurveElement element)
+        {
+            try
+            {
+                Curve geometry = element.GeometryCurve;
+                if (geometry == null || sketch.Profile == null) return false;
+                var target = new AnnotationMoveRules.Curve { Kind = geometry.GetType().FullName,
+                    Points = geometry.Tessellate().Select(p => new[] { p.X, p.Y, p.Z }).ToList() };
+                foreach (CurveArray loop in sketch.Profile)
+                    foreach (Curve curve in loop)
+                    {
+                        var source = new AnnotationMoveRules.Curve { Kind = curve.GetType().FullName,
+                            Points = curve.Tessellate().Select(p => new[] { p.X, p.Y, p.Z }).ToList() };
+                        if (AnnotationMoveRules.ContoursMoved(
+                            new List<List<AnnotationMoveRules.Curve>> { new List<AnnotationMoveRules.Curve> { source } },
+                            new List<List<AnnotationMoveRules.Curve>> { new List<AnnotationMoveRules.Curve> { target } },
+                            new[] { 0.0, 0.0, 0.0 })) return true;
+                    }
+            }
+            catch { }
+            return false;
+        }
+
+        private static string BuiltInCategoryName(Element e)
+        {
+            try
+            {
+                if (e.Category == null) return null;
+                long v = Rid.Value(e.Category.Id);
+                return v >= int.MinValue && v <= int.MaxValue ? ((BuiltInCategory)(int)v).ToString() : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>The element ids a dimension references (host and linked); an unreadable reference yields none, so unknown is never internal.</summary>
+        private static List<long> DimensionReferencedIds(Dimension dim)
+        {
+            var ids = new List<long>();
+            try
+            {
+                foreach (Reference r in dim.References)
+                {
+                    if (r == null) return new List<long>();
+                    ids.Add(Rid.Value(r.ElementId));
+                    if (r.LinkedElementId != ElementId.InvalidElementId) ids.Add(Rid.Value(r.LinkedElementId));
+                }
+            }
+            catch { return new List<long>(); }
+            return ids;
+        }
+
         private class Cascade
         {
             // Nullable for the same reason Target.RawId is: a collateral element whose id
@@ -1472,6 +1834,29 @@ namespace Horizun.Revit.Commands
             public long ParentRawId;
             public bool? Gone;          // null = we could not re-resolve it; NOT "it survived"
             public string Note;
+            /// <summary>Read while the element still exists (the dry run, after its rollback); null once it is really gone.</summary>
+            public string Category;
+            /// <summary>R2W m-3. Read while the element still exists (right after the rehearsal rolled back) and carried to the apply; null when it could not be read.</summary>
+            public string UniqueId;
+        }
+
+        /// <summary>R2W m-3. Reads the UniqueId of every readable cascaded element (after a rehearsal's rollback they all exist again).</summary>
+        private static void FillCascadeUniqueIds(Document doc, List<Cascade> cascades)
+        {
+            foreach (Cascade c in cascades)
+            {
+                if (c.IdUnreadable || c.UniqueId != null) continue;
+                try { c.UniqueId = doc.GetElement(c.Id)?.UniqueId; } catch { c.UniqueId = null; }
+            }
+        }
+
+        /// <summary>R2W m-3. The apply's cascades take the UniqueId the rehearsal read (the elements are gone now), matched by ElementId.</summary>
+        private static void CarryCascadeUniqueIds(List<Cascade> from, List<Cascade> to)
+        {
+            var byId = new Dictionary<long, string>();
+            foreach (Cascade c in from) if (c.RawId.HasValue && c.UniqueId != null) byId[c.RawId.Value] = c.UniqueId;
+            foreach (Cascade c in to)
+                if (c.RawId.HasValue && c.UniqueId == null && byId.TryGetValue(c.RawId.Value, out string uid)) c.UniqueId = uid;
         }
 
         /// <summary>

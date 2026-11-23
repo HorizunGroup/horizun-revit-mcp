@@ -42,8 +42,7 @@ namespace Horizun.Server.Tests
             {
                 Assert.True(Advertised("horizun_execute_python"));
                 Assert.True(Advertised("horizun_request_python_access"));
-                Assert.False(Advertised("horizun_export"));
-                Assert.False(Advertised("horizun_save_document"));
+                Assert.False(Advertised("horizun_open_document"));
             });
         }
 
@@ -52,9 +51,12 @@ namespace Horizun.Server.Tests
         {
             WithDataRoot(null, () =>
             {
-                Assert.False(Advertised("horizun_export"));
-                Assert.False(Advertised("horizun_save_document"));
-                Assert.False(Advertised("horizun_create_family"));
+                // save_document (save_local, relinquish_own) and export (format=pdf, image) are
+                // listed: the commands refuse per call what safe_write does not authorize.
+                Assert.True(Advertised("horizun_export"));
+                Assert.True(Advertised("horizun_save_document"));
+                Assert.False(Advertised("horizun_open_document"));
+                Assert.False(Advertised("horizun_document_session"));
                 Assert.True(Advertised("horizun_execute_plan"));
             });
         }
@@ -73,7 +75,6 @@ namespace Horizun.Server.Tests
             WithDataRoot(@"{""permission_profile"":""safe_write""}", () =>
             {
                 Assert.False(Advertised("horizun_execute_python"));
-                Assert.False(Advertised("horizun_export"));
             });
         }
 

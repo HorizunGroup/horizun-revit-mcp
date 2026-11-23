@@ -164,5 +164,37 @@ namespace Horizun.Core.Tests
             Assert.Equal("2,5", (string)TabularRules.NormalizedWrite("2,5", ",", "Integer", null));      // not an integer
             Assert.Equal("1,5", (string)TabularRules.NormalizedWrite("1,5", ",", "Double", m => null));  // unit unreadable
         }
+
+        [Fact]
+        public void A_spanish_excel_csv_splits_by_semicolon_and_keeps_its_decimal_commas()
+        {
+            string text = "x;y" + Environment.NewLine + "12,5;3,4" + Environment.NewLine;
+            char d = TabularRules.DetectDelimiter(text);
+            Assert.Equal(';', d);
+            var rows = TabularRules.ParseCsv(text, d);
+            Assert.Equal(new[] { "x", "y" }, rows[0]);
+            Assert.Equal(new[] { "12,5", "3,4" }, rows[1]);
+            Assert.Null(TabularRules.RaggedRow(rows, d));
+        }
+
+        [Fact]
+        public void A_comma_csv_with_an_unquoted_decimal_comma_is_refused_not_misplaced()
+        {
+            string text = "x,y" + Environment.NewLine + "12,5,3,4" + Environment.NewLine;
+            char d = TabularRules.DetectDelimiter(text);
+            Assert.Equal(',', d);
+            string refusal = TabularRules.RaggedRow(TabularRules.ParseCsv(text, d), d);
+            Assert.NotNull(refusal);
+            Assert.Contains("row 2 has 4 cell(s) and the header has 2", refusal);
+        }
+
+        [Fact]
+        public void Quoted_separators_do_not_count_and_a_header_is_counted_by_its_fields()
+        {
+            Assert.Equal(',', TabularRules.DetectDelimiter("\"a;b\",c" + Environment.NewLine + "1,2"));
+            Assert.Equal(3, TabularRules.CountCsvFields("\"Type, Mark\",Count,Level", ','));
+            Assert.Equal('\t', TabularRules.DetectDelimiter("a\tb\tc" + Environment.NewLine));
+        }
+
     }
 }

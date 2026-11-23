@@ -167,6 +167,7 @@ namespace Horizun.Revit
                     case AdvancedOptionsWindow.OptionPause: return new PauseMcpCommand().Execute(data, ref message, elements);
                     case AdvancedOptionsWindow.OptionCentral: return new CentralProtectionCommand().Execute(data, ref message, elements);
                     case AdvancedOptionsWindow.OptionSync: return new SyncCentralPermissionCommand().Execute(data, ref message, elements);
+                    case AdvancedOptionsWindow.OptionSyncOnly: return new SyncOnlyGrantCommand().Execute(data, ref message, elements);
                     default: return Result.Cancelled;
                 }
             }
@@ -442,10 +443,13 @@ namespace Horizun.Revit
                     RibbonText.T(es, "Puede mirar el modelo y responder preguntas; no cambia nada ni crea archivos.",
                                      "It may look at the model and answer questions; it changes nothing and creates no files."));
                 dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink2,
-                    RibbonText.T(es, "Modificar el modelo abierto", "Change the open model"),
-                    RibbonText.T(es, "Puede crear y editar elementos con comandos que comprueban cada cambio, solo en el archivo abierto.",
-                                     "It may create and edit elements with commands that check every change, only in the open file."));
+                    RibbonText.T(es, "Solo documentación", "Documentation only"),
+                    RibbonText.ModeName(es, "documentation"));
                 dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink3,
+                    RibbonText.T(es, "Modificar el modelo abierto", "Change the open model"),
+                    RibbonText.T(es, "Puede crear y editar elementos con comandos que comprueban cada cambio, solo en el archivo abierto; también guarda el archivo local y exporta PDF e imágenes de una vista.",
+                                     "It may create and edit elements with commands that check every change, only in the open file; it also saves the local file and exports PDF and one-view images."));
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink4,
                     RibbonText.T(es, "Modificar, exportar y manejar documentos", "Change, export and handle documents"),
                     RibbonText.T(es, "Además puede exportar (PDF, DWG…), abrir, cerrar y guardar documentos. Actívalo solo si lo autorizas.",
                                      "It may also export (PDF, DWG…), open, close and save documents. Enable it only if you authorise it."));
@@ -453,8 +457,9 @@ namespace Horizun.Revit
                 TaskDialogResult selected;
                 using (Interference.WithDialogAnswer(DialogAnswer.Human)) selected = dialog.Show();
                 string profile = selected == TaskDialogResult.CommandLink1 ? "read_only" :
-                                 selected == TaskDialogResult.CommandLink2 ? "safe_write" :
-                                 selected == TaskDialogResult.CommandLink3 ? "full_write" : null;
+                                 selected == TaskDialogResult.CommandLink2 ? "documentation" :
+                                 selected == TaskDialogResult.CommandLink3 ? "safe_write" :
+                                 selected == TaskDialogResult.CommandLink4 ? "full_write" : null;
                 if (profile == null) return Result.Cancelled;
 
                 if (profile == "full_write")
@@ -535,7 +540,8 @@ namespace Horizun.Revit
                             rows.Add((string)row["utc"] + "  " + (string)row["tool"] + "  " +
                                 (string)row["outcome"] + "  " +
                                 (row["dry_run"] == null ? "" : "dry_run=" + row["dry_run"] + "  ") +
-                                (row["total_ms"] == null ? "" : row["total_ms"] + " ms"));
+                                (row["total_ms"] == null ? "" : row["total_ms"] + " ms") +
+                                (row["declared_exceptions"] is JArray ex && ex.Count > 0 ? "  " + RibbonText.T(es, "excepción: ", "exception: ") + (string)ex[0]["reason"] : ""));
                         }
                         catch { /* malformed historical line is not a receipt */ }
                     }

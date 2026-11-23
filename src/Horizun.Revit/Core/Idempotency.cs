@@ -53,6 +53,20 @@ using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
+    // The dispatcher owns the durable submission claim. The queued child runs
+    // directly, but needs a stable key for validation and nested stage keys.
+    public static class AsyncChildArguments
+    {
+        public static JObject Prepare(JObject arguments, string submissionKey)
+        {
+            if (string.IsNullOrWhiteSpace(submissionKey))
+                throw new ArgumentException("A submission key is required.", nameof(submissionKey));
+            var child = (JObject)arguments.DeepClone();
+            child["idempotency_key"] = "job:" + RequestFingerprint.Sha256Hex(submissionKey);
+            return child;
+        }
+    }
+
     public enum IdempotencyOutcome
     {
         /// <summary>Never seen. The caller owns it; do the work.</summary>

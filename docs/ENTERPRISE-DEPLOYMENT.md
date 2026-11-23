@@ -7,7 +7,7 @@ misrepresent the product.
 
 | Control | Current bridge | Enterprise delivery target |
 | --- | --- | --- |
-| Permission profiles | Local `read_only`, `safe_write`, `full_write`, `unsafe_code` | Centrally provisioned role policy with local visibility |
+| Permission profiles | Local `read_only`, `documentation`, `safe_write`, `full_write`, `unsafe_code` | Centrally provisioned role policy with local visibility |
 | Tool allow/deny lists | Local settings | Signed, centrally distributed policy |
 | Model writes | Typed writes re-read after commit | Role and project approval records |
 | Central/cloud models | Existing guards and explicit document targeting | Project policy that defaults sensitive models to audit-only |

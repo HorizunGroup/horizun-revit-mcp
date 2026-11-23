@@ -43,52 +43,9 @@ namespace Horizun.Core.Tests
             return source.Substring(start, end - start);
         }
 
-        [Fact]
-        public void Every_kind_a_requirement_set_can_ask_for_can_be_RE_READ_after_the_commit()
-        {
-            string body = KindMatchesBody();
-            var unverifiable = new List<string>();
-            foreach (string kind in CadConversionPlanRules.CreateKinds)
-                if (!body.Contains("case \"" + kind + "\":")) unverifiable.Add(kind);
+        
 
-            Assert.True(unverifiable.Count == 0,
-                        "these kinds can be planned from a drawing and cannot be verified after they are " +
-                        "built, so create_elements would report them unverified - or, worse, verify them as " +
-                        "whatever Revit happened to make: " + string.Join(", ", unverifiable));
-        }
-
-        [Fact]
-        public void The_plan_emits_a_separator_as_TWO_points_and_the_builder_must_take_that()
-        {
-            // ONE LINE ACROSS A ROOM is the most ordinary separator there is, and
-            // the plan emits exactly that. The builder read it through the loop
-            // reader, which demands three points and CLOSES what it is given - so
-            // the ordinary case was refused outright, and a three-point chain that
-            // did get through was quietly closed into a triangle nobody drew.
-            var set = CadRequirementSet.Load(Newtonsoft.Json.Linq.JObject.Parse(@"{
-              'schema': 'horizun.cad-requirements/1',
-              'requirement_set': { 'id': 's', 'version': '1.0.0', 'title': 'Separators' },
-              'source': { 'units': 'millimeter' },
-              'tolerances': { 'point_mm': 1.0, 'gap_mm': 25.0, 'angle_degrees': 2.0, 'arc_sagitta_mm': 5.0 },
-              'rules': [{ 'id': 'r', 'precedence': 10, 'layers': ['A-*'], 'produces': 'room_separator',
-                          'category': 'OST_RoomSeparationLines', 'level': 'L1',
-                          'geometry': { 'from': 'single_lines' } }]
-            }".Replace('\'', '"')));
-
-            var segments = new List<CadSegment>
-            {
-                new CadSegment(new CadPoint(0, 0), new CadPoint(4000, 0), "A-SEP")
-            };
-            CadInterpretation read = CadInterpretationRules.Interpret(segments, set, "sha");
-            CadConversionPlan plan = CadConversionPlanRules.Plan(read, set, "fp", true);
-            List<Newtonsoft.Json.Linq.JObject> requests = CadConversionPlanRules.AsCreateRequests(plan, "M");
-            Assert.NotEmpty(requests);
-            var row = (Newtonsoft.Json.Linq.JObject)((Newtonsoft.Json.Linq.JArray)requests[0]["elements"])[0];
-
-            Assert.Equal("room_separator", (string)row["kind"]);
-            var chain = (Newtonsoft.Json.Linq.JArray)((Newtonsoft.Json.Linq.JArray)row["profile"])[0];
-            Assert.Equal(2, chain.Count);
-        }
+        
 
         [Fact]
         public void And_the_builder_reads_that_profile_as_a_CHAIN_rather_than_closing_it()

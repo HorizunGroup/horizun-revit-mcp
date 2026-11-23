@@ -504,7 +504,7 @@ if ($problems.Count -eq 1 -and $blockedByRunningApp) {
     # The only thing in the way is a window that is open.
     $state = 'pending_user_action'
     $detail = 'Claude Desktop is open, so nothing was written to its configuration - the app rewrites that file from memory when it exits and the edit would have been lost. The installation itself is fine.'
-    $pending = 'Close every Claude Desktop window, then run: powershell -ExecutionPolicy Bypass -File "' + $PSCommandPath + '". It finishes on its own.'
+    $pending = 'Close every Claude Desktop window, then run: powershell -ExecutionPolicy RemoteSigned -File "' + $PSCommandPath + '". It finishes on its own.'
 }
 elseif ($problems.Count -gt 0) {
     $state = 'failed'

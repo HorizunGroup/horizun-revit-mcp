@@ -6,7 +6,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $props = [xml](Get-Content (Join-Path $repo 'Directory.Build.props'))
 $version = [string]($props.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
 $changelog = Get-Content (Join-Path $repo 'CHANGELOG.md') -Raw -Encoding UTF8
-$pattern = '(?ms)^## v' + [regex]::Escape($version) + '(?:[ \t]+[^\r\n]*)?\r?\n(.*?)(?=^## |\z)'
+$pattern = '(?ms)^## v?' + [regex]::Escape($version) + '(?:[ \t]+[^\r\n]*)?\r?\n(.*?)(?=^## |\z)'
 $section = [regex]::Match($changelog, $pattern)
 if (-not $section.Success) { throw "CHANGELOG.md needs a release section for v$version before publication." }
 $changes = $section.Groups[1].Value.Trim()
@@ -21,11 +21,8 @@ Install **horizun-mcp-$version-setup.exe** from this release. Requires Windows
 x64 and Revit 2023-2027; close Revit first. The server runtime and add-ins are
 included. No Git, Visual Studio or .NET SDK is needed.
 
-The setup is signed with the Certum certificate of HORIZUN GROUP S.A.S.; check
-the Digital Signatures tab in its file properties. The server and add-ins it
-installs are not signed, so Revit may still ask you to approve the add-in once
-per year. Verify the setup against SHA256SUMS.txt as well; matching hashes do not
-authenticate a Windows publisher.
+Releases are unsigned by policy. Verify the setup against SHA256SUMS.txt;
+matching hashes do not authenticate a Windows publisher.
 
 - **Codex / Claude Code:** close the client so deferred registration can finish, then reopen it.
 - **Claude Desktop:** install the .mcpb delivered in Documents\Horizun-Revit-MCP inside Settings > Extensions, then restart the app.

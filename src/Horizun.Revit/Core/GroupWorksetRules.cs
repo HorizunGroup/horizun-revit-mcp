@@ -87,10 +87,11 @@ namespace Horizun.Revit.Core
         /// no other instance has one reading; a type with others has two, and the caller
         /// must pick.
         /// </summary>
-        public static string ResolveScope(string requested, int otherInstances, out string error)
+        public static string ResolveScope(string requested, int otherInstances, out string error, string operation = null)
         {
             error = null;
             string s = (requested ?? "").Trim().ToLowerInvariant();
+            if (operation == "add_members" && s == "type") return ScopeAll;
             if (s.Length > 0 && s != ScopeAll && s != ScopeThis)
             { error = "scope must be " + ScopeAll + " or " + ScopeThis + "."; return null; }
             if (otherInstances <= 0) return s.Length == 0 ? ScopeAll : s;
@@ -105,6 +106,12 @@ namespace Horizun.Revit.Core
             }
             return s;
         }
+
+        public static bool IsTypeAddition(string operation, string resolvedScope) =>
+            operation == "add_members" && resolvedScope == ScopeAll;
+
+        public static IEnumerable<T> AffectedAddInstances<T>(string resolvedScope, T reference, IEnumerable<T> others) =>
+            resolvedScope == ScopeAll ? new[] { reference }.Concat(others) : new[] { reference };
 
         /// <summary>
         /// The translation a swapped instance's content came back with, measured from a
@@ -125,9 +132,39 @@ namespace Horizun.Revit.Core
                 double[] c0 = was.Center, c1 = now.Center;
                 return new[] { c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2] };
             }
+            // NO UNIQUE MEMBER (measured: a pipe group whose only unique member was the pipe being
+            // removed - two identical elbows and their centre lines remain). The displacement is then
+            // VOTED: every same-key pair proposes one, and the proposal that carries the most members
+            // onto a member they had, within tolerance, wins - only when no other proposal ties it.
+            var proposals = new List<double[]>();
+            foreach (MemberSignature was in before.Where(s => s.HasBox))
+                foreach (MemberSignature now in after.Where(s => s.HasBox && s.Key == was.Key))
+                {
+                    double[] c0 = was.Center, c1 = now.Center;
+                    var d = new[] { c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2] };
+                    if (!proposals.Any(q => Math.Abs(q[0] - d[0]) <= BoxTolerance && Math.Abs(q[1] - d[1]) <= BoxTolerance && Math.Abs(q[2] - d[2]) <= BoxTolerance))
+                        proposals.Add(d);
+                }
+            double[] best = null; int bestVotes = 0; bool tie = false;
+            foreach (double[] d in proposals)
+            {
+                int votes = after.Count(x => x.HasBox && before.Any(y => y.HasBox && y.Key == x.Key && Shifted(y, d).SameAs(x, BoxTolerance)));
+                if (votes > bestVotes) { best = d; bestVotes = votes; tie = false; }
+                else if (votes == bestVotes && votes > 0) tie = true;
+            }
+            if (best != null && !tie && bestVotes >= 2) return best;
             why = "no member has a (category, type) that occurs exactly once in the instance before and after the " +
-                  "swap, so the displacement of its content cannot be measured without guessing.";
+                  "swap, and no single displacement carries the members back onto theirs" + (tie ? " (two displacements tie)" : "") +
+                  ", so the displacement of its content cannot be measured without guessing.";
             return null;
+        }
+
+        private static MemberSignature Shifted(MemberSignature s, double[] d)
+        {
+            var m = new MemberSignature(s.Category, s.Type, new[] { s.Min[0] + d[0], s.Min[1] + d[1], s.Min[2] + d[2] },
+                                        new[] { s.Max[0] + d[0], s.Max[1] + d[1], s.Max[2] + d[2] });
+            m.HasBox = s.HasBox;
+            return m;
         }
 
         /// <summary>

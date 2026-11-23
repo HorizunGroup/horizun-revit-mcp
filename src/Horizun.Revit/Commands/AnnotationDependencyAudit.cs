@@ -11,7 +11,7 @@ namespace Horizun.Revit.Commands
     // view is the owner of each annotation, not the active view of the caller.
     internal static class AnnotationDependencyAudit
     {
-        public static JObject Read(Document doc, IEnumerable<ElementId> sourceIds)
+        public static HashSet<long> TargetIds(Document doc, IEnumerable<ElementId> sourceIds, bool strict)
         {
             var targets = new HashSet<long>();
             var stack = new Stack<ElementId>(sourceIds);
@@ -20,26 +20,49 @@ namespace Horizun.Revit.Commands
                 ElementId id = stack.Pop();
                 long key = Rid.Value(id);
                 if (!targets.Add(key)) continue;
-                if (doc.GetElement(id) is Group group)
+                Element element = doc.GetElement(id);
+                if (element is Group group)
                 {
                     try { foreach (ElementId member in group.GetMemberIds()) stack.Push(member); }
-                    catch { /* named as unreadable group below */ }
+                    catch when (!strict) { }
                 }
+                else if (strict && element == null)
+                    throw new ArgumentException("Group or member " + key + " could not be read.");
             }
+            return targets;
+        }
+
+        public static JObject Read(Document doc, IEnumerable<ElementId> sourceIds) =>
+            ReadTargets(doc, TargetIds(doc, sourceIds, false), false);
+
+        public static JObject ReadTargets(Document doc, ISet<long> targets, bool verifyReferences)
+        {
             var facts = new List<AnnotationDependencyFact>();
             var unreadable = new JArray();
+            var identities = new Dictionary<long, JObject>();
+            void Remember(Element element, IEnumerable<Reference> references)
+            {
+                identities.Add(Rid.Value(element.Id), new JObject { ["unique_id"] = element.UniqueId,
+                    ["stable_references"] = new JArray(references.Select(r => r.ConvertToStableRepresentation(doc))
+                        .OrderBy(s => s, StringComparer.Ordinal)) });
+            }
             foreach (IndependentTag tag in new FilteredElementCollector(doc).OfClass(typeof(IndependentTag)))
             {
                 try
                 {
+                    var refs = tag.GetTaggedLocalElementIds().Select(Rid.Value).ToList();
+                    if (verifyReferences && refs.Any(targets.Contains))
+                    {
+                        if (tag.IsOrphaned) throw new InvalidOperationException("tag is orphaned");
+                        Remember(tag, tag.GetTaggedReferences());
+                    }
                     facts.Add(new AnnotationDependencyFact { Id = Rid.Value(tag.Id),
-                        ViewId = Rid.Value(tag.OwnerViewId), Kind = "tag",
-                        References = tag.GetTaggedLocalElementIds().Select(Rid.Value).ToList() });
+                        ViewId = Rid.Value(tag.OwnerViewId), Kind = "tag", References = refs });
                 }
                 catch (Exception ex)
                 {
                     unreadable.Add(new JObject { ["id"] = Rid.Value(tag.Id), ["kind"] = "tag",
-                        ["reason"] = ex.GetType().Name });
+                        ["reason"] = verifyReferences ? ex.Message : ex.GetType().Name });
                 }
             }
             foreach (Dimension dimension in new FilteredElementCollector(doc).OfClass(typeof(Dimension)))
@@ -52,13 +75,19 @@ namespace Horizun.Revit.Commands
                     foreach (Reference reference in array)
                         if (reference != null && reference.ElementId != ElementId.InvalidElementId)
                             refs.Add(Rid.Value(reference.ElementId));
+                    if (verifyReferences && refs.Any(targets.Contains))
+                    {
+                        if (!dimension.AreReferencesAvailable || refs.Where(targets.Contains).Any(id => doc.GetElement(Rid.Make(id)) == null))
+                            throw new InvalidOperationException("dimension references are unavailable");
+                        Remember(dimension, array.Cast<Reference>());
+                    }
                     facts.Add(new AnnotationDependencyFact { Id = Rid.Value(dimension.Id),
                         ViewId = Rid.Value(dimension.OwnerViewId), Kind = "dimension", References = refs });
                 }
                 catch (Exception ex)
                 {
                     unreadable.Add(new JObject { ["id"] = Rid.Value(dimension.Id), ["kind"] = "dimension",
-                        ["reason"] = ex.GetType().Name });
+                        ["reason"] = verifyReferences ? ex.Message : ex.GetType().Name });
                 }
             }
             var views = AnnotationDependencyRules.ForTargets(facts, targets);
@@ -67,8 +96,8 @@ namespace Horizun.Revit.Commands
             {
                 var element = Rid.CanRepresent(view.ViewId) ? doc.GetElement(Rid.Make(view.ViewId)) as View : null;
                 rows.Add(new JObject { ["view_id"] = view.ViewId, ["view_name"] = element?.Name,
-                    ["tags"] = new JArray(view.Items.Where(x => x.Kind == "tag").Select(x => (JToken)Row(x))),
-                    ["dimensions"] = new JArray(view.Items.Where(x => x.Kind == "dimension").Select(x => (JToken)Row(x))) });
+                    ["tags"] = new JArray(view.Items.Where(x => x.Kind == "tag").Select(Row)),
+                    ["dimensions"] = new JArray(view.Items.Where(x => x.Kind == "dimension").Select(Row)) });
             }
             return new JObject { ["target_and_member_count"] = targets.Count,
                 ["view_count"] = rows.Count,
@@ -78,9 +107,12 @@ namespace Horizun.Revit.Commands
                 ["coverage_complete"] = unreadable.Count == 0,
                 ["means"] = "Annotations reference a target or current group member. Their fate after a change " +
                     "must be re-read; this list is a before snapshot, not a promise that Revit preserves them." };
+            JObject Row(AnnotationDependencyFact fact)
+            {
+                var row = new JObject { ["id"] = fact.Id, ["referenced_target_ids"] = new JArray(fact.References) };
+                if (identities.TryGetValue(fact.Id, out JObject identity)) row.Merge(identity);
+                return row;
+            }
         }
-
-        private static JObject Row(AnnotationDependencyFact x) => new JObject {
-            ["id"] = x.Id, ["referenced_target_ids"] = new JArray(x.References) };
     }
 }

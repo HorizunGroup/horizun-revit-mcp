@@ -1,8 +1,8 @@
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
-// horizun_transform_elements - edit_sketch: change the boundary of a Floor, a
-// Ceiling or an Opening WITHOUT recreating it. Replacing one loop, or moving one
+// horizun_transform_elements - edit_sketch: change the boundary of a Floor,
+// Ceiling, profiled Wall or Opening WITHOUT recreating it. Replacing one loop, or moving one
 // vertex, inside the element's own SketchEditScope keeps its ElementId, its
 // UniqueId and what refers to it - hosted instances, openings, tags, schedules,
 // parameters - where delete-and-recreate would orphan all of them.
@@ -93,12 +93,11 @@ namespace Horizun.Revit.Commands
             if (e is Floor f) return f.SketchId;
             if (e is Ceiling c) return c.SketchId;
             if (e is Opening o) return o.SketchId;
+            if (e is Wall w) return w.SketchId;
             if (e is FootPrintRoof)
                 refusal = "a FootPrintRoof exposes no SketchId in the Revit API (2023-2027), so its footprint cannot be edited through a SketchEditScope; edit it in Revit.";
-            else if (e is Wall)
-                refusal = "a wall's elevation profile is not covered by edit_sketch; realign_wall_sketch covers the stranded-profile case.";
             else
-                refusal = "edit_sketch covers Floor, Ceiling and Opening; this element is " + (e == null ? "missing" : e.GetType().Name) + ".";
+                refusal = "edit_sketch covers Floor, Ceiling, profiled Wall and Opening; this element is " + (e == null ? "missing" : e.GetType().Name) + ".";
             return null;
         }
 
@@ -259,8 +258,9 @@ namespace Horizun.Revit.Commands
             if (plan == null)
             {
                 if (boundary != null) boundary["units"] = units;
-                return CommandResult.Fail(EditSketchOp + ": " + error + " Nothing was changed." + (boundary == null ? "" :
-                    " The current boundary, model [x,y,z] in the request's units: " + boundary.ToString(Formatting.None)));
+                var diagnostic = TransformFailure.SketchFailure(o["element_ids"]?.ToString(Formatting.None) ?? "in operation 0", error);
+                return CommandResult.FailWithDetail(EditSketchOp + ": " + diagnostic["error"] + " Nothing was changed." + (boundary == null ? "" :
+                    " The current boundary, model [x,y,z] in the request's units: " + boundary.ToString(Formatting.None)), diagnostic);
             }
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
@@ -316,7 +316,8 @@ namespace Horizun.Revit.Commands
                 JObject detail; string err;
                 bool ok = TryEditSketch(doc, plan, commit: false, out detail, out err);
                 planJson["rehearsal_ok"] = ok;
-                planJson["rehearsal_error"] = err;
+                planJson["rehearsal_error"] = ok ? null : TransformFailure.SketchFailure(plan.Id.ToString(), err)["error"];
+                planJson["error_code"] = ok ? null : TransformFailure.SketchFailure(plan.Id.ToString(), err)["error_code"];
                 planJson["rehearsal_detail"] = detail;
                 var result = new JObject
                 {
@@ -347,21 +348,31 @@ namespace Horizun.Revit.Commands
                     return CommandResult.Fail("the transaction group would not start. Nothing was changed.");
                 try
                 {
+                    // A profile edit can reshape a non-structural floor directly, or
+                    // move a wall and its associated floor sketch. Keep their before
+                    // state while the outer group can still undo the scope's commit.
+                    var floorBefore = FloorWallOverlapGuard.Capture(doc,
+                        new FilteredElementCollector(doc).OfClass(typeof(Floor)).Cast<Floor>()
+                            .Where(f => FloorWallOverlapGuard.IsFinishFloor(doc, f)).Select(f => f.Id)
+                            .Concat(new[] { Rid.Make(plan.Id) }));
                     string err;
                     if (!TryEditSketch(doc, plan, commit: true, out applyDetail, out err))
                     {
                         Guard.RollbackResult rb = Guard.RollBack(group);
-                        return CommandResult.Fail("Editing the sketch of " + plan.Id + " failed: " + err + " " +
-                            PlanFailure.SingleTransactionOutcome(true, rb.StatusName, "nothing was changed"));
+                        return CommandResult.FailWithDetail(TransformFailure.AtomicMessage(plan.Id.ToString(), err,
+                            PlanFailure.SingleTransactionOutcome(true, rb.StatusName, "nothing was changed")),
+                            TransformFailure.RevertedDetail(rb.StatusName, rb.Confirmed));
                     }
                     // Held BEFORE the group is kept, so a failure here leaves nothing behind.
                     string held = HoldCommittedSketch(doc, plan, applyDetail);
                     if (held != null)
                     {
                         Guard.RollbackResult rb = Guard.RollBack(group);
-                        return CommandResult.Fail("Editing the sketch of " + plan.Id + " was refused after the scope committed: " + held + " " +
-                            PlanFailure.SingleTransactionOutcome(true, rb.StatusName, "nothing was changed"));
+                        return CommandResult.FailWithDetail(TransformFailure.AtomicMessage(plan.Id.ToString(), held,
+                            PlanFailure.SingleTransactionOutcome(true, rb.StatusName, "nothing was changed")),
+                            TransformFailure.RevertedDetail(rb.StatusName, rb.Confirmed));
                     }
+                    FloorWallOverlapGuard.ThrowIfIncreased(doc, floorBefore, new[] { Rid.Make(plan.Id) });
                     Guard.Assimilate(group, EditSketchOp);
                 }
                 catch (SilentRollbackException)
@@ -373,8 +384,9 @@ namespace Horizun.Revit.Commands
                 {
                     bool attempted = false; string rbStatus = PlanFailure.NotAttempted;
                     if (group.HasStarted()) { attempted = true; rbStatus = Guard.RollBack(group).StatusName; }
-                    return CommandResult.Fail("Editing the sketch failed: " + ex.Message + ". " +
-                        PlanFailure.SingleTransactionOutcome(attempted, rbStatus, "nothing was changed"));
+                    return CommandResult.FailWithDetail(TransformFailure.AtomicMessage(plan.Id.ToString(), ex.Message,
+                        PlanFailure.SingleTransactionOutcome(attempted, rbStatus, "nothing was changed")),
+                        TransformFailure.AtomicDetail(ex, string.Equals(rbStatus, "RolledBack", StringComparison.OrdinalIgnoreCase)));
                 }
             }
 
@@ -397,6 +409,7 @@ namespace Horizun.Revit.Commands
                 ["element_id"] = plan.Id, ["verified"] = verified,
                 ["unique_id_kept"] = idKept,
                 ["method"] = method,
+                ["floor_wall_overlap_increase_checked"] = true,
                 ["loops_verified"] = loopProblem == null, ["loops_problem"] = loopProblem,
                 ["loops_after"] = now == null ? null : ModelLoopsJson(now.Vertices, plan.Plane, scale),
                 ["loops_after_mm"] = now == null ? null : LoopsJson(now.Vertices),
@@ -414,7 +427,8 @@ namespace Horizun.Revit.Commands
                 ["revit_said_at_commit"] = applyDetail?["revit_said_at_commit"]
             };
             if (!verified)
-                return CommandResult.Fail("The sketch edit committed, but post-commit verification failed: " + row.ToString(Formatting.None));
+                return CommandResult.FailWithDetail("The sketch edit committed, but post-commit verification failed. Inspect the element; use Revit undo if needed: " + row.ToString(Formatting.None),
+                    new JObject { ["error_code"] = ErrorCodes.VerificacionFallida, ["transaction_status"] = "Committed", ["rows"] = new JArray(row) });
 
             var applied = new JObject
             {

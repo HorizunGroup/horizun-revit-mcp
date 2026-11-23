@@ -15,7 +15,7 @@ dry runs and verification rules.
 | Room / Area Audit | `read_only` | Unplaced, unenclosed, duplicate or incomplete room facts | `Audit rooms and areas in the active model without writes. Separate unplaced, unenclosed, blank and duplicate conditions.` |
 | Architecture vs Structure | `read_only` | Scoped coordination evidence | `Compare the explicitly named architectural and structural links for grids, levels and requested elements. State coverage and unresolved ambiguity; do not modify either model.` |
 | Quantity / Power BI Pack | `read_only` → `full_write` | Takeoff first; optional external receipt | `Produce a read-only quantity takeoff for the named categories and parameters. Do not export or push data until I approve the destination.` |
-| DWG to BIM | `read_only` → `safe_write` | Requirement-bound plan then verified application | `Read the selected DWG and requirement set. Return a plan only, with omissions and ambiguities; do not build anything.` |
+| DWG to BIM | Pro edition | Not in Community | - |
 | Planimetry Review | `read_only` → `safe_write` | Findings, correction rehearsal and visual capture | `Audit the named sheets, propose only cited typed corrections, and rehearse them without applying.` |
 | Safe Batch Parameter Update | `safe_write` | Dry-run receipt then verified per-target values | `Rehearse updates for these explicit element ids and parameter values. Refuse unresolved scope; do not apply.` |
 

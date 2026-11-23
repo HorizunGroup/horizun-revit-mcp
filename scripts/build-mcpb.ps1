@@ -116,7 +116,7 @@ if (-not $NoToolList) {
     if (-not $probe.ok) { Fail "could not read the tool list from $ServerPath - $($probe.problem)" }
     $tools = @($probe.tool_names | Sort-Object | ForEach-Object { [ordered]@{ name = $_ } })
     $toolSource = "$ServerPath (tools/list over stdio)"
-    Step ("tools     {0}, read from a live handshake with {1}" -f $tools.Count, (Split-Path -Leaf $ServerPath))
+    Step ("tools     {0}, read from a live handshake with {1} (server version {2})" -f $tools.Count, ([IO.Path]::GetFullPath($ServerPath)), $probe.server_info.version)
 }
 
 # --- the manifest --------------------------------------------------------------

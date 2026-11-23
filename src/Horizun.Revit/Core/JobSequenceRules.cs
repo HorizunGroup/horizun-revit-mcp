@@ -53,6 +53,7 @@ namespace Horizun.Revit.Core
         public string FinishedUtc;
         public string ResultRef;
         public string Error;
+        public JObject Detail;
 
         public JObject ToJson()
         {
@@ -64,7 +65,8 @@ namespace Horizun.Revit.Core
                 ["started_utc"] = StartedUtc,
                 ["finished_utc"] = FinishedUtc,
                 ["result_ref"] = ResultRef,
-                ["error"] = Error
+                ["error"] = Error,
+                ["detail"] = Detail?.DeepClone()
             };
         }
     }

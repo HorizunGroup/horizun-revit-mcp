@@ -46,7 +46,7 @@ namespace Horizun.Server.Tests
             "--filter \"FullyQualifiedName~ToolsListLedger\", review git diff of tools-list-ledger.json and commit " +
             "it with the change that caused it.";
 
-        private static readonly string[] PermissionProfiles = { "read_only", "safe_write", "full_write", "unsafe_code" };
+        private static readonly string[] PermissionProfiles = { "read_only", "documentation", "safe_write", "full_write", "unsafe_code" };
 
         [Fact]
         public void Advertised_surface_matches_the_committed_ledger()
@@ -100,9 +100,9 @@ namespace Horizun.Server.Tests
             // it with the list over budget. This measures every contract row.
             var all = new JArray(Tools.All.Select(t => (JToken)Tools.Publish(t, true)));
             int bytes = Bytes(all);
-            Assert.True(bytes <= CeilingBytes,
+            Assert.True(bytes <= CeilingBytes - 8000,
                 "the worst-case tools/list is " + N(bytes) + " B, over the " + N(CeilingBytes) + " B ceiling by " +
-                N(bytes - CeilingBytes) + " B");
+                N(bytes - CeilingBytes) + " B; delivery requires at least 8000 B headroom");
         }
 
         // ---- measurement -------------------------------------------------------------
@@ -112,6 +112,7 @@ namespace Horizun.Server.Tests
             foreach (string p in PermissionProfiles) yield return "permission:" + p;
             yield return "permission:unsafe_code+python";
             foreach (string pack in ToolPacks.KnownPacks) yield return "pack:" + pack;
+            foreach (string profile in Horizun.Contracts.ToolGroupCatalog.Profiles) yield return "group_profile:" + profile;
         }
 
         internal static JObject CurrentLedger()
@@ -145,6 +146,9 @@ namespace Horizun.Server.Tests
                 profiles["permission:unsafe_code+python"] = Totals(Tools.List(true));
                 foreach (string pack in ToolPacks.KnownPacks.OrderBy(k => k, StringComparer.Ordinal))
                     profiles["pack:" + pack] = Totals(Tools.ListForPacks(new[] { pack }, true));
+                // 4.0: what each tool profile lists (core + its groups + the three meta tools).
+                foreach (string profile in Horizun.Contracts.ToolGroupCatalog.Profiles)
+                    profiles["group_profile:" + profile] = Totals(ToolVisibility.ListForProfile(profile, true));
             });
 
             return new JObject

@@ -1005,7 +1005,7 @@ $c = & $p.CloseDocument ([ordered]@{ year = '2099'; dir = $dir; target = 'C:\now
         $_.Finally -and $_.Finally.Extent.Text -match 'Write-HzHarnessDocumentsManifest' })
     Check 'verify-live rewrites the manifest in a script-level finally that encloses its exits' (
         ($topTry.Count -eq 1) -and ($topTry[0].Body.Extent.Text -match '(?m)^exit 0\s*$') -and
-        ($topTry[0].Body.Extent.Text -match 'dp2Source') -and ($topTry[0].Body.Extent.Text -match 'copy13b'))
+        ($topTry[0].Body.Extent.Text -match 'dp2Source') -and ($topTry[0].Body.Extent.Text -match 'isoLive'))
     if ($writerAst) {
         . ([scriptblock]::Create($writerAst.Extent.Text))
         $h = Start-Helper

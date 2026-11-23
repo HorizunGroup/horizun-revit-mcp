@@ -32,9 +32,39 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
+    public static class DimensionImportReferences
+    {
+        public static JObject ReferenceRow(int index, bool? linked) => new JObject
+        {
+            ["index"] = index,
+            ["linked"] = linked == true,
+            ["is_import"] = JValue.CreateNull()
+        };
+
+        public static bool IncludesDimension(bool importsOnly, JArray references, bool? referencesAvailable,
+                                             out JArray indices, out string unreadableReason)
+        {
+            indices = new JArray();
+            bool complete = referencesAvailable == true;
+            foreach (var reference in references)
+            {
+                JToken classification = reference["is_import"];
+                if (classification?.Type != JTokenType.Boolean) complete = false;
+                else if (classification.Value<bool>()) indices.Add(reference["index"]);
+            }
+
+            unreadableReason = null;
+            if (!importsOnly || indices.Count > 0) return true;
+            if (!complete)
+                unreadableReason = "Could not determine whether the dimension references an import.";
+            return false;
+        }
+    }
+
     public static class DimensionEditRules
     {
         // ---------------------------------------------------------------------
@@ -143,7 +173,7 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static readonly string[] EditFields =
         {
-            "set_type_id", "move_by", "prefix", "suffix", "above", "below",
+            "set_type_id", "move_by", "move_by_sheet", "prefix", "suffix", "above", "below",
             "value_override", "eq", "lock", "segments", "reset_text_position",
             "text_position", "text_offset", "leader", "leader_end"
         };
@@ -239,7 +269,7 @@ namespace Horizun.Revit.Core
         public static readonly string[] MultiSegmentOnlyFields = { "eq", "segments" };
 
         /// <summary>Fields indifferent to the segment count.</summary>
-        public static readonly string[] AnySegmentFields = { "set_type_id", "move_by", "reset_text_position", "leader" };
+        public static readonly string[] AnySegmentFields = { "set_type_id", "move_by", "move_by_sheet", "reset_text_position", "leader" };
 
         /// <summary>
         /// A text or leader position is re-read and compared to the requested point.

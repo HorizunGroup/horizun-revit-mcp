@@ -32,6 +32,13 @@ namespace Horizun.Core.Tests
             return PlanBox.FromCorners(x1, y1, x2, y2);
         }
 
+        [Fact]
+        public void Finite_revit_unbounded_sentinel_is_unreadable()
+        {
+            Assert.False(Box(-1e30, -1e30, 1e30, 1e30).Valid);
+            Assert.True(Box(-1000, -1000, 1000, 1000).Valid);
+        }
+
         // ---- separated, touching, and touching within tolerance ----------------
 
         [Fact]

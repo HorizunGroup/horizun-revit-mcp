@@ -42,6 +42,13 @@ namespace Horizun.Revit.Core
         public double EndCoverMm;
         /// <summary>How far in from the host's edges the array starts and finishes.</summary>
         public double SideCoverMm;
+        /// <summary>
+        /// False when the set did not declare that value: the expansion then takes the host's own cover (or, for the
+        /// depth, the cover plus the bar radii of the layers above) and reports it as a SUPUESTO instead of refusing.
+        /// </summary>
+        public bool EndCoverDeclared = true, SideCoverDeclared = true, OffsetDeclared = true;
+
+        public MatComponentRequest ShallowCopy() => (MatComponentRequest)MemberwiseClone();
         public string Mark;
         public string ShapeName;
         public bool AllowNewShape;
@@ -100,6 +107,8 @@ namespace Horizun.Revit.Core
         public string Code;
         public string Why;
         public List<MatComponentPlan> Components = new List<MatComponentPlan>();
+        /// <summary>Values the rule did not declare, filled with a reasonable default: reported as SUPUESTOS.</summary>
+        public List<Newtonsoft.Json.Linq.JObject> Assumptions = new List<Newtonsoft.Json.Linq.JObject>();
         /// <summary>Where the declared face sits, as a distance along the face normal.</summary>
         public double FaceOffsetMm;
         public string HowTheFaceWasFound;
@@ -147,6 +156,62 @@ namespace Horizun.Revit.Core
             CodeOpeningsNotExtractable, CodeOpeningsLeaveNoBars, CodeFollowFaceNotUsable, CodeNoFaceToFollow,
             CodeNoFaceUnderBar, CodeFaceSteps, CodeFaceNotPlanar, CodeFacetTooSmall, CodeIntoNeedsFollowFace
         };
+
+        /// <summary>
+        /// A MISSING OPENINGS BLOCK IS ASSUMED ONLY FOR A PENETRATION: an opening whose larger side, measured along and
+        /// across the bars (not its diagonal), is at most this - or at most two bar spacings, whichever is smaller.
+        /// Anything larger is a design question (who adds the edge steel?) and stays refused by name.
+        /// </summary>
+        public const double AssumedPolicyMaxOpeningMm = 300.0;
+        /// <summary>The least clearance the assumed trim keeps from a penetration: the larger of this and the bars' cover.</summary>
+        public const double AssumedPolicyClearanceMm = 50.0;
+
+        [ThreadStatic] private static bool assumingPolicy;
+
+        private static MatResult ExpandWithPolicy(StructuralMatRule withPolicy, IList<MatHostPart> parts,
+            Func<string, double> diameterOf, out List<StructuralRebarRule> expanded)
+        {
+            assumingPolicy = true;
+            try { return Expand(withPolicy, parts, diameterOf, out expanded); }
+            finally { assumingPolicy = false; }
+        }
+
+        /// <summary>The largest opening the assumed trim covers for a component laid at <paramref name="spacingMm"/>.</summary>
+        public static double PenetrationLimitMm(double? spacingMm)
+            => spacingMm.HasValue && Finite(spacingMm.Value) && spacingMm.Value > 0
+                ? Math.Min(AssumedPolicyMaxOpeningMm, 2 * spacingMm.Value) : AssumedPolicyMaxOpeningMm;
+
+        /// <summary>An opening the assumed trim may cut bars around: its larger side within the limit.</summary>
+        public static bool IsPenetration(MatOpeningRegion o, double limitMm) => o.LargestSideMm <= limitMm + 1e-6;
+
+        /// <summary>The cover assumed when a mat declares none and the host reports none. 25 mm.</summary>
+        public const double DefaultCoverMm = 25.0;
+        /// <summary>The same for a foundation (footing, foundation slab), cast against the ground. 75 mm.</summary>
+        public const double DefaultGroundCoverMm = 75.0;
+
+        /// <summary>
+        /// The depth of a layer whose depth was not declared: one cover plus its radius under the face, and under every
+        /// layer before it by that layer's radius and its own - a declared layer included, so it never sits above one.
+        /// </summary>
+        public static double AssumedLayerDepthMm(double coverMm, double radiusMm, IEnumerable<MatComponentPlan> before)
+        {
+            double depth = coverMm + radiusMm;
+            if (before != null)
+                foreach (MatComponentPlan prev in before)
+                    if (prev != null && Finite(prev.OffsetFromFaceMm))
+                        depth = Math.Max(depth, prev.OffsetFromFaceMm + prev.RadiusMm + radiusMm);
+            return depth;
+        }
+
+        /// <summary>One SUPUESTO row (AssumptionNotes) with the fields the reinforcement replies add to it.</summary>
+        internal static Newtonsoft.Json.Linq.JObject MatAssumption(string code, string ruleId, string component, string field, double value,
+                                                                  string what, string why, string overrideHow)
+        {
+            Newtonsoft.Json.Linq.JObject row = AssumptionNotes.Row(what, why, overrideHow);
+            row["code"] = code; row["rule_id"] = ruleId; row["component"] = component; row["field"] = field;
+            row["value_mm"] = Math.Round(value, 3);
+            return row;
+        }
 
         /// <summary>A direction more than this far from the face is not in it.</summary>
         public const double PerpendicularToleranceDegrees = 1.0;
@@ -342,6 +407,66 @@ namespace Horizun.Revit.Core
                     r.Why = "two mat components are called '" + name + "'. Each becomes its own bar set with " +
                             "its own provenance, so the names have to tell them apart.";
                     return r;
+                }
+
+                // NOT DECLARED IS NOT A REFUSAL: a mat that names its bars and spacing but not its covers is
+                // laid at the host's own cover, and the reply says it was assumed (SUPUESTO).
+                if (c.FollowFace == null && (!c.OffsetDeclared || !c.EndCoverDeclared || !c.SideCoverDeclared))
+                {
+                    double? coverRef = (hostCoverMm.HasValue && Finite(hostCoverMm.Value) && hostCoverMm.Value > 0) ? hostCoverMm
+                        : (faceCoverMm.HasValue && Finite(faceCoverMm.Value) && faceCoverMm.Value > 0 ? faceCoverMm : null);
+                    bool ground = parts[0].AgainstGround;
+                    double cover = coverRef ?? (ground ? DefaultGroundCoverMm : DefaultCoverMm);
+                    string coverFrom = coverRef.HasValue
+                        ? "the host's own cover, " + Mm(cover)
+                        : (ground ? "a cover of " + Mm(cover) + " for concrete cast against the ground, since this foundation reports none"
+                                  : "a usual cover of " + Mm(cover) + ", since the host reports none");
+                    if (!coverRef.HasValue)
+                        r.Assumptions.Add(MatAssumption("mat_cover_assumed", rule.Id, name, "cover", cover,
+                            "cover " + Mm(cover),
+                            "the host reports no rebar cover and the mat declares none, so " + coverFrom + " was taken" +
+                            (ground ? "." : " (" + Mm(DefaultGroundCoverMm) + " is taken for a foundation)."),
+                            "set the host's rebar cover in Revit, or declare offset_from_face_mm, end_cover_mm and side_cover_mm on component '" + name + "'."));
+                    double rad = 0;
+                    if (diameterOf != null)
+                    {
+                        double dm0 = diameterOf(c.BarTypeId);
+                        if (Finite(dm0) && dm0 > 0) rad = dm0 / 2.0;
+                    }
+                    MatComponentRequest withDefaults = c.ShallowCopy();
+                    if (!c.OffsetDeclared)
+                    {
+                        // The first layer under the face sits one cover plus its own radius in. A later layer sits
+                        // under EVERY layer before it - declared or assumed - by their radius and its own, so it is
+                        // never above a declared layer and no two bars share a plane.
+                        double assumedDepth = AssumedLayerDepthMm(cover, rad, layers);
+                        withDefaults.OffsetFromFaceMm = assumedDepth;
+                        withDefaults.OffsetDeclared = true;
+                        r.Assumptions.Add(MatAssumption("mat_offset_assumed", rule.Id, name, "offset_from_face_mm", assumedDepth,
+                            "component '" + name + "' " + Mm(assumedDepth) + " under the face",
+                            "offset_from_face_mm was not declared: the layer sits one cover plus its bar radius under the face, and " +
+                            "below each layer before it by that layer's radius and its own (" + coverFrom + ").",
+                            "declare offset_from_face_mm on component '" + name + "'."));
+                    }
+                    if (!c.EndCoverDeclared)
+                    {
+                        withDefaults.EndCoverMm = cover;
+                        withDefaults.EndCoverDeclared = true;
+                        r.Assumptions.Add(MatAssumption("mat_end_cover_assumed", rule.Id, name, "end_cover_mm", cover,
+                            "component '" + name + "' bars stop " + Mm(cover) + " short of each edge",
+                            "end_cover_mm was not declared: Revit sets a hosted bar's length from the host's cover (" + coverFrom + ").",
+                            "declare end_cover_mm on component '" + name + "'."));
+                    }
+                    if (!c.SideCoverDeclared)
+                    {
+                        withDefaults.SideCoverMm = cover + rad;
+                        withDefaults.SideCoverDeclared = true;
+                        r.Assumptions.Add(MatAssumption("mat_side_cover_assumed", rule.Id, name, "side_cover_mm", cover + rad,
+                            "component '" + name + "' array starts and ends " + Mm(cover + rad) + " in",
+                            "side_cover_mm was not declared: Revit holds the array to the host's cover plus the bar radius (" + coverFrom + ").",
+                            "declare side_cover_mm on component '" + name + "'."));
+                    }
+                    c = withDefaults;
                 }
 
                 if (!Finite(c.OffsetFromFaceMm) || c.OffsetFromFaceMm < 0)
@@ -657,7 +782,10 @@ namespace Horizun.Revit.Core
                 {
                     Policy = rule.Openings == null ? null : rule.Openings.Policy,
                     MinimumSizeMm = minSize,
-                    ClearanceMm = rule.Openings != null && rule.Openings.ClearanceMm.HasValue ? rule.Openings.ClearanceMm.Value : 0,
+                    // THE ASSUMED TRIM keeps at least the cover the bars hold from the host's edges: a penetration's
+                    // edge is an edge of the concrete too.
+                    ClearanceMm = assumingPolicy ? Math.Max(AssumedPolicyClearanceMm, c.EndCoverMm)
+                        : rule.Openings != null && rule.Openings.ClearanceMm.HasValue ? rule.Openings.ClearanceMm.Value : 0,
                     BarRadiusMm = compRadius,
                     Along = new[] { along[0], along[1], along[2] },
                     Across = new[] { acrossUnit[0], acrossUnit[1], acrossUnit[2] }
@@ -693,17 +821,70 @@ namespace Horizun.Revit.Core
                 report.BarsPlanned = slots.Count;
                 foreach (BarSlot s in slots) if (s.Body.Count > 0) report.BarsCrossing.Add(s.Index);
 
+                // WHAT A MISSING OPENINGS BLOCK MAY BE ASSUMED FOR: penetrations only, judged per component by
+                // the larger side of each opening its bars actually cross.
+                double penetrationLimit = PenetrationLimitMm(layout.ResultingSpacingMm ?? request.SpacingMm);
+                List<MatOpeningRegion> crossed = report.BarsCrossing.Count == 0 ? new List<MatOpeningRegion>()
+                    : CrossedOpenings(ctx, slots.Select(x => x.V), compRadius, u0, u1);
+                if (assumingPolicy && report.BarsCrossing.Count > 0)
+                {
+                    List<MatOpeningRegion> large = crossed.Where(o => !IsPenetration(o, penetrationLimit)).ToList();
+                    if (large.Count > 0)
+                    {
+                        r.Code = CodeOpeningsNeedAPolicy;
+                        r.Why = "component '" + name + "': its bars cross " + Describe(large) + ", larger than a penetration (" +
+                                Mm(penetrationLimit) + " on its larger side, the smaller of " + Mm(AssumedPolicyMaxOpeningMm) +
+                                " and two bar spacings), and this mat declares no openings block. A trim is assumed only around " +
+                                "penetrations; what happens at a larger opening - and what edge steel replaces the bars it cuts - " +
+                                "is a design decision: declare openings: { policy: omit | trim | ignore, minimum_size_mm, clearance_mm (trim) }.";
+                        expanded = new List<StructuralRebarRule>();
+                        return r;
+                    }
+                    Newtonsoft.Json.Linq.JObject trimRow = MatAssumption("mat_openings_trim_assumed", rule.Id, name, "openings", ctx.ClearanceMm,
+                        "component '" + name + "' cut around " + crossed.Count + " penetration(s), " + Mm(ctx.ClearanceMm) +
+                        " clear; NO edge steel is added to replace the bars cut (no_replacement_steel)",
+                        "the mat declares no openings block and " + report.BarsCrossing.Count + " of its bar(s) cross " + Describe(crossed) +
+                        ", none larger than a penetration (" + Mm(penetrationLimit) + " on its larger side, the smaller of " +
+                        Mm(AssumedPolicyMaxOpeningMm) + " and two bar spacings). Policy trim was taken: each crossing bar stops " +
+                        Mm(ctx.ClearanceMm) + " short of the opening (the larger of " + Mm(AssumedPolicyClearanceMm) +
+                        " and the cover the bars hold) and the pieces are built as their own bars. Every opening is cut around, " +
+                        "however small: no minimum size is assumed. No trimming bars or extra edge bars are added: what replaces " +
+                        "the steel an opening removes is a design decision left to the person who owns it.",
+                        "declare openings: { policy: omit | trim | ignore, minimum_size_mm, clearance_mm } on mat rule '" + rule.Id + "'.");
+                    trimRow["no_replacement_steel"] = true;
+                    trimRow["openings_cut_around"] = crossed.Count;
+                    trimRow["penetration_limit_mm"] = Math.Round(penetrationLimit, 3);
+                    r.Assumptions.Add(trimRow);
+                }
+
                 if (rule.Openings == null)
                 {
                     // NO POLICY DECLARED. A bar that would cross a hole is a design
                     // question, and it is refused here by name rather than built
                     // and refused by containment with a message about geometry.
+                    // NOT DECLARED IS NOT A REFUSAL when every opening the bars cross is a penetration: trim the
+                    // bars short of them and say so (mat_openings_trim_assumed). Anything larger stays refused here.
+                    if (report.BarsCrossing.Count > 0 && !assumingPolicy && crossed.All(o => IsPenetration(o, penetrationLimit)))
+                    {
+                        var withPolicy = rule.ShallowCopy();
+                        withPolicy.Openings = new StructuralMatOpenings
+                        {
+                            Policy = StructuralMatOpenings.PolicyTrim, MinimumSizeMm = 0, ClearanceMm = AssumedPolicyClearanceMm
+                        };
+                        return ExpandWithPolicy(withPolicy, parts, diameterOf, out expanded);
+                    }
                     if (report.BarsCrossing.Count > 0)
                     {
                         r.Code = CodeOpeningsNeedAPolicy;
+                        List<MatOpeningRegion> tooLarge = crossed.Where(o => !IsPenetration(o, penetrationLimit)).ToList();
                         r.Why = "component '" + name + "': the host's face has " + loops.Openings.Count +
                                 " opening(s) - " + Sizes(ctx) + " - and " + report.BarsCrossing.Count + " of " +
                                 slots.Count + " bar(s) would cross one, and this mat declares no openings block. " +
+                                (tooLarge.Count > 0
+                                    ? "A trim is assumed only when every opening crossed is a penetration (at most " + Mm(penetrationLimit) +
+                                      " on its larger side, the smaller of " + Mm(AssumedPolicyMaxOpeningMm) + " and two bar spacings), and " +
+                                      Describe(tooLarge) + " is larger. "
+                                    : "") +
                                 "What happens at a hole is a design decision: declare openings: { policy: omit " +
                                 "| trim | ignore, minimum_size_mm, clearance_mm (trim) }. omit drops the bars " +
                                 "that cross; trim stops each of them short of the opening by the clearance and " +
@@ -1088,7 +1269,9 @@ namespace Horizun.Revit.Core
             // WHAT THE POLICY LEAVES OF EACH BAR - the same words as a flat mat.
             bool trim = rule.Openings != null && rule.Openings.Policy == StructuralMatOpenings.PolicyTrim;
             bool omit = rule.Openings != null && rule.Openings.Policy == StructuralMatOpenings.PolicyOmit;
-            if (ctx != null && rule.Openings == null && report.BarsCrossing.Count > 0)
+            // The assumed trim (a mat with no openings block) covers flat layers only: a followed face's crossings
+            // stay a declared decision.
+            if (ctx != null && (rule.Openings == null || assumingPolicy) && report.BarsCrossing.Count > 0)
             {
                 r.Code = CodeOpeningsNeedAPolicy;
                 r.Why = "component '" + name + "': the face it follows has " + face.Openings.Count + " opening(s) - " + Sizes(ctx) +
@@ -1396,6 +1579,25 @@ namespace Horizun.Revit.Core
                 u[2] * v[0] - u[0] * v[2],
                 u[0] * v[1] - u[1] * v[0]
             };
+        }
+
+        /// <summary>The considered openings at least one bar's body (radius included) crosses within [u0, u1].</summary>
+        private static List<MatOpeningRegion> CrossedOpenings(MatOpeningContext ctx, IEnumerable<double> stations, double radiusMm,
+                                                              double u0, double u1)
+        {
+            var hit = new List<MatOpeningRegion>();
+            List<double> vs = stations.ToList();
+            foreach (MatOpeningRegion reg in ctx.Considered)
+                if (vs.Any(v => MatOpenings.Clip(MatOpenings.Merge(MatOpenings.CrossingIntervals(reg.Uv, v, radiusMm)), u0, u1).Count > 0))
+                    hit.Add(reg);
+            return hit;
+        }
+
+        /// <summary>Openings named by index with their extent along and across the bars.</summary>
+        private static string Describe(List<MatOpeningRegion> openings)
+        {
+            return string.Join(", ", openings.Select(o => "opening " + o.Index + " (" + Mm(o.UMax - o.UMin) + " along the bars by " +
+                                                            Mm(o.VMax - o.VMin) + " across)"));
         }
 
         private static string Mm(double v)

@@ -18,8 +18,7 @@ function Reply($data, $isError, $text) { @{ isError = $isError; data = $data; te
 function Obj($pairs) { $o = New-Object psobject; foreach ($k in $pairs.Keys) { $o | Add-Member -NotePropertyName $k -NotePropertyValue $pairs[$k] }; $o }
 
 $tpl = Join-Path ([IO.Path]::GetTempPath()) ('hz-rooms-tests-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path (Join-Path $tpl 'English') | Out-Null
-Set-Content -LiteralPath (Join-Path $tpl 'English\DefaultMetric.rte') -Value ''
+New-Item -ItemType Directory -Force -Path $tpl | Out-Null
 
 function New-State { $script:nextId = 5000; $script:ids = @{}; $script:westGone = $false; $script:cleanup = $null }
 $script:variant = 'good'
@@ -114,7 +113,7 @@ function Fake-Apply($tool, $a, $key) {
 }
 function Run-Probe($writeGate) {
     New-State
-    $ctx = @{ WriteGate = $writeGate; Document = 'HZ_WRITE'; RunId = 'r1'; Year = 2026; TemplateRoot = $tpl; ScratchRoot = $tpl
+    $ctx = @{ WriteGate = $writeGate; Document = 'HZ_WRITE'; RunId = 'r1'; Year = 2026; ScratchRoot = $tpl
               Call = { param($tool, $a) Fake-Call $tool $a }; Apply = { param($tool, $a, $key) Fake-Apply $tool $a $key } }
     @(& $module.Run $ctx)
 }

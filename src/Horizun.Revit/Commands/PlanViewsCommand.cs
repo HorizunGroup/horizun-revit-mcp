@@ -39,6 +39,8 @@ namespace Horizun.Revit.Commands
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             Document doc = app?.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
 
             string operation = (request.Value<string>("operation") ?? "").ToLowerInvariant();
             if(operation=="deliverable_set")
@@ -96,7 +98,7 @@ namespace Horizun.Revit.Commands
             error = RoomViewRules.ValidateElevationCount(elevationCount);
             if (error != null && kinds.Contains(RoomViewRules.KindElevations)) return CommandResult.Fail(error);
 
-            string namePattern = request.Value<string>("name_pattern") ?? "{room_number} {room_name} - {kind} {index}";
+            string namePattern = request.Value<string>("name_pattern") ?? "{short_kind} - {room_number}";
             error = RoomViewRules.ValidatePattern(namePattern);
             if (error != null) return CommandResult.Fail(error);
 
@@ -122,6 +124,17 @@ namespace Horizun.Revit.Commands
             if (roomsError != null) return CommandResult.Fail(roomsError);
 
             var existingNames = ExistingViewNames(doc);
+            AnnotationSurvey markerSurvey = null;
+            if (kinds.Contains(RoomViewRules.KindElevations))
+            {
+                markerSurvey = AnnotationLayout.Survey(doc, planView);
+                if (!markerSurvey.Complete)
+                    return CommandResult.FailWithDetail("Annotation coverage in the plan view is incomplete; " +
+                        "marker placement cannot be called clear.", markerSurvey.Coverage);
+            }
+            double markerHalfSize = (request.Value<double?>("marker_clearance") ?? 200.0) * toFeet;
+            if (markerHalfSize <= 0)
+                return CommandResult.Fail("marker_clearance must be positive.");
             var actions = new JArray();
             var planRows = new JArray();
             var excluded = new JArray();
@@ -147,6 +160,23 @@ namespace Horizun.Revit.Commands
                 }
 
                 double[] center = RoomViewRules.Center(facts);
+                List<double[]> markerPoints = null;
+                if (kinds.Contains(RoomViewRules.KindElevations))
+                {
+                    PlanBox roomBox = ProjectRoomBox(planView, facts);
+                    markerPoints = RoomViewRules.PlaceMarkers(roomBox,
+                        markerSurvey.Obstacles, elevationCount, markerHalfSize);
+                    if (markerPoints.Count != elevationCount)
+                    {
+                        excludedCount++;
+                        excluded.Add(new JObject { ["room_id"] = facts.Id,
+                            ["room"] = RoomViewRules.Describe(facts),
+                            ["code"] = RoomViewRules.CodeMarkerCollision,
+                            ["reason"] = "No room positions remain clear of measured annotation boxes " +
+                                "for all elevation markers at marker_clearance." });
+                        continue;
+                    }
+                }
                 double? rotation = orientToWalls ? RoomViewRules.PrincipalRotationDegrees(facts) : null;
                 var roomActions = new JArray();
                 var roomViews = new JArray();
@@ -191,11 +221,14 @@ namespace Horizun.Revit.Commands
                     {
                         string viewName = plannedNames[nameCursor++].Value;
                         string key = "room-" + facts.Id + "-elev-" + (i + 1) + "-" + keyOrdinal++;
+                        XYZ markerPoint = planView.Origin.Add(planView.RightDirection.Multiply(markerPoints[i][0]))
+                            .Add(planView.UpDirection.Multiply(markerPoints[i][1]));
                         var action = new JObject
                         {
                             ["operation"] = "create_elevation", ["key"] = key,
                             ["plan_view_id"] = planViewId,
-                            ["point"] = new JArray(center[0] * fromFeet, center[1] * fromFeet, center[2] * fromFeet),
+                            ["point"] = new JArray(markerPoint.X * fromFeet, markerPoint.Y * fromFeet,
+                                center[2] * fromFeet),
                             ["elevation_index"] = i,
                             ["marker_scale"] = viewScale,
                             ["name"] = viewName
@@ -207,7 +240,9 @@ namespace Horizun.Revit.Commands
                         if (rotation != null && Math.Abs(rotation.Value) > 1e-9) action["rotation"] = rotation.Value;
                         roomActions.Add(action);
                         AddTemplate(roomActions, templateId, key, ref keyOrdinal);
-                        roomViews.Add(new JObject { ["kind"] = "elevation", ["index"] = i + 1, ["name"] = viewName, ["view_key"] = key });
+                        roomViews.Add(new JObject { ["kind"] = "elevation", ["index"] = i + 1,
+                            ["name"] = viewName, ["view_key"] = key,
+                            ["marker_point"] = action["point"].DeepClone() });
                     }
                 }
 
@@ -306,11 +341,27 @@ namespace Horizun.Revit.Commands
                 ["safe_to_execute"] = actions.Count > 0,
                 ["next_tool"] = "horizun_manage_views",
                 ["next_arguments"] = manageViewsRequest,
-                ["note"] = "This planner made no model changes. Each elevation action creates its OWN marker at " +
-                           "the room centre (" + (kinds.Contains(RoomViewRules.KindElevations) ? elevationCount : 0) +
+                ["annotation_coverage"] = markerSurvey?.Coverage,
+                ["note"] = "This planner made no model changes. Elevation marker points avoid measured " +
+                           "annotation boxes with the requested clearance (" +
+                           (kinds.Contains(RoomViewRules.KindElevations) ? elevationCount : 0) +
                            " marker(s) per room). Run the returned horizun_manage_views dry run; only its " +
                            "rehearsal validates the batch and only its confirmation token writes."
             });
+        }
+
+        private static PlanBox ProjectRoomBox(ViewPlan view, RoomFacts facts)
+        {
+            if (facts.BoundingBoxMin == null || facts.BoundingBoxMax == null)
+                return PlanBox.Unreadable;
+            var points = new List<XYZ>();
+            foreach (double x in new[] { facts.BoundingBoxMin[0], facts.BoundingBoxMax[0] })
+                foreach (double y in new[] { facts.BoundingBoxMin[1], facts.BoundingBoxMax[1] })
+                    points.Add(new XYZ(x, y, view.Origin.Z).Subtract(view.Origin));
+            return PlanBox.FromCorners(points.Min(p => p.DotProduct(view.RightDirection)),
+                points.Min(p => p.DotProduct(view.UpDirection)),
+                points.Max(p => p.DotProduct(view.RightDirection)),
+                points.Max(p => p.DotProduct(view.UpDirection)));
         }
 
         // ---------------------------------------------------------------------

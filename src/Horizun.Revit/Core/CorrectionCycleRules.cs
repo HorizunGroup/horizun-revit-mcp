@@ -435,6 +435,29 @@ namespace Horizun.Revit.Core
             return checks;
         }
 
+        public static bool RecordRehearsal(CorrectionAction action, CorrectionStep step, CommandResult rehearsal)
+        {
+            object data = rehearsal.Data ?? rehearsal.Detail;
+            ApplicationState state = ApplicationOutcome.Read(data);
+            string partialRefusal = rehearsal.Success ? PartialApplyNotice.PlanRefusal(step.Tool, data) : null;
+            bool ok = rehearsal.Success && ApplicationOutcome.IsValidRehearsal(state) && partialRefusal == null;
+            step.RehearsalOk = ok;
+            step.RehearsalState = ApplicationOutcome.Name(state);
+            step.RehearsalError = rehearsal.Error ?? partialRefusal;
+            step.RehearsalData = data == null ? JValue.CreateNull() : (data as JToken)?.DeepClone() ?? JToken.FromObject(data);
+            try { step.ChildPlanFingerprint = (string)(data as JObject)?["plan_resolved"]?["fingerprint"]; }
+            catch { step.ChildPlanFingerprint = null; }
+            if (!ok)
+            {
+                action.State = CorrectionActionState.RehearsalFailed;
+                action.Why = rehearsal.Success
+                    ? partialRefusal ?? ("'" + step.Tool + "' rehearsed to '" + step.RehearsalState +
+                        "', not a clean dry run; read the step's rehearsal data.")
+                    : "'" + step.Tool + "' refused the rehearsal: " + rehearsal.Error;
+            }
+            return ok;
+        }
+
         /// <summary>
         /// Whether every action rehearsed cleanly - the only state in which a token
         /// is issued. One requires_input action withholds the whole token: the
@@ -705,6 +728,30 @@ namespace Horizun.Revit.Core
 
     public static class CorrectionReply
     {
+        public static CommandResult RehearsalRefusal(string command, IReadOnlyList<CorrectionAction> actions)
+        {
+            bool uncertain = actions.SelectMany(a => a.Steps)
+                                    .Any(s => PlanFailure.ModelMayHaveChanged(s.RehearsalData));
+            var detail = new JObject
+            {
+                ["state"] = "refused",
+                ["actions"] = new JArray(actions.Select(a => ActionJson(a)))
+            };
+            if (uncertain)
+            {
+                detail[PlanFailure.ModelMayHaveChangedKey] = true;
+                detail["write_started"] = true;
+            }
+            return CommandResult.FailWithDetail(
+                command + ": at least one action blocked application during rehearsal. Read the rows: " +
+                string.Join(" | ", actions.Where(a => a.State != CorrectionActionState.Rehearsed)
+                                          .Select(a => "actions[" + a.Index + "] " + a.State + " - " + a.Why)) +
+                (uncertain
+                    ? " The plan did not apply any correction. A child rehearsal may have changed the model. Inspect it before retrying."
+                    : " Nothing was changed."),
+                detail);
+        }
+
         public static JObject ActionJson(CorrectionAction a)
         {
             var steps = new JArray();

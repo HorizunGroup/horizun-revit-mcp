@@ -29,7 +29,7 @@ using System.Text.RegularExpressions;
 
 namespace Horizun.Revit.Core
 {
-    public enum SyncRelinquish { All, KeepBorrowed, None }
+    public enum SyncRelinquish { All, KeepBorrowed, None, BorrowedOnly }
 
     /// <summary>How a SynchronizeWithCentral that threw is reported.</summary>
     public enum SyncFailureKind
@@ -84,7 +84,9 @@ namespace Horizun.Revit.Core
         /// The REQUEST: hashed into the token's plan hash, so a different request is refused
         /// as a different request.
         /// </summary>
-        public static readonly string[] RequestFields = { "document", "comment", "relinquish", "compact" };
+        /// <remarks>INT-11 D.5: accept_findings_ids (sorted, distinct) is part of the request, so an apply that names other ids than its
+        /// dry run is refused as a different request.</remarks>
+        public static readonly string[] RequestFields = { "document", "comment", "relinquish", "compact", "accept_findings_ids" };
 
         /// <summary>
         /// The MODEL as the preview measured it: bound as the token's element fingerprint, so
@@ -111,6 +113,42 @@ namespace Horizun.Revit.Core
         public static bool MentionsSync(string maskedCode) =>
             !string.IsNullOrEmpty(maskedCode) && PythonSyncMention.IsMatch(maskedCode);
 
+        /// <summary>
+        /// CT-P1-2: the checklist a sync preview publishes so the person (and a safe_write
+        /// agent that holds only the sync grant) can see, BEFORE the token is issued, what the
+        /// apply will do. Pure: every input is a measured count the command already holds.
+        /// ok_to_apply is false while the comment is empty or a session write is unverified
+        /// without being accepted; it never replaces the token or the owner's grant.
+        /// </summary>
+        public static Newtonsoft.Json.Linq.JObject Precheck(string comment, int sessionWrites, int unverifiedBlockers,
+            bool blockersAccepted, int ownedElements, int borrowedElements, SyncRelinquish choice)
+        {
+            bool commentPresent = !string.IsNullOrWhiteSpace(comment);
+            bool writesClear = unverifiedBlockers == 0 || blockersAccepted;
+            int ownedViaWorksets = Math.Max(0, ownedElements - borrowedElements);
+            int released = choice == SyncRelinquish.All ? ownedElements
+                : choice == SyncRelinquish.BorrowedOnly ? borrowedElements
+                : choice == SyncRelinquish.KeepBorrowed ? ownedViaWorksets
+                : 0;
+            var problems = new Newtonsoft.Json.Linq.JArray();
+            if (!commentPresent) problems.Add("comment is empty: the central keeps it as the record of this sync");
+            if (!writesClear) problems.Add(unverifiedBlockers + " write(s) of this session are unverified: re-check them or accept them by name");
+            return new Newtonsoft.Json.Linq.JObject
+            {
+                ["comment_present"] = commentPresent,
+                ["session_writes"] = sessionWrites,
+                ["session_writes_unverified"] = unverifiedBlockers,
+                ["session_writes_clear"] = writesClear,
+                ["borrowed_elements_listed"] = borrowedElements,
+                ["relinquish"] = Name(choice),
+                ["elements_that_go_back"] = released,
+                ["elements_kept_owned"] = Math.Max(0, ownedElements - released),
+                ["after_sync"] = "the ownership is read again and held against this relinquish choice; a mismatch is reported, not hidden",
+                ["problems"] = problems,
+                ["ok_to_apply"] = commentPresent && writesClear
+            };
+        }
+
         public static bool TryParseRelinquish(string value, out SyncRelinquish choice)
         {
             switch ((value ?? "all").Trim().ToLowerInvariant())
@@ -118,13 +156,20 @@ namespace Horizun.Revit.Core
                 case "all": choice = SyncRelinquish.All; return true;
                 case "keep_borrowed": choice = SyncRelinquish.KeepBorrowed; return true;
                 case "none": choice = SyncRelinquish.None; return true;
+                case "borrowed_only": choice = SyncRelinquish.BorrowedOnly; return true;
                 default: choice = SyncRelinquish.All; return false;
             }
         }
 
         public static string Name(SyncRelinquish choice)
         {
-            return choice == SyncRelinquish.All ? "all" : choice == SyncRelinquish.KeepBorrowed ? "keep_borrowed" : "none";
+            switch (choice)
+            {
+                case SyncRelinquish.All: return "all";
+                case SyncRelinquish.KeepBorrowed: return "keep_borrowed";
+                case SyncRelinquish.BorrowedOnly: return "borrowed_only";
+                default: return "none";
+            }
         }
 
         private const string OwnerSwitch =
@@ -138,9 +183,9 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static string HowOwnerEnables(string settingsPath)
         {
-            return OwnerSwitch + " The same menu's \"What may the assistant do?\" must also allow opening and " +
-                   "closing documents (permission_profile=full_write): under the default safe_write " +
-                   "horizun_document_session is not offered at all. Both choices are stored in " +
+            return OwnerSwitch + " The call itself goes through horizun_save_document operation=sync_with_central, " +
+                   "which the owner's grant alone opens even under the default safe_write; " +
+                   "horizun_document_session needs permission_profile=full_write. Both choices are stored in " +
                    (settingsPath ?? "settings.json") + ", which no MCP call writes; do not edit it on the owner's behalf.";
         }
 
@@ -302,11 +347,12 @@ namespace Horizun.Revit.Core
         /// Which estimate fields moved between the preview and now, from each side's canonical
         /// text per ModelFields. null when nothing is known to have moved.
         /// </summary>
-        public static string DescribeEstimateDrift(IDictionary<string, string> approved, IDictionary<string, string> now)
+        public static string DescribeEstimateDrift(IDictionary<string, string> approved, IDictionary<string, string> now,
+                                                   IEnumerable<string> fields = null)
         {
             if (approved == null || now == null) return null;
             var moved = new List<string>();
-            foreach (string field in ModelFields)
+            foreach (string field in fields ?? ModelFields)
             {
                 approved.TryGetValue(field, out string a);
                 now.TryGetValue(field, out string b);
@@ -322,6 +368,8 @@ namespace Horizun.Revit.Core
         ///   all           no workset and no element left owned by this user;
         ///   keep_borrowed no workset owned, and exactly the elements borrowed before
         ///                 (still existing) still owned;
+        ///   borrowed_only the worksets this user owns stay owned (same count as before) and ONLY the
+        ///                 elements borrowed one by one go back: owned before minus borrowed before;
         ///   none          the same number of worksets owned, and exactly the elements
         ///                 owned before (still existing) still owned; an element the reload
         ///                 brought into a still-owned workset is listed as arrived, not a failure.
@@ -339,17 +387,19 @@ namespace Horizun.Revit.Core
             if (ownedWorksetsAfter == null) { unmeasured = true; v.Problems.Add("owned workset count after the sync could not be read"); }
             if (unreadableAfter > 0) { unmeasured = true; v.Problems.Add(unreadableAfter + " element(s) did not report a checkout status after the sync"); }
 
-            int? expectedWorksets = choice == SyncRelinquish.None ? ownedWorksetsBefore : 0;
-            if (choice == SyncRelinquish.None && ownedWorksetsBefore == null)
+            bool keepsWorksets = choice == SyncRelinquish.None || choice == SyncRelinquish.BorrowedOnly;
+            int? expectedWorksets = keepsWorksets ? ownedWorksetsBefore : 0;
+            if (keepsWorksets && ownedWorksetsBefore == null)
             { unmeasured = true; v.Problems.Add("owned workset count before the sync was not read"); }
 
             IEnumerable<string> expectedSource =
                 choice == SyncRelinquish.All ? Enumerable.Empty<string>()
                 : choice == SyncRelinquish.KeepBorrowed ? (borrowedBefore ?? new string[0])
+                : choice == SyncRelinquish.BorrowedOnly ? (ownedElementsBefore ?? new string[0]).Except(borrowedBefore ?? new string[0], StringComparer.Ordinal)
                 : (ownedElementsBefore ?? new string[0]);
             var expected = new HashSet<string>(expectedSource.Where(exists), StringComparer.Ordinal);
             var actual = new HashSet<string>(ownedElementsAfter ?? new string[0], StringComparer.Ordinal);
-            if (choice == SyncRelinquish.None && knownBefore != null)
+            if ((choice == SyncRelinquish.None || choice == SyncRelinquish.BorrowedOnly) && knownBefore != null)
             {
                 // relinquish=none keeps this user's worksets, and the sync's reload brings in what
                 // others created since: an element that lands in a workset this user still owns

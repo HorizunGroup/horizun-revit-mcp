@@ -258,8 +258,8 @@ namespace Horizun.Revit.Commands
                 return "function is " + only.Function + " and the layer is " + source.Function;
 
             if (!WallLayerRules.WithinTolerance(source.Width, only.Width))
-                return "width is " + WallLayerRules.FeetToMm(only.Width).ToString("F2") +
-                       " mm and the layer is " + WallLayerRules.FeetToMm(source.Width).ToString("F2") + " mm";
+                return "width is " + WallLayerRules.FeetToMm(only.Width).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
+                       " mm and the layer is " + WallLayerRules.FeetToMm(source.Width).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm";
 
             string wanted = MaterialUniqueId(doc, source.MaterialId);
             string has = MaterialUniqueId(doc, only.MaterialId);
@@ -938,7 +938,7 @@ namespace Horizun.Revit.Commands
 
                 if (failure == null && row.Value<bool>("in_place") == false)
                     failure = "layer " + pair.Value.LayerIndex + " (element " + Rid.Value(pair.Key.Id) + ") is " +
-                              (double.IsNaN(deviation) ? "at an unmeasurable distance" : deviation.ToString("F2") + " mm") +
+                              (double.IsNaN(deviation) ? "at an unmeasurable distance" : deviation.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm") +
                               " from where it belongs relative to the carrier";
             }
 

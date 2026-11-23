@@ -29,7 +29,7 @@
 // 1.0 (embedded verbatim, with the two XML Schema definitions it imports supplied
 // locally so validity does not depend on the network), and by the IDS reader the
 // validators of this bridge actually use (IdsReader, the same code
-// horizun_validate_ids and horizun_deliver_ifc read with): a file the XSD accepts
+// horizun_validate_ids and horizun_deliver_ifc (Pro edition) read with): a file the XSD accepts
 // but our own reader would call undecidable is not a file worth writing. After a
 // write the bytes on disk are re-read, re-hashed and proved again.
 //
@@ -566,7 +566,7 @@ namespace Horizun.Server
                 ["sha256"] = gotSha,
                 ["xsd_valid"] = true,
                 ["reader_specifications"] = reread.Specifications.Count,
-                ["read_from_disk_by"] = "IdsReader.Read, the reader horizun_validate_ids and horizun_deliver_ifc use"
+                ["read_from_disk_by"] = "IdsReader.Read, the reader horizun_validate_ids uses"
             };
             return result;
         }
@@ -623,7 +623,7 @@ namespace Horizun.Server
                 ["reader"] = new JObject
                 {
                     ["clean"] = readerProblems.Count == 0,
-                    ["reader"] = "IdsReader (horizun_validate_ids / horizun_deliver_ifc)",
+                    ["reader"] = "IdsReader (horizun_validate_ids)",
                     ["specifications"] = parsedSpecs,
                     ["problems"] = new JArray(readerProblems)
                 }

@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 # Exercises rooms-topo-federation.probes.ps1 WITHOUT Revit. Shapes from the code
-# (FederationLevelRules.cs / FederationCheckCommand.cs, CreateElementsEnclosed.cs /
+# (CreateElementsEnclosed.cs /
 # CreateElementsToposolid.cs / CreateElementsLandXml.cs: the plan row's landxml block),
 # to be held against the first live run.
 $ErrorActionPreference = 'Stop'
@@ -11,35 +11,11 @@ $fail = 0
 function Check($ok, $what) { if ($ok) { Write-Host "  PASS  $what" } else { Write-Host "  FAIL  $what"; $script:fail++ } }
 
 function New-Fake([string]$mode) {
-    $src = Join-Path $env:TEMP ('hz-fake-host-' + [guid]::NewGuid().ToString('N') + '.rvt')
-    Set-Content -LiteralPath $src -Value 'rvt' -Encoding ascii
-    $s = @{ Mode = $mode; Deleted = @(); Src = $src; Linked = $false; Moved = $false; Rooms = $false; Spaces = $false; Plan = $false; NextId = 5000; Made = @(); Y2023 = $false; PosAngle = 30; LxInternal = @(); LxFile = '' }
+    $s = @{ Mode = $mode; Deleted = @(); Rooms = $false; Spaces = $false; Plan = $false; NextId = 5000; Made = @(); Y2023 = $false; PosAngle = 30; LxInternal = @(); LxFile = '' }
     $reply = { param($data, $isError = $false, $text = 'fake') [pscustomobject]@{ isError = $isError; data = $data; text = $text } }
     $call = {
         param($tool, $a)
         switch ($tool) {
-            'horizun_health' { return & $reply ([pscustomobject]@{ open_documents = @([pscustomobject]@{ title = 'HZ_WRITE'; path = $s.Src }) }) }
-            'horizun_federation_check' {
-                if ($a.rules.levels_match -is [hashtable] -and $a.rules.levels_match.ContainsKey('tol')) {
-                    return & $reply $null $true "The federation rules were refused: levels_match: unknown key 'tol'. Known: tolerance_mm."
-                }
-                $rows = @(); $links = @()
-                if ($s.Linked) {
-                    # The REAL row shape (FederationLevelRules): link levels at 0 / 3000 / 7000 mm match the
-                    # host until the instance moves; 'stuck' is a link whose levels do not move with it.
-                    $up = if ($s.Moved -and $s.Mode -ne 'stuck') { 500 } else { 0 }
-                    $mm = @(); $matching = 3
-                    if ($up -gt 0) {
-                        $matching = 0
-                        foreach ($lv in @(@('L1', 0), @('L2', 3000), @('L3', 7000))) { $mm += [pscustomobject]@{ state = 'elevation_differs'; link_level = $lv[0]; link_elevation_mm = ($lv[1] + $up); delta_mm = $up; host_levels = @() } }
-                    }
-                    $state = if ($mm.Count -gt 0) { 'differs' } else { 'matches' }
-                    $rows += [pscustomobject]@{ instance_id = 901; title = 'HZ_LVLSRC'; state = $state; levels_compared = 3; levels_matching = $matching; mismatches = $mm; host_levels_not_in_link = @() }
-                    $links += [pscustomobject]@{ instance_id = 901; title = 'HZ_LVLSRC'; loaded = $true }
-                }
-                $verdict = if ($s.Mode -eq 'differs') { 'fails' } else { 'passes' }
-                return & $reply ([pscustomobject]@{ verdict = $verdict; levels = $rows; links = $links; summary = [pscustomobject]@{ links_levels_differ = 0; links_levels_not_read = 0 } })
-            }
             'horizun_query_model' {
                 $cat = @($a.categories)[0]; $rows = @()
                 if ($cat -eq 'OST_Walls') { $rows += [pscustomobject]@{ is_element_type = $true; family = 'Basic Wall'; type = 'Generic - 200mm'; element_id = 700 } }
@@ -91,10 +67,7 @@ function New-Fake([string]$mode) {
         param($tool, $a, $key)
         $ok = { param($d) @{ stage = 'apply'; answer = [pscustomobject]@{ isError = $false; data = $d; text = 'ok' } } }
         switch ($tool) {
-            'horizun_manage_links' { $s.Linked = $true; return & $ok ([pscustomobject]@{ link_type_id = 900; link_instance_id = 901 }) }
-            'horizun_transform_elements' { if (@($a.operations)[0].element_ids -contains 901) { $s.Moved = $true }; return & $ok ([pscustomobject]@{ operations_verified = $true }) }
-            'horizun_delete_verified' { $s.Deleted += @($a.ids); if (@($a.ids) -contains 900) { $s.Linked = $false }; return & $ok ([pscustomobject]@{ ok = $true }) }
-            'horizun_copy_between_documents' { return & $ok ([pscustomobject]@{ copied = 0 }) }
+            'horizun_delete_verified' { $s.Deleted += @($a.ids); return & $ok ([pscustomobject]@{ ok = $true }) }
             'horizun_manage_views' { $s.Plan = $true; $s.NextId = $s.NextId + 1; $s.Made += $s.NextId; return & $ok ([pscustomobject]@{ aliases = [pscustomobject]@{ rtplan = $s.NextId } }) }
             'horizun_create_elements' {
                 $els = @($a.elements); $rows = @()
@@ -113,43 +86,38 @@ function New-Fake([string]$mode) {
             }
         }
     }.GetNewClosure()
-    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $env:TEMP ('hz-rtf-' + [guid]::NewGuid().ToString('N'))); RunId = 't1'; WriteGate = $false; LinkSourceDocument = $src; Call = $call; Apply = $apply } }
+    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $env:TEMP ('hz-rtf-' + [guid]::NewGuid().ToString('N'))); RunId = 't1'; WriteGate = $false; Call = $call; Apply = $apply } }
 }
 function Outcomes($r) { ($r | ForEach-Object { $_.Outcome }) -join ',' }
-# Results come in the order the cases RUN (case 13 runs right after case 9), so they are found by catalog name.
+# Results come in the order the cases RUN (case 9 runs right after case 5), so they are found by catalog name.
 $names = @($module.Catalog)
 function At($r, $i) { @($r | Where-Object { $_.Name -eq $names[$i].Name })[0] }
 
 $h = New-Fake 'ok'; $r = @(& $module.Run $h.Ctx)
-Check ($r.Count -eq 14) ('fourteen cases: ' + $r.Count)
+Check ($r.Count -eq 10) ('ten cases: ' + $r.Count)
 Check (@($r | Where-Object { $_.Outcome -ne 'pass' -and $_.Name -notlike '*link-bounded*' }).Count -eq 0) ('everything but the link-bounded declaration passes: ' + (Outcomes $r))
-Check ((At $r 9).Outcome -eq 'pass' -and (At $r 9).Detail -match 'not_proven' -and (At $r 9).Detail -match 'not measured') 'link-bounded circuits pass on the reply''s declaration, and say the geometry is not measured'
-Check ($h.State.Deleted -contains 900) 'the probe link type is deleted'
-Check ((At $r 13).Outcome -eq 'pass' -and (At $r 13).Detail -match 'second call: requested 0') ('spaces: apply fills each region, a second call plans nothing: ' + (At $r 13).Detail)
-Check ((At $r 8).Detail -match 'space regions m2 6.8;22') ('the space rehearsal records the region areas: ' + (At $r 8).Detail)
+Check ((At $r 5).Outcome -eq 'pass' -and (At $r 5).Detail -match 'not_proven' -and (At $r 5).Detail -match 'not measured') 'link-bounded circuits pass on the reply''s declaration, and say the geometry is not measured'
+Check ((At $r 9).Outcome -eq 'pass' -and (At $r 9).Detail -match 'second call: requested 0') ('spaces: apply fills each region, a second call plans nothing: ' + (At $r 9).Detail)
+Check ((At $r 4).Detail -match 'space regions m2 6.8;22') ('the space rehearsal records the region areas: ' + (At $r 4).Detail)
 Check (@($h.State.Made | Where-Object { $h.State.Deleted -notcontains $_ }).Count -eq 0 -and $h.State.Made.Count -eq 14) ('every staged id is deleted (2 levels, a floor plan, 5 walls, 2 rooms, 2 spaces, 2 toposolids): ' + $h.State.Made.Count)
 $lxi = @($h.State.LxInternal)
 $want = @(@(1190000, 0, 1000), @(1200000, 0, 1500), @(1200000, 10000, 3000), @(1190000, 10000, 2000), @(1195000, 5000, 3500))
 $worst = 0.0
 if ($lxi.Count -eq 5) { for ($k = 0; $k -lt 5; $k++) { for ($d = 0; $d -lt 3; $d++) { $worst = [math]::Max($worst, [math]::Abs([double]$lxi[$k][$d] - $want[$k][$d])) } } }
 Check ($lxi.Count -eq 5 -and $worst -lt 0.001) ('a TIN written through a rotated, offset position comes back at the probe''s own X (SharedToInternal ported), worst ' + $worst + ' mm')
-Check ((At $r 11).Outcome -eq 'pass' -and (At $r 11).Detail -match 'HZ_RT_EG' -and (At $r 11).Detail -notmatch 'identity') ('the LandXML case names the surface and the position it used: ' + (At $r 11).Detail)
+Check ((At $r 7).Outcome -eq 'pass' -and (At $r 7).Detail -match 'HZ_RT_EG' -and (At $r 7).Detail -notmatch 'identity') ('the LandXML case names the surface and the position it used: ' + (At $r 7).Detail)
 Check ($h.State.LxFile -match 'linearUnit="meter"' -and $h.State.LxFile -notmatch '<!DOCTYPE') 'the probe''s file declares its unit and carries no DTD'
 
-$h = New-Fake 'stuck'; $r = @(& $module.Run $h.Ctx)
-Check ((At $r 1).Outcome -eq 'fail' -and (At $r 1).Detail -match 'still match' -and (At $r 2).Outcome -eq 'pass') 'a link whose levels do not rise with it fails the differential case but still answers'
-
 $h = New-Fake 'ok'; $h.Ctx.Year = 2023; $h.State.Y2023 = $true; $r = @(& $module.Run $h.Ctx)
-Check ((At $r 10).Outcome -eq 'pass' -and (At $r 10).Detail -match 'toposolid_not_in_revit_2023') ('2023 reports the named refusal: ' + (At $r 10).Outcome)
-Check ((At $r 11).Outcome -eq 'pass' -and (At $r 11).Detail -match 'toposolid_not_in_revit_2023') ('2023 refuses a landxml_path row by the same name: ' + (At $r 11).Outcome)
+Check ((At $r 6).Outcome -eq 'pass' -and (At $r 6).Detail -match 'toposolid_not_in_revit_2023') ('2023 reports the named refusal: ' + (At $r 6).Outcome)
+Check ((At $r 7).Outcome -eq 'pass' -and (At $r 7).Detail -match 'toposolid_not_in_revit_2023') ('2023 refuses a landxml_path row by the same name: ' + (At $r 7).Outcome)
 
 $h = New-Fake 'notopo'; $r = @(& $module.Run $h.Ctx)
-Check ((At $r 10).Outcome -eq 'not_covered' -and (At $r 10).Detail -match 'Terrain: Site') ('no toposolid type by name: not_covered, naming what it saw: ' + (At $r 10).Detail)
-Check ((At $r 11).Outcome -eq 'not_covered') ('no toposolid type: the LandXML case is not_covered too: ' + (At $r 11).Outcome)
+Check ((At $r 6).Outcome -eq 'not_covered' -and (At $r 6).Detail -match 'Terrain: Site') ('no toposolid type by name: not_covered, naming what it saw: ' + (At $r 6).Detail)
+Check ((At $r 7).Outcome -eq 'not_covered') ('no toposolid type: the LandXML case is not_covered too: ' + (At $r 7).Outcome)
 
 $h = New-Fake 'ok'; $h.Ctx.WriteGate = $true; $r = @(& $module.Run $h.Ctx)
-Check ((At $r 1).Outcome -eq 'not_covered' -and (At $r 2).Outcome -eq 'not_covered' -and (At $r 3).Outcome -eq 'not_covered' -and (At $r 0).Outcome -eq 'pass') ('write tier closed, no links: ' + (Outcomes $r))
-Check ($r.Count -eq 14 -and @($r | Where-Object { $_.Name -in @($names[4..13] | ForEach-Object { $_.Name }) -and $_.Outcome -ne 'not_covered' }).Count -eq 0) 'write tier closed: rooms, spaces and toposolid cases are not_covered'
+Check ($r.Count -eq 10 -and @($r | Where-Object { $_.Outcome -ne 'not_covered' }).Count -eq 0) ('write tier closed: rooms, spaces and toposolid cases are not_covered: ' + (Outcomes $r))
 
 if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }
 Write-Host 'all checks passed'

@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP server - which MCP extensions this build actually implements.
 // Original Horizun code.
 //
@@ -50,19 +50,15 @@ namespace Horizun.Server.Protocol
                 Pending = null
             },
 
-            // G05. The clash viewer is served at ui://horizun/clash-viewer and renders
-            // ONLY what the tool result already contains - it fetches nothing - so the
-            // textual reply and the app cannot disagree. McpAppResources.Text() renders
-            // the same payload from the same fields in the same order, which is what
-            // makes "same result in both modes" a property a test can assert rather than
-            // a sentence in a README.
+            // The impact preview is served at ui://horizun/impact-preview and renders only what
+            // the tool result already contains.
             new McpExtension
             {
                 Id = Ui,
                 Implemented = true,
                 Settings = () => new JObject
                 {
-                    ["mimeTypes"] = new JArray(McpAppResources.AppMimeType)
+                    ["mimeTypes"] = new JArray(ImpactPreviewApp.AppMimeType)
                 },
                 Pending = null
             }

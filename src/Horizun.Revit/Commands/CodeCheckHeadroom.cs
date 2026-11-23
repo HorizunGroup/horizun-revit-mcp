@@ -298,7 +298,7 @@ namespace Horizun.Revit.Commands
                 var row = new JObject
                 {
                     ["element_id"] = ownId,
-                    ["category"] = p.Element.Category?.Name,
+                    ["category"] = p.Element.Category?.Name, ["built_in_category"] = CategoryKey.Of(p.Element),
                     ["outcome"] = outcome,
                     ["min_clear_mm"] = minClearMm.HasValue ? (JToken)Math.Round(minClearMm.Value, 1) : JValue.CreateNull(),
                     ["samples"] = p.Points.Count,
@@ -380,7 +380,7 @@ namespace Horizun.Revit.Commands
                 if (linkedTarget && !surfaces.ContainsKey(linkKey))
                     surfaces[linkKey] = new JObject
                     {
-                        ["kind"] = "linked", ["element_id"] = Rid.Value(linked.Id), ["link_instance_id"] = Rid.Value(link.Id), ["category"] = linked.Category.Name
+                        ["kind"] = "linked", ["element_id"] = Rid.Value(linked.Id), ["link_instance_id"] = Rid.Value(link.Id), ["category"] = linked.Category.Name, ["built_in_category"] = CategoryKey.Of(linked)
                     };
                 return new HeadroomRules.Hit(rc.Proximity, linkedTarget ? HeadroomRules.HitKind.Target : HeadroomRules.HitKind.Other, linkKey);
             }
@@ -389,7 +389,7 @@ namespace Horizun.Revit.Commands
             string key = "host:" + Rid.Value(e.Id);
             bool target = e.Category != null && targetIds.Contains(Rid.Value(e.Category.Id));
             if (target && !surfaces.ContainsKey(key))
-                surfaces[key] = new JObject { ["kind"] = "host", ["element_id"] = Rid.Value(e.Id), ["category"] = e.Category.Name };
+                surfaces[key] = new JObject { ["kind"] = "host", ["element_id"] = Rid.Value(e.Id), ["category"] = e.Category.Name, ["built_in_category"] = CategoryKey.Of(e) };
             return new HeadroomRules.Hit(rc.Proximity, target ? HeadroomRules.HitKind.Target : HeadroomRules.HitKind.Other, key);
         }
 
@@ -446,7 +446,7 @@ namespace Horizun.Revit.Commands
         }
 
         private static JObject HeadroomSkip(Element e, string reason) =>
-            new JObject { ["element_id"] = Rid.Value(e.Id), ["category"] = e.Category?.Name, ["reason"] = reason };
+            new JObject { ["element_id"] = Rid.Value(e.Id), ["category"] = e.Category?.Name, ["built_in_category"] = CategoryKey.Of(e), ["reason"] = reason };
 
         private static double? HeadroomNumber(JObject o, string key)
         {

@@ -137,7 +137,7 @@ anterior byte a byte. El parcial aún publicaba allí instrucciones de la lista 
 
 ### Lo que la fachada pierde (documentado, no oculto)
 
-- **MCP Apps.** `horizun_clash` y las cinco escrituras con vista previa declaran `_meta.ui` en `tools/list`; un host que
+- **MCP Apps.** Las cinco escrituras con vista previa declaran `_meta.ui` en `tools/list`; un host que
   precarga la app por esa entrada no la ve en modo facade. En `full` todo sigue igual.
 - **Anotaciones por herramienta.** `readOnlyHint`/`destructiveHint` de cada herramienta no están en `tools/list`;
   `horizun_call_tool` lleva las más fuertes (no solo lectura, destructiva, mundo abierto) y `horizun_describe_tool`

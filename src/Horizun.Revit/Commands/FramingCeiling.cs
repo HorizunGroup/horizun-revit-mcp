@@ -19,7 +19,7 @@
 // or roof straight above it, host or loaded link, within max_length_mm. depth_mm is
 // optional and its absence is a warning, not a guess of the section.
 //
-// HANGER RAYS reuse horizun_mep_routing's approach (MepRoutingHangers.cs): a
+// HANGER RAYS reuse horizun_mep_routing (Pro edition)'s approach (MepRoutingHangers.cs): a
 // temporary isometric view whose visibility this code sets (no template, no
 // filters, no section box, structure and links shown, the source's phase),
 // ReferenceIntersector with links, inside a transaction that is ALWAYS rolled

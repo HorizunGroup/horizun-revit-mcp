@@ -1,9 +1,9 @@
-{
+﻿{
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.HorizunGroup/horizun-revit-mcp",
   "title": "Horizun Revit MCP",
   "description": "Local Windows MCP for Revit 2023-2027. Run the Windows installer before connecting a client.",
-  "version": "4.0.1",
+  "version": "6.0.0",
   "repository": {
     "url": "https://github.com/HorizunGroup/horizun-revit-mcp",
     "source": "github"

@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -94,6 +95,34 @@ namespace Horizun.Core.Tests
             Assert.Equal(2L, (long)r["without_code"][0]["type_id"]);
             Assert.Equal(1, (int)r["types_with_unknown_code"]);        // Z.99
             Assert.Equal("Z.99", (string)r["unknown_code"][0]["code"]);
+        }
+
+        [Fact]
+        public void A_loaded_link_is_not_a_placed_type_without_code()
+        {
+            // INFORME_P6 §6.1: Casa_Est.rvt linked into Casa_Arq.rvt came back as
+            // without_code [{name: "Casa_Est.rvt", category: "RVT Links"}] and blocked the kit audit.
+            // A link's type is a reference to another model, not a modelled type: it carries no code.
+            var types = Types();
+            types.Add(new ParameterClassificationRules.TypeCode { Id = 9, Name = "Casa_Est.rvt", Category = "RVT Links", Code = "", Instances = 1, IsReference = true });
+            types.Add(new ParameterClassificationRules.TypeCode { Id = 10, Name = "planta.dwg", Category = "Imports in Families", Code = null, Instances = 2, IsReference = true });
+            JObject r = ParameterClassificationRules.Missing(Table, types, 100);
+            Assert.Equal(1, (int)r["placed_types_without_code"]);       // still only W2
+            Assert.DoesNotContain(((JArray)r["without_code"]).OfType<JObject>(), x => (long)x["type_id"] == 9);
+            Assert.Equal(2, (int)r["reference_types_not_judged"]);
+            Assert.Equal("Casa_Est.rvt", (string)r["reference_types"][0]["name"]);
+        }
+
+        [Fact]
+        public void A_reference_type_with_a_code_is_still_not_judged_against_the_table()
+        {
+            var types = new List<ParameterClassificationRules.TypeCode>
+            {
+                new ParameterClassificationRules.TypeCode { Id = 9, Name = "Est.rvt", Category = "RVT Links", Code = "Q.1", Instances = 1, IsReference = true }
+            };
+            JObject r = ParameterClassificationRules.Missing(Table, types, 100);
+            Assert.Equal(0, (int)r["types_with_unknown_code"]);
+            Assert.Equal(1, (int)r["reference_types_not_judged"]);
         }
 
         [Fact]

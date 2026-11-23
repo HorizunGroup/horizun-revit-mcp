@@ -14,12 +14,40 @@
 // this reports; that half carries no Revit and is where the states are tested.
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using Autodesk.Revit.DB;
 
 namespace Horizun.Revit.Core
 {
     public static class DocumentVisibility
     {
+        // Same coverage result as Measure, with a yield between workset reads.
+        // The caller must validate the document before each resumption.
+        public static IEnumerable<int> MeasureSteps(Document doc, Action<DocumentVisibilityCoverage> complete)
+        {
+            if (complete == null) throw new ArgumentNullException(nameof(complete));
+            if (doc == null) { complete(DocumentVisibilityCoverage.Unreadable("there is no document to measure")); yield break; }
+            bool shared = false; string error = null;
+            try { shared = doc.IsWorkshared; }
+            catch (Exception ex) { error = "Document.IsWorkshared threw: " + ex.Message; }
+            if (error != null) { complete(DocumentVisibilityCoverage.Unreadable(error)); yield break; }
+            if (!shared) { complete(DocumentVisibilityCoverage.NotWorkshared()); yield break; }
+            IList<Workset> sets = null;
+            try { sets = new FilteredWorksetCollector(doc).OfKind(WorksetKind.UserWorkset).ToWorksets(); }
+            catch (Exception ex) { error = "the workset collector threw: " + ex.Message; }
+            yield return 0;
+            if (error != null) { complete(DocumentVisibilityCoverage.Unreadable(error)); yield break; }
+            int total = 0, open = 0;
+            foreach (Workset set in sets)
+            {
+                try { total++; if (set.IsOpen) open++; }
+                catch (Exception ex) { error = "the workset collector threw: " + ex.Message; }
+                yield return 0;
+                if (error != null) { complete(DocumentVisibilityCoverage.Unreadable(error)); yield break; }
+            }
+            complete(DocumentVisibilityCoverage.From(total, open));
+        }
+
         /// <summary>
         /// Measure a document's coverage. Never throws: a command that cannot report
         /// coverage must still report its findings, with coverage stated as unknown -

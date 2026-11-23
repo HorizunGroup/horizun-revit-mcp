@@ -52,6 +52,8 @@ namespace Horizun.Revit.Core
         public bool NeedPlacements = true;
         public bool NeedAnnotations = true;
         public bool NeedReferences = true;
+        public bool ResumeCollection;
+        public PositionWalk CollectionWalk;
 
         /// <summary>
         /// The unscoped inventory answer is a census, not a geometry query.  In this mode
@@ -96,9 +98,12 @@ namespace Horizun.Revit.Core
             // everything below succeeds.
             try
             {
-                DocumentVisibilityCoverage visibility = DocumentVisibility.Measure(doc);
-                snap.VisibilityCoverage = visibility.ToJson();
-                snap.VisibilityCoverageComplete = visibility.CoverageComplete;
+                if (MayStart(snap, "visibility_coverage"))
+                {
+                    DocumentVisibilityCoverage visibility = DocumentVisibility.Measure(doc);
+                    snap.VisibilityCoverage = visibility.ToJson();
+                    snap.VisibilityCoverageComplete = visibility.CoverageComplete;
+                }
             }
             catch (Exception ex)
             {
@@ -108,9 +113,12 @@ namespace Horizun.Revit.Core
             }
             try
             {
-                JObject federated = FederatedVisibility.Measure(doc, true);
-                snap.LinkCoverage = federated;
-                snap.LinkCoverageComplete = federated.Value<bool>("coverage_complete");
+                if (MayStart(snap, "link_coverage"))
+                {
+                    JObject federated = FederatedVisibility.Measure(doc, true);
+                    snap.LinkCoverage = federated;
+                    snap.LinkCoverageComplete = federated.Value<bool>("coverage_complete");
+                }
             }
             catch (Exception ex)
             {
@@ -127,7 +135,7 @@ namespace Horizun.Revit.Core
             var viewNames = new Dictionary<long, string>();
             try
             {
-                foreach (View v in new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>())
+                foreach (View v in IndexItems(snap, "views_index", new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>()))
                 {
                     long id = Rid.Value(v.Id);
                     allViews[id] = v;
@@ -147,11 +155,15 @@ namespace Horizun.Revit.Core
             var allViewports = new List<Viewport>();
             try
             {
-                foreach (Viewport vp in new FilteredElementCollector(doc).OfClass(typeof(Viewport)).Cast<Viewport>())
+                foreach (Viewport vp in IndexItems(snap, "viewport_index", new FilteredElementCollector(doc).OfClass(typeof(Viewport)).Cast<Viewport>()))
                 {
                     allViewports.Add(vp);
                     long? viewId = TryId(() => vp.ViewId);
-                    if (!viewId.HasValue) continue;
+                    if (!viewId.HasValue)
+                    {
+                        snap.ChecksFailed.Add(new PlanimetryCheckFailure { Check = "viewport_index", Error = "A viewport's view id could not be read." });
+                        continue;
+                    }
                     List<Viewport> list;
                     if (!viewportsByView.TryGetValue(viewId.Value, out list))
                         viewportsByView[viewId.Value] = list = new List<Viewport>();
@@ -170,7 +182,7 @@ namespace Horizun.Revit.Core
             // regenerate placed views. The detailed modes still take the full path.
             if (scope.CensusOnly)
             {
-                if (scope.NeedReferences)
+                if (scope.NeedReferences && MayStart(snap, "references"))
                     References(doc, snap, scope, allViews, viewNames, viewportsByView);
                 ResolveUnmatched(snap, scope);
                 return snap;
@@ -179,8 +191,8 @@ namespace Horizun.Revit.Core
             var schedulePlacements = new List<ScheduleSheetInstance>();
             try
             {
-                schedulePlacements.AddRange(new FilteredElementCollector(doc)
-                    .OfClass(typeof(ScheduleSheetInstance)).Cast<ScheduleSheetInstance>());
+                schedulePlacements.AddRange(IndexItems(snap, "schedule_placement_index", new FilteredElementCollector(doc)
+                    .OfClass(typeof(ScheduleSheetInstance)).Cast<ScheduleSheetInstance>()));
             }
             catch (Exception ex)
             {
@@ -188,21 +200,78 @@ namespace Horizun.Revit.Core
                 { Check = "schedule_placement_index", Error = ex.Message });
             }
 
-            if (scope.NeedViews || scope.NeedAnnotations || scope.NeedReferences)
+            if (!scope.ResumeCollection && (scope.NeedViews || scope.NeedAnnotations || scope.NeedReferences) && MayStart(snap, "views"))
                 Views(doc, snap, scope, allViews, viewportsByView);
-            if (scope.NeedSheets)
+            if (scope.NeedSheets && MayStart(snap, "sheets"))
                 Sheets(doc, snap, scope, schedulePlacements);
-            if (scope.NeedPlacements)
+            if (scope.NeedPlacements && MayStart(snap, "placements"))
                 Placements(doc, snap, scope, allViews, viewNames, allViewports, schedulePlacements);
-            if (scope.NeedAnnotations)
+            if (scope.NeedAnnotations && MayStart(snap, "annotations"))
                 Annotations(doc, snap, scope, allViews, viewNames, viewportsByView);
-            if (scope.NeedReferences)
+            if (scope.NeedReferences && MayStart(snap, "references"))
                 References(doc, snap, scope, allViews, viewNames, viewportsByView);
-            if (scope.TagCoverageCategories.Count > 0)
+            if (scope.TagCoverageCategories.Count > 0 && MayStart(snap, "tag_coverage"))
                 TagCoverage(doc, snap, scope);
 
             ResolveUnmatched(snap, scope);
             return snap;
+        }
+
+        // =====================================================================
+        // COOPERATIVE BUDGET. Callers without an ambient scope collect as before.
+        // =====================================================================
+
+        /// <summary>One more item of <paramref name="pass"/>: may it be read? Records the stop.</summary>
+        private static bool Step(PlanimetrySnapshot snap, string pass)
+        {
+            CooperativeRead.Scope scope = CooperativeRead.Ambient;
+            if (scope == null) return true;
+            if (scope.Continue())
+            {
+                int done;
+                snap.PassItems.TryGetValue(pass, out done);
+                snap.PassItems[pass] = done + 1;
+                return true;
+            }
+            snap.PassStopped[pass] = scope.StoppedBecause;
+            return false;
+        }
+
+        private static WalkStep CollectionStep(PlanimetrySnapshot snap, PlanimetryScope scope, string pass)
+        {
+            if (!scope.ResumeCollection) return Step(snap, pass) ? WalkStep.Go : WalkStep.Stop;
+            WalkStep step = scope.CollectionWalk.Next();
+            if (step == WalkStep.Go)
+            {
+                int done;
+                snap.PassItems.TryGetValue(pass, out done);
+                snap.PassItems[pass] = done + 1;
+            }
+            else if (step == WalkStep.Stop) snap.PassStopped[pass] = CooperativeRead.Ambient.StoppedBecause;
+            return step;
+        }
+
+        /// <summary>May the pass START? A pass that does not is recorded as never begun.</summary>
+        private static bool MayStart(PlanimetrySnapshot snap, string pass)
+        {
+            CooperativeRead.Scope scope = CooperativeRead.Ambient;
+            if (scope == null || scope.Poll()) return true;
+            if (!snap.PassNotStarted.Contains(pass)) snap.PassNotStarted.Add(pass);
+            return false;
+        }
+
+        private static IEnumerable<T> IndexItems<T>(PlanimetrySnapshot snap, string pass, IEnumerable<T> source)
+        {
+            if (!MayStart(snap, pass)) yield break;
+            using (var items = source.GetEnumerator())
+            {
+                while (CooperativeRead.Ambient == null || CooperativeRead.Ambient.Poll())
+                {
+                    if (!items.MoveNext()) yield break;
+                    yield return items.Current;
+                }
+            }
+            snap.PassStopped[pass] = CooperativeRead.Ambient.StoppedBecause;
         }
 
         // =====================================================================
@@ -225,27 +294,27 @@ namespace Horizun.Revit.Core
                   .OfCategory(BuiltInCategory.OST_DetailComponents).WhereElementIsNotElementType().GetElementCount());
             Count(doc, snap, "generic_annotations_total", d => new FilteredElementCollector(d)
                   .OfCategory(BuiltInCategory.OST_GenericAnnotation).WhereElementIsNotElementType().GetElementCount());
-            Count(doc, snap, "detail_curves_total", d => new FilteredElementCollector(d)
-                  .OfClass(typeof(CurveElement)).Cast<CurveElement>().Count(c => c is DetailCurve));
+            Count(doc, snap, "detail_curves_total", d => IndexItems(snap, "totals", new FilteredElementCollector(d)
+                  .OfClass(typeof(CurveElement)).Cast<CurveElement>()).Count(c => c is DetailCurve));
 
-            Count(doc, snap, "views_total", d => Views(d).Count(v => !IsTemplateSafe(v) && !(v is ViewSheet)));
-            Count(doc, snap, "templates_total", d => Views(d).Count(IsTemplateSafe));
-            Count(doc, snap, "sections_total", d => CountType(d, ViewType.Section));
-            Count(doc, snap, "elevations_total", d => CountType(d, ViewType.Elevation));
-            Count(doc, snap, "drafting_views_total", d => CountType(d, ViewType.DraftingView));
-            Count(doc, snap, "legends_total", d => CountType(d, ViewType.Legend));
-            Count(doc, snap, "schedules_total", d => new FilteredElementCollector(d)
-                  .OfClass(typeof(ViewSchedule)).Cast<ViewSchedule>().Count(s => !IsTemplateSafe(s)));
+            Count(doc, snap, "views_total", d => Views(d, snap).Count(v => !IsTemplateSafe(v) && !(v is ViewSheet)));
+            Count(doc, snap, "templates_total", d => Views(d, snap).Count(IsTemplateSafe));
+            Count(doc, snap, "sections_total", d => CountType(d, snap, ViewType.Section));
+            Count(doc, snap, "elevations_total", d => CountType(d, snap, ViewType.Elevation));
+            Count(doc, snap, "drafting_views_total", d => CountType(d, snap, ViewType.DraftingView));
+            Count(doc, snap, "legends_total", d => CountType(d, snap, ViewType.Legend));
+            Count(doc, snap, "schedules_total", d => IndexItems(snap, "totals", new FilteredElementCollector(d)
+                  .OfClass(typeof(ViewSchedule)).Cast<ViewSchedule>()).Count(s => !IsTemplateSafe(s)));
         }
 
-        private static IEnumerable<View> Views(Document d)
+        private static IEnumerable<View> Views(Document d, PlanimetrySnapshot snap)
         {
-            return new FilteredElementCollector(d).OfClass(typeof(View)).Cast<View>();
+            return IndexItems(snap, "totals", new FilteredElementCollector(d).OfClass(typeof(View)).Cast<View>());
         }
 
-        private static int CountType(Document d, ViewType type)
+        private static int CountType(Document d, PlanimetrySnapshot snap, ViewType type)
         {
-            return Views(d).Count(v => !IsTemplateSafe(v) && SafeViewType(v) == type);
+            return Views(d, snap).Count(v => !IsTemplateSafe(v) && SafeViewType(v) == type);
         }
 
         private static bool IsTemplateSafe(View v)
@@ -265,7 +334,12 @@ namespace Horizun.Revit.Core
         /// </summary>
         private static void Count(Document doc, PlanimetrySnapshot snap, string key, Func<Document, int> f)
         {
-            try { snap.Totals[key] = f(doc); }
+            if (!MayStart(snap, "totals")) return;
+            try
+            {
+                int value = f(doc);
+                if (!snap.PassStopped.ContainsKey("totals")) snap.Totals[key] = value;
+            }
             catch (Exception ex)
             {
                 snap.ChecksFailed.Add(new PlanimetryCheckFailure { Check = key, Error = ex.Message });
@@ -281,7 +355,7 @@ namespace Horizun.Revit.Core
             List<ViewSheet> sheets;
             try
             {
-                sheets = new FilteredElementCollector(doc).OfClass(typeof(ViewSheet)).Cast<ViewSheet>()
+                sheets = IndexItems(snap, "sheets", new FilteredElementCollector(doc).OfClass(typeof(ViewSheet)).Cast<ViewSheet>())
                     .Where(s => scope.SheetIds == null || scope.SheetIds.Contains(Rid.Value(s.Id)))
                     .OrderBy(s => Rid.Value(s.Id)).ToList();
             }
@@ -292,7 +366,7 @@ namespace Horizun.Revit.Core
             }
 
             var schedulesBySheet = new Dictionary<long, List<ScheduleSheetInstance>>();
-            foreach (ScheduleSheetInstance si in schedulePlacements)
+            foreach (ScheduleSheetInstance si in IndexItems(snap, "sheets", schedulePlacements))
             {
                 long? owner = TryId(() => si.OwnerViewId);
                 if (!owner.HasValue) continue;
@@ -304,6 +378,9 @@ namespace Horizun.Revit.Core
 
             foreach (ViewSheet s in sheets)
             {
+                WalkStep step = CollectionStep(snap, scope, "sheets");
+                if (step == WalkStep.Stop) break;
+                if (step == WalkStep.Skip) continue;
                 var fact = new SheetFact { Id = Rid.Value(s.Id) };
                 try
                 {
@@ -424,6 +501,7 @@ namespace Horizun.Revit.Core
 
             foreach (KeyValuePair<long, View> kv in selected)
             {
+                if (!Step(snap, "views")) break;
                 View v = kv.Value;
                 var fact = new ViewFact { Id = kv.Key };
                 try
@@ -684,6 +762,7 @@ namespace Horizun.Revit.Core
 
             foreach (Viewport vp in viewports.OrderBy(x => Rid.Value(x.Id)))
             {
+                if (!Step(snap, "placements")) break;
                 long? sheetId = TryId(() => vp.SheetId);
                 if (scope.SheetIds != null && (!sheetId.HasValue || !scope.SheetIds.Contains(sheetId.Value))) continue;
                 long? viewId = TryId(() => vp.ViewId);
@@ -705,6 +784,9 @@ namespace Horizun.Revit.Core
                     {
                         fact.TargetExists = allViews.ContainsKey(viewId.Value);
                         fact.TargetName = viewNames.ContainsKey(viewId.Value) ? viewNames[viewId.Value] : null;
+                        if (allViews.TryGetValue(viewId.Value, out View targetView))
+                            try { fact.ViewScale = targetView.Scale; }
+                            catch (Exception ex) { fact.Note("view_scale", ex.Message); }
                     }
                     else { fact.Note("view_id", "the viewport would not name its view"); }
 
@@ -754,6 +836,7 @@ namespace Horizun.Revit.Core
 
             foreach (ScheduleSheetInstance si in schedules.OrderBy(x => Rid.Value(x.Id)))
             {
+                if (!Step(snap, "placements")) break;
                 long? sheetId = TryId(() => si.OwnerViewId);
                 if (scope.SheetIds != null && (!sheetId.HasValue || !scope.SheetIds.Contains(sheetId.Value))) continue;
                 if (scope.ViewIds != null) continue;   // a schedule placement is not a view placement
@@ -776,6 +859,7 @@ namespace Horizun.Revit.Core
                         Element schedule = doc.GetElement(si.ScheduleId);
                         fact.TargetExists = schedule != null;
                         fact.TargetName = schedule == null ? null : Try(() => schedule.Name, null);
+                        if (schedule is ViewSchedule vs && !Try(() => si.IsTitleblockRevisionSchedule, false)) ReadTotals(fact, vs);
                     }
                     else fact.Note("schedule_id", "the placement would not name its schedule");
 
@@ -800,6 +884,37 @@ namespace Horizun.Revit.Core
                 catch (Exception ex) { fact.Readable = false; fact.Note("schedule_placement", ex.Message); }
                 snap.Placements.Add(fact);
             }
+        }
+
+        /// <summary>
+        /// The schedule's itemization and the visible fields set to Calculate Totals, with their spec and whether
+        /// they read the instance or its type - what ScheduleTotalsRules needs. An unreadable definition leaves
+        /// ScheduleTotalFields null (unknown), never an empty list (clean).
+        /// </summary>
+        private static void ReadTotals(PlacementFact fact, ViewSchedule vs)
+        {
+            try
+            {
+                ScheduleDefinition def = vs.Definition;
+                fact.ScheduleItemized = GuardBool(fact, "schedule_itemized", () => def.IsItemized);
+                var fields = new List<ScheduleTotalField>();
+                int n = def.GetFieldCount();
+                for (int i = 0; i < n; i++)
+                {
+                    ScheduleField f = def.GetField(i);
+                    if (f.IsHidden || f.DisplayType != ScheduleFieldDisplayType.Totals) continue;
+                    string spec = null;
+                    try { spec = f.GetSpecTypeId()?.TypeId; } catch { spec = null; }
+                    fields.Add(new ScheduleTotalField
+                    {
+                        Name = Try(() => f.ColumnHeading, null) ?? Try(() => f.GetName(), null),
+                        SpecTypeId = spec,
+                        FieldType = ScheduleTotalsRules.FieldTypeName(Try(() => f.FieldType.ToString(), null))
+                    });
+                }
+                fact.ScheduleTotalFields = fields;
+            }
+            catch (Exception ex) { fact.ScheduleTotalFields = null; fact.ScheduleTotalsUnreadable = true; fact.Note("schedule_definition", ex.Message); }
         }
 
         private static string SheetNumberOf(Document doc, long? sheetId)
@@ -857,9 +972,12 @@ namespace Horizun.Revit.Core
         {
             try
             {
-                foreach (T e in new FilteredElementCollector(doc).OfClass(typeof(T)).Cast<T>()
+                foreach (T e in IndexItems(snap, "annotations:" + population, new FilteredElementCollector(doc).OfClass(typeof(T)).Cast<T>())
                              .Where(keep).OrderBy(x => Rid.Value(x.Id)))
                 {
+                    WalkStep step = CollectionStep(snap, scope, "annotations:" + population);
+                    if (step == WalkStep.Stop) break;
+                    if (step == WalkStep.Skip) continue;
                     long id = Rid.Value(e.Id);
                     if (scope.ElementIds != null && !scope.ElementIds.Contains(id)) continue;
                     if (!InViewScope(e, scope)) continue;
@@ -884,9 +1002,12 @@ namespace Horizun.Revit.Core
         {
             try
             {
-                foreach (Element e in new FilteredElementCollector(doc).OfCategory(category)
-                             .WhereElementIsNotElementType().ToElements().OrderBy(x => Rid.Value(x.Id)))
+                foreach (Element e in IndexItems(snap, "annotations:" + kind, new FilteredElementCollector(doc).OfCategory(category)
+                             .WhereElementIsNotElementType()).OrderBy(x => Rid.Value(x.Id)))
                 {
+                    WalkStep step = CollectionStep(snap, scope, "annotations:" + kind);
+                    if (step == WalkStep.Stop) break;
+                    if (step == WalkStep.Skip) continue;
                     long id = Rid.Value(e.Id);
                     if (scope.ElementIds != null && !scope.ElementIds.Contains(id)) continue;
                     if (!InViewScope(e, scope)) continue;
@@ -997,6 +1118,45 @@ namespace Horizun.Revit.Core
                                                 PlanimetryScope scope)
         {
             AnnotationFact fact = Common(doc, d, "dimension", allViews, viewNames, viewportsByView);
+            // The printed band (dimension line and its text), for collision checks: the
+            // line's own position across it, plus 3.5 mm of paper either side (2.5 mm text and its gap).
+            try
+            {
+                long ownerId = Rid.Value(d.OwnerViewId);
+                if (fact.Box.Valid && allViews.TryGetValue(ownerId, out View owner) && d.Curve is Line dl && owner.Scale > 0)
+                {
+                    double[] o = ViewFrame(owner, dl.Origin);
+                    double[] t = ViewFrame(owner, dl.Origin.Add(dl.Direction));
+                    double dx = t[0] - o[0], dy = t[1] - o[1];
+                    bool horizontal = Math.Abs(dx) >= Math.Abs(dy);
+                    bool aligned = Math.Min(Math.Abs(dx), Math.Abs(dy)) < 1e-6 * Math.Max(Math.Abs(dx), Math.Abs(dy));
+                    if (aligned)
+                    {
+                        fact.CollisionBox = SheetAnnotationOverlapRules.DimensionBand(fact.Box, horizontal,
+                            horizontal ? o[1] : o[0], 3.5 / 304.8 * owner.Scale);
+                        // Printed parts: a 0.3 mm line band and one box per value text, sized
+                        // from the dimension type's text size and the value string.
+                        double size = 2.5 / 304.8;
+                        try { Parameter ts = doc.GetElement(d.GetTypeId())?.get_Parameter(BuiltInParameter.TEXT_SIZE); if (ts != null && ts.AsDouble() > 0) size = ts.AsDouble(); } catch { }
+                        size *= owner.Scale;
+                        fact.LineBand = SheetAnnotationOverlapRules.DimensionBand(fact.Box, horizontal, horizontal ? o[1] : o[0], 0.3 / 304.8 * owner.Scale);
+                        fact.LineHorizontal = horizontal;
+                        var texts = new List<PlanBox>();
+                        void AddText(XYZ at, string value)
+                        {
+                            if (at == null) return;
+                            double[] c0 = ViewFrame(owner, at);
+                            double w = Math.Max(1, (value ?? "").Length) * 0.8 * size * 0.5, h = size * 0.5;
+                            texts.Add(horizontal ? PlanBox.FromCorners(c0[0] - w, c0[1] - h, c0[0] + w, c0[1] + h)
+                                                 : PlanBox.FromCorners(c0[0] - h, c0[1] - w, c0[0] + h, c0[1] + w));
+                        }
+                        if (d.NumberOfSegments > 1) foreach (DimensionSegment s in d.Segments) AddText(s.TextPosition, s.ValueString);
+                        else AddText(d.TextPosition, d.ValueString);
+                        fact.TextBoxes = texts;
+                    }
+                }
+            }
+            catch { fact.CollisionBox = null; }
             fact.IsViewSpecific = GuardBool(fact, "view_specific", () => d.ViewSpecific);
             fact.AreReferencesAvailable = GuardBool(fact, "references_available", () => d.AreReferencesAvailable);
             fact.SegmentCount = GuardInt(fact, "segment_count", () => d.NumberOfSegments);
@@ -1223,10 +1383,11 @@ namespace Horizun.Revit.Core
             //    the API states rather than implies, so it is read first and never guessed.
             try
             {
-                foreach (ElevationMarker marker in new FilteredElementCollector(doc)
-                             .OfClass(typeof(ElevationMarker)).Cast<ElevationMarker>()
+                foreach (ElevationMarker marker in IndexItems(snap, "references", new FilteredElementCollector(doc)
+                             .OfClass(typeof(ElevationMarker)).Cast<ElevationMarker>())
                              .OrderBy(m => Rid.Value(m.Id)))
                 {
+                    if (!Step(snap, "references")) break;
                     long id = Rid.Value(marker.Id);
                     if (scope.ElementIds != null && !scope.ElementIds.Contains(id)) continue;
                     long? owner = TryId(() => marker.OwnerViewId);
@@ -1268,6 +1429,7 @@ namespace Horizun.Revit.Core
             {
                 foreach (KeyValuePair<long, View> kv in allViews.OrderBy(x => x.Key))
                 {
+                    if (!Step(snap, "references")) break;
                     if (scope.ViewIds != null && !scope.ViewIds.Contains(kv.Key)) continue;
                     ICollection<ElementId> callouts;
                     try { callouts = kv.Value.GetReferenceCallouts(); }
@@ -1275,6 +1437,7 @@ namespace Horizun.Revit.Core
                     if (callouts == null) continue;
                     foreach (ElementId id in callouts.OrderBy(Rid.Value))
                     {
+                        if (!Step(snap, "references")) break;
                         long raw = Rid.Value(id);
                         if (!seen.Add(raw)) continue;
                         if (scope.ElementIds != null && !scope.ElementIds.Contains(raw)) continue;
@@ -1297,11 +1460,12 @@ namespace Horizun.Revit.Core
             //    the reason, never inferred from a name.
             try
             {
-                foreach (Element marker in new FilteredElementCollector(doc)
+                foreach (Element marker in IndexItems(snap, "references", new FilteredElementCollector(doc)
                              .OfCategory(BuiltInCategory.OST_ReferenceViewer)
-                             .WhereElementIsNotElementType().ToElements()
+                             .WhereElementIsNotElementType())
                              .OrderBy(e => Rid.Value(e.Id)))
                 {
+                    if (!Step(snap, "references")) break;
                     long raw = Rid.Value(marker.Id);
                     if (!seen.Add(raw)) continue;
                     if (scope.ElementIds != null && !scope.ElementIds.Contains(raw)) continue;
@@ -1322,7 +1486,8 @@ namespace Horizun.Revit.Core
                 .OrderBy(r => r.Id)
                 .ThenBy(r => r.TargetViewId ?? long.MaxValue)
                 .ToList();
-            snap.Totals["view_references_total"] = snap.References.Count;
+            if (CooperativeRead.Ambient?.Complete != false)
+                snap.Totals["view_references_total"] = snap.References.Count;
         }
 
         private static string KindOf(Element marker)
@@ -1445,6 +1610,7 @@ namespace Horizun.Revit.Core
 
             foreach (ViewFact v in snap.Views)
             {
+                if (!Step(snap, "tag_coverage")) break;
                 if (v.IsTemplate == true) continue;
                 v.TagCoverage = new List<TagCoverageFact>();
                 View view = doc.GetElement(Rid.Make(v.Id)) as View;
@@ -1522,7 +1688,8 @@ namespace Horizun.Revit.Core
                                     "LOWER BOUND and the remainder is unknown, not tagged";
                                 continue;
                             }
-                            var row = new UntaggedElement { Id = id, Category = categoryName };
+                            // The element's OWN category: the one the rule asked for is only what the sweep was filtered by.
+                            var row = new UntaggedElement { Id = id, Category = Try(() => e.Category == null ? null : e.Category.Name, null) ?? categoryName, RequestedCategory = categoryName, UniqueId = Try(() => e.UniqueId, null) };
                             try
                             {
                                 Element type = doc.GetElement(e.GetTypeId());

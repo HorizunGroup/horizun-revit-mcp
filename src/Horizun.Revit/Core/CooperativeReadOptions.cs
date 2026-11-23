@@ -48,10 +48,15 @@ namespace Horizun.Revit.Core
     /// <summary>The opt-in reading options, parsed once and shaped the same way everywhere.</summary>
     public sealed class CooperativeOptions
     {
+        // Epochs restart with the process. A cursor from a previous process must not
+        // happen to match a newly created observer at the same numeric epoch.
+        private static readonly string CursorSession = Guid.NewGuid().ToString("N");
         /// <summary>False when the caller said nothing: the command then behaves exactly as it always has.</summary>
         public bool Requested;
 
         public int? UiBudgetMs;
+
+        public bool DefaultApplied;
 
         /// <summary>A hard bound on units examined, independent of the clock. Zero = unbounded.</summary>
         public int MaxUnits;
@@ -108,18 +113,18 @@ namespace Horizun.Revit.Core
             options.MaxUnits = node.Value<int?>("max_units") ?? 0;
             if (options.MaxUnits < 0) options.MaxUnits = 0;
 
+            // Read the caller's ceiling on the first page and every continuation.
+            // ResponseCeiling clamps it to the hard maximum.
+            options.MaxResponseBytes = request?.Value<int?>("max_response_bytes") ?? 0;
+
             string cursor = node.Value<string>("cursor");
             if (string.IsNullOrWhiteSpace(cursor)) return options;
-
-            // A CEILING THE CALLER MAY LOWER AND MAY NOT REMOVE. Raising it past the hard
-            // maximum is clamped rather than refused: a caller asking for more than the
-            // client can parse has made an estimate, not a mistake.
-            options.MaxResponseBytes = request?.Value<int?>("max_response_bytes") ?? 0;
 
             int startAt;
             string fingerprint;
             long epoch;
-            options.Refusal = ReadCursor(cursor, out startAt, out fingerprint, out epoch);
+            string session;
+            options.Refusal = ReadCursor(cursor, out startAt, out fingerprint, out epoch, out session);
             if (options.Refusal != null) return options;
 
             if (!string.Equals(fingerprint, requestFingerprint, StringComparison.Ordinal))
@@ -141,7 +146,12 @@ namespace Horizun.Revit.Core
             // of a collection that is now shorter - skipping whatever moved up into the gap,
             // and reporting a clean continuation.
             long now = CurrentEpoch();
-            if (epoch >= 0 && now >= 0 && epoch != now)
+            if (epoch < 0 || now < 0 || session != CursorSession)
+            {
+                options.Refusal = "this cursor's document state cannot be verified in this session. Re-run without a cursor.";
+                return options;
+            }
+            if (epoch != now)
             {
                 options.Refusal =
                     "this cursor was issued when the model was at state " + epoch + " and it is now at " +
@@ -156,6 +166,19 @@ namespace Horizun.Revit.Core
             options.StartAt = startAt;
             options.CursorFingerprint = fingerprint;
             options.CursorEpoch = epoch;
+            return options;
+        }
+
+        public static CooperativeOptions ReadWithDefault(JObject request, string fingerprint, int defaultUiBudgetMs)
+        {
+            var options = Read(request, fingerprint);
+            if (request?["cooperative"] == null || request["cooperative"].Type == JTokenType.Null)
+            {
+                options.Requested = true;
+                options.UiBudgetMs = defaultUiBudgetMs;
+                options.DefaultApplied = true;
+                options.MaxResponseBytes = request?.Value<int?>("max_response_bytes") ?? 0;
+            }
             return options;
         }
 
@@ -174,10 +197,10 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>Open a scope for this read, or null when the caller asked for the old behaviour.</summary>
-        public CooperativeRead.Scope Begin(string what, int knownUnits)
+        public CooperativeRead.Scope Begin(string what, int knownUnits, bool zeroIsUnlimited = false)
         {
             if (!Requested) return null;
-            return CooperativeRead.Begin(what, UiBudgetMs, knownUnits);
+            return CooperativeRead.Begin(what, UiBudgetMs, knownUnits, MaxUnits, zeroIsUnlimited);
         }
 
         /// <summary>Has this read hit the caller's unit bound? Separate from the clock on purpose.</summary>
@@ -201,7 +224,7 @@ namespace Horizun.Revit.Core
             if (collected == null) return false;
             if (done > 0 && done % SizeCheckEvery != 0) return false;
 
-            bytes = collected.ToString(Newtonsoft.Json.Formatting.None).Length;
+            bytes = Encoding.UTF8.GetByteCount(collected.ToString(Newtonsoft.Json.Formatting.None));
             return bytes >= ResponseCeiling;
         }
 
@@ -217,31 +240,29 @@ namespace Horizun.Revit.Core
         public static string MakeCursor(int position, string fingerprint)
         {
             string raw = position.ToString(CultureInfo.InvariantCulture) + "|" + (fingerprint ?? "") +
-                         "|" + CurrentEpoch().ToString(CultureInfo.InvariantCulture);
+                         "|" + CurrentEpoch().ToString(CultureInfo.InvariantCulture) + "|" + CursorSession;
             return Convert.ToBase64String(Encoding.UTF8.GetBytes(raw));
         }
 
         private static string ReadCursor(string cursor, out int position, out string fingerprint,
-                                         out long epoch)
+                                         out long epoch, out string session)
         {
             position = 0;
             fingerprint = null;
             epoch = -1;
+            session = null;
             try
             {
                 string raw = Encoding.UTF8.GetString(Convert.FromBase64String(cursor));
                 string[] parts = raw.Split('|');
-                if (parts.Length < 2) return "this cursor is malformed.";
+                if (parts.Length != 4) return "this cursor cannot be verified in this session; re-run without a cursor.";
                 if (!int.TryParse(parts[0], NumberStyles.Integer,
                                   CultureInfo.InvariantCulture, out position) || position < 0)
                     return "this cursor carries no usable position.";
                 fingerprint = parts[1];
-                // A TWO-PART CURSOR IS ONE THIS BUILD ISSUED BEFORE THE EPOCH EXISTED. It is
-                // accepted and its model state is reported as unchecked, rather than refused:
-                // breaking every outstanding cursor to add a check is a worse trade than
-                // saying which ones could not be checked.
-                if (parts.Length >= 3)
-                    long.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out epoch);
+                if (!long.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out epoch))
+                    return "this cursor has an invalid document state.";
+                session = parts[3];
                 return null;
             }
             catch (Exception)
@@ -301,15 +322,17 @@ namespace Horizun.Revit.Core
             if (!Requested) return null;
 
             var report = scope == null ? new JObject() : scope.Report();
+            if (DefaultApplied)
+            {
+                report["default_applied"] = true;
+                report["default_note"] = "applied by default; send cooperative.ui_budget_ms to change it";
+            }
             report["max_units"] = MaxUnits > 0 ? (JToken)MaxUnits : JValue.CreateNull();
             report["resumed_at"] = StartAt;
             report["response_ceiling_bytes"] = ResponseCeiling;
-            report["model_state"] = CurrentEpoch();
-            report["model_state_checked"] = CursorEpoch >= 0 || StartAt == 0;
-            if (StartAt > 0 && CursorEpoch < 0)
-                report["model_state_means"] =
-                    "this cursor carried no model state, so nothing verified that the model is what it " +
-                    "was when the cursor was issued. It came from a build before that check existed.";
+            long currentEpoch = CurrentEpoch();
+            report["model_state"] = currentEpoch;
+            report["model_state_checked"] = currentEpoch >= 0 && (CursorEpoch >= 0 || StartAt == 0);
             report["more_remains"] = moreRemains;
             if (ownCursorField != null)
             {
@@ -323,9 +346,11 @@ namespace Horizun.Revit.Core
             }
             else
             {
-                report["cursor"] = moreRemains
+                report["cursor"] = moreRemains && currentEpoch >= 0
                     ? (JToken)MakeCursor(nextPosition, fingerprint) : JValue.CreateNull();
-                report["cursor_means"] = moreRemains
+                report["cursor_means"] = moreRemains && currentEpoch < 0
+                    ? "No safe continuation is available because the document state observer is unavailable. Re-run the read."
+                    : moreRemains
                     ? "send this back in cooperative.cursor, with the SAME request, to carry on where " +
                       "this stopped. A partial read that cannot be continued is one somebody has to " +
                       "redo from the start, and the second attempt freezes Revit exactly as long as " +

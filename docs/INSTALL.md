@@ -31,20 +31,15 @@ del servidor MCP y los add-ins. **No necesitas Git, Visual Studio ni el SDK de
 4. Call `horizun_health` to verify the loaded version and active document.
    / Llama a `horizun_health` para verificar la versión y el documento activo.
 
-From v4.0.1 the Setup and every binary it installs (server, add-ins and the
-libraries they load) are signed by HORIZUN GROUP S.A.S. (Certum): check the
-Digital Signatures tab in their properties. Windows Smart App Control blocks
-unsigned binaries, so releases before v4.0.1 (unsigned server and add-ins) do not
-run with it on. Desde la v4.0.1 el Setup y todos los binarios que instala están
-firmados por HORIZUN GROUP S.A.S. (Certum); antes de la v4.0.1 el servidor y los
-add-ins no lo estaban y el Control inteligente de aplicaciones los bloquea.
-Consulta la [política de firma](../CODE-SIGNING-POLICY.md).
+Public releases are unsigned by policy. Hashes verify the downloaded bytes but
+do not authenticate a Windows publisher; Windows/Revit may show a publisher
+warning. Las releases públicas no tienen firma de editor de Windows. Consulta
+la [política de firma](../CODE-SIGNING-POLICY.md).
 
 The optional [bootstrap](../install-release.ps1) performs the download and hash
-comparison automatically; it requires the explicit `-AllowUnsigned` flag only
-when the Setup is not signed (releases before v3.0.2).
-El bootstrap opcional descarga y compara el hash automáticamente; solo exige
-`-AllowUnsigned` si el Setup no está firmado (releases anteriores a la v3.0.2).
+comparison automatically and requires the explicit `-AllowUnsigned` flag.
+El bootstrap opcional descarga y compara el hash automáticamente; requiere
+`-AllowUnsigned`.
 
 ## Verify the downloaded installer / Verificar la descarga
 
@@ -69,7 +64,7 @@ con el plan gratuito; [pasos completos / complete steps](CLIENTS.md#claude-deskt
 ## First Revit start / Primer arranque de Revit
 
 Revit may show an add-in security prompt on first launch. After verifying the
-package and its HORIZUN GROUP S.A.S. signature, choose **Always Load** to
+package and accepting the unsigned-release policy, choose **Always Load** to
 allow the add-in. Check the other monitors if Revit appears to be waiting with
 no visible dialog. With a document open, the **Horizun Hub** ribbon tab and its
 **Estado del puente** button show the local bridge state; verify the client
@@ -88,24 +83,15 @@ Close Revit, run the new release's Setup and complete the
 completa los pasos del cliente. Source compilation is described separately in
 [BUILDING.md](BUILDING.md); it is not required to update a release installation.
 
-### Upgrading to 2.0 / Actualizar a la 2.0
+### Upgrading to 6.0 Community / Actualizar a la 6.0 Community
 
-Installing is the same. **Two calls that worked before now fail**, and both are in
-`horizun_apply_cad_update`. Instalar es igual; dos llamadas que antes funcionaban
-ahora fallan, ambas en `horizun_apply_cad_update`.
-
-| What changed | What to do |
-|---|---|
-| `apply_binding` is a **required** argument | Copy the `apply_binding` block from the `horizun_plan_cad_update` reply, verbatim. Any caller following the documented flow already receives it. |
-| A plan that **releases fittings** is refused | Either drop the pairing that needs the release and plan again, or send `accept_connections_not_rebuilt: true` — which says you will run `horizun_cad_connect` over the result and accept its verdict. |
-
-Nothing else in the tool set changed shape. No other tool was removed, renamed or
-given a required argument. Ninguna otra herramienta cambió de forma.
-
-**Reading a reply.** `state: applied` has never meant the network was built and
-still does not. 2.0 says so in the reply: `verdict.geometry` is verified by
-re-reading the model, and `verdict.network` is `not_asserted`. Joining is
-`horizun_cad_connect`, and its result is what makes a revision *built*.
+Installing is the same. The 41 tools of the Pro edition (MEP, DWG to BIM,
+reinforcement, IFC to BIM and IFC delivery, point clouds, family authoring and
+coordination) are not part of Community 6.0. Some calls that passed before are now
+refused (for example a bare number in a length parameter); see the
+[CHANGELOG](../CHANGELOG.md). Instalar es igual. Las 41 herramientas de la edición
+Pro no forman parte de la Community 6.0, y algunas llamadas que antes pasaban ahora
+se rechazan (ver el CHANGELOG).
 
 ### Going back / Volver atrás
 
@@ -115,13 +101,10 @@ Instala el Setup anterior encima; los ajustes se conservan.
 
 Two limits worth knowing before you do:
 
-- **What 2.0 recorded, 1.3 does not read.** Operation records (used to continue an
-  update that stopped part-way) and the provenance stamped on fittings are ignored
-  by older versions. Nothing breaks; the protections they enable simply stop
-  applying, and an older `horizun_apply_cad_update` will again apply a plan without
-  re-measuring the world it was made against.
-- **Models are not downgraded.** Elements built or re-shaped by 2.0 stay exactly as
-  they are. It is the checking that goes away, not the geometry.
+- **What a newer version recorded, an older one may not read.** Nothing breaks; the
+  protections those records enable simply stop applying.
+- **Models are not downgraded.** Elements built or re-shaped by a newer version stay
+  exactly as they are. It is the checking that goes away, not the geometry.
 
 ## Common questions / Preguntas frecuentes
 

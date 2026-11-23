@@ -26,7 +26,7 @@ if (-not $config.expected_addin_commit) { throw 'expected_addin_commit is requir
 if ((Get-FileHash -LiteralPath $Server -Algorithm SHA256).Hash -ne $config.expected_server_sha256) { throw 'Server SHA-256 differs from the fixture manifest.' }
 if (@($config.cases).Count -lt 1) { throw 'Provide at least one explicit case.' }
 foreach ($case in $config.cases) {
-    if (-not $case.name -or $case.tool -notin @('horizun_create_elements', 'horizun_manage_system_types', 'horizun_capture_view')) {
+    if (-not $case.name -or $case.tool -notin @('horizun_create_elements', 'horizun_capture_view')) {
         throw 'Cases require a name and an allowed typed rehearsal/capture tool.'
     }
     if (-not $case.arguments) { throw "Missing arguments for $($case.name)." }

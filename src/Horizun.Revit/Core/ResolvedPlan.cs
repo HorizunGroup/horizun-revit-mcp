@@ -33,6 +33,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -64,6 +65,9 @@ namespace Horizun.Revit.Core
         /// </summary>
         public IDictionary<string, string> BeforeValues;
         public IDictionary<string, string> ProposedValues;
+        // Measured from a provisional element and then rolled back. Display only:
+        // the confirmation fingerprint binds the host/type inputs, not temporary IDs.
+        public IDictionary<string, string> PreviewValues;
         public long? ElementId;
 
         /// <summary>
@@ -123,6 +127,24 @@ namespace Horizun.Revit.Core
         public int CreateCount { get { return Count(PlannedAction.Create); } }
         public int ModifyCount { get { return Count(PlannedAction.Modify); } }
         public int DeleteCount { get { return Count(PlannedAction.Delete); } }
+
+        internal JObject DescribeResolution() => new JObject
+        {
+            ["elements"] = Elements.Count,
+            ["create"] = CreateCount,
+            ["modify"] = ModifyCount,
+            ["delete"] = DeleteCount,
+            ["expected_cascade"] = ExpectedCascadeCount,
+            ["fingerprint"] = Fingerprint()
+        };
+
+        internal CommandResult RefuseChangedChild(string expectedFingerprint, string action)
+        {
+            if (expectedFingerprint == null || string.Equals(expectedFingerprint, Fingerprint(), StringComparison.Ordinal))
+                return null;
+            return CommandResult.FailWithDetail("The " + action + " plan changed after the atomic plan recheck. Rehearse the graph again.",
+                new JObject { ["state"] = "stale_plan", ["write_started"] = false, ["changes_applied"] = false });
+        }
 
         private int Count(PlannedAction a)
         {

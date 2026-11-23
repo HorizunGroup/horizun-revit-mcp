@@ -99,6 +99,9 @@ namespace Horizun.Revit.Core
     {
         /// <summary>Null when the open may proceed. The whole sentence when it may not.</summary>
         public string Refusal { get; internal set; }
+        /// <summary>Stable error code of the refusal: entrada_invalida for a bad expected_version,
+        /// precondicion_no_cumplida when the file, the host or the central forbid the open.</summary>
+        public string RefusalCode { get; internal set; }
 
         public bool Ok => Refusal == null;
 
@@ -145,19 +148,27 @@ namespace Horizun.Revit.Core
             if (expected == null && !string.IsNullOrWhiteSpace(i.ExpectedVersion))
                 return Refuse(v,
                     "expected_version does not contain a Revit year: '" + i.ExpectedVersion + "'. Pass something " +
-                    "like '2026'. Nothing was opened.");
+                    "like '2026'. Nothing was opened.", "entrada_invalida");
 
             if (expected == null && i.ExpectedVersionRequired)
-                return Refuse(v,
+                return RefuseInput(v,
                     "expected_version is required for open and must contain a Revit year (e.g. '2026'). " +
                     "It is the whole safety mechanism: opening a file on a newer host upgrades it irreversibly, " +
                     "and this tool has no way to know which bridge you meant to be on unless you say so.");
 
             if (expected != null && !SameVersion(f.HostVersion, expected))
+            {
+                int fileYear, hostYear;
+                bool older = !f.IsCloud && TryYear(f.FileVersion, out fileYear) &&
+                    TryYear(f.HostVersion, out hostYear) && fileYear < hostYear;
                 return Refuse(v,
                     "This Revit host is " + (f.HostVersion ?? "(unreadable)") + ", not " + expected +
                     ". You are talking to the wrong bridge. Nothing was opened. Send this to the bridge running " +
-                    "Revit " + expected + " - horizun_target lists the ones that are running.");
+                    "Revit " + expected + " - horizun_target lists the ones that are running." +
+                    (!f.IsCloud ? " The detected file version is " + (f.FileVersion ?? "unreadable") + "." : "") +
+                    (older ? " To open the older file here instead, set expected_version to the host year " +
+                        f.HostVersion + " and allow_upgrade=true; back up the file before converting it." : ""));
+            }
 
             // --- Guard 1: the irreversible upgrade. --------------------------------
             // Not for an activation: the document is already in memory, and whatever its
@@ -232,6 +243,8 @@ namespace Horizun.Revit.Core
                         "Revit opens it and SAVES it (opened and closed without saving it still reads as a " +
                         "central). If it is a copy of the central, detach=true reads it safely; open_central=true " +
                         "opens it as it is, and anything synchronized from it goes to the central it records. " +
+                        "For a local you made yourself with CreateNewLocal that is what you want: open_central names " +
+                        "what Revit reports about the file (a central), it does not open the central model itself. " +
                         "Nothing was opened.");
 
                 if (f.IsCentral == true)
@@ -307,10 +320,13 @@ namespace Horizun.Revit.Core
             return n != null && int.TryParse(n, out year);
         }
 
-        private static OpenVerdict Refuse(OpenVerdict v, string message)
+        private static OpenVerdict Refuse(OpenVerdict v, string message, string code = "precondicion_no_cumplida")
         {
             v.Refusal = message;
+            v.RefusalCode = code;
             return v;
         }
+
+        private static OpenVerdict RefuseInput(OpenVerdict v, string message) => Refuse(v, message, "entrada_invalida");
     }
 }

@@ -3,17 +3,18 @@
 # doors converted, walls with M_Fixed windows rolled back - the window's read-only 'Wall
 # Thickness'/'Extension Jamb' follow the thinner host, and its nested muntins read "hosted
 # by 0" after Revit regenerates it. This module keeps that case in every year's matrix.
-# Stages its own level, one compound wall of Autodesk's own template ('Exterior - Brick on
-# Mtl. Stud'), a door ('M_Single-Flush') and a window ('M_Fixed', the one with nested
-# components) hosted on it; splits it; re-reads the inserts and clashes them against the new
-# layer walls; deletes everything it created. The document is never saved.
+# Stages its own level, one compound wall ('Exterior - Brick on Mtl. Stud'), a door
+# ('M_Single-Flush') and a window ('M_Fixed', the one with nested components) hosted on it,
+# their types taken BY NAME from the document (a document without them leaves the cases
+# not_covered); splits it; re-reads the inserts and the split's own spatial check; deletes
+# everything it created. The document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'wallsplit-hosted'
     Catalog = @(
         @{ Name = 'wallsplit-hosted: the dry run plans the layers of an own compound wall hosting a door and a window'; Tool = 'horizun_split_multilayer_walls' }
         @{ Name = 'wallsplit-hosted: apply converts it, verified, with a cut proof'; Tool = 'horizun_split_multilayer_walls' }
         @{ Name = 'wallsplit-hosted: the door and the window keep id, UniqueId, host (the core carrier), sill and head'; Tool = 'horizun_split_multilayer_walls' }
-        @{ Name = 'wallsplit-hosted: a door or window touching a new layer wall is reported as trim in a lining (warning), never as a blocked opening'; Tool = 'horizun_clash' }
+        @{ Name = 'wallsplit-hosted: the split''s spatial check reports a door or window touching a new layer wall as trim in a lining (warning), never as a blocked opening'; Tool = 'horizun_split_multilayer_walls' }
         @{ Name = 'wallsplit-hosted: everything the probe created is deleted'; Tool = 'horizun_delete_verified' }
     )
     Run     = {
@@ -40,32 +41,21 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             return $null
         }
-        # One type per category from the year's own Autodesk template, by name (a fixture
-        # rarely carries a compound wall, a door AND a window with nested components).
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-        $tpl = @('English\DefaultMetric.rte', 'English\Default-Multi-Discipline_Metric.rte') | ForEach-Object { Join-Path $tplRoot $_ } |
-            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        function Bring($category, $typeName, $familyName, $key) {
-            $have = @(Types $category $typeName) | Select-Object -First 1
-            if ($have) { return $have }
-            if (-not $tpl) { return $null }
-            $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = $category
-                    type_names = @($familyName + ': ' + $typeName); duplicate_types = 'use_destination' } ($run + '-wsh-' + $key)
-            return @(Types $category $typeName) | Select-Object -First 1
-        }
+        # One type per category, by name, from the document.
+        function Bring($category, $typeName) { return @(Types $category $typeName) | Select-Object -First 1 }
 
         $E = 99000.0; $X = 1030000.0; $Y = 0.0; $L = 8000.0
         $lv = Create @{ kind = 'level'; name = ('HZ_WSH_' + (([string]$run) -replace '[^A-Za-z0-9]', '')); elevation = $E } 'level'
-        $wallType = Bring 'OST_Walls' 'Exterior - Brick on Mtl. Stud' 'Basic Wall' 'walltype'
-        $doorType = Bring 'OST_Doors' '0915 x 2134mm' 'M_Single-Flush' 'doortype'
-        $winType = Bring 'OST_Windows' '0915 x 1220mm' 'M_Fixed' 'wintype'
+        $wallType = Bring 'OST_Walls' 'Exterior - Brick on Mtl. Stud'
+        $doorType = Bring 'OST_Doors' '0915 x 2134mm'
+        $winType = Bring 'OST_Windows' '0915 x 1220mm'
         $wall = if ($lv -and $wallType) { Create @{ kind = 'wall'; start = @($X, $Y, $E); end = @(($X + $L), $Y, $E); height = 3000; level_id = $lv; type_id = $wallType.element_id } 'wall' } else { $null }
         $door = if ($wall -and $doorType) { Create @{ kind = 'family_instance'; type_id = $doorType.element_id; point = @(($X + 2000), $Y, $E); coordinate_mode = 'absolute'; level_id = $lv; host_id = $wall } 'door' } else { $null }
         $window = if ($wall -and $winType) { Create @{ kind = 'family_instance'; type_id = $winType.element_id; point = @(($X + 5500), $Y, ($E + 900)); coordinate_mode = 'absolute'; level_id = $lv; host_id = $wall } 'window' } else { $null }
         $layerWalls = @()
         try {
             if (-not ($wall -and $door -and $window)) {
-                $why = "staging incomplete: template=$tpl level=$lv wall_type=$($wallType.element_id) door_type=$($doorType.element_id) window_type=$($winType.element_id) wall=$wall door=$door window=$window"
+                $why = "staging incomplete: level=$lv wall_type=$($wallType.element_id) door_type=$($doorType.element_id) window_type=$($winType.element_id) wall=$wall door=$door window=$window"
                 for ($i = 0; $i -lt 4; $i++) { Case $i 'not_covered' $why }
             }
             else {
@@ -111,28 +101,22 @@ $script:HzProbeModules += [pscustomobject]@{
                 elseif (-not ($row -and $row.applied -eq $true)) { Case 2 'not_covered' 'the wall did not convert, so there is nothing to compare' }
                 else { Case 2 'fail' ($bad -join '; ') }
 
-                # ---- 3: no insert inside a new layer wall ----
+                # ---- 3: no insert finding of the split's spatial check is an error ----
+                # MEASURED 2026-09-26: a door family that lays its trim on the host's faces
+                # (M_Single-Flush) has that trim inside the layer walls once the host is the
+                # core - the opening itself is cut. What must hold: every such touch is in the
+                # split's own spatial_check as a WARNING naming a lining, and no finding about
+                # the inserts is an error ("blocked", "move the door").
                 if ($layerWalls.Count -eq 0) { Case 3 'not_covered' 'no layer wall was produced' }
                 else {
-                    $cl = & $Ctx.Call 'horizun_clash' @{ categories_a = @('OST_Doors', 'OST_Windows'); categories_b = @('OST_Walls'); include_links = $false; max_results = 500 }
-                    $hits = @(if ($cl.data) { $cl.data.clashes | Where-Object { $layerWalls -contains [long]$_.b.element_id -or $layerWalls -contains [long]$_.a.element_id } })
-                    # MEASURED 2026-09-26: a door family that lays its trim on the host's faces
-                    # (M_Single-Flush) has that trim inside the layer walls once the host is the
-                    # core - the opening itself is cut. What must hold: every such touch is in the
-                    # split's own spatial_check as a WARNING naming a lining, and no finding about
-                    # the inserts is an error ("blocked", "move the door").
                     $sc = if ($ap -and $ap.answer.data) { $ap.answer.data.spatial_check } else { $null }
                     $inserts = @($door, $window)
                     $onInserts = @(if ($sc) { @($sc.findings) | Where-Object { $inserts -contains [long]$_.a.id -or $inserts -contains [long]$_.b.id } })
                     $errors = @($onInserts | Where-Object { $_.severity -eq 'error' })
-                    # Below 3 L the spatial check calls a frame touch expected by design (SpatialCoherenceRules,
-                    # OpeningMinSharedFt3); only touches at or above it must be reported.
-                    $unreported = @($hits | Where-Object { [double]$_.intersection_volume_m3 -ge 0.003 } | Where-Object { $h = $_; -not @($onInserts | Where-Object { $_.severity -eq 'warning' -and [string]$_.reason -match 'lines its host' -and
-                        (([long]$_.a.id -eq [long]$h.a.element_id -and [long]$_.b.id -eq [long]$h.b.element_id) -or ([long]$_.b.id -eq [long]$h.a.element_id -and [long]$_.a.id -eq [long]$h.b.element_id)) }).Count })
-                    if ($cl.isError -or -not $cl.data) { Case 3 'unverified' ('clash did not answer: ' + (Short $cl)) }
+                    $linings = @($onInserts | Where-Object { $_.severity -eq 'warning' -and [string]$_.reason -match 'lines its host' })
+                    if (-not $sc) { Case 3 'unverified' 'the split reply carries no spatial_check' }
                     elseif ($errors.Count -gt 0) { Case 3 'fail' ('the split reported insert findings as errors: ' + (($errors | ForEach-Object { $_.reason }) -join ' | ')) }
-                    elseif ($unreported.Count -gt 0) { Case 3 'fail' ('touches the split did not report as a lining warning: ' + (($unreported | ForEach-Object { "$($_.a.element_id) x $($_.b.element_id)" }) -join ', ')) }
-                    else { Case 3 'pass' ("$($hits.Count) insert touch(es) with the $($layerWalls.Count) layer walls, every one reported as trim in a lining (warning), no error ($($cl.data.pairs_tested) pairs tested)") }
+                    else { Case 3 'pass' ("$($linings.Count) insert touch(es) with the $($layerWalls.Count) layer walls reported as trim in a lining (warning), no error") }
                 }
             }
         }

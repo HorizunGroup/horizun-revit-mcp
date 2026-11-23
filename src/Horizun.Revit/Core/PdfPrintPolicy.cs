@@ -289,12 +289,45 @@ namespace Horizun.Revit.Core
                 double ew = Math.Min(expected[0], expected[1]), eh = Math.Max(expected[0], expected[1]);
                 double pw = Math.Min(pageWidthPoints, pageHeightPoints), ph = Math.Max(pageWidthPoints, pageHeightPoints);
                 bool sizeMatches = Math.Abs(ew - pw) <= tolerancePoints && Math.Abs(eh - ph) <= tolerancePoints;
+                // MEASURED LIVE 2026-10-18 (Revit 2024, Snowdon cover sheet G000): the sheet's
+                // Outline was 938 x 1067 mm because content lies outside the titleblock, and
+                // Revit printed the Default page at the titleblock's DECLARED 762 x 1067 mm.
+                // Keep that paper choice when the two dimensions do not suggest
+                // proportional automatic fit.
+                bool matchesTitleblock = false;
+                if (!sizeMatches && PaperFormat == "Default" && titleblockPoints != null && titleblockPoints.Length == 2 &&
+                    titleblockPoints[0] > 0 && titleblockPoints[1] > 0)
+                {
+                    double tw = Math.Min(titleblockPoints[0], titleblockPoints[1]), th = Math.Max(titleblockPoints[0], titleblockPoints[1]);
+                    matchesTitleblock = Math.Abs(tw - pw) <= tolerancePoints && Math.Abs(th - ph) <= tolerancePoints;
+                }
+                double ratio = pw / ew;
+                bool proportionalAutomaticFit = PaperFormat == "Default" && Zoom == "fit_to_page" &&
+                    !IsRequested("paper_format") && !IsRequested("zoom") &&
+                    Math.Abs(ew - pw) > tolerancePoints && Math.Abs(eh - ph) > tolerancePoints &&
+                    Math.Abs(ph - eh * ratio) <= tolerancePoints;
                 verdict["expected_width_points"] = Math.Round(ew, 3);
                 verdict["expected_height_points"] = Math.Round(eh, 3);
-                verdict["paper_format"] = sizeMatches ? StatusVerified : StatusVerifiedMismatch;
-                if (!sizeMatches)
-                    verdict["paper_format_reason"] = "the produced page is " + Mm(pw) + "x" + Mm(ph) + " mm; " + PaperFormat +
-                        " expects " + Mm(ew) + "x" + Mm(eh) + " mm";
+                if (proportionalAutomaticFit)
+                {
+                    verdict["paper_format"] = StatusRequestedUnverifiable;
+                    verdict["page_to_sheet_dimension_ratio"] = Math.Round(ratio, 4);
+                    verdict["paper_format_reason"] = "the produced page is " + Mm(pw) + "x" + Mm(ph) +
+                        " mm against the sheet outline of " + Mm(ew) + "x" + Mm(eh) +
+                        " mm; with automatic fit, a proportional change leaves the physical paper size unverified";
+                    verdict["page_exceeds_titleblock"] = JValue.CreateNull();
+                    verdict["page_exceeds_titleblock_reason"] = "with automatic fit, proportional page dimensions leave content overflow unverified";
+                }
+                else
+                {
+                    verdict["paper_format"] = sizeMatches || matchesTitleblock ? StatusVerified : StatusVerifiedMismatch;
+                    if (matchesTitleblock)
+                        verdict["paper_format_reason"] = "the page equals the titleblock's declared size (" + Mm(pw) + "x" + Mm(ph) +
+                            " mm), and the sheet outline measures " + Mm(ew) + "x" + Mm(eh) + " mm";
+                    else if (!sizeMatches)
+                        verdict["paper_format_reason"] = "the produced page is " + Mm(pw) + "x" + Mm(ph) + " mm; " + PaperFormat +
+                            " expects " + Mm(ew) + "x" + Mm(eh) + " mm";
+                }
             }
             bool landscape = pageWidthPoints > pageHeightPoints + tolerancePoints;
             bool portrait = pageHeightPoints > pageWidthPoints + tolerancePoints;
@@ -310,9 +343,11 @@ namespace Horizun.Revit.Core
                 verdict["orientation"] = ok ? StatusVerified : StatusVerifiedMismatch;
                 if (!ok) verdict["orientation_reason"] = "requested " + Orientation + ", produced " + verdict["page_orientation_observed"];
             }
-            verdict["page_verified"] = verdict.Value<string>("paper_format") != StatusVerifiedMismatch &&
-                                       verdict.Value<string>("orientation") != StatusVerifiedMismatch &&
-                                       verdict.Value<bool?>("page_exceeds_titleblock") != true;
+            bool contradicted = verdict.Value<string>("paper_format") == StatusVerifiedMismatch ||
+                                verdict.Value<string>("orientation") == StatusVerifiedMismatch ||
+                                verdict.Value<bool?>("page_exceeds_titleblock") == true;
+            verdict["page_verified"] = !contradicted && verdict["page_to_sheet_dimension_ratio"] != null
+                ? JValue.CreateNull() : (JToken)!contradicted;
             return verdict;
         }
 
@@ -351,7 +386,8 @@ namespace Horizun.Revit.Core
                         else if (statuses.All(s => s == StatusVerified)) row["status"] = StatusVerified;
                         else row["status"] = StatusRequestedUnverifiable;
                         row["pages"] = new JArray(statuses);
-                        string reason = pages.Select(p => p.Value<string>(field + "_reason")).FirstOrDefault(r => r != null);
+                        string reason = pages.Where(p => p.Value<string>(field) == row.Value<string>("status"))
+                            .Select(p => p.Value<string>(field + "_reason")).FirstOrDefault(r => r != null);
                         if (reason != null) row["reason"] = reason;
                     }
                 }
@@ -403,9 +439,10 @@ namespace Horizun.Revit.Core
                         ["source_view_id"] = p["source_view_id"]?.DeepClone() ?? JValue.CreateNull(),
                         ["reason"] = p["page_exceeds_titleblock_reason"]?.DeepClone()
                     })),
-                    ["held"] = exceeding.Count == 0,
-                    ["means"] = "with Default paper the page follows the sheet outline; a page larger than its titleblock proves " +
-                                "something on the sheet lies outside it (inside the paper is not inside the frame)"
+                    ["held"] = exceeding.Count == 0 && pages.Any(p => p["page_exceeds_titleblock"]?.Type == JTokenType.Null)
+                        ? JValue.CreateNull() : (JToken)(exceeding.Count == 0),
+                    ["means"] = "with Default paper, a page larger than its titleblock indicates overflow when its " +
+                                "dimensions are not confounded by proportional automatic fit"
                 },
                 ["verifiable_options_held"] = allVerifiableHeld,
                 ["verified_from_output"] = new JArray(VerifiableFromOutput),

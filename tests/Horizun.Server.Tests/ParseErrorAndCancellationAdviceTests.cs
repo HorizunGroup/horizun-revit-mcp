@@ -186,6 +186,21 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void A_long_python_wait_recommends_its_async_mode_instead_of_submit_job()
+        {
+            string verdict = CancellationAdvice.Classify(false, true);
+            string text = CancellationAdvice.Sentence(verdict, 0, CancellationAdvice.LongWaitMs, "horizun_execute_python");
+            JObject json = CancellationAdvice.ToJson(verdict, true, 0, CancellationAdvice.LongWaitMs, "horizun_execute_python");
+
+            Assert.Contains("run_async=true", text);
+            Assert.Contains("idempotency_key", text);
+            Assert.Contains("horizun_job_status", text);
+            Assert.DoesNotContain("horizun_submit_job", text);
+            Assert.Equal("run_async", (string)json["prefer"]);
+            Assert.Equal("horizun_execute_python", (string)json["recommended_call"]["tool"]);
+        }
+
+        [Fact]
         public void A_blank_or_non_string_key_is_no_key()
         {
             Assert.False(CancellationAdvice.HasKey(new JObject { ["idempotency_key"] = " " }));

@@ -70,12 +70,22 @@ namespace Horizun.Server.Tests
         {
             foreach (string tool in new[]
             {
-                "horizun_document_session", "horizun_open_document", "horizun_save_document",
-                "horizun_relinquish_all"
+                "horizun_document_session", "horizun_open_document", "horizun_relinquish_all"
             })
                 foreach (string pack in ToolPacks.KnownPacks)
                     Assert.True(ToolPacks.MembersOf(pack).Contains(tool) == (pack == "administration"),
                         tool + " vs pack '" + pack + "'");
+
+            // horizun_save_document also rides on documentation (2026-10-18: a drafter on the
+            // documentation toolset could not save the sheets she had just made). VISIBILITY IS
+            // NOT PRIVILEGE: a toolset only decides what a session lists. operation=save_local and
+            // relinquish_own are what the toolset brings; sync_with_central still needs
+            // permission_profile full_write or unsafe_code AND the owner's grant from Revit,
+            // both checked by the command on every call.
+            foreach (string pack in ToolPacks.KnownPacks)
+                Assert.True(ToolPacks.MembersOf(pack).Contains("horizun_save_document") ==
+                            (pack == "administration" || pack == "documentation"),
+                    "horizun_save_document vs pack '" + pack + "'");
         }
 
         [Fact]
@@ -251,32 +261,28 @@ namespace Horizun.Server.Tests
                 // stays the authority on effects, and the goldens pin that layering.
                 AssertProfile(new[] { "read" }, new[]
                 {
-                    "get_document_info", "horizun_audit_cad_model", "horizun_audit_reinforcement",
-                    "horizun_cad_extract", "horizun_cad_networks", "horizun_cad_review",
-                    "horizun_cad_symbols", "horizun_cad_unit_instances",
+                    "get_document_info", "horizun_api_help", "horizun_audit_support",
                     "horizun_file_info",
                     "horizun_get_dimension_references", "horizun_get_schedule_data", "horizun_health",
                     "horizun_job_status", "horizun_list_elements", "horizun_list_schedules",
-                    "horizun_model_scan", "horizun_navigate", "horizun_plan_cad_update",
-                    "horizun_plan_from_cad", "horizun_plan_reinforcement", "horizun_project_context", "horizun_quantities",
-                    "horizun_query_cad", "horizun_query_classification", "horizun_query_detail_2d", "horizun_query_dimensions", "horizun_query_model",
-                    "horizun_query_planimetry", "horizun_query_structure", "horizun_submit_job",
-                    "horizun_target"
+                    "horizun_measure_geometry", "horizun_model_scan", "horizun_navigate", 
+                    "horizun_project_context", "horizun_quantities",
+                    "horizun_query_classification", "horizun_query_detail_2d", "horizun_query_dimensions", "horizun_query_model",
+                    "horizun_query_planimetry", "horizun_query_relations", "horizun_query_structure", "horizun_room_boundaries", "horizun_selection_context", "horizun_submit_job",
+                    "horizun_target", "horizun_template_kit"
                 });
                 AssertProfile(new[] { "schedules" }, new[]
                 {
-                    "get_document_info", "horizun_audit_cad_model", "horizun_audit_reinforcement",
-                    "horizun_cad_extract", "horizun_cad_networks", "horizun_cad_review",
-                    "horizun_cad_symbols", "horizun_cad_unit_instances",
+                    "get_document_info", "horizun_api_help", "horizun_audit_support",
                     "horizun_create_schedule",
                     "horizun_file_info", "horizun_get_dimension_references", "horizun_get_schedule_data",
                     "horizun_health", "horizun_job_status", "horizun_list_elements",
-                    "horizun_list_schedules", "horizun_manage_schedules", "horizun_model_scan",
-                    "horizun_navigate", "horizun_plan_cad_update", "horizun_plan_from_cad",
-                    "horizun_plan_reinforcement", "horizun_project_context",
-                    "horizun_quantities", "horizun_query_cad", "horizun_query_classification", "horizun_query_detail_2d",
+                    "horizun_list_schedules", "horizun_manage_schedules", "horizun_measure_geometry", "horizun_model_scan",
+                    "horizun_navigate", 
+                    "horizun_project_context",
+                    "horizun_quantities", "horizun_query_classification", "horizun_query_detail_2d",
                     "horizun_query_dimensions", "horizun_query_model", "horizun_query_planimetry",
-                    "horizun_query_structure", "horizun_submit_job", "horizun_target"
+                    "horizun_query_relations", "horizun_query_structure", "horizun_room_boundaries", "horizun_selection_context", "horizun_submit_job", "horizun_target", "horizun_template_kit"
                 });
             });
         }

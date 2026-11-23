@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -66,6 +68,19 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_roof_shape_top_is_one_thickness_above_its_base_offset_and_a_floor_top_is_its_offset()
+        {
+            // Field case: add_point on a flat roof read the new vertex +50 mm (the roof thickness) and rolled back.
+            double mm = 1 / 304.8;
+            Assert.Equal((3000 + 200 + 50) * mm, ArchitecturalEditRules.SlabShapeTop(3000 * mm, 200 * mm, true, 50 * mm), 9);
+            Assert.Equal((3000 + 200) * mm, ArchitecturalEditRules.SlabShapeTop(3000 * mm, 200 * mm, false, 50 * mm), 9);
+            Assert.Equal((3000 + 200) * mm, ArchitecturalEditRules.SlabShapeTop(3000 * mm, 200 * mm, true, null), 9);
+            string src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "src", "Horizun.Revit", "Commands", "SlabShapeCommand.cs"));
+            Assert.Contains("ArchitecturalEditRules.SlabShapeTop(", src);
+            Assert.Contains("ROOF_ATTR_THICKNESS_PARAM", src);
+        }
+
+        [Fact]
         public void The_slab_shape_verify_reads_one_convention_for_the_edit()
         {
             string src = System.IO.File.ReadAllText(System.IO.Path.Combine(Root(), "src", "Horizun.Revit", "Commands", "SlabShapeCommand.cs"));
@@ -87,6 +102,143 @@ namespace Horizun.Core.Tests
             double c = ArchitecturalEditRules.CoveredLength(new[] { new[] { 0.0, 4 }, new[] { 3.0, 6 }, new[] { 9.0, 12 } }, 0, 10);
             Assert.Equal(7, c, 9);
             Assert.Equal(0, ArchitecturalEditRules.CoveredLength(null, 0, 10));
+        }
+
+        [Fact]
+        public void Flat_slab_returns_boundary_vertices_and_keeps_an_opening_as_its_own_loop()
+        {
+            double[][] Loop(double x, double y, double side) => new[] { new[] { x, y, 3 },
+                new[] { x + side, y, 3 }, new[] { x + side, y + side, 3 }, new[] { x, y + side, 3 } };
+            JObject result = ArchitecturalEditRules.FlatSlabContour(new[] { Loop(0, 0, 10), Loop(3, 3, 4) }, 0.5);
+            Assert.Equal(JTokenType.Boolean, result["enabled"].Type);
+            Assert.False(result.Value<bool>("enabled"));
+            Assert.Equal("top_face_boundary", result.Value<string>("vertex_source"));
+            Assert.True(result.Value<bool>("boundary_read_complete"));
+            Assert.Equal(8, ((JArray)result["vertices"]).Count);
+            Assert.Equal(2, ((JArray)result["boundary_loops"]).Count);
+            Assert.Equal(new[] { 6d, 6d, 6d }, result["boundary_loops"][1][0].Take(3).Values<double>());
+            Assert.Empty((JArray)result["creases"]);
+            Assert.False(ArchitecturalEditRules.FlatSlabContour(new double[0][][], 1).Value<bool>("boundary_read_complete"));
+        }
+
+        [Theory]
+        [InlineData(false, 2)]
+        [InlineData(true, 1)]
+        public void Slab_split_regenerates_before_reading_the_editor_and_after_enabling(bool initiallyEnabled, int refreshes)
+        {
+            int generation = 0;
+            bool enabled = initiallyEnabled;
+            int editor = ArchitecturalEditRules.RefreshSlabEditor(() => generation++,
+                () => generation > 0 ? generation : throw new InvalidOperationException("The new floor has not regenerated."),
+                current => { Assert.Equal(generation, current); return enabled; },
+                current => { Assert.Equal(generation, current); enabled = true; }, out bool wasEnabled);
+            Assert.Equal(initiallyEnabled, wasEnabled);
+            Assert.True(enabled);
+            Assert.Equal(refreshes, generation);
+            Assert.Equal(generation, editor);
+        }
+
+        [Fact]
+        public void Split_with_two_new_endpoints_refreshes_after_each_insertion_before_using_vertices()
+        {
+            int generation = 0;
+            var pending = new System.Collections.Generic.List<int>();
+            var committed = new System.Collections.Generic.HashSet<int> { 5 };
+            bool inserted = false;
+            ArchitecturalEditRules.InsertSlabSplit(10, 20,
+                () =>
+                {
+                    committed.UnionWith(pending);
+                    pending.Clear();
+                    return ++generation;
+                },
+                (epoch, point) => committed.Contains(point) ? Tuple.Create(epoch, point) : null,
+                point => ArchitecturalEditRules.SlabEndpoint.Interior,
+                (epoch, point) =>
+                {
+                    Assert.Equal(generation, epoch);
+                    Assert.Empty(pending);
+                    pending.Add(point);
+                },
+                (epoch, start, end, insertedBoundaryVertex) =>
+                {
+                    Assert.False(insertedBoundaryVertex);
+                    Assert.Equal(3, epoch);
+                    Assert.Equal(Tuple.Create(epoch, 10), start);
+                    Assert.Equal(Tuple.Create(epoch, 20), end);
+                    inserted = true;
+                },
+                _ => throw new InvalidOperationException("Interior endpoints do not use a support line."));
+            Assert.True(inserted);
+        }
+
+        [Fact]
+        public void Edge_to_edge_split_uses_a_support_line_when_boundary_insertion_is_unavailable()
+        {
+            int supportCalls = 0;
+            ArchitecturalEditRules.InsertSlabSplit<int, string, object>(0, 4000,
+                () => "enabled editor", (_, _) => null, _ => ArchitecturalEditRules.SlabEndpoint.Boundary,
+                (_, _) => throw new InvalidOperationException("AddPoint requires an interior point."),
+                (_, _, _, _) => throw new InvalidOperationException("Neither end is an existing vertex."),
+                editor => { Assert.Equal("enabled editor", editor); supportCalls++; },
+                canAddBoundaryVertex: false);
+            Assert.Equal(1, supportCalls);
+            Assert.Equal(9.25, ArchitecturalEditRules.FlatFloorSupportElevation(new[] { 10.0, 10.0 }, new[] { 9.25 }, 0.001));
+            Assert.Null(ArchitecturalEditRules.FlatFloorSupportElevation(new[] { 10.0, 10.1 }, new[] { 9.25 }, 0.001));
+            Assert.Null(ArchitecturalEditRules.FlatFloorSupportElevation(new[] { 10.0 }, new[] { 9.25, double.NaN }, 0.001));
+            Assert.Null(ArchitecturalEditRules.FlatFloorSupportElevation(new[] { 10.0 }, Array.Empty<double>(), 0.001));
+        }
+
+        [Fact]
+        public void Revit_with_boundary_vertex_insertion_uses_the_exact_two_edge_points()
+        {
+            var points = new HashSet<int>();
+            var vertices = new Dictionary<int, object>();
+            int epoch = 0, addedAtEpoch = 0;
+            bool split = false;
+            ArchitecturalEditRules.InsertSlabSplit<int, int, object>(40000, 44000,
+                () =>
+                {
+                    vertices = points.ToDictionary(point => point, _ => new object());
+                    return ++epoch;
+                },
+                (editor, point) =>
+                {
+                    Assert.Equal(epoch, editor);
+                    return vertices.TryGetValue(point, out object vertex) ? vertex : null;
+                },
+                _ => ArchitecturalEditRules.SlabEndpoint.Boundary,
+                (editor, point) =>
+                {
+                    Assert.True(editor > addedAtEpoch);
+                    addedAtEpoch = editor;
+                    Assert.True(points.Add(point));
+                },
+                (editor, a, b, insertedBoundaryVertex) =>
+                {
+                    Assert.True(insertedBoundaryVertex);
+                    Assert.True(editor > addedAtEpoch);
+                    Assert.Same(vertices[40000], a);
+                    Assert.Same(vertices[44000], b);
+                    split = true;
+                },
+                _ => throw new InvalidOperationException("The boundary vertices are available."), canAddBoundaryVertex: true);
+            Assert.Equal(2, vertices.Count);
+            Assert.True(split);
+        }
+
+        [Theory]
+        [InlineData(ArchitecturalEditRules.SlabEndpoint.Outside, "outside")]
+        [InlineData(ArchitecturalEditRules.SlabEndpoint.Boundary, "cannot insert")]
+        public void A_missing_noninterior_endpoint_does_not_reach_AddPoint(ArchitecturalEditRules.SlabEndpoint location, string reason)
+        {
+            var refusal = Assert.Throws<ArgumentException>(() =>
+                ArchitecturalEditRules.InsertSlabSplit<int, int, object>(0, 4000, () => 1, (_, _) => null,
+                    point => point == 0 ? location : ArchitecturalEditRules.SlabEndpoint.Interior,
+                    (_, _) => throw new InvalidOperationException("No points should have been added."),
+                    (_, _, _, _) => throw new InvalidOperationException("No vertex split should have run."),
+                    _ => throw new InvalidOperationException("This is not an edge-to-edge chord.")));
+            Assert.Contains(reason, refusal.Message);
         }
 
         [Fact]

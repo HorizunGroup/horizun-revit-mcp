@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <# Exercise real package export, metadata and refusal paths without Revit. #>
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -118,6 +118,13 @@ Remove-Item Env:USERPROFILE -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath (Join-Path $repo 'Directory.Build.props') -Destination $fixtureRepo
     [IO.File]::WriteAllText((Join-Path $fixtureRepo 'CHANGELOG.md'), "# Changes`n`n## Unreleased`nPending.")
     Assert-Refused { & (Join-Path $fixtureRepo 'scripts/build-release-notes.ps1') -OutFile (Join-Path $root 'no-notes.md') } 'needs a release section'
+    foreach ($prefix in @('', 'v')) {
+        [IO.File]::WriteAllText((Join-Path $fixtureRepo 'CHANGELOG.md'), "# Changes`n`n## ${prefix}$version — 2026-11-04`n`nReleased item.`n`n## Unreleased`n`nPending item.")
+        $fixtureNotes = Join-Path $root "notes-$prefix.md"
+        & (Join-Path $fixtureRepo 'scripts/build-release-notes.ps1') -OutFile $fixtureNotes
+        $content = Get-Content -LiteralPath $fixtureNotes -Raw -Encoding UTF8
+        Assert-Metadata ($content.Contains('Released item.') -and -not $content.Contains('Pending item.')) "Release heading '$prefix$version' was not isolated."
+    }
     Write-Host "release metadata: PASS ($checks checks)"
 }
 finally {

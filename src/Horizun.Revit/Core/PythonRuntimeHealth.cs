@@ -20,6 +20,9 @@ namespace Horizun.Revit.Core
             // remains disallowed. Expose that fact without implying permission.
             warmup["engine_state"] = lifecycle;
             warmup["authorized"] = authorized;
+            // The latest horizun_request_python_access of this Revit session, so a caller can
+            // poll the person's answer from health too (null when none was made).
+            warmup["access_request"] = PythonAccessRequests.Snapshot();
             return warmup;
         }
     }

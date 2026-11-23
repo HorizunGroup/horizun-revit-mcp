@@ -33,6 +33,27 @@ namespace Horizun.Core.Tests
             => new DiffSnapshot { Id = id, Elements = els.ToList() };
 
         [Fact]
+        public void Collaboration_evidence_is_reported_on_changed_rows_and_missing_history_has_a_reason()
+        {
+            var old = El("u1", 0);
+            var json = JObject.FromObject(El("u1", 10));
+            json["last_changed_by"] = "Ana";
+            json["owner"] = "Luis";
+            json["checkout"] = "OwnedByOtherUser";
+            var row = JObject.FromObject(ModelDiffRules.Compare(Snap("a", old), Snap("b", json.ToObject<DiffElement>()), new DiffOptions()).Rows.Single());
+            Assert.Equal("Ana", (string)row["last_changed_by"]);
+            Assert.Equal("Luis", (string)row["owner"]);
+            Assert.Equal("OwnedByOtherUser", (string)row["checkout"]);
+            var missing = JObject.FromObject(ModelDiffRules.Compare(Snap("a"), Snap("b", old), new DiffOptions()).Rows.Single());
+            Assert.Equal(JTokenType.Null, missing["checkout"].Type);
+            Assert.False(string.IsNullOrEmpty((string)missing["worksharing_reason"]));
+            var metadataOnly = json.ToObject<DiffElement>();
+            metadataOnly.Location = old.Location;
+            metadataOnly.BoundingBox = old.BoundingBox;
+            Assert.Empty(ModelDiffRules.Compare(Snap("a", old), Snap("b", metadataOnly), new DiffOptions()).Rows);
+        }
+
+        [Fact]
         public void Doubles_are_rounded_so_float_noise_is_not_a_change()
         {
             Assert.Equal(ModelDiffRules.NormalizeDouble(3.0), ModelDiffRules.NormalizeDouble(3.0000000000001));
@@ -153,7 +174,7 @@ namespace Horizun.Core.Tests
             var before = Snap("a", El("u1", 0));
             var after = Snap("b", El("u1", 0), El("p1", 5, "P", "Pipes", "OST_PipeCurves"));
             JObject s = ModelDiffRules.Summary(ModelDiffRules.Compare(before, after, new DiffOptions()));
-            Assert.Equal(1, (int)s["by_category"]["Pipes"]["added"]);
+            Assert.Equal(1, (int)s["by_category"]["OST_PipeCurves"]["added"]);
             Assert.Equal(1, (int)s["by_discipline"]["plumbing"]["added"]);
             Assert.Equal(1, (int)s["by_level"]["L1"]["added"]);
         }
@@ -208,7 +229,7 @@ namespace Horizun.Core.Tests
             Assert.Equal("s:A", back.Elements.Single().Parameters["Mark"]);
             Assert.Empty(ModelDiffRules.Compare(s, back, new DiffOptions()).Rows);
             JObject meta = ModelDiffRules.Meta(back, ModelDiffRules.Sha256Hex(bytes), bytes.Length);
-            Assert.Equal(1, (int)meta["by_category"]["Walls"]);
+            Assert.Equal(1, (int)meta["by_category"]["OST_Walls"]);
         }
 
         [Fact]

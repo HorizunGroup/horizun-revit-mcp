@@ -33,6 +33,7 @@ namespace Horizun.Revit.Commands
         {
             RailingType type = ModelEditRunner.Need<RailingType>(doc, r, "type_id");
             long typeId = Rid.Value(type.Id);
+            InfillPlan infill = InfillPlan.From(doc, r["infill"] as JObject, scale);
             double? baseOffset = r["base_offset"] == null ? (double?)null : r.Value<double>("base_offset") * scale;
             var edit = new ArchModelEdit();
             var created = new List<long>();
@@ -57,11 +58,13 @@ namespace Horizun.Revit.Commands
             }
             var placement = (r.Value<string>("placement") ?? "treads").ToLowerInvariant() == "stringer" ? RailingPlacementPosition.Stringer : RailingPlacementPosition.Treads;
             edit.Summary["type_id"] = typeId;
+            if (infill != null) edit.Summary["infill"] = infill.Describe(scale);
             edit.Summary["route"] = hostId > 0 ? "host" : "path";
             if (hostId > 0) edit.Summary["host_id"] = hostId; else edit.Summary["segments"] = pts.Count - 1;
             edit.Apply = d =>
             {
                 created.Clear();
+                if (infill != null) typeId = infill.CreateType(d, Rid.Make(Rid.Value(type.Id)));
                 if (hostId > 0)
                     foreach (ElementId id in Railing.Create(d, Rid.Make(hostId), Rid.Make(typeId), placement) ?? new List<ElementId>()) created.Add(Rid.Value(id));
                 else
@@ -83,7 +86,15 @@ namespace Horizun.Revit.Commands
                 var req = new List<string> { "created", "type_id" };
                 if (hostId > 0) req.Add("host_id"); else req.Add("path");
                 if (baseOffset.HasValue) req.Add("base_offset");
+                if (infill != null) req.Add("infill");
                 var check = new PostconditionCheck(req.ToArray());
+                if (infill != null)
+                {
+                    string why = infill.Reread(d, typeId, out JObject read);
+                    if (why != null) read["mismatch"] = why;
+                    edit.Evidence["infill"] = read;
+                    check.Record("infill", infill.Describe(scale), read, why == null);
+                }
                 var rails = created.Select(id => d.GetElement(Rid.Make(id)) as Railing).ToList();
                 check.Compare("created", created.Count, rails.Count(x => x != null));
                 check.Compare("type_id", created.Count, rails.Count(x => x != null && Rid.Value(x.GetTypeId()) == typeId));
@@ -116,6 +127,92 @@ namespace Horizun.Revit.Commands
                 return check;
             };
             return edit;
+        }
+
+        /// <summary>The new railing type's infill: one baluster/panel family every spacing, optional posts.</summary>
+        private sealed class InfillPlan
+        {
+            public string Name; public long BalusterTypeId; public long? PostTypeId; public double SpacingFeet;
+
+            public static InfillPlan From(Document doc, JObject infill, double scale)
+            {
+                if (infill == null) return null;
+                var plan = new InfillPlan
+                {
+                    Name = infill.Value<string>("new_type_name").Trim(),
+                    BalusterTypeId = infill.Value<long>("baluster_type_id"),
+                    PostTypeId = infill["post_type_id"] == null ? (long?)null : infill.Value<long>("post_type_id"),
+                    SpacingFeet = infill.Value<double>("spacing") * scale
+                };
+                CheckBaluster(doc, plan.BalusterTypeId, "infill.baluster_type_id");
+                if (plan.PostTypeId.HasValue) CheckBaluster(doc, plan.PostTypeId.Value, "infill.post_type_id");
+                bool taken = new FilteredElementCollector(doc).OfClass(typeof(RailingType)).Cast<RailingType>()
+                    .Any(t => string.Equals(t.Name, plan.Name, StringComparison.Ordinal));
+                if (taken) throw new ArgumentException("infill.new_type_name '" + plan.Name + "' is already a railing type: choose a new name. Nothing was written.");
+                return plan;
+            }
+
+            private static void CheckBaluster(Document doc, long id, string field)
+            {
+                var symbol = doc.GetElement(Rid.Make(id)) as FamilySymbol;
+                long cat = symbol?.Category == null ? 0 : Rid.Value(symbol.Category.Id);
+                if (symbol == null || cat != (long)BuiltInCategory.OST_StairsRailingBaluster)
+                    throw new ArgumentException(field + " " + id + " is not a baluster or baluster-panel family type (category Balusters). Nothing was written.");
+            }
+
+            public JObject Describe(double scale) => new JObject
+            {
+                ["new_type_name"] = Name, ["baluster_type_id"] = BalusterTypeId,
+                ["post_type_id"] = PostTypeId.HasValue ? (JToken)PostTypeId.Value : null,
+                ["spacing"] = Math.Round(SpacingFeet / scale, 4)
+            };
+
+            public long CreateType(Document d, ElementId sourceTypeId)
+            {
+                var source = (RailingType)d.GetElement(sourceTypeId);
+                var made = source.Duplicate(Name) as RailingType;
+                if (made == null) throw new InvalidOperationException("Revit did not duplicate railing type " + Rid.Value(sourceTypeId) + ".");
+                BalusterPattern pattern = made.BalusterPlacement?.BalusterPattern;
+                if (pattern == null || pattern.GetBalusterCount() == 0)
+                    throw new InvalidOperationException("the duplicated type has no baluster pattern entry to fill.");
+                while (pattern.GetBalusterCount() > 1) pattern.RemoveBaluster(pattern.GetBalusterCount() - 1);
+                BalusterInfo b = pattern.GetBaluster(0);
+                b.BalusterFamilyId = Rid.Make(BalusterTypeId);
+                b.DistanceFromPreviousOrSpace = SpacingFeet;
+                if (PostTypeId.HasValue)
+                {
+                    PostPattern posts = made.BalusterPlacement.PostPattern;
+                    posts.StartPost.BalusterFamilyId = Rid.Make(PostTypeId.Value);
+                    posts.EndPost.BalusterFamilyId = Rid.Make(PostTypeId.Value);
+                    posts.CornerPost.BalusterFamilyId = Rid.Make(PostTypeId.Value);
+                }
+                return Rid.Value(made.Id);
+            }
+
+            /// <summary>null when the type reads back as planned; else what differs.</summary>
+            public string Reread(Document d, long typeId, out JObject read)
+            {
+                read = new JObject { ["type_id"] = typeId };
+                var t = d.GetElement(Rid.Make(typeId)) as RailingType;
+                if (t == null) return "the new railing type is not in the model";
+                read["type_name"] = t.Name;
+                BalusterPattern pattern = t.BalusterPlacement?.BalusterPattern;
+                if (pattern == null || pattern.GetBalusterCount() != 1) return "the pattern does not hold exactly one baluster";
+                BalusterInfo b = pattern.GetBaluster(0);
+                read["baluster_type_id"] = Rid.Value(b.BalusterFamilyId);
+                read["spacing_feet"] = b.DistanceFromPreviousOrSpace;
+                if (!string.Equals(t.Name, Name, StringComparison.Ordinal)) return "type name differs";
+                if (Rid.Value(b.BalusterFamilyId) != BalusterTypeId) return "baluster family differs";
+                if (Math.Abs(b.DistanceFromPreviousOrSpace - SpacingFeet) > 1e-6) return "spacing differs";
+                if (PostTypeId.HasValue)
+                {
+                    PostPattern posts = t.BalusterPlacement.PostPattern;
+                    read["post_type_ids"] = new JArray(Rid.Value(posts.StartPost.BalusterFamilyId), Rid.Value(posts.EndPost.BalusterFamilyId), Rid.Value(posts.CornerPost.BalusterFamilyId));
+                    if (Rid.Value(posts.StartPost.BalusterFamilyId) != PostTypeId.Value || Rid.Value(posts.EndPost.BalusterFamilyId) != PostTypeId.Value ||
+                        Rid.Value(posts.CornerPost.BalusterFamilyId) != PostTypeId.Value) return "post family differs";
+                }
+                return null;
+            }
         }
 
         private static CurveLoop Loop(List<XYZ> pts)

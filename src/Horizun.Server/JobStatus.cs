@@ -21,6 +21,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -34,6 +35,7 @@ namespace Horizun.Server
     internal static class JobStatus
     {
         internal const int MaxJobsPerCall = 100;
+        internal const int MaxWaitSeconds = 60;
         internal const int MaxCheckpointsPerJob = 1000;
         // A sweep is three steps per model; 200 sequence entries is the admission
         // cap, so this holds every step of the largest admissible sequence and the
@@ -53,9 +55,36 @@ namespace Horizun.Server
         internal static JObject Handle(JObject args) => Handle(args, CancellationToken.None);
 
         internal static JObject Handle(JObject args, CancellationToken cancellationToken)
+            => Handle(args, cancellationToken, null);
+
+        /// <summary>
+        /// <paramref name="cancel"/> answers "stop this job" for a caller that asked with
+        /// cancel=true. Null means the real control message to the Revit that owns the job.
+        /// </summary>
+        internal static JObject Handle(JObject args, CancellationToken cancellationToken,
+                                       Func<string, int?, McpTasks.JobCancelAnswer> cancel)
         {
             cancellationToken.ThrowIfCancellationRequested();
             string jobId = (string)args?["job_id"];
+            bool wantsCancel = args?["cancel"]?.Type == JTokenType.Boolean && (bool)args["cancel"];
+            int? requestedWait = (int?)args?["wait_s"];
+            int waitSeconds = requestedWait ?? 0;
+            if (waitSeconds < 0 || waitSeconds > MaxWaitSeconds)
+                throw new ArgumentOutOfRangeException("wait_s", "wait_s must be between 0 and 60 seconds.");
+            if (requestedWait.HasValue && (string.IsNullOrEmpty(jobId) || wantsCancel ||
+                (args?["output_page"] != null && args["output_page"].Type != JTokenType.Null)))
+                throw new ArgumentException("wait_s needs a job_id and cannot be combined with cancel or output_page.");
+            if (wantsCancel && string.IsNullOrEmpty(jobId))
+                throw new ArgumentException("cancel=true needs the job_id of the job to cancel.");
+            if (args?["output_page"] != null && args["output_page"].Type != JTokenType.Null)
+            {
+                // null = absent; a default value (limit 5, checkpoints 10) is not a different request either.
+                bool otherLimit = args["limit"] != null && args["limit"].Type != JTokenType.Null && !(args["limit"].Type == JTokenType.Integer && (long)args["limit"] == 5);
+                bool otherTail = args["checkpoints"] != null && args["checkpoints"].Type != JTokenType.Null && !(args["checkpoints"].Type == JTokenType.Integer && (long)args["checkpoints"] == 10);
+                if (wantsCancel || otherLimit || otherTail)
+                    throw new ArgumentException("output_page reads one page of a saved Python output and cannot be combined with cancel, limit or checkpoints.");
+                return OutputPage(jobId, args["output_page"], Dir());
+            }
             int responseBudget = string.IsNullOrEmpty(jobId)
                 ? MaxResponseBytes
                 : Horizun.Contracts.Contract.MaxReplyBytes;
@@ -107,8 +136,9 @@ namespace Horizun.Server
             foreach (FileInfo f in files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                JObject described = Describe(f, tail, cancellationToken,
-                    string.IsNullOrEmpty(jobId) ? 0 : MaxExternalResultBytes);
+                JObject described = waitSeconds > 0
+                    ? WaitForStateChange(f, tail, TimeSpan.FromSeconds(waitSeconds), cancellationToken)
+                    : Describe(f, tail, cancellationToken, string.IsNullOrEmpty(jobId) ? 0 : MaxExternalResultBytes);
                 int describedBytes = Encoding.UTF8.GetByteCount(described.ToString(Newtonsoft.Json.Formatting.None));
                 if (describedBytes > responseBudget - metadataReserveBytes - jobsBytes)
                 {
@@ -142,6 +172,8 @@ namespace Horizun.Server
                            "that is what this tool is for."
             };
 
+            if (wantsCancel) response["cancel_request"] = CancelRequest(jobs, cancel);
+
             // Exact UTF-8 budget, including metadata and JSON escaping. Remove complete
             // job objects rather than slicing serialized JSON, so the response is always
             // valid JSON and every omission is counted explicitly.
@@ -155,6 +187,73 @@ namespace Horizun.Server
                 response["response_truncated"] = true;
             }
             return response;
+        }
+
+        internal static JObject WaitForStateChange(FileInfo file, int tail, TimeSpan budget, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var elapsed = Stopwatch.StartNew();
+            JObject current = Describe(file, tail, cancellationToken, MaxExternalResultBytes);
+            string initialState = (string)current["state"];
+            while ((initialState == "queued" || initialState == "running") &&
+                   (bool?)current["process_alive"] != false && (string)current["state"] == initialState &&
+                   elapsed.Elapsed < budget)
+            {
+                var remaining = budget - elapsed.Elapsed;
+                int delayMs = Math.Max(0, Math.Min(250, (int)Math.Ceiling(remaining.TotalMilliseconds)));
+                cancellationToken.WaitHandle.WaitOne(delayMs);
+                cancellationToken.ThrowIfCancellationRequested();
+                current = Describe(file, tail, cancellationToken, MaxExternalResultBytes);
+            }
+            return current;
+        }
+
+        /// <summary>
+        /// One page of the full __output__ a Python run saved because it was larger than a page
+        /// (Core/OutputPages.cs). Read from disk without Revit; the path is built from the job id
+        /// alone, never taken from a record, so it cannot point outside the outputs folder.
+        /// </summary>
+        internal static JObject OutputPage(string jobId, JToken pageToken, string jobsDir)
+        {
+            if (!Horizun.Revit.Core.OutputPages.ValidJobId(jobId))
+                throw new ArgumentException("output_page needs the job_id of the Python run whose output you want.");
+            if (pageToken.Type != JTokenType.Integer || (long)pageToken < 1)
+                throw new ArgumentException("output_page must be an integer of 1 or more.");
+            string path = Horizun.Revit.Core.OutputPages.Find(jobsDir, jobId, out int pageChars);
+            if (path == null)
+            {
+                string record = Path.Combine(jobsDir, jobId + ".jsonl");
+                bool exists = File.Exists(record), finished = false;
+                if (exists)
+                {
+                    try { finished = File.ReadLines(record).Any(l => l.Contains("\"event\":\"finish\"")); }
+                    catch { finished = false; }
+                }
+                throw new FileNotFoundException(Horizun.Revit.Core.OutputPages.MissingReason(jobId, exists, finished));
+            }
+            // The file is checked BEFORE it is read: the add-in never saves above this, so a bigger one is not ours.
+            long length = new FileInfo(path).Length;
+            if (length > Horizun.Revit.Core.OutputPages.MaxPagedBytes)
+                throw new InvalidDataException("The saved output of job " + jobId + " is " + length + " bytes, over the " +
+                                               Horizun.Revit.Core.OutputPages.MaxPagedBytes + " this tool reads. Nothing was read.");
+            string text = File.ReadAllText(path, new UTF8Encoding(false, true));
+            int pages = Horizun.Revit.Core.OutputPages.PageCount(text.Length, pageChars);
+            long page = (long)pageToken;
+            if (page > pages)
+                throw new ArgumentException("The output of job " + jobId + " has " + pages + " page(s); there is no page " + page + ".");
+            return new JObject
+            {
+                ["job_id"] = jobId,
+                ["output_page"] = page,
+                ["pages"] = pages,
+                ["page_chars"] = pageChars,
+                ["total_chars"] = text.Length,
+                ["last_page"] = page == pages,
+                ["next_page_with"] = page < pages ? (JToken)("horizun_job_status job_id=" + jobId + " output_page=" + (page + 1)) : JValue.CreateNull(),
+                ["text"] = Horizun.Revit.Core.OutputPages.Slice(text, (int)page, pageChars),
+                ["note"] = "A slice of the JSON text the script returned in __output__, read from disk without Revit. " +
+                           "Join the pages in order, then parse. The run's evidence_status came with the first reply."
+            };
         }
 
         /// <summary>
@@ -356,7 +455,9 @@ namespace Horizun.Server
                         // "cancelled": removed from the queue on request before it started
                         // (__horizun_cancel_job) - the same never-ran sequence as not_started.
                         bool knownStatus = candidateStatus == "ok" || candidateStatus == "failed" ||
-                                           candidateStatus == "not_started" || candidateStatus == "cancelled";
+                                           candidateStatus == "not_started" || candidateStatus == "cancelled" ||
+                                           candidateStatus == "timed_out" || candidateStatus == "cancelled_running" ||
+                                           candidateStatus == "cancelled_after_start";
                         bool neverRan = candidateStatus == "not_started" || candidateStatus == "cancelled";
                         bool validSequence = seenStart && (neverRan ? !seenRunning && !seenResult : seenRunning);
                         int declaredCheckpoints;
@@ -603,6 +704,46 @@ namespace Horizun.Server
         /// a record with no pid (written before it was stamped) keeps the old sentence,
         /// because there liveness genuinely is not knowable.
         /// </summary>
+        /// <summary>
+        /// "Stop this job", as a REQUEST and nothing more. A job still in the queue is removed
+        /// and never runs; a Python script already running is asked to stop and does so at its
+        /// next checkpoint()/safe_point(), if it ever reaches one. This tool never claims the
+        /// stop: the job's own record does, when it finishes as cancelled_running.
+        /// </summary>
+        private static JObject CancelRequest(JArray jobs, Func<string, int?, McpTasks.JobCancelAnswer> cancel)
+        {
+            JObject job = jobs.Count > 0 ? jobs[0] as JObject : null;
+            string state = (string)job?["state"];
+            string id = (string)job?["job_id"];
+            if (job == null || (state != "queued" && state != "running"))
+                return new JObject
+                {
+                    ["state"] = "not_cancellable",
+                    ["stopped"] = false,
+                    ["job_state"] = state,
+                    ["what_this_means"] = "The job is not queued or running (" + (state ?? "not in this response") +
+                                          "), so there is nothing to cancel. Read its own state."
+                };
+            int? pid = job["pid"]?.Type == JTokenType.Integer ? (int?)job["pid"] : null;
+            McpTasks.JobCancelAnswer answer = null;
+            try { answer = cancel != null ? cancel(id, pid) : PipeClient.TryCancelJob(id, pid); } catch { answer = null; }
+            if (answer == null)
+                return new JObject
+                {
+                    ["state"] = "unanswered",
+                    ["stopped"] = false,
+                    ["what_this_means"] = CancelAnswerMapping.Meaning(null)
+                };
+            return new JObject
+            {
+                ["state"] = CancelAnswerMapping.StateOf(answer),
+                ["stopped"] = false,
+                ["removed_before_start"] = answer.Removed,
+                ["interrupt_requested"] = answer.InterruptRequested,
+                ["what_this_means"] = CancelAnswerMapping.Meaning(answer)
+            };
+        }
+
         private static string Explain(string state, bool hasResult, int? pid, bool? processAlive,
                                       WerDumpEvidence.Finding wer)
         {
@@ -658,9 +799,24 @@ namespace Horizun.Server
                            "written, so this is safe to send again. Use a NEW idempotency_key: keys are bound to " +
                            "the Revit process that issued them.";
 
+                case "timed_out":
+                    return "STOPPED because its timeout_s passed. The script reached a checkpoint after the limit and was " +
+                           "interrupted there: the transactions it had open were rolled back, but anything it had " +
+                           "already committed before that point stays committed. Read the last checkpoint to see how far " +
+                           "it got, and re-read the model before sending it again.";
+
+                case "cancelled_running":
+                    return "STOPPED by a cancellation request while it was running. The script reached a checkpoint " +
+                           "after the request and was interrupted there: the transactions it had open were rolled back, " +
+                           "but anything it had already committed before that point stays committed. Read the last " +
+                           "checkpoint to see how far it got, and re-read the model before sending it again.";
+
                 case "cancelled":
                     return "CANCELLED before it started: a cancellation request took it out of Revit's queue while " +
                            "it was still waiting. Nothing was executed and nothing was written.";
+
+                case "cancelled_after_start":
+                    return "CANCELLED between callbacks after it started. Check result_present for a partial snapshot; the work did not complete.";
 
                 case "record_incomplete":
                     return "This durable record is INCOMPLETE: read record_fault and read_error for whether an append " +

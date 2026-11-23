@@ -377,6 +377,11 @@ namespace Horizun.Core.Tests
                 // bridge owns a folder it only reads.
                 if (Path.GetFileName(path) == "AccUploadStatusCommand.cs") continue;
 
+                // SaveDocumentCommand reads REVIT's collaboration cache (a cloud model's local copy,
+                // Core/CloudCacheLocator.cs) to measure save_local - another application's folder,
+                // only resolved on the Revit side and reported back as the path it judged.
+                if (Path.GetFileName(path) == "SaveDocumentCommand.cs") continue;
+
                 foreach (string line in File.ReadAllLines(path))
                 {
                     string code = line.TrimStart();

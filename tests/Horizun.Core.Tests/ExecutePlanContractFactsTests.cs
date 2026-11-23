@@ -69,22 +69,6 @@ namespace Horizun.Core.Tests
 
         // ---- The drift guard that was missing -----------------------------------
 
-        [Fact]
-        public void The_advertised_tool_list_is_exactly_the_one_the_command_enforces()
-        {
-            HashSet<string> enforced = EnforcedAllowlist();
-            HashSet<string> advertised = AdvertisedAllowlist();
-
-            // A tool in the schema but not in the HashSet is a published capability the
-            // command refuses at runtime. One in the HashSet but not the schema is a
-            // capability no client is told about, and a strict validator rejects.
-            Assert.Empty(advertised.Except(enforced));
-            Assert.Empty(enforced.Except(advertised));
-            // Sheet packing participates so a multi-sheet assignment is atomic.
-            Assert.Contains("horizun_pack_sheets", enforced);
-            Assert.Equal(22, enforced.Count);
-        }
-
         // ---- The claims the description makes, one by one ------------------------
 
         [Fact]
@@ -150,6 +134,23 @@ namespace Horizun.Core.Tests
             Assert.Contains("only when every action and reference resolves", Plan().Description);
             Assert.Contains("currently refused rather than authorised unseen", Plan().Description);
             Assert.DoesNotContain("authorize the complete graph", Plan().Description);
+        }
+
+        [Fact]
+        public void The_advertised_tool_list_is_exactly_the_one_the_command_enforces()
+        {
+            HashSet<string> enforced = EnforcedAllowlist();
+            HashSet<string> advertised = AdvertisedAllowlist();
+
+            // A tool in the schema but not in the HashSet is a published capability the
+            // command refuses at runtime. One in the HashSet but not the schema is a
+            // capability no client is told about, and a strict validator rejects.
+            Assert.Empty(advertised.Except(enforced));
+            Assert.Empty(enforced.Except(advertised));
+            // Sheet packing participates so a multi-sheet assignment is atomic.
+            Assert.Contains("horizun_pack_sheets", enforced);
+            Assert.Contains("horizun_view_visibility", enforced);
+            Assert.Equal(20, enforced.Count);
         }
     }
 }

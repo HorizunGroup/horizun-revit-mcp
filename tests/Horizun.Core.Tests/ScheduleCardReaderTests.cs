@@ -102,36 +102,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(600, (double)span["tolerance_mm"], 3);
         }
 
-        [Fact]
-        public void The_proposed_requirement_set_loads_and_keys_each_card_by_its_mark()
-        {
-            // extents "host": the proposal measured from the host's start face (the axis form has its own tests).
-            JObject hostMode = ScheduleCardFixtures.Proposal();
-            hostMode["extents"] = "host";
-            JObject r = Read(ScheduleCardFixtures.BeamSheet(), ScheduleCardFixtures.Args(new JObject { ["requirement_set"] = hostMode }));
-            var set = (JObject)r["requirement_set"];
-            Assert.NotNull(set);
-            StructuralRequirementSet loaded = StructuralRequirementSet.Load(set);
-            Assert.True(loaded.Ok, loaded.Error);
-
-            JObject rule = (JObject)set["section_rules"].Single();
-            Assert.Equal("V-101", (string)rule["host"]["mark"]);
-            Assert.Equal("OST_StructuralFraming", (string)rule["host"]["category"]);
-            Assert.Equal("host", (string)rule["cover"]["source"]);
-            JObject top = (JObject)rule["layers"].Single(l => (string)l["face"] == "top");
-            Assert.Equal(2, (int)top["count"]);
-            Assert.Equal("host_length", (string)top["extend"]);
-            JObject bottom = (JObject)rule["layers"].Single(l => (string)l["face"] == "bottom");
-            Assert.Equal(3, (int)bottom["count"]);
-            Assert.NotNull(bottom["start"]["hook_type"]);
-            Assert.NotNull(bottom["end"]["hook_type"]);
-            JArray zones = (JArray)rule["stirrups"]["zones"];
-            Assert.Equal(new[] { 800.0, 3900.0, 800.0 }, zones.Select(z => (double)z["length_mm"]));
-            Assert.Equal(new[] { 80.0, 300.0, 80.0 }, zones.Select(z => (double)z["layout"]["spacing_mm"]));
-            Assert.False((bool)zones[0]["layout"]["include_last_bar"]);
-            Assert.Empty((JArray)r["requirement_set_not_proposed"]);
-            Assert.Equal(2, (int)r["cards"][0]["members_stated"]);
-        }
+        
 
         [Fact]
         public void Without_declared_bar_type_names_no_set_is_proposed_and_the_reply_says_which()
@@ -144,27 +115,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("#4", (string)why["why"]);
         }
 
-        [Fact]
-        public void Asymmetric_zones_are_not_mapped_to_a_host_end_unless_the_caller_declares_the_orientation()
-        {
-            Action<BeamCardSpec> asym = c => c.Zones = new List<Tuple<string, double, double>>
-            {
-                Tuple.Create("11@.08", 0.15, 0.95), Tuple.Create("17#3@.30", 1.05, 5.85)
-            };
-            Action<BeamCardSpec> total = c => { asym(c); c.StirrupTotal = "SON 28"; };
-            JObject hostMode = ScheduleCardFixtures.Proposal();
-            hostMode["extents"] = "host";
-            JObject r = Read(ScheduleCardFixtures.BeamSheet(total), ScheduleCardFixtures.Args(new JObject { ["requirement_set"] = hostMode }));
-            Assert.Equal(JTokenType.Null, r["requirement_set"].Type);
-            Assert.Contains(r["requirement_set_not_proposed"], n => (string)n["code"] == "zones_orientation_unknown");
-
-            JObject p = ScheduleCardFixtures.Proposal();
-            p["extents"] = "host";
-            p["card_left_is_host_start"] = true;
-            JObject r2 = Read(ScheduleCardFixtures.BeamSheet(total), ScheduleCardFixtures.Args(new JObject { ["requirement_set"] = p }));
-            Assert.Equal(JTokenType.Object, r2["requirement_set"].Type);
-            Assert.True(StructuralRequirementSet.Load((JObject)r2["requirement_set"]).Ok);
-        }
+        
 
         [Fact]
         public void A_baston_is_read_but_not_proposed_because_the_host_start_face_is_not_on_the_card()
@@ -459,26 +410,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(6200, (double)top["to_station_mm"], 3);
         }
 
-        [Fact]
-        public void A_135_degree_hook_is_proposed_only_with_its_own_hook_type_name()
-        {
-            Action<BeamCardSpec> hooked = c =>
-            {
-                c.BottomHooks = false;
-                c.BottomCallout = "3#4 L=6.42";
-                c.Extra = (s, k) => s.Line(k.X(0), k.BottomY, k.X(0) + 3, k.BottomY + 3, SyntheticSheet.Red)
-                                     .Line(k.X(6), k.BottomY, k.X(6) - 3, k.BottomY + 3, SyntheticSheet.Red);
-            };
-            JObject r = Read(ScheduleCardFixtures.BeamSheet(hooked), ScheduleCardFixtures.Args(new JObject { ["requirement_set"] = ScheduleCardFixtures.Proposal() }));
-            Assert.Equal("135", (string)Card(r, "V-101")["bars"].Single(b => (string)b["face"] == "bottom")["hook_end"]["shape"]);
-            Assert.Contains(r["requirement_set_not_proposed"], n => (string)n["code"] == "hook_type_not_declared");
-
-            JObject p = ScheduleCardFixtures.Proposal();
-            p["hook_type_names"]["135"] = "Standard - 135 deg.";
-            JObject r2 = Read(ScheduleCardFixtures.BeamSheet(hooked), ScheduleCardFixtures.Args(new JObject { ["requirement_set"] = p }));
-            Assert.True(StructuralRequirementSet.Load((JObject)r2["requirement_set"]).Ok, r2["requirement_set_not_proposed"].ToString());
-            Assert.Equal("H135", (string)r2["requirement_set"]["section_rules"][0]["layers"].Single(l => (string)l["face"] == "bottom")["start"]["hook_type"]);
-        }
+        
 
         [Fact]
         public void A_box_around_several_cards_is_no_card_s_frame()
@@ -492,11 +424,7 @@ namespace Horizun.Core.Tests
             Assert.Empty((JArray)r["refusals"]);
         }
 
-        [Fact]
-        public void The_proposed_set_names_the_schema_the_requirement_set_reader_loads()
-        {
-            Assert.Equal(StructuralRequirementSet.SchemaName, ScheduleCards.StructuralRequirementSetSchema);
-        }
+        
 
         // ---------------------------------------------------------------- wall card
 
@@ -668,25 +596,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("table", (string)r["tables_not_read"]);
         }
 
-        // ------------------------------------------------------------- DWG route
-
-        [Fact]
-        public void The_dwg_intermediate_representation_reads_to_the_same_card()
-        {
-            SyntheticSheet sheet = ScheduleCardFixtures.BeamSheet();
-            ScheduleCards.Options o = ScheduleCards.ReadOptions(ScheduleCardFixtures.Args(new JObject { ["requirement_set"] = ScheduleCardFixtures.Proposal() }), out _, out _);
-            ScheduleCards.Sheet fromCad = ScheduleCards.SheetFromCadEntities(sheet.ToCadEntities(), "middle", out string code, out string error);
-            Assert.True(fromCad != null, code + ": " + error);
-            JObject r = ScheduleCards.Read(new[] { fromCad }, o);
-            JObject card = Card(r, "V-101");
-            Assert.Equal(2, ((JArray)card["bars"]).Count);
-            Assert.Equal(3, ((JArray)card["zones"]).Count);
-            Assert.Empty((JArray)r["refusals"]);
-            Assert.True(StructuralRequirementSet.Load((JObject)r["requirement_set"]).Ok);
-            // The circle is counted, not read: the IR kinds this reader leaves alone are named.
-            Assert.Equal(1, (int)r["sources"][0]["ignored_by_kind"]["circle"]);
-            Assert.Equal("anchor_middle", (string)r["sources"][0]["text_extent"]);
-        }
+        
 
         [Fact]
         public void Dwg_texts_anchored_at_their_start_leave_the_axis_stations_uncertain_and_nothing_is_proposed()

@@ -24,6 +24,7 @@
 using System;
 using System.IO;
 using System.Text;
+using Newtonsoft.Json;
 
 namespace Horizun.Server
 {
@@ -56,6 +57,18 @@ namespace Horizun.Server
 
         public static void Info(string message) => Write("INFO ", message);
         public static void Warn(string message) => Write("WARN ", message);
+
+        /// <summary>Records only contract field paths and rule classes. Never arguments, values or model names.</summary>
+        public static void SchemaRejection(string tool, string path, string rule)
+        {
+            if (string.IsNullOrEmpty(tool)) return;
+            Write("INFO ", "schema_rejection " + JsonConvert.SerializeObject(new
+            {
+                tool = tool,
+                path = path ?? "/",
+                rule = rule ?? "constraint"
+            }));
+        }
 
         public static void Error(string message, Exception ex)
         {

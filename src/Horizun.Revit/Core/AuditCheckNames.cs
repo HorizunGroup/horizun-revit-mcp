@@ -65,6 +65,19 @@ namespace Horizun.Revit.Core
         /// wall's current LocationCurve. See Core/WallSketchDriftRules.cs.
         /// </summary>
         public const string WallSketchDrift = "wall_sketch_drift";
+        public const string LevelSpan = "level_span";
+
+        // MODEL COHERENCE: what a person sees wrong in a 3D view and no other finding measured.
+        // See Commands/AuditModelCommand.Coherence.cs and Core/AuditCoherenceRules.cs.
+        public const string DoorsToVoid = "doors_to_void";
+        public const string BalconyWithoutAccess = "balcony_without_access";
+        public const string RailingWithoutInfill = "railing_without_infill";
+        public const string RoomsWithoutDoor = "rooms_without_door";
+        public const string RoomsWithoutFloorFinish = "rooms_without_floor_finish";
+        public const string DefaultMaterialFurniture = "default_material_furniture";
+        public const string FramingNotReachingSupport = "framing_not_reaching_support";
+        public const string FramingInconsistentSections = "framing_inconsistent_sections";
+        public const string StructuralOverlapUnjoined = "structural_overlap_unjoined";
 
         /// <summary>
         /// Not a finding: the file size is measured beside the findings and injected
@@ -79,7 +92,10 @@ namespace Horizun.Revit.Core
         {
             Warnings, OrphanGroupTypes, InPlaceFamilies, OpenMepConnectors, UnpinnedLinks,
             ViewsWithoutTemplate, ImportedCad, ViewsOffSheets, Rooms, Links, DesignOptions,
-            Coordinates, Datums, Readiness, WallSketchDrift, TemplateComparison
+            Coordinates, Datums, Readiness, WallSketchDrift, LevelSpan,
+            DoorsToVoid, BalconyWithoutAccess, RailingWithoutInfill, RoomsWithoutDoor, RoomsWithoutFloorFinish,
+            DefaultMaterialFurniture, FramingNotReachingSupport, FramingInconsistentSections, StructuralOverlapUnjoined,
+            TemplateComparison
         };
 
         /// <summary>Every name the gate may legitimately map a requirement onto.</summary>

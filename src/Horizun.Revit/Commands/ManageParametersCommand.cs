@@ -5,7 +5,7 @@
 //
 // Reads: list_bindings (the whole BindingMap), global_list.
 // Writes: create_shared (definition written to an SPF + binding), rebind, remove_binding,
-// global_create, global_set, global_delete. Every write rehearses in a transaction
+// global_create, global_set, global_delete, purge_legacy_marks (.Marks.cs). Every write rehearses in a transaction
 // that is rolled back (dry_run defaults to true), is applied only with the token,
 // and is re-read from the model - and, for create_shared, from the SPF on disk -
 // through a PostconditionCheck before and after the commit.
@@ -37,7 +37,7 @@ namespace Horizun.Revit.Commands
         private static readonly string[] Ops =
         {
             "list_bindings", "create_shared", "create_project", "rebind", "remove_binding",
-            "global_list", "global_create", "global_set", "global_delete"
+            "global_list", "global_create", "global_set", "global_delete", "purge_legacy_marks"
         };
 
         public CommandResult Execute(UIApplication uiapp, string paramsJson)
@@ -63,6 +63,17 @@ namespace Horizun.Revit.Commands
                     "(the only parameter factory is SharedParameterElement.Create). Python would meet the same absent " +
                     "API. Use create_shared, which writes the definition to an SPF you choose and binds it. Nothing was written.",
                     new JObject { ["state"] = "refused", ["reason"] = "no_api_in_any_supported_year", ["use_instead"] = "create_shared" });
+
+            if (op == "purge_legacy_marks")
+            {
+                // Nothing to purge is a read: it answers 0 without opening a transaction or asking for a token.
+                Document d = uiapp?.ActiveUIDocument?.Document;
+                if (d == null) return CommandResult.Fail("No active Revit document.");
+                CommandResult wrong = DocumentGate.ReadGuard(d, request, Name);
+                if (wrong != null) return wrong;
+                try { if (LegacyMarked(d).Count == 0) return CommandResult.Ok(LegacyMarksNone(d)); }
+                catch (Exception ex) { return CommandResult.Fail("The ownership marks could not be counted: " + ex.Message + " Nothing was written."); }
+            }
 
             GateResult gate = DocumentGate.ForMutation(uiapp, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -266,6 +277,7 @@ namespace Horizun.Revit.Commands
                 case "global_create": return BuildGlobalCreate(doc, r, out error);
                 case "global_set": return BuildGlobalSet(doc, r, out error);
                 case "global_delete": return BuildGlobalDelete(doc, r, out error);
+                case "purge_legacy_marks": return BuildPurgeLegacyMarks(doc, r, out error);
             }
             error = "operation " + op + " has no write plan.";
             return null;

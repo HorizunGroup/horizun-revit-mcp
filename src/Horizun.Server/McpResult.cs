@@ -17,6 +17,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
+using Horizun.Revit.Core;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -34,13 +36,199 @@ namespace Horizun.Server
         internal const uint MaxImageDimension = 8192;
         internal const int LargeStructuredTextThresholdBytes = 512 * 1024;
 
+        internal static JObject ExceptionError(string tool, Exception exception, JObject transport = null, bool bridge = false)
+        {
+            var detail = transport == null ? new JObject() : (JObject)transport.DeepClone();
+            string code = (string)detail["error_code"];
+            if (!ErrorCodes.IsStable(code) || code == ErrorCodes.NoClasificado)
+                detail["error_code"] = exception is TimeoutException ? ErrorCodes.TiempoAgotado :
+                    bridge ? ErrorCodes.TransporteFallido : ErrorCodes.ErrorInterno;
+            detail["tool"] = tool;
+            detail["exception_type"] = exception.GetType().Name;
+            detail["exception_message"] = exception.Message ?? "";
+            if (detail["write_started"] == null) detail["write_started"] = JValue.CreateNull();
+            string write = detail["write_started"].Type == JTokenType.Boolean
+                ? ((bool)detail["write_started"] ? "Writing started." : "Writing did not start.")
+                : "Whether anything was written is unknown.";
+            var causes = new List<string>();
+            for (Exception e = exception; e != null; e = e.InnerException)
+                causes.Add(e.GetType().Name + ": " + (string.IsNullOrWhiteSpace(e.Message) ? "(no message)" : e.Message));
+            return Error("Error in " + tool + ": " + string.Join("; caused by ", causes) + ". " + write, null, null, detail);
+        }
+
+        internal static JObject EnsureFailureMessage(JObject result, string tool)
+        {
+            if ((bool?)result?["isError"] != true) return result;
+            JObject block = (result["content"] as JArray)?.OfType<JObject>()
+                .FirstOrDefault(b => (string)b["type"] == "text" && b["text"]?.Type == JTokenType.String);
+            string text = (string)block?["text"] ?? "";
+            string original = System.Text.RegularExpressions.Regex.Replace(text, @"(?m)^error_code:.*$", "").Trim();
+            if (!string.IsNullOrWhiteSpace(original) && !string.Equals(original, "Error:", StringComparison.OrdinalIgnoreCase)) return result;
+            JObject detail = result["structuredContent"] as JObject ?? new JObject();
+            string type = (string)detail["exception_type"] ?? "unknown exception";
+            string message = (string)detail["exception_message"];
+            string written = detail["write_started"]?.Type == JTokenType.Boolean
+                ? ((bool)detail["write_started"] ? "Writing started." : "Writing did not start.")
+                : "Whether anything was written is unknown.";
+            string explanation = "Error in " + (tool ?? "unknown tool") + ": " + type + ": " +
+                (string.IsNullOrWhiteSpace(message) ? "(no message)" : message) + ". " + written;
+            if (block == null)
+            {
+                if (!(result["content"] is JArray content)) result["content"] = content = new JArray();
+                content.Add(new JObject { ["type"] = "text", ["text"] = explanation });
+            }
+            else block["text"] = explanation;
+            detail["error"] = explanation;
+            result["structuredContent"] = detail;
+            return StampError(result);
+        }
+
+        internal static JObject ExplainFailure(JObject result, string tool)
+        {
+            if ((bool?)result?["isError"] != true) return result;
+            result = EnsureFailureMessage(result, tool);
+            var detail = (JObject)result["structuredContent"];
+            if (detail["tool"] == null) detail["tool"] = tool ?? "unknown tool";
+            string type = (string)detail["exception_type"];
+            if (detail["write_started"] == null && detail["fallback"] is JObject fb && fb.Value<bool?>("allowed") == true && fb.Value<bool?>("write_started") == false)
+                detail["write_started"] = false;
+            string written = (string)detail["rollback_status"] == "RolledBack" ? "the transaction rolled back; nothing was changed" : detail["write_started"]?.Type == JTokenType.Boolean
+                ? ((bool)detail["write_started"] ? "writing started" : "nothing was written")
+                : "whether anything was written is unknown";
+            JObject block = ((JArray)result["content"]).OfType<JObject>()
+                .First(b => (string)b["type"] == "text" && b["text"]?.Type == JTokenType.String);
+            // Live 5.0.4: "Nothing was undone ... whether anything was written is unknown" - the
+            // trailer contradicted the add-in's own statement. When the message itself says
+            // nothing was written, the trailer repeats that instead of doubting it.
+            if (detail["write_started"]?.Type != JTokenType.Boolean && (string)detail["rollback_status"] != "RolledBack" &&
+                MessageSaysNothingWritten((string)block["text"]))
+                written = "nothing was written (as stated above)";
+            block["text"] = (string)block["text"] + Environment.NewLine +
+                "Tool: " + (tool ?? "unknown tool") + (string.IsNullOrWhiteSpace(type) ? "" : "; exception: " + type) + "; " + written + ".";
+            return result;
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex NothingWrittenStatement =
+            new System.Text.RegularExpressions.Regex(
+                @"\b(nothing was (written|applied|undone|changed|opened|sent to revit|run|created|deleted|modified|committed)|NEVER STARTED|nothing ran)\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        /// <summary>True when the failure text itself states that nothing was written.</summary>
+        internal static bool MessageSaysNothingWritten(string text)
+            => !string.IsNullOrEmpty(text) && NothingWrittenStatement.IsMatch(text);
+
         public static JObject Text(string text, bool isError)
+        {
+            JObject result = TextUnstamped(text, isError);
+            // EVERY failure leaves with its cause as data. McpResult is the one seat where the
+            // server assembles an error reply (Text, Error and ImageAttachmentError all end
+            // here), so the stable code is stamped here and no tool does it for itself.
+            return isError ? StampError(result) : result;
+        }
+
+        private static JObject TextUnstamped(string text, bool isError)
         {
             return new JObject
             {
                 ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = text } },
                 ["isError"] = isError
             };
+        }
+
+        /// <summary>
+        /// Gives a failed result its stable `error_code` (and `exception_type` / `limite_ms`
+        /// when they apply) in structuredContent, plus one trailing line in the text for the
+        /// clients that only read prose. Idempotent: a result that already carries a code is
+        /// left alone. A result with no structure gains a minimal one that repeats the message
+        /// as `error`, so a client that forwards structuredContent in place of the text blocks
+        /// still shows the model what went wrong.
+        /// </summary>
+        internal static JObject StampError(JObject result)
+        {
+            if (result == null || result["isError"]?.Type != JTokenType.Boolean || !(bool)result["isError"])
+                return result;
+
+            JObject block = (result["content"] as JArray)?.OfType<JObject>()
+                .FirstOrDefault(b => (string)b["type"] == "text" && b["text"]?.Type == JTokenType.String);
+            string text = block != null ? (string)block["text"] : "";
+            JObject structured = result["structuredContent"] as JObject;
+
+            string existing = structured?["error_code"]?.Type == JTokenType.String
+                ? (string)structured["error_code"] : null;
+
+            if (ErrorCodes.IsStable(existing))
+            {
+                // A code arrived from the add-in. An upgrade is still possible for the generic one:
+                // schema advice attached later proves the arguments broke the contract.
+                if (existing == ErrorCodes.NoClasificado)
+                {
+                    // An old add-in may have named the generic code before the server
+                    // attached schema or transport evidence. Re-evaluate only that code.
+                    var evidence = (JObject)structured.DeepClone();
+                    evidence.Remove(ErrorCodes.CodeField);
+                    var cause = ErrorCodes.Classify(text, evidence);
+                    string promoted = structured["schema_help"] != null
+                        ? ErrorCodes.EsquemaInvalido : cause.Code;
+                    structured["error_code"] = promoted;
+                    if (structured[ErrorCodes.ExceptionTypeField] == null && cause.ExceptionType != null)
+                        structured[ErrorCodes.ExceptionTypeField] = cause.ExceptionType;
+                    if (structured[ErrorCodes.LimitField] == null && cause.LimiteMs.HasValue)
+                        structured[ErrorCodes.LimitField] = cause.LimiteMs.Value;
+                    if (block != null)
+                        block["text"] = System.Text.RegularExpressions.Regex.Replace(text,
+                            @"(?m)^error_code: error_no_clasificado[^\r\n]*$",
+                            _ => ErrorCodes.Line(structured));
+                }
+                if (block != null && ((string)block["text"]).IndexOf("error_code:", StringComparison.Ordinal) < 0)
+                    block["text"] = (string)block["text"] + Environment.NewLine + Environment.NewLine + ErrorCodes.Line(structured);
+                CarryMessage(structured, text);
+                StampFallbackDenial(structured);
+                return result;
+            }
+
+            JObject ensured = ErrorCodes.Ensure(text, structured);
+            if (ensured[ErrorCodes.CodeField] != null && (string)ensured[ErrorCodes.CodeField] == ErrorCodes.NoClasificado &&
+                ensured["schema_help"] != null)
+                ensured[ErrorCodes.CodeField] = ErrorCodes.EsquemaInvalido;
+            if (structured == null) ensured["error"] = text;
+            else CarryMessage(ensured, text);
+            StampFallbackDenial(ensured);
+            result["structuredContent"] = ensured;
+            if (block != null && text.IndexOf("error_code:", StringComparison.Ordinal) < 0)
+                block["text"] = text + Environment.NewLine + Environment.NewLine + ErrorCodes.Line(ensured);
+            return result;
+        }
+
+        private static void StampFallbackDenial(JObject detail)
+        {
+            if (detail["fallback"] is JObject fallback &&
+                (fallback["recommended_tool"] != null || (string)fallback["reason"] != ErrorCodes.NoClasificado)) return;
+            bool? writeStarted = detail["write_started"]?.Type == JTokenType.Boolean ? (bool?)detail["write_started"] : null;
+            detail["fallback"] = new JObject
+            {
+                ["allowed"] = false,
+                ["reason"] = writeStarted == true ? "write_may_have_started" : (string)detail["error_code"],
+                ["write_started"] = writeStarted.HasValue ? new JValue(writeStarted.Value) : JValue.CreateNull()
+            };
+        }
+
+        /// <summary>
+        /// A failure whose structure came from the add-in with its own code but no message (live 5.2, Revit 2025:
+        /// manage_styles answered {error_code: esquema_invalido, answered_by, tool} and the cause - a scheme name
+        /// already in use - lived only in the text) gains the text as `error`, so a client that reads only
+        /// structuredContent still learns why. Left alone when the structure already says why.
+        /// </summary>
+        internal static void CarryMessage(JObject structured, string text)
+        {
+            if (structured == null || string.IsNullOrWhiteSpace(text)) return;
+            if (structured["error"] != null && structured["error"].Type != JTokenType.Null) return;
+            foreach (string key in new[] { "message", "mensaje", "exception_message" })
+                if (structured[key]?.Type == JTokenType.String && !string.IsNullOrWhiteSpace((string)structured[key])) return;
+            string message = System.Text.RegularExpressions.Regex.Replace(text, @"(?m)^error_code:.*$", "").Trim();
+            // A text that is the payload dumped as JSON is not a message: repeating it would only cost tokens.
+            if (message.Length == 0 || message[0] == '{' || message[0] == '[') return;
+            const int max = 4000;
+            structured["error"] = message.Length <= max ? message : message.Substring(0, max) + "…";
         }
 
         public static JObject Structured(JToken data, string text)
@@ -53,6 +241,10 @@ namespace Horizun.Server
         /// </summary>
         public static JObject Structured(JToken data, string text, JObject fallback, JArray capabilityGaps)
         {
+            string writeFailure = CommandResult.WriteResultFailure(data as JObject, out string writeCode);
+            if (writeFailure != null)
+                return Error("Error: " + writeFailure, fallback, capabilityGaps,
+                    ErrorCodes.Detail(writeCode, extra: data as JObject));
             // The TEXT of a success stays exactly the payload. On the error path the
             // block is also rendered as prose, because a human reading a log has
             // nothing else; here that would splice a second JSON document into a
@@ -60,6 +252,7 @@ namespace Horizun.Server
             // precisely the replies that carry the new signal. structuredContent is
             // where a success publishes structure - that is what it is for.
             JObject structured = data is JObject o ? (JObject)o.DeepClone() : null;
+            ReadResultCoverage.Stamp(structured);
             // Tool results normally repeat the payload as human text and as
             // structuredContent. That is useful for small answers but doubles a large
             // async result and can turn an otherwise valid <=32 MiB response into an
@@ -70,9 +263,14 @@ namespace Horizun.Server
             {
                 int structuredBytes = Encoding.UTF8.GetByteCount(
                     structured.ToString(Formatting.None));
-                if (structuredBytes > LargeStructuredTextThresholdBytes)
+                // Only replace a redundant JSON rendering. Preserve any text appended
+                // by Revit, and never discard a caller's distinct human explanation.
+                string payloadText = data.ToString(Formatting.Indented);
+                if (structuredBytes > LargeStructuredTextThresholdBytes && text != null &&
+                    text.StartsWith(payloadText, StringComparison.Ordinal))
                     rendered = "Large structured result (" + structuredBytes +
-                               " UTF-8 bytes) is available in structuredContent.";
+                               " UTF-8 bytes) is available in structuredContent." +
+                               text.Substring(payloadText.Length);
             }
             JObject result = Text(rendered, false);
 
@@ -104,6 +302,8 @@ namespace Horizun.Server
         public static JObject Error(string text, JObject fallback, JArray capabilityGaps, JObject detail)
         {
             if (fallback == null && capabilityGaps == null && detail == null) return Text(text, true);
+            // (Text above stamps the code. The structured branch below builds its result unstamped
+            // and stamps it once the detail is in place, because the add-in's own code lives there.)
 
             var structured = new JObject();
             string rendered = text;
@@ -133,9 +333,9 @@ namespace Horizun.Server
                 structured["capability_gaps"] = capabilityGaps.DeepClone();
             }
 
-            JObject result = Text(rendered, true);
+            JObject result = TextUnstamped(rendered, true);
             result["structuredContent"] = structured;
-            return result;
+            return StampError(result);
         }
 
         /// <summary>
@@ -155,9 +355,10 @@ namespace Horizun.Server
             if (fallback != null) structured["fallback"] = fallback.DeepClone();
             if (capabilityGaps != null) structured["capability_gaps"] = capabilityGaps.DeepClone();
 
-            JObject result = Text(text, true);
+            structured[ErrorCodes.CodeField] = ErrorCodes.AdjuntoImagenFallido;
+            JObject result = TextUnstamped(text, true);
             result["structuredContent"] = structured;
-            return result;
+            return StampError(result);
         }
 
         /// <summary>
@@ -194,6 +395,7 @@ namespace Horizun.Server
                             fallback, capabilityGaps);
 
                     baseResult = Structured(data, text, fallback, capabilityGaps);
+                    if ((bool?)baseResult["isError"] == true) return baseResult;
                     long baseBytes = System.Text.Encoding.UTF8.GetByteCount(baseResult.ToString(Formatting.None));
                     long encodedBytes = ((length + 2L) / 3L) * 4L;
                     // Reserve the JSON wrapper for the image block. The constant is deliberately
@@ -234,7 +436,6 @@ namespace Horizun.Server
                         ["mimeType"] = mime
                     }
                 };
-                baseResult["isError"] = false;
                 return baseResult;
             }
             catch (Exception ex)

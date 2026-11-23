@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Server tests - original Horizun code.
 //
 // The contract is declared once now. These are the tests that keep it that way,
@@ -56,7 +56,7 @@ namespace Horizun.Server.Tests
                     "horizun_budget_compare", "horizun_catalog_lookup", "horizun_cde_cloud", "horizun_excel_read_rows",
                     "horizun_excel_write_rows", "horizun_exchange", "horizun_information_container", "horizun_job_status", "horizun_power_bi_push",
                     "horizun_project_context", "horizun_promote_script", "horizun_read_schedule", "horizun_repair_memory", "horizun_run_procedure",
-                    "horizun_selection_exchange", "horizun_target"
+                    "horizun_selection_exchange", "horizun_target", "horizun_template_kit"
                 },
                 hostResident);
         }
@@ -74,18 +74,6 @@ namespace Horizun.Server.Tests
             Assert.Null(properties?["access_token"]);
             Assert.Null(properties?["client_secret"]);
             Assert.Contains("environment variables", c.Description);
-        }
-
-        // D5 (2026-10-09): coordination show reports elements_painted_requested in the dry
-        // run and the apply. The old elements_painted counted requests, not paint; the
-        // rename is breaking and the contract says so, so the hash moves with it.
-        [Fact]
-        public void Coordination_show_names_the_requested_count_and_the_rename()
-        {
-            CommandContract c = Contract.Find("horizun_coordination");
-            Assert.NotNull(c);
-            Assert.Contains("elements_painted_requested", c.Description);
-            Assert.Contains("renamed from elements_painted in 2.2.0", c.Description);
         }
 
         [Fact]
@@ -138,9 +126,8 @@ namespace Horizun.Server.Tests
             string[] mutations =
             {
                 "horizun_delete_verified", "horizun_write_params_verified", "horizun_set_keynote",
-                "horizun_bind_shared_param", "horizun_family_apply", "horizun_save_document",
+                "horizun_bind_shared_param", "horizun_save_document",
                 "horizun_relinquish_all", "horizun_create_schedule",
-                "horizun_create_family", "horizun_manage_system_types",
                 // Recipe-backed geometry tools. They delete and recreate elements, which
                 // makes naming the model at least as load-bearing here as anywhere above.
                 "horizun_split_floor_loops", "horizun_split_multilayer_walls",
@@ -216,20 +203,6 @@ namespace Horizun.Server.Tests
             Assert.Contains("nwc", formats.Values<string>());
             Assert.Contains("fbx", formats.Values<string>());
 
-            CommandContract family = Contract.Find("horizun_create_family");
-            Assert.NotNull(family);
-            JToken familyProperties = family.InputSchema["properties"];
-            foreach (string property in new[] { "parameters", "types", "forms", "connectors", "reference_planes", "dimensions", "family_lines", "nested_instances" })
-                Assert.NotNull(familyProperties?[property]);
-            JToken familyKinds = familyProperties?["forms"]?["items"]?["properties"]?["kind"]?["enum"];
-            foreach (string kind in new[] { "extrusion", "blend", "revolution", "sweep", "swept_blend" })
-                Assert.Contains(kind, familyKinds.Values<string>());
-            CommandContract systemTypes = Contract.Find("horizun_manage_system_types");
-            Assert.NotNull(systemTypes);
-            JToken compound = systemTypes.InputSchema["properties"]?["actions"]?["items"]?["properties"]?["compound_structure"];
-            Assert.NotNull(compound?["properties"]?["layers"]);
-            Assert.NotNull(compound?["properties"]?["structural_layer_index"]);
-            Assert.NotNull(compound?["properties"]?["opening_wrapping"]);
         }
 
         // ---- the hash ----------------------------------------------------------

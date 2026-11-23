@@ -34,7 +34,7 @@ body:
     id: tool
     attributes:
       label: Which tool
-      placeholder: "horizun_create_family"
+      placeholder: "horizun_create_elements"
     validations:
       required: true
 

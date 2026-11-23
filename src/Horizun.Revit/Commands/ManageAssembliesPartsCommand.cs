@@ -106,7 +106,7 @@ namespace Horizun.Revit.Commands
                     bool valid = false; try { valid = PartUtils.AreElementsValidForCreateParts(doc, new List<ElementId> { id }); } catch { }
                     rows.Add(new JObject
                     {
-                        ["id"] = Rid.Value(id), ["category"] = e.Category?.Name, ["is_part"] = e is Part,
+                        ["id"] = Rid.Value(id), ["category"] = e.Category?.Name, ["built_in_category"] = CategoryKey.Of(e), ["is_part"] = e is Part,
                         ["valid_for_create_parts"] = valid, ["part_ids"] = StagedGroupWrite.Json(PartsOf(doc, id)),
                         ["assembly_id"] = e.AssemblyInstanceId == ElementId.InvalidElementId ? (JToken)JValue.CreateNull() : Rid.Value(e.AssemblyInstanceId)
                     });

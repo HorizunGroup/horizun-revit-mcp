@@ -1,9 +1,9 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - structural steel connections. Original Horizun code.
 //
 // G09 of the 2026-09-14 competitive inventory asked for "armaduras y acero".
 // Re-verified against 1.3.3, the armadura half was already there and thorough -
-// horizun_plan_reinforcement, horizun_apply_reinforcement, horizun_audit_rein-
+// horizun_plan_reinforcement (Pro edition), horizun_apply_reinforcement (Pro edition), horizun_audit_rein-
 // forcement, plus RebarApi, RebarArrayGeometry, StirrupZoneRules, RebarTakeoff.
 // The steel half was not there at all: StructuralConnectionHandler appeared
 // nowhere in the source.
@@ -290,8 +290,11 @@ namespace Horizun.Revit.Commands
                 var plan = new Plan { Index = i, Key = key, Members = members, MemberIds = ids };
 
                 string typeName = a.Value<string>("connection_type");
+                // "No type named" is the generic connection. -1 is a representable id, so the old default of -1
+                // read as "a type was named" and refused every generic connection in a project with no types loaded.
                 long typeId = a.Value<long?>("connection_type_id") ?? -1;
-                if (Rid.CanRepresent(typeId) || !string.IsNullOrWhiteSpace(typeName))
+                bool typeIdGiven = typeId != -1 && Rid.CanRepresent(typeId);
+                if (typeIdGiven || !string.IsNullOrWhiteSpace(typeName))
                 {
                     StructuralConnectionHandlerType type = ResolveType(doc, typeId, typeName, out string typeError);
                     if (type == null) { error = "actions[" + i + "]: " + typeError; return null; }
@@ -348,7 +351,7 @@ namespace Horizun.Revit.Commands
                 .OrderBy(t => Rid.Value(t.Id))
                 .ToList();
 
-            if (Rid.CanRepresent(typeId))
+            if (typeId != -1 && Rid.CanRepresent(typeId))
             {
                 StructuralConnectionHandlerType byId = loaded.FirstOrDefault(t => Rid.Value(t.Id) == typeId);
                 if (byId != null) return byId;

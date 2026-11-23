@@ -51,10 +51,7 @@ namespace Horizun.Server.Tests
             "information-containers/02-stamp.json",
             "information-containers/03-inspect.json",
             "information-containers/04-transition.json",
-            "ifc-delivery/deliver-ifc.json",
             "disciplines/architecture-walls-and-slab.json",
-            "disciplines/structure-plan-reinforcement.json",
-            "disciplines/mep-ducts.json",
             "disciplines/documentation-export-pdf-container.json"
         };
 

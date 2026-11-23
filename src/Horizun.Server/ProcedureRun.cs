@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP - running one of the catalogue's procedures. Original Horizun code.
 //
 // G13 HAD TWENTY ROUTES AND NO WAY TO FOLLOW ONE. The catalogue said what to call,
@@ -319,6 +319,17 @@ namespace Horizun.Server
 
             int number = (int)step["step"];
 
+            if ((string)record["procedure"] == "sheet-issue" &&
+                ((string)step["tool"] == "horizun_save_document" || (string)step["tool"] == "horizun_export"))
+            {
+                JObject traffic = IssueTrafficLight(IssueFactsFromRecord(record), beforeExport: true,
+                    requireSave: (string)step["tool"] == "horizun_export");
+                if ((string)traffic["verdict"] != "green")
+                    return new JObject { ["run_id"] = record["run_id"], ["step"] = number,
+                        ["state"] = "blocked", ["traffic_light"] = traffic,
+                        ["means"] = "The issue checks are not all clean and covered; nothing was dispatched." };
+            }
+
             // A STEP ALREADY IN FLIGHT IS NEVER SENT AGAIN.
             //
             // The record is saved with dispatched=true before the call, which is what
@@ -475,6 +486,31 @@ namespace Horizun.Server
                 };
             }
 
+            if ((string)record["procedure"] == "sheet-issue" && tool == "horizun_export")
+            {
+                try
+                {
+                    JObject rehearsal = Structured(result);
+                    string previewState, previewWhy;
+                    Judge(Ok, JudgeInput(result, rehearsal), out previewState, out previewWhy);
+                    if (previewState == Failed) throw new InvalidOperationException("Export rehearsal: " + previewWhy);
+                    step["rehearsal"] = rehearsal.DeepClone();
+                    Save(record);
+                    result = IssueExportApply(arguments, rehearsal,
+                        apply => Invoker(new JObject { ["name"] = tool, ["arguments"] = apply }, cancellationToken),
+                        applied => RereadIssueManifest(applied, arguments["view_ids"] as JArray));
+                }
+                catch (Exception ex)
+                {
+                    step["state"] = NotEvaluated;
+                    step["evaluation"] = "Export or manifest verification did not complete: " + ex.Message + ". Files may exist; do not repeat without reconciliation.";
+                    step["recorded_utc"] = DateTime.UtcNow.ToString("o");
+                    AdvanceState(record); Save(record);
+                    return new JObject { ["run_id"] = record["run_id"], ["step"] = number, ["state"] = NotEvaluated,
+                        ["evaluation"] = step["evaluation"], ["summary"] = Summary(record) };
+                }
+            }
+
             JObject structured = Structured(result);
             step["evidence"] = structured ?? result ?? JValue.CreateNull();
             step["recorded_utc"] = DateTime.UtcNow.ToString("o");
@@ -507,6 +543,60 @@ namespace Horizun.Server
                 ["next"] = NextCall(record),
                 ["summary"] = Summary(record)
             };
+        }
+
+        internal static JObject IssueExportApply(JObject arguments, JObject rehearsal, Func<JObject, JToken> invoke, Func<JObject, JObject> reread)
+        {
+            string token = (string)rehearsal?["confirmation_token"];
+            if ((bool?)rehearsal?["dry_run"] != true || string.IsNullOrWhiteSpace(token))
+                throw new InvalidOperationException("Rehearsal did not return a confirmation token.");
+            var apply = (JObject)arguments.DeepClone();
+            apply["dry_run"] = false; apply["confirmation_token"] = token;
+            JToken response = invoke(apply);
+            JObject body = Structured(response);
+            string state, why;
+            Judge(Ok, JudgeInput(response, body), out state, out why);
+            if (state == Failed || body == null || (bool?)body["delivery"]?["package_verified"] != true)
+                throw new InvalidOperationException("Export apply was not verified: " + why);
+            body = (JObject)body.DeepClone();
+            body["manifest_reread"] = reread(body);
+            if ((bool?)body["manifest_reread"]?["verified"] != true)
+                throw new InvalidOperationException("Manifest reread did not verify the package.");
+            body["verified"] = true;
+            return body;
+        }
+
+        internal static JObject RereadIssueManifest(JObject applied, JArray expectedSheets)
+        {
+            string path = (string)applied["manifest_path"];
+            if (string.IsNullOrWhiteSpace(path) || expectedSheets == null || expectedSheets.Count == 0)
+                throw new InvalidDataException("Manifest path or requested sheets missing.");
+            JObject manifest = JObject.Parse(File.ReadAllText(path));
+            if ((string)manifest["schema"] != "horizun.delivery-manifest/1" || (bool?)manifest["package_verified"] != true || !(manifest["files"] is JArray files) || files.Count == 0)
+                throw new InvalidDataException("Manifest incomplete.");
+            if (!JToken.DeepEquals(files, applied["delivery"]?["files"]))
+                throw new InvalidDataException("Manifest files differ from the export response.");
+            var actualSheets = new List<long>();
+            foreach (JObject file in files.OfType<JObject>())
+            {
+                string pdfPath = (string)file["path"], expectedHash = (string)file["sha256"];
+                var sources = file["source_views"] as JArray;
+                if (sources == null || sources.Count == 0 || sources.Any(s => s["id"]?.Type != JTokenType.Integer))
+                    throw new InvalidDataException("Manifest has no sheet mapping.");
+                actualSheets.AddRange(sources.Select(s => (long)s["id"]));
+                using (var stream = File.OpenRead(pdfPath))
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var pdf = UglyToad.PdfPig.PdfDocument.Open(pdfPath))
+                {
+                    string hash = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+                    if (!string.Equals(hash, expectedHash, StringComparison.OrdinalIgnoreCase) || pdf.NumberOfPages != sources.Count || (int?)file["pages"] != pdf.NumberOfPages)
+                        throw new InvalidDataException("PDF hash or page count differs from the manifest.");
+                }
+            }
+            if (files.OfType<JObject>().Count() != files.Count || !actualSheets.OrderBy(x => x).SequenceEqual(expectedSheets.Select(x => (long)x).OrderBy(x => x)))
+                throw new InvalidDataException("Manifest sheets differ from the requested sheets.");
+            return new JObject { ["verified"] = true, ["manifest_path"] = path, ["files"] = files.Count, ["sheets"] = actualSheets.Count,
+                ["limit"] = "Sheet mapping is the export invocation mapping, not independent visual identification." };
         }
 
         /// <summary>
@@ -1381,7 +1471,7 @@ namespace Horizun.Server
                             "= 0 answers only the first."
             };
 
-            return new JObject
+            var summary = new JObject
             {
                 ["steps"] = steps.Count,
                 ["by_state"] = byState,
@@ -1407,6 +1497,86 @@ namespace Horizun.Server
                         : "the declared checks did not all pass, or a step did not complete. The procedure " +
                           "has not been completed, whatever the individual replies said."
             };
+            if ((string)record["procedure"] == "sheet-issue")
+                summary["traffic_light"] = IssueTrafficLight(IssueFactsFromRecord(record));
+            return summary;
+        }
+
+        // Issue is green only on positive evidence. Missing, malformed and partial
+        // evidence remain unknown; a known finding takes precedence over unknowns.
+        internal static JObject IssueTrafficLight(JObject facts, bool beforeExport = false, bool requireSave = false)
+        {
+            var rows = new JArray();
+            bool red = false, unknown = false;
+            void Check(string section, string field, bool count)
+            {
+                JToken value = facts?[section]?[field];
+                string result = "unknown";
+                if (count && value?.Type == JTokenType.Integer && (long)value >= 0)
+                    result = (long)value == 0 ? "green" : "red";
+                else if (!count && value?.Type == JTokenType.Boolean && (bool)value)
+                    result = "green";
+                if (result == "red") red = true;
+                if (result == "unknown") unknown = true;
+                rows.Add(new JObject { ["section"] = section, ["field"] = field,
+                    ["observed"] = value?.DeepClone(), ["verdict"] = result });
+            }
+            Check("audit", "coverage_complete", false); Check("audit", "blocking_total", true); Check("audit", "unknown_total", true);
+            Check("loans", "coverage_complete", false); Check("loans", "borrowed", true);
+            Check("notes", "clean", false); Check("notes", "stale", true); Check("notes", "unknown", true);
+            Check("diff", "coverage_complete", false); Check("diff", "assessed", false);
+            Check("diff", "session_record_complete", false); Check("diff", "own_changes", true);
+            if (!beforeExport || requireSave) Check("save", "verified", false);
+            if (!beforeExport) { Check("pdf", "coverage_complete", false); Check("pdf", "fonts_judged", false);
+                Check("pdf", "findings", true); Check("manifest", "verified", false); }
+            return new JObject { ["verdict"] = red ? "red" : unknown ? "unknown" : "green", ["checks"] = rows,
+                ["scope"] = beforeExport ? "before_export" : "complete_issue",
+                ["limits"] = "PDF inspection does not render; visual approval remains necessary." };
+        }
+
+        private static JObject IssueFactsFromRecord(JObject record)
+        {
+            JToken Evidence(string tool) => ((JArray)record["steps"]).OfType<JObject>()
+                .FirstOrDefault(s => (string)s["tool"] == tool && (string)s["state"] != Pending)?["evidence"];
+            JToken audit = Evidence("horizun_audit_planimetry"), loans = Evidence("horizun_model_scan"), notes = Evidence("horizun_query_planimetry"),
+                diff = Evidence("horizun_model_diff"), save = Evidence("horizun_save_document"), export = Evidence("horizun_export");
+            var facts = new JObject();
+            if (audit is JObject) facts["audit"] = new JObject { ["coverage_complete"] = audit["coverage_complete"]?.DeepClone(),
+                ["blocking_total"] = audit["blocking_total"]?.DeepClone(), ["unknown_total"] = audit["unknown_total"]?.DeepClone() };
+            if (notes is JObject) facts["notes"] = new JObject { ["clean"] = notes["clean"]?.DeepClone(),
+                ["stale"] = notes["stale"]?.DeepClone(), ["unknown"] = notes["unknown"]?.DeepClone() };
+            if (diff is JObject) facts["diff"] = new JObject { ["coverage_complete"] = diff["coverage"]?["complete"]?.DeepClone(),
+                ["assessed"] = diff["origin"]?["assessed"]?.DeepClone(), ["session_record_complete"] = diff["origin"]?["session_record_complete"]?.DeepClone(),
+                ["own_changes"] = diff["origin"]?["horizun_session"]?["total"]?.DeepClone() };
+            if (save is JObject) facts["save"] = new JObject { ["verified"] =
+                (string)save["operation"] == "save_local" && (bool?)save["saved"] == true };
+            if (loans is JObject loanScan) facts["loans"] = IssueLoansFromScan(loanScan);
+            JToken delivery = export?["delivery"];
+            if (delivery is JObject d && d["files"] is JArray files && files.Count > 0)
+            {
+                bool complete = files.All(f => (string)f["qa"]?["verdict"] == "clean" || (string)f["qa"]?["verdict"] == "findings");
+                bool judged = files.All(f => (bool?)f["qa"]?["fonts"]?["judged_against_expected"] == true);
+                facts["pdf"] = new JObject { ["coverage_complete"] = complete, ["fonts_judged"] = judged,
+                    ["findings"] = files.Count(f => (string)f["qa"]?["verdict"] == "findings") };
+                facts["manifest"] = new JObject { ["verified"] = (bool?)d["package_verified"] == true &&
+                    (bool?)export["manifest_reread"]?["verified"] == true };
+            }
+            return facts;
+        }
+
+        internal static JObject IssueLoansFromScan(JObject scan)
+        {
+            JToken sharing = scan?["sections"]?["worksharing"], ownership = sharing?["ownership"];
+            bool complete = (bool?)scan?["complete"] == true;
+            if (complete && (bool?)sharing?["is_workshared"] == false)
+                return new JObject { ["coverage_complete"] = true, ["borrowed"] = 0 };
+            JToken mine = ownership?["elements_owned_by_me"], others = ownership?["elements_owned_by_others"];
+            bool counts = mine?.Type == JTokenType.Integer && others?.Type == JTokenType.Integer &&
+                          (long)mine >= 0 && (long)others >= 0;
+            bool covered = complete && (bool?)sharing?["is_workshared"] == true &&
+                           (bool?)ownership?["counts_are_exact"] == true && (bool?)ownership?["counts_balance"] == true && counts;
+            return new JObject { ["coverage_complete"] = covered,
+                ["borrowed"] = counts ? (JToken)((long)mine + (long)others) : JValue.CreateNull() };
         }
 
         /// <summary>

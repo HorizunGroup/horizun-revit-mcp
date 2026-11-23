@@ -62,14 +62,52 @@ namespace Horizun.Revit.Core
         public bool? HasHost;
         public long? HostId;
         public string HostCategory;
+        /// <summary>The area or path system a RebarInSystem belongs to; null for a rebar set.</summary>
+        public long? SystemId;
         public int? BarsInSet;
         public double? CoverMm;
         public bool CoverReadable = true;
         public bool Readable = true;
     }
 
+    /// <summary>Which kind of element in the Rebar category was read, because the host is read differently from each.</summary>
+    public enum RebarHostSource
+    {
+        /// <summary>A Rebar: its own GetHostId().</summary>
+        RebarSet,
+        /// <summary>A RebarInSystem (a bar laid by an area or path system): its GetHostId(), or its system's.</summary>
+        SystemBar,
+        /// <summary>Anything else in the category: nobody asked it, so nothing is known about its host.</summary>
+        NotAsked
+    }
+
     public static class StructureCensusRules
     {
+        /// <summary>
+        /// The three-state host of one element of the Rebar category. A RebarInSystem is not a Rebar, and
+        /// the census used to read the host only off Rebar, so every bar of an area reinforcement came out
+        /// as "no host" (90 false positives in a field model) when its GetHostId() was the slab. The host of
+        /// a system bar is its own GetHostId(), else the host of the system it belongs to. An element whose
+        /// host could not be asked, or whose read failed, is unknown (null), never "no host".
+        /// </summary>
+        public static bool? HostState(RebarHostSource source, bool readFailed, long? hostId, long? systemHostId)
+        {
+            if (source == RebarHostSource.NotAsked || readFailed) return null;
+            if (IsRealId(hostId)) return true;
+            if (source == RebarHostSource.SystemBar && IsRealId(systemHostId)) return true;
+            return false;
+        }
+
+        /// <summary>The id the host state rests on: the bar's own, else its system's.</summary>
+        public static long? ResolvedHostId(RebarHostSource source, long? hostId, long? systemHostId)
+        {
+            if (IsRealId(hostId)) return hostId;
+            if (source == RebarHostSource.SystemBar && IsRealId(systemHostId)) return systemHostId;
+            return null;
+        }
+
+        private static bool IsRealId(long? id) { return id.HasValue && id.Value >= 0; }
+
         public const string ScopeMeans =
             "these are MODELLING facts. Nothing here assesses safety, capacity, adequacy or code compliance, " +
             "because nothing in a Revit document supports those judgements: a beam's presence is not a " +
@@ -121,6 +159,7 @@ namespace Horizun.Revit.Core
                 ["has_host"] = r.HasHost,
                 ["host_id"] = r.HostId,
                 ["host_category"] = r.HostCategory,
+                ["system_id"] = r.SystemId,
                 ["bars_in_set"] = r.BarsInSet,
                 // Null rather than 0: a cover that could not be read is not no cover.
                 ["cover_mm"] = r.CoverReadable ? r.CoverMm : null,

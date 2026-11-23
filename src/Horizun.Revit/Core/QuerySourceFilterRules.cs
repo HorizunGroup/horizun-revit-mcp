@@ -40,6 +40,9 @@ namespace Horizun.Revit.Core
 
         public bool Active => _names.Count > 0 || _linkIds.Count > 0;
         public bool NamesALink => _linkIds.Count > 0 || _names.Any(n => !string.Equals(n, HostKeyword, StringComparison.OrdinalIgnoreCase));
+        public bool NamesLinkOtherThanHost(string hostTitle) => _linkIds.Count > 0 || _names.Any(n =>
+            !string.Equals(n, HostKeyword, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(n, hostTitle, StringComparison.OrdinalIgnoreCase));
 
         /// <summary>Parse source_models / link_instance_ids. Absent or empty means no filter.</summary>
         public static QuerySourceFilter Parse(JObject request, out string error)

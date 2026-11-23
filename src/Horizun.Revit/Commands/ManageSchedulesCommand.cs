@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - the schedule DEFINITION as a typed, verified surface.
 //
 // horizun_manage_schedules edits what a schedule IS - its fields, filters,
@@ -60,6 +60,7 @@ namespace Horizun.Revit.Commands
             var errors = new JArray();
             var outcomes = new List<ActionOutcome>();
             var knownKeys = new HashSet<string>(StringComparer.Ordinal);
+            var changedDefinitions = new HashSet<long>();
             var resolvedPlan = new ResolvedPlan
             {
                 Command = Name,
@@ -71,10 +72,11 @@ namespace Horizun.Revit.Commands
             {
                 JObject a = input[i] as JObject;
                 string reason = null;
-                string error = Validate(doc, a, knownKeys, out reason);
+                bool deferredFields = a != null && changedDefinitions.Contains(a.Value<long?>("schedule_id") ?? -1);
+                string error = Validate(doc, a, knownKeys, deferredFields, out reason);
                 if (error != null)
                 {
-                    errors.Add(new JObject { ["index"] = i, ["error"] = error });
+                    errors.Add(new JObject { ["index"] = i, ["error"] = error, ["error_code"] = ErrorCodes.EntradaInvalida });
                     outcomes.Add(new ActionOutcome { Index = i, Error = error, UnsupportedReason = reason });
                     continue;
                 }
@@ -98,8 +100,26 @@ namespace Horizun.Revit.Commands
                     row.BeforeValues["schedule"] = SafeUid(target) + "|" + SafeName(target);
                     row.BeforeValues["definition_fingerprint"] =
                         ScheduleEditRules.DefinitionFingerprint(Canonical(doc, target));
+                    if (op == ScheduleEditRules.OpSetFilters && !deferredFields)
+                    {
+                        // A name resolved during rehearsal must still name that same ID
+                        // when the token is spent, even if the referenced level was renamed.
+                        var values = new List<string>();
+                        foreach (JObject filterEntry in (JArray)a["filters"])
+                            using (ScheduleFilter filter = BuildFilter(target, filterEntry))
+                                if (filter.IsElementIdValue)
+                                    values.Add(filter.FieldId.IntegerValue + ":" + Rid.Value(filter.GetElementIdValue()));
+                        row.BeforeValues["resolved_filter_ids"] = string.Join(";", values);
+                    }
                 }
                 resolvedPlan.Elements.Add(row);
+                if (target != null && (op == ScheduleEditRules.OpAddFields || op == ScheduleEditRules.OpRemoveFields ||
+                    op == ScheduleEditRules.OpSetOptions ||
+                    (op == ScheduleAppearanceRules.OpSetAppearance && a["show_title"] != null)))
+                    changedDefinitions.Add(Rid.Value(target.Id));
+                if (target != null && op == ScheduleAppearanceRules.OpUnsplit)
+                    row.BeforeValues["sheet_instances_removed"] =
+                        ScheduleAppearanceOps.InstancesThatUnsplitRemoves(doc, target).ToString(CultureInfo.InvariantCulture);
             }
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
@@ -128,8 +148,14 @@ namespace Horizun.Revit.Commands
                                                FallbackDecision.Decide(outcomes, writeStarted: false));
             }
             if (errors.Count > 0)
-                return FallbackDecision.Refuse("Invalid actions; nothing ran: " + errors.ToString(Formatting.None),
-                                               FallbackDecision.Decide(outcomes, writeStarted: false));
+            {
+                FallbackVerdict verdict = FallbackDecision.Decide(outcomes, writeStarted: false);
+                if (outcomes.Any(o => o.IsCapabilityGap))
+                    return FallbackDecision.Refuse("Invalid actions; nothing ran: " + errors.ToString(Formatting.None), verdict);
+                return CommandResult.FailCoded(ErrorCodes.EntradaInvalida,
+                    "Invalid actions; nothing ran: " + errors.ToString(Formatting.None),
+                    extra: new JObject { ["errors"] = errors, ["transaction_status"] = "not_started" });
+            }
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
                                                                      resolvedPlan, null);
             if (refusal != null) return refusal;
@@ -175,8 +201,10 @@ namespace Horizun.Revit.Commands
                 {
                     bool attempted = false; string rb = PlanFailure.NotAttempted;
                     if (tx.GetStatus() == TransactionStatus.Started) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
-                    return CommandResult.Fail("Atomic schedule batch failed: " + ex.Message + ". " +
-                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing in it was kept"));
+                    string message = "Atomic schedule batch failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing in it was kept");
+                    return ex is ArgumentException ? CommandResult.FailCoded(ErrorCodes.EntradaInvalida, message)
+                        : CommandResult.Fail(message);
                 }
             }
 
@@ -231,7 +259,8 @@ namespace Horizun.Revit.Commands
         // Validation
         // =====================================================================
 
-        private static string Validate(Document doc, JObject a, HashSet<string> knownKeys, out string unsupportedReason)
+        private static string Validate(Document doc, JObject a, HashSet<string> knownKeys, bool deferredFields,
+                                       out string unsupportedReason)
         {
             unsupportedReason = null;
             if (a == null) return "action is not an object";
@@ -302,6 +331,9 @@ namespace Horizun.Revit.Commands
                             var entry = t as JObject;
                             if (entry == null || (entry["parameter_id"] == null && entry["name"] == null))
                                 return "each fields entry needs parameter_id or name.";
+                            string fieldType = entry.Value<string>("field_type");
+                            if (fieldType != null && !Enum.TryParse(fieldType, true, out ScheduleFieldType _))
+                                return "field_type must name a Revit ScheduleFieldType (for project data: ProjectInfo).";
                         }
                         // Existence/ambiguity against the SCHEDULABLE fields is checked at
                         // apply for batch-created targets; for an id target it is checked
@@ -312,7 +344,7 @@ namespace Horizun.Revit.Commands
                             {
                                 var entry = (JObject)t;
                                 string resolveError = ResolveSchedulable(target, entry.Value<long?>("parameter_id"),
-                                                                          entry.Value<string>("name"), out _);
+                                                                          entry.Value<string>("name"), entry.Value<string>("field_type"), out _);
                                 if (resolveError != null) return resolveError;
                             }
                         }
@@ -381,12 +413,21 @@ namespace Horizun.Revit.Commands
                         {
                             var f = t as JObject;
                             if (f == null) return "filters entries must be objects.";
+                            bool elementId = false;
+                            if (target != null && !deferredFields)
+                                elementId = ElementIdCandidates(target,
+                                    target.Definition.GetField(ResolveFieldId(target, FilterFieldRef(f))), out _) != null;
                             string shapeError = ScheduleEditRules.ValidateFilter(
                                 (f.Value<string>("operator") ?? "").ToLowerInvariant(),
-                                f["value"] != null, f["number_value"] != null);
+                                f["value"] != null, f["number_value"] != null, elementId || deferredFields || target == null);
                             if (shapeError != null) return shapeError;
                             if (f["parameter_id"] == null && f["field"] == null)
                                 return "each filter names its field by parameter_id or field (name).";
+                            // Constructors and resolution are read-only. Fail during rehearsal,
+                            // before ClearFilters or any other action can modify the document.
+                            // Like batch-created targets, fields/options edited earlier in
+                            // this batch must resolve against their new definition at apply.
+                            if (target != null && !deferredFields) using (BuildFilter(target, f)) { }
                         }
                         return null;
                     }
@@ -413,6 +454,32 @@ namespace Horizun.Revit.Commands
                             return "set_options changes nothing: pass itemized, grand_total, headers and/or " +
                                    "include_links.";
                         return null;
+                    case ScheduleAppearanceRules.OpSetAppearance:
+                    {
+                        StyleSpec spec;
+                        string shape = ScheduleAppearanceRules.ValidateAppearance(a, out spec);
+                        if (shape != null) return shape;
+                        if (target == null) return null; // a batch-created target is checked at apply
+                        if (a.Value<string>("scope") == ScheduleAppearanceRules.ScopeField && !deferredFields &&
+                            a["field_index"] == null)
+                        {
+                            ScheduleFieldFacts resolved;
+                            string resolveError = ScheduleEditRules.ResolveField(FieldFacts(target),
+                                a.Value<long?>("parameter_id"), a.Value<string>("name"), out resolved);
+                            if (resolveError != null) return resolveError;
+                        }
+                        return ScheduleAppearanceOps.ValidateLive(doc, target, a, spec,
+                                                                 deferredFields || a["show_title"] != null);
+                    }
+                    case ScheduleAppearanceRules.OpSplit:
+                    {
+                        int segments; List<double> heights;
+                        string shape = ScheduleAppearanceRules.ValidateSplit(a, out segments, out heights);
+                        if (shape != null) return shape;
+                        return target == null ? null : ScheduleAppearanceOps.ValidateSplitLive(target, op);
+                    }
+                    case ScheduleAppearanceRules.OpUnsplit:
+                        return target == null ? null : ScheduleAppearanceOps.ValidateSplitLive(target, op);
                     default:
                         unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
                         return "unsupported operation '" + op + "'.";
@@ -486,9 +553,11 @@ namespace Horizun.Revit.Commands
                         var entry = (JObject)t;
                         SchedulableField schedulable;
                         string error = ResolveSchedulable(target, entry.Value<long?>("parameter_id"),
-                                                          entry.Value<string>("name"), out schedulable);
+                                                          entry.Value<string>("name"), entry.Value<string>("field_type"), out schedulable);
                         if (error != null) throw new InvalidOperationException(error);
-                        definition.AddField(schedulable);
+                        ScheduleField added = definition.AddField(schedulable);
+                        if (added == null || added.FieldType != schedulable.FieldType)
+                            throw new InvalidOperationException("Revit did not add the requested schedulable field type.");
                     }
                     return target;
                 case ScheduleEditRules.OpRemoveFields:
@@ -538,9 +607,16 @@ namespace Horizun.Revit.Commands
                 }
                 case ScheduleEditRules.OpSetFilters:
                 {
-                    definition.ClearFilters();
-                    foreach (JToken t in (JArray)a["filters"])
-                        definition.AddFilter(BuildFilter(target, (JObject)t));
+                    var filters = new List<ScheduleFilter>();
+                    try
+                    {
+                        // Resolve the WHOLE list before touching the old filters. This also
+                        // covers targets created by a previous action in the same batch.
+                        foreach (JObject entry in (JArray)a["filters"])
+                            filters.Add(BuildFilter(target, entry));
+                        definition.SetFilters(filters);
+                    }
+                    finally { foreach (ScheduleFilter filter in filters) filter.Dispose(); }
                     return target;
                 }
                 case ScheduleEditRules.OpSetSorting:
@@ -549,7 +625,7 @@ namespace Horizun.Revit.Commands
                     foreach (JToken t in (JArray)a["sorting"])
                     {
                         var entry = (JObject)t;
-                        var sort = new ScheduleSortGroupField(ResolveFieldId(target, entry),
+                        var sort = new ScheduleSortGroupField(ResolveFieldId(target, SortFieldRef(entry)),
                             (entry.Value<string>("direction") ?? "ascending").ToLowerInvariant() == "descending"
                                 ? ScheduleSortOrder.Descending : ScheduleSortOrder.Ascending);
                         if (entry["header"] != null) sort.ShowHeader = entry.Value<bool>("header");
@@ -571,6 +647,30 @@ namespace Horizun.Revit.Commands
                     if (a["include_links"] != null)
                         definition.IncludeLinkedFiles = a.Value<bool>("include_links");
                     return target;
+                case ScheduleAppearanceRules.OpSetAppearance:
+                {
+                    StyleSpec spec;
+                    string shape = ScheduleAppearanceRules.ValidateAppearance(a, out spec);
+                    if (shape != null) throw new ArgumentException(shape);
+                    ScheduleFieldId fieldId = a.Value<string>("scope") == ScheduleAppearanceRules.ScopeField
+                        ? ResolveFieldId(target, a) : null;
+                    ScheduleAppearanceOps.ApplyAppearance(doc, target, a, spec, fieldId);
+                    return target;
+                }
+                case ScheduleAppearanceRules.OpSplit:
+                {
+                    string live = ScheduleAppearanceOps.ValidateSplitLive(target, op);
+                    if (live != null) throw new ArgumentException(live);
+                    ScheduleAppearanceOps.ApplySplit(target, a);
+                    return target;
+                }
+                case ScheduleAppearanceRules.OpUnsplit:
+                {
+                    string live = ScheduleAppearanceOps.ValidateSplitLive(target, op);
+                    if (live != null) throw new ArgumentException(live);
+                    ScheduleAppearanceOps.ApplyUnsplit(target);
+                    return target;
+                }
                 default:
                     throw new InvalidOperationException("unsupported operation '" + op + "'");
             }
@@ -618,9 +718,12 @@ namespace Horizun.Revit.Commands
                         var entry = (JObject)t;
                         long? parameterId = entry.Value<long?>("parameter_id");
                         string name = entry.Value<string>("name");
+                        string fieldType = entry.Value<string>("field_type");
                         bool present = parameterId != null
-                            ? facts.Any(f => f.ParameterId == parameterId.Value)
-                            : facts.Any(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase));
+                            ? facts.Any(f => f.ParameterId == parameterId.Value &&
+                                             (fieldType == null || string.Equals(f.FieldType, fieldType, StringComparison.OrdinalIgnoreCase)))
+                            : facts.Any(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase) &&
+                                             (fieldType == null || string.Equals(f.FieldType, fieldType, StringComparison.OrdinalIgnoreCase)));
                         if (!present) { why = "field " + (name ?? parameterId.ToString()) + " is not present"; return false; }
                     }
                     return true;
@@ -670,23 +773,37 @@ namespace Horizun.Revit.Commands
                     {
                         var entry = (JObject)wanted[i];
                         ScheduleFilter filter = got[i];
-                        if (filter.FilterType != MapFilterType((entry.Value<string>("operator") ?? "").ToLowerInvariant()))
-                        { why = "filter " + i + " has type " + filter.FilterType; return false; }
-                        if (entry["value"] != null)
+                        ScheduleFilter expected;
+                        try { expected = BuildFilter(schedule, entry); }
+                        catch (Exception ex) { why = "filter " + i + " cannot be resolved: " + ex.Message; return false; }
+                        using (expected)
                         {
-                            string text; try { text = filter.GetStringValue(); } catch { text = null; }
-                            if (!string.Equals(text, entry.Value<string>("value"), StringComparison.Ordinal))
-                            { why = "filter " + i + "'s text value did not stick"; return false; }
-                        }
-                        if (entry["number_value"] != null)
-                        {
-                            double got2; try { got2 = filter.GetDoubleValue(); }
-                            catch { try { got2 = filter.GetIntegerValue(); } catch { why = "filter " + i + "'s number could not be re-read"; return false; } }
-                            // Compared in the units Revit stores, the request converted the same way it
-                            // was written (audit 2026-10-08, 6.7).
-                            double want2 = InternalFilterNumber(schedule, filter.FieldId, entry.Value<double>("number_value"));
-                            if (Math.Abs(got2 - want2) > 1e-9)
-                            { why = "filter " + i + "'s number value did not stick"; return false; }
+                            if (filter.FieldId.IntegerValue != expected.FieldId.IntegerValue)
+                            { why = "filter " + i + " targets a different field"; return false; }
+                            if (filter.FilterType != MapFilterType((entry.Value<string>("operator") ?? "").ToLowerInvariant()))
+                            { why = "filter " + i + " has type " + filter.FilterType; return false; }
+                            if (expected.IsElementIdValue)
+                            {
+                                if (!filter.IsElementIdValue || Rid.Value(filter.GetElementIdValue()) != Rid.Value(expected.GetElementIdValue()))
+                                { why = "filter " + i + "'s ElementId did not stick"; return false; }
+                                continue;
+                            }
+                            if (entry["value"] != null)
+                            {
+                                string text; try { text = filter.GetStringValue(); } catch { text = null; }
+                                if (!string.Equals(text, entry.Value<string>("value"), StringComparison.Ordinal))
+                                { why = "filter " + i + "'s text value did not stick"; return false; }
+                            }
+                            if (entry["number_value"] != null)
+                            {
+                                double got2; try { got2 = filter.GetDoubleValue(); }
+                                catch { try { got2 = filter.GetIntegerValue(); } catch { why = "filter " + i + "'s number could not be re-read"; return false; } }
+                                // Compared in the units Revit stores, the request converted the same way it
+                                // was written (audit 2026-10-08, 6.7).
+                                double want2 = InternalFilterNumber(schedule, filter.FieldId, entry.Value<double>("number_value"));
+                                if (Math.Abs(got2 - want2) > 1e-9)
+                                { why = "filter " + i + "'s number value did not stick"; return false; }
+                            }
                         }
                     }
                     return true;
@@ -703,6 +820,11 @@ namespace Horizun.Revit.Commands
                     {
                         var entry = (JObject)wanted[i];
                         ScheduleSortGroupField sort = got[i];
+                        ScheduleFieldId expected;
+                        try { expected = ResolveFieldId(schedule, SortFieldRef(entry)); }
+                        catch (Exception ex) { why = "sorting " + i + " field cannot be resolved: " + ex.Message; return false; }
+                        if (sort.FieldId.IntegerValue != expected.IntegerValue)
+                        { why = "sorting " + i + " targets a different field"; return false; }
                         bool descending = (entry.Value<string>("direction") ?? "ascending").ToLowerInvariant() == "descending";
                         if ((sort.SortOrder == ScheduleSortOrder.Descending) != descending)
                         { why = "sorting " + i + "'s direction did not stick"; return false; }
@@ -769,6 +891,23 @@ namespace Horizun.Revit.Commands
                     if (a.Action["headers"] != null && definition.ShowHeaders != a.Action.Value<bool>("headers"))
                     { why = "headers did not stick"; return false; }
                     return true;
+                case ScheduleAppearanceRules.OpSetAppearance:
+                {
+                    StyleSpec spec;
+                    string shape = ScheduleAppearanceRules.ValidateAppearance(a.Action, out spec);
+                    if (shape != null) { why = shape; return false; }
+                    ScheduleFieldId fieldId;
+                    try
+                    {
+                        fieldId = a.Action.Value<string>("scope") == ScheduleAppearanceRules.ScopeField
+                            ? ResolveFieldId(schedule, a.Action) : null;
+                    }
+                    catch (Exception ex) { why = "the column could not be resolved: " + ex.Message; return false; }
+                    return ScheduleAppearanceOps.VerifyAppearance(doc, schedule, a.Action, spec, fieldId, out why);
+                }
+                case ScheduleAppearanceRules.OpSplit:
+                case ScheduleAppearanceRules.OpUnsplit:
+                    return ScheduleAppearanceOps.VerifySplit(doc, schedule, a.Action, op, out why);
                 default:
                     why = "no verifier for '" + op + "'";
                     return false;
@@ -949,7 +1088,7 @@ namespace Horizun.Revit.Commands
         /// One caller-named SCHEDULABLE field (a field that could be added), resolved
         /// with the same ambiguity discipline as existing fields.
         /// </summary>
-        private static string ResolveSchedulable(ViewSchedule schedule, long? parameterId, string name,
+        private static string ResolveSchedulable(ViewSchedule schedule, long? parameterId, string name, string fieldType,
                                                  out SchedulableField resolved)
         {
             resolved = null;
@@ -957,6 +1096,9 @@ namespace Horizun.Revit.Commands
             var matches = new List<SchedulableField>();
             foreach (SchedulableField candidate in all)
             {
+                if (!string.IsNullOrWhiteSpace(fieldType) &&
+                    !string.Equals(candidate.FieldType.ToString(), fieldType, StringComparison.OrdinalIgnoreCase))
+                    continue;
                 if (parameterId.HasValue)
                 {
                     if (Rid.Value(candidate.ParameterId) == parameterId.Value) matches.Add(candidate);
@@ -980,8 +1122,9 @@ namespace Horizun.Revit.Commands
             if (matches.Count == 0)
                 return "no schedulable field of this schedule matches " + wanted + ". horizun_get_schedule_data " +
                        "shows the current fields; the schedulable set is what Revit offers in the Fields dialog.";
-            return wanted + " matches " + matches.Count + " schedulable fields (parameter ids " +
-                   string.Join(", ", matches.Select(m => Rid.Value(m.ParameterId))) + "); resolve by parameter_id.";
+            return wanted + " matches " + matches.Count + " schedulable fields (" +
+                   string.Join(", ", matches.Select(m => m.FieldType + ":" + Rid.Value(m.ParameterId))) +
+                   "); specify field_type (for sheet-list project data, ProjectInfo).";
         }
 
         /// <summary>
@@ -1013,7 +1156,35 @@ namespace Horizun.Revit.Commands
         private static ScheduleFilter BuildFilter(ViewSchedule schedule, JObject entry)
         {
             ScheduleFieldId fieldId = ResolveFieldId(schedule, FilterFieldRef(entry));
-            ScheduleFilterType type = MapFilterType((entry.Value<string>("operator") ?? "").ToLowerInvariant());
+            string op = (entry.Value<string>("operator") ?? "").ToLowerInvariant();
+            ScheduleFilterType type = MapFilterType(op);
+            ScheduleDefinition definition = schedule.Definition;
+            ScheduleField field = definition.GetField(fieldId);
+            bool ordered;
+            List<ScheduleEditRules.ElementIdCandidate> candidates = ElementIdCandidates(schedule, field, out ordered);
+            if (op == "has_value" || op == "has_no_value")
+            {
+                if (!definition.CanFilterByValuePresence(fieldId))
+                    throw new ArgumentException("operator '" + op + "' does not apply to field '" + field.GetName() + "'.");
+                return new ScheduleFilter(fieldId, type);
+            }
+            if (candidates != null)
+            {
+                long id;
+                string error = ScheduleEditRules.ResolveElementIdFilter(candidates,
+                    entry["value"] ?? entry["number_value"], op, ordered, out id);
+                if (error != null) throw new ArgumentException(error);
+                if (!definition.CanFilterByValue(fieldId))
+                    throw new ArgumentException("Revit does not allow a value filter on ElementId field '" + field.GetName() +
+                        "' in this schedule (check IncludeLinkedFiles). Candidates: " +
+                        string.Join("; ", candidates.Select(c => c.Name + " (" + c.Id + ")")));
+                return new ScheduleFilter(fieldId, type, Rid.ToElementId(id));
+            }
+            bool substring = op.Contains("contains") || op.Contains("begins_with") || op.Contains("ends_with");
+            if (substring ? !definition.CanFilterBySubstring(fieldId) : !definition.CanFilterByValue(fieldId))
+                throw new ArgumentException("operator '" + op + "' does not apply to field '" + field.GetName() + "'.");
+            if (entry["value"]?.Type == JTokenType.Integer)
+                throw new ArgumentException("numeric value is an ElementId only; use number_value for numeric fields.");
             if (entry["value"] != null) return new ScheduleFilter(fieldId, type, entry.Value<string>("value"));
             if (entry["number_value"] != null)
             {
@@ -1028,7 +1199,81 @@ namespace Horizun.Revit.Commands
             return new ScheduleFilter(fieldId, type);
         }
 
+        private static List<ScheduleEditRules.ElementIdCandidate> ElementIdCandidates(
+            ViewSchedule schedule, ScheduleField field, out bool ordered)
+        {
+            Document doc = schedule.Document;
+            ordered = false;
+            long parameterId = Rid.Value(field.ParameterId);
+            string token = parameterId < 0 ? ((BuiltInParameter)parameterId).ToString() : "";
+            bool level = token.Contains("LEVEL");
+            bool phase = token == "ROOM_PHASE" || token == "PHASE_CREATED" || token == "PHASE_DEMOLISHED";
+            bool workset = token == "ELEM_PARTITION_PARAM";
+            bool option = token == "DESIGN_OPTION_ID";
+            bool family = token == "ELEM_FAMILY_PARAM";
+            bool type = token == "ELEM_TYPE_PARAM" || token == "ELEM_FAMILY_AND_TYPE_PARAM" || token == "SYMBOL_ID_PARAM";
+            StorageType storage = StorageType.None;
+            if (parameterId == -1) return null; // calculated/count fields have no parameter
+            if (parameterId < 0 && Enum.IsDefined(typeof(BuiltInParameter), (BuiltInParameter)parameterId))
+                storage = doc.GetTypeOfStorage(ParameterUtils.GetParameterTypeId((BuiltInParameter)parameterId));
+            // LEVEL tokens also include numeric offsets. Storage is authoritative.
+            if (storage != StorageType.ElementId && !workset && !family && !type)
+            {
+                if (parameterId < 0) return null;
+                // Shared/project parameters: read their actual storage, including type parameters.
+                var probe = new FilteredElementCollector(doc).FirstOrDefault(e =>
+                    e.Parameters.Cast<Parameter>().Any(p => Rid.Value(p.Id) == parameterId));
+                Parameter p = probe?.Parameters.Cast<Parameter>().FirstOrDefault(x => Rid.Value(x.Id) == parameterId);
+                if (p?.StorageType != StorageType.ElementId) return null;
+            }
+            var result = new List<ScheduleEditRules.ElementIdCandidate>();
+            if (workset)
+            {
+                foreach (Workset w in new FilteredWorksetCollector(doc))
+                    result.Add(new ScheduleEditRules.ElementIdCandidate { Id = w.Id.IntegerValue, Name = w.Name });
+                return result;
+            }
+            IEnumerable<Element> elements;
+            if (level) { elements = new FilteredElementCollector(doc).OfClass(typeof(Level)); ordered = true; }
+            else if (phase) { elements = doc.Phases.Cast<Phase>(); ordered = true; }
+            else if (option) elements = new FilteredElementCollector(doc).OfClass(typeof(DesignOption));
+            else if (family) elements = new FilteredElementCollector(doc).OfClass(typeof(Family));
+            else if (type) elements = new FilteredElementCollector(doc).WhereElementIsElementType();
+            else if (field.GetSpecTypeId() == SpecTypeId.Reference.Material)
+                elements = new FilteredElementCollector(doc).OfClass(typeof(Material));
+            else
+            {
+                // Other ElementId parameters (materials, key schedules, custom family
+                // types): derive their domain from actual parameter references, then
+                // include peers of the same runtime classes for currently unused values.
+                var referenced = new List<Element>();
+                foreach (Element e in new FilteredElementCollector(doc))
+                    foreach (Parameter p in e.Parameters)
+                        if (Rid.Value(p.Id) == parameterId && p.StorageType == StorageType.ElementId && p.HasValue)
+                        {
+                            Element candidate = doc.GetElement(p.AsElementId());
+                            if (candidate != null) referenced.Add(candidate);
+                        }
+                var classes = new HashSet<Type>(referenced.Select(e => e.GetType()));
+                elements = new FilteredElementCollector(doc).Where(e => classes.Contains(e.GetType()));
+            }
+            ElementId category = schedule.Definition.CategoryId;
+            if ((type || family) && category != ElementId.InvalidElementId)
+                elements = elements.Where(e => e is Family f
+                    ? f.FamilyCategory != null && f.FamilyCategory.Id == category
+                    : e.Category != null && e.Category.Id == category);
+            foreach (Element e in elements)
+                result.Add(new ScheduleEditRules.ElementIdCandidate { Id = Rid.Value(e.Id), Name = SafeName(e) });
+            return result.GroupBy(c => c.Id).Select(g => g.First()).ToList();
+        }
+
         private static JObject FilterFieldRef(JObject entry) => new JObject
+        {
+            ["parameter_id"] = entry["parameter_id"]?.DeepClone(),
+            ["name"] = entry["field"]?.DeepClone()
+        };
+
+        private static JObject SortFieldRef(JObject entry) => new JObject
         {
             ["parameter_id"] = entry["parameter_id"]?.DeepClone(),
             ["name"] = entry["field"]?.DeepClone()
@@ -1065,7 +1310,9 @@ namespace Horizun.Revit.Commands
                 foreach (ScheduleFilter filter in definition.GetFilters())
                 {
                     string value = "";
-                    try { value = filter.GetStringValue(); } catch { }
+                    if (filter.IsElementIdValue)
+                        value = "ElementId:" + Rid.Value(filter.GetElementIdValue()).ToString(CultureInfo.InvariantCulture);
+                    else try { value = filter.GetStringValue(); } catch { }
                     if (string.IsNullOrEmpty(value))
                         try { value = filter.GetDoubleValue().ToString(CultureInfo.InvariantCulture); } catch { }
                     if (string.IsNullOrEmpty(value))
@@ -1084,9 +1331,12 @@ namespace Horizun.Revit.Commands
                                   " blank=" + sort.ShowBlankLine);
             }
             catch { sortLines.Add("(unreadable)"); }
+            List<string> appearance;
+            try { appearance = ScheduleAppearanceOps.CanonicalLines(schedule); }
+            catch { appearance = new List<string> { "(unreadable)" }; }
             return ScheduleEditRules.CanonicalDefinition(FieldFacts(schedule), filterLines, sortLines,
                                                          definition.IsItemized, definition.ShowGrandTotal,
-                                                         definition.ShowHeaders);
+                                                         definition.ShowHeaders, appearance);
         }
 
         private static JObject CurrentDefinitions(Document doc, JArray input)

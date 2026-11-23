@@ -125,6 +125,52 @@ namespace Horizun.Revit.Core
             return groups;
         }
 
+        // Same ordered, transitive clustering as Cluster, with a yield before
+        // every potentially large scan or distance comparison.
+        public static IEnumerable<int> ClusterSteps(IList<double[]> pointsFeet, double radiusFeet,
+            Action<List<List<int>>> complete)
+        {
+            if (complete == null) throw new ArgumentNullException(nameof(complete));
+            var groups = new List<List<int>>();
+            if (pointsFeet == null) { complete(groups); yield break; }
+            if (radiusFeet <= 0)
+            {
+                for (int i = 0; i < pointsFeet.Count; i++)
+                { groups.Add(new List<int> { i }); yield return 0; }
+                complete(groups); yield break;
+            }
+            var assigned = new int[pointsFeet.Count];
+            for (int i = 0; i < assigned.Length; i++) { assigned[i] = -1; yield return 0; }
+            for (int i = 0; i < pointsFeet.Count; i++)
+            {
+                yield return 0;
+                if (assigned[i] >= 0) continue;
+                var group = new List<int> { i };
+                assigned[i] = groups.Count;
+                bool grew = true;
+                while (grew)
+                {
+                    grew = false;
+                    for (int j = 0; j < pointsFeet.Count; j++)
+                    {
+                        yield return 0;
+                        if (assigned[j] >= 0) continue;
+                        foreach (int member in group)
+                        {
+                            yield return 0;
+                            double dx = pointsFeet[j][0] - pointsFeet[member][0];
+                            double dy = pointsFeet[j][1] - pointsFeet[member][1];
+                            double dz = pointsFeet[j][2] - pointsFeet[member][2];
+                            if (Math.Sqrt(dx * dx + dy * dy + dz * dz) <= radiusFeet)
+                            { group.Add(j); assigned[j] = groups.Count; grew = true; break; }
+                        }
+                    }
+                }
+                groups.Add(group);
+            }
+            complete(groups);
+        }
+
         /// <summary>
         /// One opening covering a CLUSTER of wall crossings: the rectangle that
         /// spans every member's own rectangle. Direction and sizes come from the
@@ -136,15 +182,26 @@ namespace Horizun.Revit.Core
             corner1 = null; corner2 = null;
             if (corner1s == null || corner1s.Count == 0 || corner2s == null || corner2s.Count != corner1s.Count)
                 return false;
-            corner1 = new[] { double.MaxValue, double.MaxValue, double.MaxValue };
-            corner2 = new[] { double.MinValue, double.MinValue, double.MinValue };
+            var bounds = new ClusterBounds();
             for (int i = 0; i < corner1s.Count; i++)
+                bounds.Add(corner1s[i], corner2s[i]);
+            corner1 = bounds.Min;
+            corner2 = bounds.Max;
+            return true;
+        }
+
+        public sealed class ClusterBounds
+        {
+            public double[] Min { get; } = new[] { double.MaxValue, double.MaxValue, double.MaxValue };
+            public double[] Max { get; } = new[] { double.MinValue, double.MinValue, double.MinValue };
+            public void Add(IList<double> a, IList<double> b)
+            {
                 for (int axis = 0; axis < 3; axis++)
                 {
-                    corner1[axis] = Math.Min(corner1[axis], Math.Min(corner1s[i][axis], corner2s[i][axis]));
-                    corner2[axis] = Math.Max(corner2[axis], Math.Max(corner1s[i][axis], corner2s[i][axis]));
+                    Min[axis] = Math.Min(Min[axis], Math.Min(a[axis], b[axis]));
+                    Max[axis] = Math.Max(Max[axis], Math.Max(a[axis], b[axis]));
                 }
-            return true;
+            }
         }
 
         /// <summary>Opening size validation shared by the slab kinds: positive, bounded.</summary>

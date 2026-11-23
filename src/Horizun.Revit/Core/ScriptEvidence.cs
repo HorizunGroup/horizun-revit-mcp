@@ -116,9 +116,9 @@ namespace Horizun.Revit.Core
                 return report;
             }
 
-            string status = (o.Value<string>("status") ?? "").Trim().ToLowerInvariant();
+            string status = (o["status"]?.Type == JTokenType.String ? (string)o["status"] : "").Trim().ToLowerInvariant();
             report.ScriptReportedStatus = string.IsNullOrEmpty(status) ? null : status;
-            report.Summary = o.Value<string>("summary");
+            report.Summary = o["summary"]?.Type == JTokenType.String ? (string)o["summary"] : null;
 
             // The script's own warnings ride along; they are its content, not ours to drop.
             if (o["warnings"] is JArray scriptWarnings)

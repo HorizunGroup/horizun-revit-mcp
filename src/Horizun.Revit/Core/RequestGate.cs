@@ -31,6 +31,9 @@ namespace Horizun.Revit.Core
         /// <summary>How many early cancels (an id cancelled before it reached the gate) are remembered.</summary>
         public const int MaxEarlyCancels = 64;
 
+        /// <summary>The state answered to a timeout notice for a cooperative job that is running: the wait expired, the job did not.</summary>
+        public const string JobContinues = "job_continues";
+
         public sealed class Request
         {
             public long Ticket;
@@ -42,6 +45,11 @@ namespace Horizun.Revit.Core
             public int AheadAtAdmission;
 
             public CommandResult Result;
+            /// <summary>Live progress of the executing call, read by the queue status (execute_python heartbeat).</summary>
+            internal Func<JObject> LiveProgress;
+
+            /// <summary>This call's checkpoints, kept in memory until a caller that gave up is handed a job record (CallProgress).</summary>
+            public readonly CallProgress Progress = new CallProgress();
 
             private readonly System.Threading.ManualResetEventSlim _done =
                 new System.Threading.ManualResetEventSlim(false);
@@ -51,6 +59,9 @@ namespace Horizun.Revit.Core
             public volatile bool CancelledBeforeStart;
 
             internal LinkedListNode<Request> Node;
+            internal Action DetachedCancellation;
+            internal bool Cooperative;
+            internal bool CancellationPending;
 
             public bool Wait(int timeoutMs) => _done.Wait(timeoutMs);
             public void Signal() => _done.Set();
@@ -61,6 +72,17 @@ namespace Horizun.Revit.Core
         private readonly int _maxDepth;
         private long _nextTicket;
         private Request _inFlight;
+        private readonly Dictionary<string, Request> _detached = new Dictionary<string, Request>(StringComparer.Ordinal);
+        [ThreadStatic] private static Request _currentRequest;
+
+        /// <summary>The request id of the call this UI thread is executing, or null (an async job has none).</summary>
+        public static string CurrentWireId => _currentRequest?.WireId;
+
+        /// <summary>Attach progress only to this UI thread's claimed request; never a different queued call.</summary>
+        public static void AttachProgress(Func<JObject> progress)
+        {
+            if (_currentRequest != null) _currentRequest.LiveProgress = progress;
+        }
 
         // Ids cancelled before they reached the gate (backlog #36), oldest first. Bounded:
         // a cancel for a request that already FINISHED lands here too and is never consumed.
@@ -87,6 +109,16 @@ namespace Horizun.Revit.Core
                 {
                     result["state"]="executing";
                     result["execution_elapsed_ms"]=Math.Max(0,(DateTime.UtcNow-_inFlight.StartedUtc).TotalMilliseconds);
+                    try { if (_inFlight.LiveProgress != null) result["progress"] = _inFlight.LiveProgress(); }
+                    catch { result["progress_unavailable"] = true; }
+                    return result;
+                }
+                if (_detached.TryGetValue(wireId, out Request detached))
+                {
+                    result["state"] = "executing";
+                    result["execution_elapsed_ms"] = Math.Max(0, (DateTime.UtcNow - detached.StartedUtc).TotalMilliseconds);
+                    try { if (detached.LiveProgress != null) result["progress"] = detached.LiveProgress(); }
+                    catch { result["progress_unavailable"] = true; }
                     return result;
                 }
                 int position=0;
@@ -111,6 +143,9 @@ namespace Horizun.Revit.Core
         /// bounded queue is full.
         /// </summary>
         public Request Begin(string wireId, string name, string paramsJson, out string refusal)
+            => Begin(wireId, name, paramsJson, false, out refusal);
+
+        public Request Begin(string wireId, string name, string paramsJson, bool cooperative, out string refusal)
         {
             lock (_lock)
             {
@@ -155,6 +190,7 @@ namespace Horizun.Revit.Core
                     WireId = wireId,
                     Name = name,
                     ParamsJson = paramsJson,
+                    Cooperative = cooperative,
                     QueuedUtc = DateTime.UtcNow,
                     AheadAtAdmission = ahead
                 };
@@ -184,6 +220,7 @@ namespace Horizun.Revit.Core
                     r.Started = true;
                     r.StartedUtc = DateTime.UtcNow;
                     _inFlight = r;
+                    _currentRequest = r;
                     return r;
                 }
                 return null;
@@ -196,8 +233,45 @@ namespace Horizun.Revit.Core
             lock (_lock)
             {
                 if (_inFlight == r) _inFlight = null;
+                if (_currentRequest == r) _currentRequest = null;
+                if (r.WireId != null && _detached.TryGetValue(r.WireId, out Request detached) && ReferenceEquals(detached, r))
+                    _detached.Remove(r.WireId);
+                r.LiveProgress = null;
             }
+            if (r.WireId != null) PythonRunRegistry.Unregister(PythonRunRegistry.WireKey(r.WireId));
             r.Signal();
+        }
+
+        // Relinquish the UI-thread turn without signalling the synchronous caller.
+        // Its continuation remains discoverable until Complete, including during
+        // the interval in which another request is in flight.
+        public bool Detach(Request r, Action cancel)
+        {
+            if (r == null || cancel == null) return false;
+            lock (_lock)
+            {
+                if (!ReferenceEquals(_inFlight, r)) return false;
+                if (r.WireId != null && _detached.ContainsKey(r.WireId)) return false;
+                r.DetachedCancellation = cancel;
+                if (r.WireId != null) _detached.Add(r.WireId, r);
+                _inFlight = null;
+                if (_currentRequest == r) _currentRequest = null;
+                return true;
+            }
+        }
+
+        public bool PrepareDetach(Request r, Action cancel)
+        {
+            if (r == null || cancel == null) return false;
+            bool pending;
+            lock (_lock)
+            {
+                if (!ReferenceEquals(_inFlight, r)) return false;
+                r.DetachedCancellation = cancel;
+                pending = r.CancellationPending;
+            }
+            if (pending) cancel();
+            return true;
         }
 
         /// <summary>
@@ -232,9 +306,10 @@ namespace Horizun.Revit.Core
         /// False means it is running, finished, or unknown; none of those may be called
         /// cancelled safely.
         /// </summary>
-        public bool CancelQueued(string wireId, out string detail)
+        public bool CancelQueued(string wireId, out string detail, bool callerTimedOut = false)
         {
             detail = null;
+            Action cancelDetached = null;
             if (string.IsNullOrWhiteSpace(wireId))
             {
                 detail = "No request id was supplied.";
@@ -265,26 +340,80 @@ namespace Horizun.Revit.Core
 
                 if (_inFlight != null && string.Equals(_inFlight.WireId, wireId, StringComparison.Ordinal))
                 {
-                    detail = "already_running";
+                    if (_inFlight.DetachedCancellation == null)
+                    {
+                        if (_inFlight.Name == "horizun_query_planimetry")
+                        {
+                            // This synchronous read always polls the abandonment flag between items.
+                            _inFlight.Abandoned = true;
+                            detail = "cancel_requested";
+                            return false;
+                        }
+                        // The caller's WAIT expired (callerTimedOut) is not the caller CANCELLING (review M5): only queued
+                        // work is removed on a timeout; whatever already runs keeps running and is polled by its job.
+                        if (callerTimedOut)
+                        {
+                            detail = _inFlight.Cooperative ? JobContinues : "already_running";
+                            return false;
+                        }
+                        if (_inFlight.Cooperative)
+                        {
+                            _inFlight.CancellationPending = true;
+                            detail = "cancel_requested";
+                            return false;
+                        }
+                        // A synchronous script runs under a stop switch of its own (review M2): the wire cancel asks for it.
+                        if (string.Equals(_inFlight.Name, "horizun_execute_python", StringComparison.Ordinal))
+                        {
+                            string asked = PythonRunRegistry.CancelClaimed(PythonRunRegistry.WireKey(wireId), "cancellation requested by the caller over the wire");
+                            // The script already ended and only its reply is left (m-6): nothing can be interrupted any more.
+                            detail = asked == "finished" ? "not_found_or_finished" : "cancel_requested";
+                            return false;
+                        }
+                        // A script that is a STEP of a plan registers under the wire id of the plan (review m-3). Nothing is
+                        // claimed here: a plan between two scripts has no switch to flip, and that is "already running".
+                        if (string.Equals(_inFlight.Name, "horizun_execute_plan", StringComparison.Ordinal))
+                        {
+                            string asked = PythonRunRegistry.Cancel(PythonRunRegistry.WireKey(wireId), "cancellation requested by the caller over the wire");
+                            if (asked == "interrupt_requested" || asked == "already_interrupted")
+                            {
+                                detail = "cancel_requested";
+                                return false;
+                            }
+                        }
+                        detail = "already_running";
+                        return false;
+                    }
+                    if (callerTimedOut) { detail = JobContinues; return false; }
+                    cancelDetached = _inFlight.DetachedCancellation;
+                    detail = "cancel_requested";
+                }
+                else if (_detached.TryGetValue(wireId, out Request detached))
+                {
+                    if (callerTimedOut) { detail = JobContinues; return false; }
+                    cancelDetached = detached.DetachedCancellation;
+                    detail = "cancel_requested";
+                }
+                else
+                {
+                    // It finished, or has not arrived yet. Remember the id so a
+                    // cancellation that overtook admission still refuses the request.
+                    if (_earlyCancels.Add(wireId))
+                    {
+                        _earlyCancelOrder.AddLast(wireId);
+                        while (_earlyCancelOrder.Count > MaxEarlyCancels)
+                        {
+                            _earlyCancels.Remove(_earlyCancelOrder.First.Value);
+                            _earlyCancelOrder.RemoveFirst();
+                        }
+                    }
+                    detail = "not_found_or_finished";
                     return false;
                 }
-
-                // Not here: it finished, or it has not ARRIVED yet. Which cannot be told, so
-                // the id is remembered and refused if it does arrive - wire ids are fresh
-                // per send, so this can stop a request that would have run after its cancel
-                // and nothing else.
-                if (_earlyCancels.Add(wireId))
-                {
-                    _earlyCancelOrder.AddLast(wireId);
-                    while (_earlyCancelOrder.Count > MaxEarlyCancels)
-                    {
-                        _earlyCancels.Remove(_earlyCancelOrder.First.Value);
-                        _earlyCancelOrder.RemoveFirst();
-                    }
-                }
-                detail = "not_found_or_finished";
-                return false;
             }
+            try { cancelDetached?.Invoke(); }
+            catch { detail = "cancel_request_failed"; }
+            return false;
         }
 
         /// <summary>

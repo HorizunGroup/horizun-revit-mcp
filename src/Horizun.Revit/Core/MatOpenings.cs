@@ -61,6 +61,8 @@ namespace Horizun.Revit.Core
         public double DiameterMm;
         public double AreaMm2;
         public double UMin, UMax, VMin, VMax;
+        /// <summary>The larger side of its extent along and across the bars - not the diagonal. What a penetration is judged by.</summary>
+        public double LargestSideMm { get { return Math.Max(UMax - UMin, VMax - VMin); } }
         public bool Considered;
         public string Why;
 

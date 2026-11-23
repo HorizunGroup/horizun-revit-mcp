@@ -15,7 +15,10 @@ namespace Horizun.Revit.Commands
         private static void PlanStairs(Document doc, Plan p)
         {
             p.Level = Need<Level>(doc, p.Input, "level_id"); p.TopLevel = Need<Level>(doc, p.Input, "top_level_id"); p.Type = Need<StairsType>(doc, p.Input, "type_id");
-            p.Height = p.TopLevel.ProjectElevation - p.Level.ProjectElevation;
+            p.TopOffset = (p.Input.Value<double?>("top_offset") ?? 0) * p.Scale;
+            if (double.IsNaN(p.TopOffset) || double.IsInfinity(p.TopOffset))
+                throw new ArgumentException("top_offset must be finite.");
+            p.Height = p.TopLevel.ProjectElevation + p.TopOffset - p.Level.ProjectElevation;
             if (p.Height <= 0) throw new ArgumentException("Stairs top level must be above the base level.");
             if (p.Input["desired_risers"]?.Type != JTokenType.Integer) throw new ArgumentException("desired_risers must be an integer.");
             p.DesiredRisers = p.Input.Value<int>("desired_risers");
@@ -81,7 +84,18 @@ namespace Horizun.Revit.Commands
                         using (var tx = new Transaction(doc, "Horizun: runs and landings"))
                         {
                             tx.Start(); var stairs = (Stairs)doc.GetElement(stairsId);
-                            stairs.ChangeTypeId(p.Type.Id); stairs.DesiredRisersNumber = p.DesiredRisers; stairs.ActualTreadDepth = p.TreadDepth;
+                            stairs.ChangeTypeId(p.Type.Id);
+                            if (p.Input["top_offset"] != null)
+                            {
+                                Parameter topOffset = stairs.get_Parameter(BuiltInParameter.STAIRS_TOP_OFFSET);
+                                if (topOffset == null || topOffset.IsReadOnly)
+                                    throw new InvalidOperationException("This stairs type has no writable STAIRS_TOP_OFFSET.");
+                                topOffset.Set(p.TopOffset);
+                            }
+                            stairs.DesiredRisersNumber = p.DesiredRisers; stairs.ActualTreadDepth = p.TreadDepth;
+                            // Revit otherwise lays out the first run against the original
+                            // top datum, then later runs against the new top offset.
+                            if (p.Input["top_offset"] != null) doc.Regenerate();
                             foreach (var run in p.StairRuns)
                             {
                                 var created = StairsRun.CreateStraightRun(doc, stairsId, Line.CreateBound(run.Start, run.End), StairsRunJustification.Center);
@@ -99,12 +113,48 @@ namespace Horizun.Revit.Commands
                         scope.Commit(failures);
                     }
                     checks = VerifyStairs(doc, p, stairsId);
-                    if (checks.Value<bool>("verified") != true) throw new InvalidOperationException("Stairs geometry, dimensions or connectivity did not match the request.");
+                    if (checks.Value<bool>("verified") != true)
+                    {
+                        var mismatches = (checks["postconditions"]?["properties"] as JArray)?.OfType<JObject>()
+                            .Where(row => row.Value<bool?>("matches") != true)
+                            .Select(row => row.Value<string>("property") + ": asked " +
+                                (row["requested"]?.ToString(Newtonsoft.Json.Formatting.None) ?? "unreadable") +
+                                ", model has " +
+                                (row["found_in_committed_model"]?.ToString(Newtonsoft.Json.Formatting.None) ?? "unreadable"))
+                            .ToList();
+                        throw new InvalidOperationException("Stairs verification failed: " +
+                            (mismatches == null || mismatches.Count == 0 ? "geometry or connectivity could not be measured" : string.Join("; ", mismatches)) + ".");
+                    }
+                    // Stairs can extend beyond their top-level datum even when all API
+                    // dimensions agree. Check the committed geometry before assimilating.
+                    var stairBox = doc.GetElement(stairsId)?.get_BoundingBox(null);
+                    double[] stairBounds = LevelSpanBounds.Read(stairBox);
+                    if (stairBounds == null) throw new InvalidOperationException("Stairs level span could not be measured.");
+                    var crossed = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>()
+                        .Where(level => LevelSpanRules.Crossed(stairBounds[0] * 304.8, stairBounds[1] * 304.8,
+                            new[] { level.ProjectElevation * 304.8 }).Count != 0).ToList();
+                    checks["level_span"] = new JObject {
+                        ["bottom_mm"] = stairBounds[0] * 304.8, ["top_mm"] = stairBounds[1] * 304.8,
+                        ["crossed_levels"] = new JArray(crossed.Select(level => new JObject {
+                            ["element_id"] = Rid.Value(level.Id), ["name"] = level.Name,
+                            ["elevation_mm"] = level.ProjectElevation * 304.8 }))
+                    };
+                    if (crossed.Count != 0 && string.IsNullOrWhiteSpace(p.Input["parameters"]?["HZ_Excepcion_Nivel"]?.Value<string>()))
+                    {
+                        checks["verified"] = false;
+                        throw new InvalidOperationException("Stairs level_span crosses " +
+                            string.Join(", ", crossed.Select(level => level.Name + " at " +
+                                Math.Round(level.ProjectElevation * 304.8, 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + " mm (bounds " +
+                                Math.Round(stairBounds[0] * 304.8, 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + ".." +
+                                Math.Round(stairBounds[1] * 304.8, 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + " mm; top excess " +
+                                Math.Round((stairBounds[1] - level.ProjectElevation) * 304.8, 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + " mm)")) +
+                            "; split at the level or supply parameters.HZ_Excepcion_Nivel with a documented reason.");
+                    }
                     if (rehearsal)
                     {
                         var rb = Guard.RollBack(group);
                         if (!rb.Confirmed || doc.GetElement(stairsId) != null) throw new InvalidOperationException("Stairs rehearsal rollback was not verified.");
-                        return CommandResult.Ok(new JObject { ["transaction_status"] = rb.StatusName, ["changes_applied"] = false, ["provisional_elements_absent"] = true, ["provisional_verification"] = checks, ["failures"] = failures.Records });
+                        return CommandResult.Ok(new JObject { ["dry_run"] = true, ["transaction_status"] = rb.StatusName, ["changes_applied"] = false, ["provisional_elements_absent"] = true, ["provisional_verification"] = checks, ["failures"] = failures.Records });
                     }
                     Guard.Assimilate(group, "stairs");
                 }
@@ -116,6 +166,7 @@ namespace Horizun.Revit.Commands
                     return CommandResult.FailWithDetail("Stairs creation failed: " + ex.Message, new JObject
                     {
                         ["code"] = "stairs_creation_failed",
+                        ["error_code"] = GeometryRehearsalRules.ConflictErrorCode(ex.Message),
                         ["exception_type"] = ex.GetType().FullName,
                         ["exception_message"] = ex.Message,
                         ["write_started"] = stairsId != null,
@@ -146,7 +197,10 @@ namespace Horizun.Revit.Commands
             Exact("type_id", Rid.Value(p.Type.Id), () => Rid.Value(stairs.GetTypeId()));
             Exact("level_id", Rid.Value(p.Level.Id), () => Rid.Value(stairs.get_Parameter(BuiltInParameter.STAIRS_BASE_LEVEL_PARAM).AsElementId()));
             Exact("top_level_id", Rid.Value(p.TopLevel.Id), () => Rid.Value(stairs.get_Parameter(BuiltInParameter.STAIRS_TOP_LEVEL_PARAM).AsElementId()));
-            Number("base_elevation", p.Level.ProjectElevation, () => stairs.BaseElevation); Number("top_elevation", p.TopLevel.ProjectElevation, () => stairs.TopElevation);
+            Number("base_elevation", p.Level.ProjectElevation, () => stairs.BaseElevation);
+            Number("top_elevation", p.TopLevel.ProjectElevation + p.TopOffset, () => stairs.TopElevation);
+            if (p.Input["top_offset"] != null)
+                Number("top_offset", p.TopOffset, () => stairs.get_Parameter(BuiltInParameter.STAIRS_TOP_OFFSET).AsDouble());
             Number("height", p.Height, () => stairs.Height); Number("tread_depth", p.TreadDepth, () => stairs.ActualTreadDepth);
             Number("riser_height", p.Height / p.DesiredRisers, () => stairs.ActualRiserHeight);
             Exact("risers", p.DesiredRisers, () => stairs.ActualRisersNumber);
@@ -186,8 +240,8 @@ namespace Horizun.Revit.Commands
                     return actual.All(c => c is Line) && GeometryInput.SameBoundaryXY(actual.Select(Segment).ToList(), desired.Select(Segment).ToList());
                 });
             }
-            foreach (var write in p.ParameterWrites ?? new List<ManageSystemTypesCommand.Write>())
-                Exact("parameters." + write.Spec, write.Expected, () => ManageSystemTypesCommand.Read(ManageSystemTypesCommand.ResolveParameter(stairs, write.Spec, out _)));
+            foreach (var write in p.ParameterWrites ?? new List<TypeParameterWrites.Write>())
+                Exact("parameters." + write.Spec, write.Expected, () => TypeParameterWrites.Read(TypeParameterWrites.ResolveParameter(stairs, write.Spec, out _)));
             var check = new PostconditionCheck(expected.Keys.ToArray());
             foreach (var pair in expected)
             {

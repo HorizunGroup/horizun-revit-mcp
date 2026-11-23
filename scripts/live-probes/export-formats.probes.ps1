@@ -123,8 +123,8 @@ $script:HzProbeModules += [pscustomobject]@{
         }
 
         # ---- gbXML --------------------------------------------------------------------
-        # Staging: own level, a 6 x 4 m ring of 'Generic - 200mm' walls (BY NAME, brought from
-        # this Revit's own Autodesk template when the document lacks it), one room and one space
+        # Staging: own level, a 6 x 4 m ring of 'Generic - 200mm' walls (BY NAME, from the
+        # document; without it the case is unverified, named), one room and one space
         # at the same point inside it.
         $gbWhy = New-Object System.Collections.Generic.List[string]
         function Types($category) {
@@ -139,17 +139,8 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             [void]$gbWhy.Add($key + ' not created: ' + (Why $r)); return $null
         }
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
         $wallType = @(Types 'OST_Walls' | Where-Object { [string]$_.type -eq 'Generic - 200mm' -and [string]$_.family -eq 'Basic Wall' }) | Select-Object -First 1
-        if (-not $wallType) {
-            $tpl = @(@('English\DefaultMetric.rte', 'English\Default-Multi-Discipline_Metric.rte') | ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
-            if ($tpl) {
-                $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Walls'
-                        type_names = @('Basic Wall: Generic - 200mm'); duplicate_types = 'use_destination' } 'exp-gb-walltype'
-                $wallType = @(Types 'OST_Walls' | Where-Object { [string]$_.type -eq 'Generic - 200mm' -and [string]$_.family -eq 'Basic Wall' }) | Select-Object -First 1
-                if ($wallType) { [void]$created.Add([long]$wallType.element_id) } else { [void]$gbWhy.Add('copying Generic - 200mm gave no wall type: ' + (Why $cp)) }
-            } else { [void]$gbWhy.Add("no Autodesk template under $tplRoot") }
-        }
+        if (-not $wallType) { [void]$gbWhy.Add("the document holds no 'Basic Wall: Generic - 200mm' type") }
         $gE = 151000.0; $gX = 1210000.0; $gY = 0.0; $gW = 6000.0; $gD = 4000.0
         $gLevel = Stage @{ kind = 'level'; name = ('HZ_EXP_GB_' + $Ctx.RunId); elevation = $gE } 'level'
         $ring = @()
@@ -192,20 +183,9 @@ $script:HzProbeModules += [pscustomobject]@{
         $null = New-Item -ItemType Directory -Force -Path $rfaFolder
         $list = & $Ctx.Call $X @{ target_document = $doc; format = 'rfa'; output_path = $rfaFolder; category = 'OST_Doors'; dry_run = $true }
         $door = if ($list.data) { @($list.data.families | Sort-Object { [string]$_.name })[0] } else { $null }
-        if (-not $door) {
-            # A freshly opened fixture may carry no loadable door (MEASURED 2026-09-27: HZ_WRITE from
-            # disk has none; an earlier run passed only because another probe had loaded one in the
-            # same session). One is brought BY NAME from this Revit's template; it stays in the
-            # disposable document, which is never saved.
-            $tpl = @(@('English\DefaultMetric.rte', 'English\Default-Multi-Discipline_Metric.rte') | ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
-            if ($tpl) {
-                $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'
-                        type_names = @('M_Single-Flush: 0915 x 2134mm'); duplicate_types = 'use_destination' } 'exp-rfa-door'
-                $list = & $Ctx.Call $X @{ target_document = $doc; format = 'rfa'; output_path = $rfaFolder; category = 'OST_Doors'; dry_run = $true }
-                $door = if ($list.data) { @($list.data.families | Sort-Object { [string]$_.name })[0] } else { $null }
-            }
-        }
-        if (-not $door) { Case $names[5] $X 'not_covered' ('no loadable door family in this document, and none could be brought from the template: ' + [string]$list.text) }
+        # A freshly opened fixture may carry no loadable door (MEASURED 2026-09-27: HZ_WRITE from
+        # disk has none); then the case is not_covered.
+        if (-not $door) { Case $names[5] $X 'not_covered' ('no loadable door family in this document: ' + [string]$list.text) }
         else {
             $r = & $Ctx.Apply $X @{ target_document = $doc; format = 'rfa'; output_path = $rfaFolder; family_ids = @([long]$door.id) } 'exp-rfa'
             if (Applied $r) {

@@ -104,6 +104,16 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void S22_advice_matches_code_and_ignores_comments()
+        {
+            var found = PythonSourceMask.S22Alternatives("doc.GetWarnings()\ne.get_Geometry(opts)\nsheet.GetAllViewports()\n");
+            Assert.Contains("horizun_audit_model", found);
+            Assert.Contains("horizun_measure_geometry", found);
+            Assert.Contains("horizun_query_planimetry", found);
+            Assert.Empty(PythonSourceMask.S22Alternatives("# doc.GetWarnings()\nx = 'GetAllViewports()'\n"));
+        }
+
+        [Fact]
         public void Null_and_empty_are_returned_unchanged()
         {
             Assert.Null(PythonSourceMask.StripCommentsAndStrings(null));

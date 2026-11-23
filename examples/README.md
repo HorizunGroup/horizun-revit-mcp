@@ -27,9 +27,7 @@ loads every `examples/**/*.json`, reads the tool it declares and validates
 `arguments` against that tool's `InputSchema` in the current contract; a renamed
 property, a narrowed enum or a new required field fails the build, not your first
 call. The host-resident examples are also run (the project-context draft must
-rehearse to a valid, coherent document; every container must compose a valid name),
-and `tests/Horizun.Core.Tests/ExampleDeliveryFilesTests.cs` proves that the example
-IDS and property-set mapping agree with each other on a hand-written IFC.
+rehearse to a valid, coherent document; every container must compose a valid name).
 
 **No project data.** Names, codes and paths are placeholders under
 `C:/proyectos/demo/`. Element ids (`1001`, `2001`, `5001`...) are placeholders too:
@@ -42,10 +40,7 @@ and a new `idempotency_key`.
 |---|---|
 | [`iso19650-startup/`](iso19650-startup/) | ISO 19650 start-up with `horizun_project_context`: `questions` → `draft` (rehearsal) → `draft` (write) → `validate`, plus a complete [`project-context.example.json`](iso19650-startup/project-context.example.json). |
 | [`information-containers/`](information-containers/) | `horizun_information_container`: `name` → `stamp` → `inspect` → `transition` (WIP → Shared). |
-| [`ifc-delivery/`](ifc-delivery/) | `horizun_deliver_ifc` with a TAB-separated Pset mapping ([`hz-delivery-psets.txt`](ifc-delivery/hz-delivery-psets.txt)) and an IDS 1.0 file ([`hz-delivery.ids`](ifc-delivery/hz-delivery.ids)) that match: `HZ_Delivery.Code` on every `IfcDuctSegment`. |
-| [`disciplines/`](disciplines/) | One call per discipline. Architecture: walls and a slab (`horizun_create_elements`). Structure: a stirrup plan from a requirement set (`horizun_plan_reinforcement`). MEP: a rectangular and a round duct (`horizun_create_elements`). Documentation: sheets to one PDF named as a container (`horizun_export`). |
-| [`dwg-revision-update/`](dwg-revision-update/) | A reproducible DWG revision cycle with its own synthetic fixture. |
-| [`rebar-from-schedule/`](rebar-from-schedule/) | A synthetic detail schedule to verified reinforcement: section rules per member mark, plan, apply, audit, and the model reconciled with the bar list. |
+| [`disciplines/`](disciplines/) | One call per discipline. Architecture: walls and a slab (`horizun_create_elements`). Documentation: sheets to one PDF named as a container (`horizun_export`). Structural reinforcement, MEP, IFC delivery and DWG revision examples are in the Pro edition. |
 
 ### QA/QC report template
 
@@ -75,9 +70,7 @@ carga cada `examples/**/*.json`, lee la herramienta que declara y valida
 propiedad renombrada, un enum más estrecho o un campo obligatorio nuevo rompen la
 compilación, no tu primera llamada. Los ejemplos que se resuelven en el servidor
 también se ejecutan (el borrador del contexto debe ensayar a un documento válido y
-coherente; cada contenedor debe componer un nombre válido), y
-`tests/Horizun.Core.Tests/ExampleDeliveryFilesTests.cs` demuestra que el IDS y el
-mapeo de Psets de ejemplo coinciden entre sí sobre un IFC escrito a mano.
+coherente; cada contenedor debe componer un nombre válido).
 
 **Sin datos de proyecto.** Nombres, códigos y rutas son marcadores bajo
 `C:/proyectos/demo/`. Los ids de elementos (`1001`, `2001`, `5001`...) también:
@@ -90,10 +83,7 @@ ensayo y un `idempotency_key` nuevo.
 |---|---|
 | [`iso19650-startup/`](iso19650-startup/) | Arranque ISO 19650 con `horizun_project_context`: `questions` → `draft` (ensayo) → `draft` (escritura) → `validate`, más un [`project-context.example.json`](iso19650-startup/project-context.example.json) completo. |
 | [`information-containers/`](information-containers/) | `horizun_information_container`: `name` → `stamp` → `inspect` → `transition` (WIP → Compartido). |
-| [`ifc-delivery/`](ifc-delivery/) | `horizun_deliver_ifc` con un mapeo de Psets separado por TAB y un IDS 1.0 que coinciden: `HZ_Delivery.Code` en cada `IfcDuctSegment`. |
-| [`disciplines/`](disciplines/) | Una llamada por disciplina. Arquitectura: muros y losa (`horizun_create_elements`). Estructura: plan de estribos desde un conjunto de requisitos (`horizun_plan_reinforcement`). MEP: un ducto rectangular y uno circular (`horizun_create_elements`). Documentación: planos a un PDF con nombre de contenedor (`horizun_export`). |
-| [`dwg-revision-update/`](dwg-revision-update/) | Un ciclo reproducible de revisión de DWG con su propio fixture sintético. |
-| [`rebar-from-schedule/`](rebar-from-schedule/) | De una cartilla sintética a un refuerzo verificado: section rules por marca, plan, aplicación, auditoría y el modelo conciliado con el despiece. |
+| [`disciplines/`](disciplines/) | Una llamada por disciplina. Arquitectura: muros y losa (`horizun_create_elements`). Documentación: planos a un PDF con nombre de contenedor (`horizun_export`). Los ejemplos de refuerzo estructural, MEP, entrega IFC y revisiones de DWG están en la edición Pro. |
 
 ### Plantilla de informe QA/QC
 

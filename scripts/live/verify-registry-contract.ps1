@@ -187,7 +187,7 @@ Add-HzProbe -Run $run -Id 'R5' -Name 'a host-resident tool is listed whatever th
 
 # R6. A call for a withheld tool must still explain itself. Advertising nothing
 # and refusing without a reason would be the same failure one level down.
-$probeTool = 'horizun_clash'
+$probeTool = 'horizun_measure_geometry'
 $call = Invoke-HzTool -Run $run -Tool $probeTool -Label 'withheld-call' -Arguments @{ } -TimeoutSec 120
 if ($Mode -eq 'mismatched') {
     $msg = [string]$call.Raw

@@ -14,6 +14,8 @@
 // prove that we call the overload we call.
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
+using Horizun.Revit.Core;
 using IronPython.Hosting;
 using Microsoft.Scripting;
 using Microsoft.Scripting.Hosting;
@@ -23,6 +25,27 @@ namespace Horizun.Server.Tests
 {
     public class PythonTracebackPathTests
     {
+        [Fact]
+        public void Compile_failure_identifies_the_include_that_failed()
+        {
+            var engine = Python.CreateEngine();
+            var failure = ScriptPrecompile.Check(engine, "x = 1", "main.py",
+                new[] { new KeyValuePair<string, string>("def broken(:\n    pass", "include.py") });
+            Assert.NotNull(failure);
+            Assert.Equal("include.py", failure.SourcePath);
+            Assert.Contains("broken", failure.SourceCode);
+            var summary = ScriptErrorSummary.Build(failure.Formatted, failure.SourceCode, failure.SourcePath);
+            Assert.Equal("include.py", (string)summary["file"]);
+            Assert.Equal(1, (int)summary["line"]);
+            Assert.Contains("broken", summary["context"].ToString());
+        }
+
+        [Fact]
+        public void Bridge_commit_failure_is_not_a_python_exception()
+        {
+            var detail = ErrorCodes.ScriptFailureDetail(null, false, null, "InvalidOperationException", false, true);
+            Assert.Equal(ErrorCodes.ErrorInterno, (string)detail["error_code"]);
+        }
         private const string Fails = "def audit(model):\n    raise ValueError('boom')\naudit('X')\n";
 
         private static string FormattedFailure(ScriptEngine engine, ScriptSource source)

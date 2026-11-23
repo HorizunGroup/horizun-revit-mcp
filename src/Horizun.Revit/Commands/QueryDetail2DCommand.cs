@@ -60,6 +60,8 @@ namespace Horizun.Revit.Commands
 
             Document doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
 
             string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
             double display;   // internal feet -> display units
@@ -462,7 +464,9 @@ namespace Horizun.Revit.Commands
                     if (!isCurve && !isRegion && !isInstance) { otherClasses++; continue; }
                     if (wantedIds != null && !wantedIds.Contains(id)) continue;
                     long catId = 0; try { catId = e.Category == null ? 0 : Rid.Value(e.Category.Id); } catch { catId = 0; }
-                    if (categoryFilter != null && !categoryFilter.Contains(catId)) continue;
+                    // A region is the CLASS FilledRegion; its category is not OST_FilledRegion, so the
+                    // 'filled_regions' token is a class test (see Detail2DQueryRules).
+                    if (!Detail2DQueryRules.PassesCategoryFilter(categoryFilter, catId, isRegion, (int)BuiltInCategory.OST_FilledRegion)) continue;
 
                     var warnings = new JArray();
                     JObject row = isCurve

@@ -81,7 +81,10 @@ namespace Horizun.Server.Tests
         {
             JObject mcp = Hop(CommandResult.Fail("Invalid atomic plan; nothing ran."));
             Assert.True((bool)mcp["isError"]);
-            Assert.Null(mcp["structuredContent"]);
+            // No rollback diagnostic is invented; only the stable cause is added.
+            Assert.Null(mcp["structuredContent"]["rollback_status"]);
+            Assert.Null(mcp["structuredContent"]["transaction_group_started"]);
+            Assert.NotNull(mcp["structuredContent"]["error_code"]);
         }
 
         /// <summary>

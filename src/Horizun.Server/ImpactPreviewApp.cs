@@ -32,6 +32,8 @@ namespace Horizun.Server
     internal static class ImpactPreviewApp
     {
         public const string Uri = "ui://horizun/impact-preview";
+        /// <summary>The MCP Apps mime type of an HTML app resource.</summary>
+        public const string AppMimeType = "text/html;profile=mcp-app";
 
         /// <summary>
         /// The tools whose rehearsal payload the app KNOWS how to render and narrow. The
@@ -109,7 +111,7 @@ namespace Horizun.Server
                 "Interactive view of a bulk-write rehearsal (dry_run): what it touches, before -> after, warnings, " +
                 "and rows to exclude. Excluding asks for a NEW rehearsal; Apply only spends the token of the " +
                 "rehearsal on screen. Fetches nothing.",
-            ["mimeType"] = McpAppResources.AppMimeType,
+            ["mimeType"] = AppMimeType,
             ["size"] = Encoding.UTF8.GetByteCount(Html()),
             ["annotations"] = new JObject
             {

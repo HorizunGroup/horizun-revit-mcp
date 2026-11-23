@@ -31,13 +31,6 @@ $fakeCall = {
             return Ok @{ verdict = 'fails'; rules = $rules
                          totals = [pscustomobject]@{ passes = 1; fails = 2; not_decidable = 4 } }
         }
-        'horizun_federation_check' {
-            if ($a.rules.ContainsKey('modles')) { return Err "The federation rules were refused: rules: unknown key 'modles'." }
-            return Ok @{ verdict = 'fails'; models = @([pscustomobject]@{ host = $true; state = 'clean' })
-                         expected_links = @([pscustomobject]@{ state = 'missing' })
-                         site = @([pscustomobject]@{ state = 'coherent' }); links = @([pscustomobject]@{ instance_id = 5 })
-                         summary = [pscustomobject]@{ links_missing = 1 } }
-        }
         'horizun_link_schedule' {
             if ($a.operation -eq 'import') {
                 $n = @(Get-Content -LiteralPath $a.schedule_path).Count - 1

@@ -137,6 +137,29 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Short_kind_gives_spanish_delivery_names_without_losing_room_identity()
+        {
+            Assert.Equal("Corte A-A - 101", RoomViewRules.ExpandPattern(
+                "{short_kind} - {room_number}", Room(), "SEC", 1, out _));
+            Assert.Equal("Alzado 2 - 101", RoomViewRules.ExpandPattern(
+                "{short_kind} - {room_number}", Room(), "ELEV", 2, out _));
+        }
+
+        [Fact]
+        public void Marker_layout_moves_away_from_a_central_annotation_and_separates_markers()
+        {
+            var room = PlanBox.FromCorners(0, 0, 10, 10);
+            var centerTag = PlanBox.FromCorners(4, 4, 6, 6);
+            var points = RoomViewRules.PlaceMarkers(room, new[] { centerTag }, 2, 0.5);
+            Assert.Equal(2, points.Count);
+            foreach (double[] p in points)
+                Assert.False(PlanimetryGeometry.Overlaps(centerTag,
+                    PlanBox.FromCorners(p[0] - 0.5, p[1] - 0.5, p[0] + 0.5, p[1] + 0.5), 0));
+            Assert.True(Math.Abs(points[0][0] - points[1][0]) >= 1 ||
+                        Math.Abs(points[0][1] - points[1][1]) >= 1);
+        }
+
+        [Fact]
         public void An_unknown_token_refuses_naming_the_known_ones_instead_of_passing_through()
         {
             string error;

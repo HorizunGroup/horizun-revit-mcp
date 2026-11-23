@@ -5,8 +5,8 @@
 // application BLOCK.
 //
 // THE DEFECT THIS EXISTS TO FIX, found in the 2026-09-24 inventory. A composite
-// tool (horizun_apply_cad_plan, horizun_apply_cad_update, horizun_cad_connect,
-// horizun_apply_ifc_plan, horizun_execute_plan) calls a typed child and then asks
+// tool (horizun_apply_cad_plan (Pro edition), horizun_apply_cad_update (Pro edition), horizun_cad_connect (Pro edition),
+// horizun_apply_ifc_plan (Pro edition), horizun_execute_plan) calls a typed child and then asks
 // only "did the call answer Success?" - which is transport, not application (see
 // ApplicationOutcome.cs). A child that answered Success over a rollback, a
 // partial write, or an unmeasured result was counted as LANDED, exactly the

@@ -63,7 +63,7 @@ namespace Horizun.Revit.Commands
                 {
                     ["id"] = Rid.Value(host.Id),
                     ["resolved"] = true,
-                    ["category"] = host.Category == null ? null : host.Category.Name,
+                    ["category"] = host.Category == null ? null : host.Category.Name, ["built_in_category"] = CategoryKey.Of(host),
                     ["name"] = Safe(() => host.Name)
                 };
 

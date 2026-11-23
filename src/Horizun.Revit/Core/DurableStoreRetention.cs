@@ -55,6 +55,8 @@ namespace Horizun.Revit.Core
             public string AttachmentPath;
             public string ResultPath;
             public string LeasePath;
+            public List<string> OutputPaths = new List<string>();
+            public long OutputBytes;
             public DateTime WrittenUtc;
             public long Bytes;
             public long RecordBytes;
@@ -163,6 +165,7 @@ namespace Horizun.Revit.Core
                         }
                     }
                     DeleteCompanion(file.ResultPath, file.ResultBytes, report);
+                    foreach (string output in file.OutputPaths) DeleteCompanion(output, File.Exists(output) ? new FileInfo(output).Length : 0, report);
                     DeleteCompanion(file.LeasePath, file.LeaseBytes, report);
                 }
                 catch (Exception ex)
@@ -252,6 +255,15 @@ namespace Horizun.Revit.Core
                             file.ResultBytes = new FileInfo(result).Length;
                             file.Bytes += file.ResultBytes;
                         }
+                        string outputsDir = OutputPages.Folder(directory);
+                        if (Directory.Exists(outputsDir))
+                            foreach (string output in Directory.GetFiles(outputsDir, Path.GetFileNameWithoutExtension(path) + ".*.json"))
+                            {
+                                long size = new FileInfo(output).Length;
+                                file.OutputPaths.Add(output);
+                                file.OutputBytes += size;
+                                file.Bytes += size;
+                            }
                         string lease = Path.Combine(directory, "leases",
                             Path.GetFileNameWithoutExtension(path) + ".json");
                         if (File.Exists(lease))
@@ -289,6 +301,21 @@ namespace Horizun.Revit.Core
             CleanupOrphans(directory, Path.Combine(directory, "attachments"), "*.png", report);
             CleanupOrphans(directory, Path.Combine(directory, "results"), "*.json", report);
             CleanupOrphans(directory, Path.Combine(directory, "leases"), "*.json", report);
+            // Saved Python outputs are named <job_id>.<page_chars>.json (and .tmp while being written).
+            CleanupOrphans(directory, OutputPages.Folder(directory), "*.json", report, OutputPages.JobIdOfFile);
+            CleanupOrphans(directory, OutputPages.Folder(directory), "*.tmp", report, OutputPages.JobIdOfFile);
+        }
+
+        private static void CleanupOrphans(string jobsDirectory, string artifactDirectory, string pattern,
+                                           DurableStoreRetentionReport report, Func<string, string> jobOf)
+        {
+            if (!Directory.Exists(artifactDirectory)) return;
+            foreach (string artifact in Directory.GetFiles(artifactDirectory, pattern, SearchOption.TopDirectoryOnly))
+            {
+                if (File.Exists(Path.Combine(jobsDirectory, jobOf(artifact) + ".jsonl"))) continue;
+                try { File.Delete(artifact); }
+                catch (Exception ex) { report.Errors.Add(Path.GetFileName(artifact) + ": orphan cleanup failed: " + ex.Message); }
+            }
         }
 
         private static void CleanupOrphans(string jobsDirectory, string artifactDirectory, string pattern,
@@ -440,6 +467,11 @@ namespace Horizun.Revit.Core
                 {
                     if (!claimed || completed) return false;
                     completed = true;
+                }
+                else if (ev == "released")
+                {
+                    if (!claimed || completed) return false;
+                    claimed = false; // voided claim (rejected before the run); a later claim starts clean
                 }
                 else return false;
             }

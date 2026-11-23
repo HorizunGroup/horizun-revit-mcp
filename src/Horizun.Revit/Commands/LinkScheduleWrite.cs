@@ -1,14 +1,13 @@
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP - horizun_link_schedule, operation=write. Original Horizun code.
 //
-// Stamps each matched element's activity id (and optionally start/finish, ISO
+// Stamps each matched element's selected activity field (and optionally start/finish, ISO
 // yyyy-MM-dd) into TEXT INSTANCE parameters. A row whose parameter is missing,
-// read-only, a type parameter or not text is listed as unresolved and not
-// written - the batch writes only what it can then re-read. Any Set that Revit
-// refuses inside the transaction rolls the whole batch back.
+// ambiguous, read-only, a type parameter or not text is listed as unresolved, as is a
+// row outside the ownership gate. A failed Set requests rollback of the batch.
 // -----------------------------------------------------------------------------
 using System;
-using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -19,151 +18,132 @@ namespace Horizun.Revit.Commands
 {
     public sealed partial class LinkScheduleCommand
     {
-        private sealed class WriteRow
-        {
-            public long Id;
-            public string UniqueId;
-            public string Activity;
-            public Dictionary<string, string> Values = new Dictionary<string, string>(StringComparer.Ordinal);
-            public Dictionary<string, string> Before = new Dictionary<string, string>(StringComparer.Ordinal);
-            public string Unresolved;
-        }
-
         private CommandResult Write(UIApplication app, JObject request, ScheduleImportResult schedule, JObject spec,
                                     string fileSha, JObject head, int maxRows)
         {
-            JObject w = request["write"] as JObject;
-            string actParam = w?.Value<string>("activity_parameter");
-            if (string.IsNullOrWhiteSpace(actParam))
-                return CommandResult.Fail("write.activity_parameter is required (a text instance parameter).");
-            string startParam = w.Value<string>("start_parameter");
-            string finishParam = w.Value<string>("finish_parameter");
+            string error = ScheduleWriteOptions.Read(request, out var options);
+            if (error != null) return CommandResult.Fail(error);
+            var assumptions = new[] { ScheduleLinkWriteRules.ActivityFieldAssumption(options.RequestedField, options.ActivityParameter) };
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
             Document doc = gate.Document;
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
 
-            ScheduleMatch m = ScheduleLinkRules.Match(spec, schedule.Activities, Facts(doc, spec, null));
-            var rows = new List<WriteRow>();
-            foreach (var kv in m.Links.OrderBy(k => k.Key))
-            {
-                Element e = doc.GetElement(Rid.Make(kv.Key));
-                var row = new WriteRow { Id = kv.Key, UniqueId = e?.UniqueId, Activity = kv.Value.Id };
-                row.Values[actParam] = kv.Value.Id;
-                if (startParam != null) row.Values[startParam] = ScheduleImport.Day(kv.Value.Start) ?? "";
-                if (finishParam != null) row.Values[finishParam] = ScheduleImport.Day(kv.Value.Finish) ?? "";
-                foreach (string p in row.Values.Keys.ToList())
-                {
-                    string why = Writable(e, p, out string before);
-                    if (why != null) { row.Unresolved = why; break; }
-                    row.Before[p] = before ?? "";
-                }
-                rows.Add(row);
-            }
-            List<WriteRow> ready = rows.Where(r => r.Unresolved == null).ToList();
-            int unresolved = rows.Count - ready.Count;
+            ScheduleMatch m = ScheduleLinkRules.Match(spec, schedule, Facts(doc, spec, null));
+            Element Resolve(string uniqueId) => doc.GetElement(uniqueId);
+            bool IsOwned(Element e) => HrzOwnership.IsTrustedOwned(doc, e) || HrzOwnership.CreatedThisSession(doc, e);
+            var rows = ScheduleLinkWriteRules.Prepare(m, options, Resolve, IsOwned, InspectWritableParameter, HrzOwnership.MarkPresence);
+            var ready = rows.Where(r => r.Unresolved == null).ToList();
 
             var plan = new ResolvedPlan
             {
                 Command = Name, DocumentKey = gate.Fingerprint,
                 RevitVersion = app?.Application?.VersionNumber, DocumentFingerprint = gate.Identity?.FingerprintDigest()
             };
-            foreach (WriteRow r in ready)
-                plan.Elements.Add(new PlannedElement
-                {
-                    UniqueId = r.UniqueId, ElementId = r.Id, Action = PlannedAction.Modify,
-                    BeforeValues = new Dictionary<string, string>(r.Before), ProposedValues = new Dictionary<string, string>(r.Values)
-                });
-            string planHash = PlanHash(request, fileSha, "write");
+            ScheduleLinkWriteRules.BindPlan(plan, ready);
+            string planHash = ScheduleLinkRules.PlanHash(request, fileSha, "write");
 
             head["document"] = doc.Title;
             MatchJson(head, m, maxRows);
-            head["rows_ready"] = ready.Count;
-            head["rows_unresolved"] = unresolved;
-            head["unresolved"] = new JArray(rows.Where(r => r.Unresolved != null).Take(maxRows)
-                .Select(r => new JObject { ["element_id"] = r.Id, ["reason"] = r.Unresolved }));
-
+            head["activity_field"] = options.ActivityField;
             if (dryRun)
-            {
-                head["dry_run"] = true;
-                head["preview"] = new JArray(ready.Take(maxRows).Select(r => new JObject
-                    { ["element_id"] = r.Id, ["activity"] = r.Activity, ["values"] = JObject.FromObject(r.Values) }));
-                DocumentGate.RecordResolvedPlan(plan);
-                DocumentGate.StampConfirmation(head, gate, Name, planHash, true,
-                    "the token binds the schedule file's SHA-256, the match spec, the parameters and the resolved rows.");
-                ApplicationOutcome.StampRehearsal(head, rows.Count, unresolved, 0, 0);
-                return CommandResult.Ok(head);
-            }
+                return ScheduleLinkWriteRules.Rehearse(head, rows, ready, maxRows,
+                    DocumentGate.Confirmations, gate.Identity, planHash, plan, assumptions);
+
+            int unresolved = ScheduleLinkWriteRules.StampPreparation(head, rows, ready, maxRows, dryRun: false);
             if (ready.Count == 0)
-                return CommandResult.Fail("Nothing to write: no matched element has writable text instance parameters. " +
-                                          "See unresolved in a dry run. Nothing was changed.");
+                return ScheduleLinkWriteRules.NothingToWrite(head, unresolved, assumptions);
 
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, plan, null);
             if (refusal != null) return refusal;
 
             TransactionStatus status = TransactionStatus.Uninitialized;
-            using (var tx = new Transaction(doc, "Horizun: link schedule (4D) parameters"))
+            string cleanupError = null;
+            try
             {
+                using var tx = new Transaction(doc, "Horizun: link schedule (4D) parameters");
                 tx.Start();
-                try
+                string RollBack() => Guard.RollBack(tx).StatusName;
+                string TransactionState() => tx.GetStatus().ToString();
+                CommandResult writeFailure = ScheduleLinkWriteRules.ApplyValues(ready, Resolve, IsOwned,
+                    SetResolvedValue, RollBack, head, unresolved, assumptions, HrzOwnership.MarkPresence, TransactionState);
+                if (writeFailure != null) return writeFailure;
+                try { status = Guard.Commit(tx, "link schedule parameters"); }
+                catch (SilentRollbackException ex) { status = ex.Status; }
+                catch (Exception ex)
                 {
-                    foreach (WriteRow r in ready)
-                    {
-                        Element e = doc.GetElement(Rid.Make(r.Id));
-                        foreach (var kv in r.Values)
-                            if (e == null || CodeCheckCommand.Lookup(e, kv.Key)?.Set(kv.Value) != true)
-                            {
-                                Guard.RollBack(tx);
-                                return CommandResult.FailWithDetail("Revit refused to set '" + kv.Key + "' on element " + r.Id +
-                                    ". The whole batch was rolled back; nothing was changed.",
-                                    new JObject { ["state"] = "rolled_back", ["write_started"] = true, ["changes_applied"] = false });
-                            }
-                    }
-                    try { status = Guard.Commit(tx, "link schedule parameters"); }
-                    catch (SilentRollbackException ex) { status = ex.Status; }
+                    return ScheduleLinkRules.FailAfterRollback("Revit could not commit the schedule parameters: " + ex.Message,
+                        RollBack, head, ready.Count, unresolved, assumptions, TransactionState);
                 }
-                catch
-                {
-                    if (tx.GetStatus() == TransactionStatus.Started) Guard.RollBack(tx);
-                    throw;
-                }
+            }
+            catch (Exception ex) when (status == TransactionStatus.Committed)
+            {
+                cleanupError = ex.Message;
             }
 
-            // Re-read from the committed model, row by row.
-            int verified = 0, unverified = 0;
-            var verification = new JArray();
-            foreach (WriteRow r in ready)
-            {
-                Element e = doc.GetElement(Rid.Make(r.Id));
-                bool ok = e != null && r.Values.All(kv => string.Equals(CodeCheckCommand.Lookup(e, kv.Key)?.AsString() ?? "", kv.Value, StringComparison.Ordinal));
-                if (ok) verified++; else unverified++;
-                if (!ok || verification.Count < maxRows)
-                    verification.Add(new JObject { ["element_id"] = r.Id, ["verified"] = ok });
-            }
-            head["dry_run"] = false;
-            head["verification"] = verification;
-            head["rows_verified"] = verified;
             DocumentGate.StampConfirmation(head, gate, Name, planHash, false);
-            ApplicationOutcome.Stamp(head, WriteTally.PerTarget(status.ToString(), ready.Count, unresolved, verified, unverified));
-            return status == TransactionStatus.Committed && unverified == 0
-                ? CommandResult.Ok(head)
-                : CommandResult.FailWithDetail("The write did not verify: commit " + status + ", " + unverified +
-                                               " row(s) re-read with a different value.", head);
+            var result = ScheduleLinkWriteRules.CompleteAfterCommit(status.ToString(), ready, Resolve, ReadWrittenValue,
+                head, unresolved, maxRows, assumptions);
+            return ScheduleLinkRules.ReportCommittedCleanupFailure(result, cleanupError);
         }
 
-        /// <summary>Null when the instance parameter can take text; else why not. `before` is its current value.</summary>
-        private static string Writable(Element e, string name, out string before)
+        private static string ParameterIdentity(Parameter p)
         {
-            before = null;
-            if (e == null) return "the element no longer exists.";
-            try { if (e.GroupId != ElementId.InvalidElementId) return "the element is a group member; its instance parameters may be locked by the group."; } catch { }
-            Parameter p;
-            p = CodeCheckCommand.Lookup(e, name);
-            if (p == null) return "no INSTANCE parameter '" + name + "' (a type parameter would stamp every instance of the type).";
-            if (p.StorageType != StorageType.String) return "'" + name + "' is not a text parameter.";
-            if (p.IsReadOnly) return "'" + name + "' is read-only.";
-            try { before = p.AsString(); } catch { }
+            if (p.IsShared)
+            {
+                Guid guid = p.GUID;
+                return guid == Guid.Empty ? null : "guid:" + guid.ToString("D");
+            }
+            if (p.Definition is InternalDefinition def && def.BuiltInParameter != BuiltInParameter.INVALID)
+                return "builtin:" + def.BuiltInParameter;
+            return p.Id == ElementId.InvalidElementId ? null : "id:" + Rid.Value(p.Id).ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static Parameter ResolveParameter(Element e, string identity)
+        {
+            if (identity.StartsWith("guid:", StringComparison.Ordinal))
+                return e.get_Parameter(Guid.ParseExact(identity.Substring(5), "D"));
+            if (identity.StartsWith("builtin:", StringComparison.Ordinal))
+                return e.get_Parameter((BuiltInParameter)Enum.Parse(typeof(BuiltInParameter), identity.Substring(8)));
+
+            // Instance and family parameter IDs do not always name a ParameterElement.
+            long id = long.Parse(identity.Substring(3), CultureInfo.InvariantCulture);
+            return e.Parameters.Cast<Parameter>().SingleOrDefault(p => Rid.Value(p.Id) == id && !p.IsShared);
+        }
+
+        private static bool SetResolvedValue(Element e, string identity, string value)
+        {
+            Parameter p = ResolveParameter(e, identity);
+            if (p?.StorageType != StorageType.String || p.IsReadOnly) return false;
+            // Revit returns false from Set when the value did not change.
+            return string.Equals(p.AsString() ?? "", value, StringComparison.Ordinal) || p.Set(value);
+        }
+
+        private static string ReadWrittenValue(Element e, string identity)
+        {
+            Parameter p = ResolveParameter(e, identity);
+            return p?.StorageType == StorageType.String ? p.AsString() ?? "" : null;
+        }
+
+        /// <summary>Null when the instance parameter can take text; else why not.</summary>
+        private static string InspectWritableParameter(Element e, string name, out ScheduleWriteField field)
+        {
+            field = null;
+            try
+            {
+                if (e.GroupId != ElementId.InvalidElementId)
+                    return "the element is a group member; its instance parameters may be locked by the group.";
+                string refusal = ScheduleLinkRules.ResolveParameterName(name, NamedParameters(e, name), out Parameter p);
+                if (refusal != null) return refusal;
+                if (p == null) return "no INSTANCE parameter '" + name + "' (a type parameter would stamp every instance of the type).";
+                if (p.StorageType != StorageType.String) return "'" + name + "' is not a text parameter.";
+                if (p.IsReadOnly) return "'" + name + "' is read-only.";
+                string identity = ParameterIdentity(p);
+                if (identity == null) return "could not establish the identity of '" + name + "'.";
+                field = new ScheduleWriteField { Identity = identity, Before = p.AsString() ?? "" };
+            }
+            catch (Exception ex) { return "could not inspect '" + name + "' before writing: " + ex.Message; }
             return null;
         }
     }

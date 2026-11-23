@@ -27,6 +27,37 @@ using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
+    public static class PythonIdempotencyRules
+    {
+        /// <summary>
+        /// Tools whose missing idempotency_key the bridge generates instead of refusing. Field 2026-11-07..10: 73 refusals
+        /// of save_document, 11 of document_session and 5 of open_document for a missing key, each a wasted round trip.
+        /// Saving, opening and closing are session operations whose replay is harmless or refused by its own state check
+        /// (a document already open, a document already closed); the generated key is returned so a retry can reuse it.
+        /// </summary>
+        public static bool GeneratesKey(string tool) =>
+            tool == "horizun_execute_python" || tool == "horizun_save_document" ||
+            tool == "horizun_document_session" || tool == "horizun_open_document";
+
+        /// <summary>execute_python with run_async=true: its key must come from the caller.</summary>
+        public static bool IsAsyncPython(string tool, JObject request) =>
+            tool == "horizun_execute_python" && request?["run_async"]?.Type == JTokenType.Boolean && (bool)request["run_async"];
+
+        public static string EnsureKey(JObject request, Func<string> newKey = null)
+        {
+            if (!string.IsNullOrWhiteSpace((string)request["idempotency_key"])) return null;
+            string key = (newKey ?? (() => Guid.NewGuid().ToString()))();
+            request["idempotency_key"] = key;
+            return key;
+        }
+
+        public static JObject SuggestedCall(JObject original, Func<string> newKey = null)
+        {
+            var args = (JObject)original.DeepClone();
+            args["idempotency_key"] = (newKey ?? (() => Guid.NewGuid().ToString()))();
+            return new JObject { ["tool"] = "horizun_execute_python", ["arguments"] = args };
+        }
+    }
     public enum DurableCommandOutcome { Fresh, Replay, Conflict, InDoubt }
 
     public sealed class DurableCommandDecision
@@ -110,6 +141,17 @@ namespace Horizun.Revit.Core
                             !string.Equals((string)record["fingerprint"], (string)claim["fingerprint"], StringComparison.Ordinal))
                         { ledgerError = "completion does not match its claim"; break; }
                         completed = record;
+                    }
+                    else if (ev == "released")
+                    {
+                        // The command refused the call before anything ran (CT-P1-5b): the claim is
+                        // void and the key is free again. Only an open claim can be released, and
+                        // only for the operation that was claimed.
+                        if (claim == null || completed != null) { ledgerError = "release without one open claim"; break; }
+                        if (!string.Equals((string)record["command"], (string)claim["command"], StringComparison.Ordinal) ||
+                            !string.Equals((string)record["fingerprint"], (string)claim["fingerprint"], StringComparison.Ordinal))
+                        { ledgerError = "release does not match its claim"; break; }
+                        claim = null;
                     }
                     else { ledgerError = "unknown ledger event"; break; }
                 }
@@ -268,6 +310,39 @@ namespace Horizun.Revit.Core
                 return int.TryParse(pid.ToString(), out parsed) ? parsed : 0;
             }
             catch { return 0; }
+        }
+
+        /// <summary>
+        /// Void a FRESH claim whose command refused the call before anything ran, so the key
+        /// is not consumed by a validation error (CT-P1-5b). Append-only like everything else
+        /// here: a "released" record follows the claim, and the next claim of the key starts
+        /// clean. Returns false (and writes nothing) unless the result says it was rejected
+        /// before the run - a failure after the run began keeps its key.
+        /// </summary>
+        public bool Release(DurableCommandDecision claim, CommandResult result)
+        {
+            if (claim == null || !claim.IsFresh || result == null || result.Success || !result.RejectedBeforeRun) return false;
+            string keyHash = RequestFingerprint.Sha256Hex(claim.Key);
+            return WithKeyLock(keyHash, () =>
+            {
+                // Only an OPEN claim of this very operation can be voided: the newest record
+                // must be its "claimed" line. A completed or already-released key is untouched.
+                string readError;
+                List<JObject> existing = ReadRecords(claim.Path, out readError);
+                JObject last = existing.Count == 0 ? null : existing[existing.Count - 1];
+                if (readError != null || last == null || (string)last["event"] != "claimed" ||
+                    !string.Equals((string)last["fingerprint"], claim.Fingerprint, StringComparison.Ordinal))
+                    return false;
+                Append(claim.Path, new JObject
+                {
+                    ["event"] = "released",
+                    ["command"] = claim.Command,
+                    ["fingerprint"] = claim.Fingerprint,
+                    ["reason"] = "rejected_before_run",
+                    ["at_utc"] = _utcNow().ToString("o")
+                });
+                return true;
+            });
         }
 
         public void Complete(DurableCommandDecision claim, CommandResult result)

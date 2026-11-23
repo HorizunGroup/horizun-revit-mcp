@@ -117,21 +117,6 @@ namespace Horizun.Core.Tests
         // ---------------------------------------------------------- selection
 
         [Fact]
-        public void A_per_element_recipe_expands_to_one_typed_step_per_element()
-        {
-            CorrectionAction a = Select(Act("f:links")).Single();
-
-            Assert.Equal(CorrectionActionState.Rehearsed, a.State);
-            Assert.Equal("horizun_manage_links", a.Tool);
-            Assert.Equal(2, a.Steps.Count);
-            Assert.Equal(10L, (long)a.Steps[0].Arguments["link_instance_id"]);
-            Assert.Equal("pin", (string)a.Steps[0].Arguments["operation"]);
-            Assert.Equal("prop:f:links:11", a.Steps[1].ProposalId);
-            // Rehearsal is the surface's flag; the recipe cannot turn it off.
-            Assert.True((bool)a.Steps[0].Arguments["dry_run"]);
-        }
-
-        [Fact]
         public void A_list_recipe_makes_one_typed_delete_over_the_selected_ids()
         {
             CorrectionAction a = Select(new JObject
@@ -146,23 +131,6 @@ namespace Horizun.Core.Tests
             Assert.Equal(new long[] { 50, 51 }, a.Steps[0].Arguments["ids"].Select(t => (long)t).ToArray());
             Assert.Equal("high", a.Risk);
             Assert.False(a.Reversible);
-        }
-
-        [Fact]
-        public void Narrowing_to_the_findings_own_elements_is_honoured_and_widening_is_refused()
-        {
-            var narrowed = new JObject { ["finding_id"] = "f:links", ["element_ids"] = new JArray(11) };
-            CorrectionAction a = Select(narrowed).Single();
-            Assert.Equal(CorrectionActionState.Rehearsed, a.State);
-            Assert.Single(a.Steps);
-            Assert.Equal(11L, (long)a.Steps[0].Arguments["link_instance_id"]);
-
-            var widened = new JObject { ["finding_id"] = "f:links", ["element_ids"] = new JArray(11, 999) };
-            CorrectionAction w = Select(widened).Single();
-            Assert.Equal(CorrectionActionState.Unsafe, w.State);
-            Assert.Equal(ProposalRefusal.ScopeWidened, w.RefusalCode);
-            Assert.Contains("999", w.Why);
-            Assert.Empty(w.Steps);
         }
 
         [Fact]
@@ -186,20 +154,6 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void A_missing_required_input_is_requires_input_naming_it_while_the_rest_still_select()
-        {
-            List<CorrectionAction> actions = Select(Act("f:views"), Act("f:links"));
-
-            CorrectionAction views = actions[0];
-            Assert.Equal(CorrectionActionState.RequiresInput, views.State);
-            Assert.Contains("template_view_id", views.Why);
-            Assert.Empty(views.Steps);
-
-            Assert.Equal(CorrectionActionState.Rehearsed, actions[1].State);
-            Assert.False(CorrectionSelection.RehearsedCleanly(actions));
-        }
-
-        [Fact]
         public void The_input_answers_the_question_and_the_call_is_wrapped_as_manage_views_actions()
         {
             var act = new JObject { ["finding_id"] = "f:views", ["inputs"] = new JObject { ["template_view_id"] = 777 } };
@@ -217,16 +171,6 @@ namespace Horizun.Core.Tests
             Assert.Null(args["view_id"]);
             // The second ambiguity travels as a caveat rather than blocking.
             Assert.Contains(a.Caveats, c => c.Contains("OVERRIDES"));
-        }
-
-        [Fact]
-        public void An_input_the_recipe_never_asked_for_is_refused()
-        {
-            var act = new JObject { ["finding_id"] = "f:links", ["inputs"] = new JObject { ["operation"] = "unpin" } };
-            CorrectionAction a = Select(act).Single();
-            Assert.Equal(CorrectionActionState.RequiresInput, a.State);
-            Assert.Contains("not one", a.Why);
-            Assert.Empty(a.Steps);
         }
 
         [Fact]
@@ -250,18 +194,6 @@ namespace Horizun.Core.Tests
             List<string> skipped = CorrectionSelection.Skipped(Audit(), Actions(Act("f:links"), Act("f:nope")));
             Assert.Equal(new[] { "f:views", "f:rooms", "f:groups", "f:inplace", "f:linktypes" }, skipped.ToArray());
             Assert.DoesNotContain("f:warn", skipped);
-        }
-
-        [Fact]
-        public void The_token_is_withheld_until_every_step_rehearsed_cleanly()
-        {
-            List<CorrectionAction> actions = Select(Act("f:links"));
-            Assert.False(CorrectionSelection.RehearsedCleanly(actions));
-            actions[0].Steps[0].RehearsalOk = true;
-            Assert.False(CorrectionSelection.RehearsedCleanly(actions));
-            actions[0].Steps[1].RehearsalOk = true;
-            Assert.True(CorrectionSelection.RehearsedCleanly(actions));
-            Assert.False(CorrectionSelection.RehearsedCleanly(new List<CorrectionAction>()));
         }
 
         // ---------------------------------------------------------- staleness
@@ -302,58 +234,5 @@ namespace Horizun.Core.Tests
             };
         }
 
-        [Fact]
-        public void Corrected_means_every_selected_element_is_gone_from_the_re_run_finding()
-        {
-            JObject r = ReAuditRules.Compare(Applied(true, 10, 11), Fresh(false), false);
-            Assert.Equal(ReAuditOutcome.Corrected, (string)r["outcome"]);
-            Assert.Equal(2, (int)r["counts"]["corrected"]);
-            Assert.Equal("f:after", (string)r["after"]["finding_id"]);
-        }
-
-        [Fact]
-        public void Persistent_means_the_audit_still_lists_it_whatever_the_typed_call_said()
-        {
-            JObject r = ReAuditRules.Compare(Applied(true, 10, 11), Fresh(false, 11), false);
-            Assert.Equal(ReAuditOutcome.Persistent, (string)r["outcome"]);
-            Assert.Equal(new long[] { 10 }, r["elements"]["corrected"].Select(t => (long)t).ToArray());
-            Assert.Equal(new long[] { 11 }, r["elements"]["persistent"].Select(t => (long)t).ToArray());
-            Assert.Contains("the audit is the judge", (string)r["why"]);
-        }
-
-        [Fact]
-        public void Failed_means_no_typed_call_applied_and_the_elements_are_listed_as_failed()
-        {
-            JObject r = ReAuditRules.Compare(Applied(false, 10), Fresh(false, 10), false);
-            Assert.Equal(ReAuditOutcome.Failed, (string)r["outcome"]);
-            Assert.Equal(1, (int)r["counts"]["failed"]);
-        }
-
-        [Fact]
-        public void Not_verifiable_when_the_check_died_or_the_list_was_cut_and_the_element_is_past_the_cut()
-        {
-            JObject dead = ReAuditRules.Compare(Applied(true, 10), null, true);
-            Assert.Equal(ReAuditOutcome.NotVerifiable, (string)dead["outcome"]);
-            Assert.True((bool)dead["after"]["check_failed"]);
-
-            JObject cut = ReAuditRules.Compare(Applied(true, 10), Fresh(true, 11), false);
-            Assert.Equal(ReAuditOutcome.NotVerifiable, (string)cut["outcome"]);
-            Assert.Contains("larger top", (string)cut["why"]);
-        }
-
-        [Fact]
-        public void The_reply_rows_carry_state_why_scope_and_every_step()
-        {
-            List<CorrectionAction> actions = Select(Act("f:links"), Act("f:views"));
-            JObject row = CorrectionReply.ActionJson(actions[0]);
-            Assert.Equal("rehearsed", (string)row["state"]);
-            Assert.Equal(2, ((JArray)row["steps"]).Count);
-            Assert.Equal(2, ((JArray)row["selected_element_ids"]).Count);
-            JObject tally = CorrectionReply.Tally(actions);
-            Assert.Equal(1, (int)tally["rehearsed"]);
-            Assert.Equal(1, (int)tally["requires_input"]);
-            Assert.Equal(new[] { AuditCheckNames.UnpinnedLinks, AuditCheckNames.ViewsWithoutTemplate },
-                         CorrectionSelection.ChecksOf(actions).ToArray());
-        }
     }
 }

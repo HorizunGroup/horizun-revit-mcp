@@ -6,12 +6,34 @@
 // clash to reproduce live.
 // -----------------------------------------------------------------------------
 using Horizun.Revit.Core;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Xunit;
 
 namespace Horizun.Core.Tests
 {
     public class PenetrationRulesTests
     {
+        [Fact]
+        public void Sliced_clustering_preserves_transitive_groups_and_order()
+        {
+            var random = new Random(901);
+            for (int sample = 0; sample < 40; sample++)
+            {
+                var points = Enumerable.Range(0, random.Next(0, 20))
+                    .Select(_ => new[] { random.NextDouble() * 10, random.NextDouble() * 10, 0.0 }).ToList();
+                double radius = sample % 3 == 0 ? 0 : random.NextDouble() * 5;
+                var expected = PenetrationRules.Cluster(points, radius);
+                List<List<int>> actual = null;
+                int steps = 0;
+                foreach (int ignored in PenetrationRules.ClusterSteps(points, radius, value => actual = value)) steps++;
+                Assert.NotNull(actual);
+                Assert.Equal(expected.Select(g => string.Join(",", g)), actual.Select(g => string.Join(",", g)));
+                if (points.Count > 0) Assert.True(steps > 0);
+            }
+        }
+
         [Fact]
         public void Exactly_one_mep_curve_makes_a_penetration_pair()
         {

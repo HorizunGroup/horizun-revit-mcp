@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
-// VERIFIED IFC DELIVERY - the Revit-free half of horizun_deliver_ifc.
+// VERIFIED IFC DELIVERY - the Revit-free half of horizun_deliver_ifc (Pro edition).
 //
 // A delivery is a FILE somebody else will open. Its verdict is therefore the
 // file's, not the model's: the IDS is evaluated against the exported IFC, the
@@ -71,6 +71,48 @@ namespace Horizun.Revit.Core
 
     public static class IfcDeliveryRules
     {
+        public static string ResolveMappingPath(string path, string contextPath, Func<string, bool> exists, out string error)
+            => ResolveMappingPathWithEvidence(path, contextPath, exists, out error, out _);
+
+        public static string ResolveMappingPathWithEvidence(string path, string contextPath, Func<string, bool> exists, out string error, out string resolvedPath)
+        {
+            error = null;
+            resolvedPath = null;
+            try
+            {
+                string resolved;
+                if (Path.IsPathRooted(path)) resolved = Path.GetFullPath(path);
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(contextPath))
+                    {
+                        error = "relative pset_mapping_path needs a project-context.json; send an absolute path";
+                        return null;
+                    }
+                    string basePath = Path.GetDirectoryName(Path.GetFullPath(contextPath));
+                    resolved = Path.GetFullPath(Path.Combine(basePath, path));
+                    resolvedPath = resolved;
+                    string prefix = basePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    if (!resolved.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        error = "relative pset_mapping_path escapes the project-context.json folder";
+                        return null;
+                    }
+                }
+                resolvedPath = resolved;
+                if (!exists(resolved)) { error = "pset_mapping_path does not exist: " + resolved; return null; }
+                return resolved;
+            }
+            catch (Exception ex) { error = "pset_mapping_path is invalid: " + ex.Message; return null; }
+        }
+        /// <summary>The request fields the confirmation token binds (DocumentGate.PlanHash).</summary>
+        public static readonly string[] PlanHashKeys =
+        {
+            "output_folder", "output_name", "information_container", "ifc_version", "ifc_filter_view_id", "export_base_quantities",
+            "split_walls_and_columns", "space_boundary_level", "export_ifc_common_property_sets", "export_internal_revit_property_sets",
+            "site_placement", "pset_mapping_path", "pset_min_coverage", "ids_path", "precheck", "bcf", "overwrite", "ifc_setup", "strict"
+        };
+
         /// <summary>The fixed gate order of the report.</summary>
         public static readonly string[] GateOrder =
             { "precheck", "export", "schema_header", "ids_validate", "pset_mapping", "bcf", "information_container" };

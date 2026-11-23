@@ -59,6 +59,53 @@ namespace Horizun.Server.Tests
             "{\"kind\":\"dialog\",\"description\":\"Dialog_Revit_LinksNotFound\",\"while\":\"MOD-002\"}]";
 
         [Fact]
+        public void Revit_imports_and_portable_helpers_are_available_to_scripts()
+        {
+            var engine = Python.CreateEngine();
+            var scope = engine.CreateScope();
+            engine.Execute(@"
+import sys, types
+a = types.ModuleType('Autodesk'); a.__path__ = []
+r = types.ModuleType('Autodesk.Revit'); r.__path__ = []
+db = types.ModuleType('Autodesk.Revit.DB')
+class Wall: pass
+db.Wall = Wall
+a.Revit = r; r.DB = db
+sys.modules['Autodesk'] = a; sys.modules['Autodesk.Revit'] = r; sys.modules['Autodesk.Revit.DB'] = db
+", scope);
+            scope.SetVariable("__hz_import_revit", true);
+            engine.Execute(ScriptPrelude.Prologue, scope);
+            engine.Execute(@"
+assert Autodesk.Revit.DB.Wall is Wall
+import Autodesk
+from Autodesk.Revit.DB import Wall
+assert clr is not None
+class Old: ParameterType = 'legacy'
+class New:
+    def GetDataType(self): return 'forge'
+assert horizun.param_data_type(Old()) == 'legacy'
+assert horizun.param_data_type(New()) == 'forge'
+class Param:
+    def __init__(self, kind): self.StorageType = kind
+class FamilyType:
+    def AsDouble(self, p): return 1.5
+    def AsInteger(self, p): return 2
+    def AsString(self, p): return 'x'
+    def AsElementId(self, p): return 3
+for kind, expected in [('Double', 1.5), ('Integer', 2), ('String', 'x'), ('ElementId', 3)]:
+    assert horizun.family_type_value(FamilyType(), Param(kind)) == expected
+w = Wall()
+assert horizun.of_class([w, object()], Wall) == [w]
+assert list(horizun.iter_safe(None)) == []
+assert list(horizun.iter_safe([1, 2])) == [1, 2]
+import json
+path = 'C:\\example\\file.rvt'
+assert json.loads(horizun.safe_json_path(path)) == path
+", scope);
+            engine.Execute(ScriptPrelude.Epilogue, scope);
+        }
+
+        [Fact]
         public void The_prelude_and_the_epilogue_are_valid_python()
         {
             ScriptEngine engine = Python.CreateEngine();
@@ -159,6 +206,88 @@ trace = ','.join(events)
             Assert.Equal("9007199254740993", scope.GetVariable("modern").ToString());
             Assert.Equal("4242", scope.GetVariable("legacy").ToString());
             Assert.Null(scope.GetVariable("nothing"));
+        }
+
+        [Fact]
+        public void Id_value_hands_back_a_python_int_that_json_can_serialise()
+        {
+            // .Value is a System.Int64 in 2024+; json.dumps refuses Int64. The helper
+            // recommended for portable ids must not reintroduce the TypeError.
+            var engine = Python.CreateEngine();
+            var scope = Prepared(engine, _ => "[]", _ => new FakeScope(), new FakeJob());
+            engine.Execute(
+                "import System, json\n" +
+                "class Id2026(object):\n" +
+                "    Value = System.Int64(9007199254740993)\n" +
+                "v = horizun.id_value(Id2026())\n" +
+                "is_int = type(v) is int\n" +
+                "text = json.dumps({'id': v})\n", scope);
+            Assert.True((bool)scope.GetVariable("is_int"));
+            Assert.Equal("{\"id\": 9007199254740993}", (string)scope.GetVariable("text"));
+        }
+
+        [Fact]
+        public void Json_serialises_the_net_values_the_revit_api_returns()
+        {
+            // Field signals 2026-10: TypeError '... is not JSON serializable' on
+            // ElementId.Value (Int64) and Color.Red (Byte) at the last line of read-only
+            // scripts that had finished their work.
+            var engine = Python.CreateEngine();
+            var scope = Prepared(engine, _ => "[]", _ => new FakeScope(), new FakeJob());
+            engine.Execute(
+                "import System, json, io\n" +
+                "vals = {'int64': System.Int64(5), 'byte': System.Byte(200), 'u32': System.UInt32(7),\n" +
+                "        'single': System.Single(1.5), 'guid': System.Guid.Empty,\n" +
+                "        'enum': System.StringSplitOptions.RemoveEmptyEntries, 'nested': [System.Int16(3)]}\n" +
+                "text = json.dumps(vals, sort_keys=True)\n" +
+                "buf = io.StringIO()\n" +
+                "json.dump({'a': System.Int64(9)}, buf)\n" +
+                "dumped = buf.getvalue()\n", scope);
+            Assert.Equal(
+                "{\"byte\": 200, \"enum\": \"RemoveEmptyEntries\", \"guid\": \"00000000-0000-0000-0000-000000000000\", " +
+                "\"int64\": 5, \"nested\": [3], \"single\": 1.5, \"u32\": 7}",
+                (string)scope.GetVariable("text"));
+            Assert.Equal("{\"a\": 9}", (string)scope.GetVariable("dumped"));
+        }
+
+        [Fact]
+        public void Json_still_refuses_what_it_cannot_convert_and_a_script_encoder_still_wins()
+        {
+            // Only lossless conversions are added: an arbitrary object is still a
+            // TypeError (no silent str()), and a script's own JSONEncoder overrides ours.
+            var engine = Python.CreateEngine();
+            var scope = Prepared(engine, _ => "[]", _ => new FakeScope(), new FakeJob());
+            engine.Execute(
+                "import json\n" +
+                "try:\n" +
+                "    json.dumps({'x': object()})\n" +
+                "    refused = False\n" +
+                "except TypeError:\n" +
+                "    refused = True\n" +
+                "class Mine(json.JSONEncoder):\n" +
+                "    def default(self, o):\n" +
+                "        return 'mine'\n" +
+                "custom = json.dumps({'x': object()}, cls=Mine)\n", scope);
+            Assert.True((bool)scope.GetVariable("refused"));
+            Assert.Equal("{\"x\": \"mine\"}", (string)scope.GetVariable("custom"));
+        }
+
+        [Fact]
+        public void Json_hook_is_installed_once_when_the_prelude_runs_again_on_the_same_engine()
+        {
+            // The command keeps ONE engine per Revit session, so the prelude runs many
+            // times against the same json module; it must not wrap itself in layers.
+            var engine = Python.CreateEngine();
+            Prepared(engine, _ => "[]", _ => new FakeScope(), new FakeJob());
+            var second = Prepared(engine, _ => "[]", _ => new FakeScope(), new FakeJob());
+            engine.Execute(
+                "import json, System\n" +
+                "first = json.JSONEncoder.default\n" +
+                "_hz_install_json_net_values()\n" +
+                "same = json.JSONEncoder.default is first\n" +
+                "text = json.dumps(System.Int64(1))\n", second);
+            Assert.True((bool)second.GetVariable("same"));
+            Assert.Equal("1", (string)second.GetVariable("text"));
         }
 
         [Fact]

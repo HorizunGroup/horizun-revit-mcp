@@ -70,20 +70,7 @@ namespace Horizun.Core.Tests
             };
         }
 
-        /// <summary>A row built from a rule the expansions produced, the way the resolver describes it.</summary>
-        private static JObject RowOf(StructuralRebarRule r, long host, double modelDia, int index = 0)
-        {
-            List<double[]> path = RebarArcs.Path(r.CurvesMm, r.Closed, r.ArcThrough, RebarArcs.DefaultChordMm);
-            var req = r.Layout;
-            req.BarDiameterMm = modelDia;
-            RebarLayoutPlan plan = RebarLayoutRules.Resolve(req);
-            Assert.True(plan.Ok, r.Id + ": " + plan.Error);
-            double[] pos = plan.PositionsMm.Select(v => r.BarsOnNormalSide ? v : -v).ToArray();
-            JObject row = Row(r.Id, host, modelDia, path.ToArray(), r.NormalMm, pos, r.Closed, RebarOverlap.Identity(r),
-                              plan.IncludeFirstBar, plan.IncludeLastBar, index);
-            row["style"] = r.Style;
-            return row;
-        }
+        
 
         /// <summary>A bar as RebarFacts.Describe(doc, bar, includePositions: true) publishes it.</summary>
         private static JObject Observed(long id, double modelDia, double[][] drawn, double[][] asDeclared,
@@ -245,20 +232,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(RebarOverlap.KindIntersection, Plan(null, inB1, inB2).Pairs.Single().Kind);
         }
 
-        // ----------------------------------------------------------- excuses
-
-        private static StructuralRequirementSet BeamSet(string layers, string extra = "")
-        {
-            StructuralRequirementSet s = StructuralRequirementSet.Load(JObject.Parse(@"{
-  'schema': 'horizun.structural-requirements/1', 'units': 'millimeter',
-  'requirement_set': { 'id': 'ov', 'version': '1' },
-  'bar_types': [ { 'id': 'N16', 'type_name': '16M' }, { 'id': 'N10', 'type_name': '10M' } ],
-  'hook_types': [ { 'id': 'H135', 'type_name': 'Stirrup/Tie - 135 deg.' } ],
-  'section_rules': [ { 'id': 'C1', 'host': { 'element_ids': [ 7 ] }, 'cover': { 'distance_mm': 40 },
-    'layers': " + layers + extra + @" } ] }".Replace('\'', '"')));
-            Assert.True(s.Ok, s.Error);
-            return s;
-        }
+        
 
         private const string ColumnStirrups = @", 'stirrups': { 'bar_type': 'N10', 'allow_new_shape': true,
       'start': { 'hook_type': 'H135' }, 'end': { 'hook_type': 'H135' },
@@ -270,126 +244,15 @@ namespace Horizun.Core.Tests
             UMin = 0, UMax = 3000, VMin = -300, VMax = 300, WMin = -200, WMax = 200
         };
 
-        /// <summary>The rows a section rule produces, through SectionRules and StirrupZoneRules, as the resolver chains them.</summary>
-        private static List<JObject> CageRows(StructuralRequirementSet s, SectionHostFrame f)
-        {
-            Func<string, double> dia = id => id == "N10" ? 10 : 16;
-            SectionResult r = SectionRules.ExpandAll(s.SectionRules.Single(), f, dia, null, null, out List<StructuralRebarRule> bars,
-                                                     out List<StructuralStirrupZoneRule> zones);
-            Assert.True(r.Ok, r.Why);
-            var rules = new List<StructuralRebarRule>(bars);
-            foreach (StructuralStirrupZoneRule z in zones)
-            {
-                StirrupZoneResult zr = StirrupZoneRules.Expand(z, z.SpanMm.Value, dia(z.BarTypeId), out List<StructuralRebarRule> zb);
-                Assert.True(zr.Ok, zr.Why);
-                rules.AddRange(zb);
-            }
-            return rules.Select((b, i) => RowOf(b, f.ElementId, dia(b.BarTypeId), i)).ToList();
-        }
+        
 
-        [Fact]
-        public void The_expansions_say_which_declared_rule_which_cage_and_which_layout_a_bar_belongs_to()
-        {
-            StructuralRequirementSet s = BeamSet(@"[ { 'face': 'perimeter', 'count': 4, 'bar_type': 'N16', 'extend': 'host_length', 'allow_new_shape': true },
-      { 'name': 'sides', 'face': 'left', 'count': 2, 'bar_type': 'N16', 'extend': 'host_length', 'allow_new_shape': true } ]",
-                ColumnStirrups + @", 'ties': [ { 'name': 'x', 'bar_type': 'N10', 'layer': 'sides', 'allow_new_shape': true,
-                'start': { 'hook_type': 'H135' }, 'end': { 'hook_type': 'H135' } } ]");
-            List<JObject> rows = CageRows(s, Column());
-            foreach (JObject row in rows)
-            {
-                JObject b = (JObject)row["belongs_to"];
-                Assert.Equal("C1", (string)b["declared_rule_id"]);
-                Assert.Equal("C1#h7", (string)b["cage"]["id"]);
-            }
-            Assert.Contains(rows, r => (string)r["belongs_to"]["cage"]["role"] == RebarOverlap.RoleLongitudinal);
-            JObject stirrup = rows.Single(r => ((string)r["rule_id"]).Contains("#stirrups#"));
-            Assert.Equal(RebarOverlap.RoleStirrup, (string)stirrup["belongs_to"]["cage"]["role"]);
-            Assert.Equal("C1#h7#stirrups", (string)stirrup["belongs_to"]["layout"]);
-            Assert.All(rows.Where(r => ((string)r["rule_id"]).Contains("#tie-")),
-                       r => Assert.Equal(RebarOverlap.RoleTie, (string)r["belongs_to"]["cage"]["role"]));
+        
 
-            // A mat's components name the mat and their own component.
-            var mat = new StructuralRebarRule { Id = "M1#top-x", OriginRuleId = "M1", LayoutGroupId = "M1#top-x" };
-            Assert.Equal("M1", (string)RebarOverlap.Identity(mat)["declared_rule_id"]);
-            Assert.Null(RebarOverlap.Identity(mat)["cage"]);
-            // A plain rule belongs to itself.
-            Assert.Equal("r1", (string)RebarOverlap.Identity(new StructuralRebarRule { Id = "r1" })["declared_rule_id"]);
-        }
+        
 
-        [Fact]
-        public void A_cage_s_stirrups_and_ties_touching_and_enclosing_its_own_bars_are_its_design_and_are_counted_as_excused()
-        {
-            StructuralRequirementSet s = BeamSet(@"[ { 'face': 'perimeter', 'count': 4, 'bar_type': 'N16', 'extend': 'host_length', 'allow_new_shape': true },
-      { 'name': 'sides', 'face': 'left', 'count': 2, 'bar_type': 'N16', 'extend': 'host_length', 'allow_new_shape': true } ]",
-                ColumnStirrups + @", 'ties': [ { 'name': 'x', 'bar_type': 'N10', 'layer': 'sides', 'allow_new_shape': true,
-                'start': { 'hook_type': 'H135' }, 'end': { 'hook_type': 'H135' } } ]");
-            List<JObject> rows = CageRows(s, Column());
-            OverlapReport r = Plan(Clear(25), rows.ToArray());
-            Assert.Empty(r.Pairs);
-            // The stirrups touch the bars; the ties are declared through the side bars' centres.
-            Assert.True(r.Excused[RebarOverlap.ExcuseCage] > 0);
+        
 
-            // CONTROL: the same rows with the cage identity taken away are findings - it is the
-            // excuse that passes them, not the geometry.
-            JObject[] anonymous = rows.Select(x => { var c = (JObject)x.DeepClone(); c["belongs_to"] = new JObject { ["declared_rule_id"] = (string)x["rule_id"] }; return c; }).ToArray();
-            OverlapReport bare = Plan(Clear(25), anonymous);
-            Assert.Contains(bare.Pairs, p => p.Kind == RebarOverlap.KindIntersection);   // the ties through the bars
-        }
-
-        [Fact]
-        public void A_cage_does_not_excuse_two_of_its_own_longitudinal_bars_nor_another_cage()
-        {
-            // Two layers of ONE section rule laid on top of each other: no stirrup involved, a finding.
-            JObject a = Row("C1#h7#top", 7, 16, new[] { P(0, 0, 0), P(0, 0, 3000) }, new[] { 1.0, 0, 0 }, new[] { 0.0 },
-                            belongsTo: new JObject { ["declared_rule_id"] = "C1", ["cage"] = new JObject { ["id"] = "C1#h7", ["role"] = "longitudinal" } });
-            JObject b = Row("C1#h7#left", 7, 16, new[] { P(10, 0, 0), P(10, 0, 3000) }, new[] { 0, 1.0, 0 }, new[] { 0.0 },
-                            belongsTo: new JObject { ["declared_rule_id"] = "C1", ["cage"] = new JObject { ["id"] = "C1#h7", ["role"] = "longitudinal" } });
-            Assert.Equal(RebarOverlap.KindIntersection, Plan(null, a, b).Pairs.Single().Kind);
-
-            // A BEAM-COLUMN JOINT: the beam cage's bar passes through the column cage's stirrup.
-            StructuralRequirementSet s = BeamSet(@"[ { 'face': 'perimeter', 'count': 4, 'bar_type': 'N16', 'extend': 'host_length', 'allow_new_shape': true } ]", ColumnStirrups);
-            List<JObject> column = CageRows(s, Column());
-            JObject stirrup = column.First(r => ((string)r["rule_id"]).Contains("#stirrups#"));
-            double z = stirrup["curve_mm"][0][2].Value<double>();
-            // The beam's top bar at the stirrup's own level, running along x through the stirrup's legs.
-            JObject beamBar = Row("B1#h9#top", 9, 16, new[] { P(-2000, 0, z), P(2000, 0, z) }, new[] { 0, 1.0, 0 }, new[] { 0.0 },
-                                  belongsTo: new JObject { ["declared_rule_id"] = "B1", ["cage"] = new JObject { ["id"] = "B1#h9", ["role"] = "longitudinal" } });
-            OverlapReport r2 = Plan(null, column.Concat(new[] { beamBar }).ToArray());
-            OverlapPair hit = Assert.Single(r2.Pairs);
-            Assert.Equal(RebarOverlap.KindIntersection, hit.Kind);
-            Assert.Contains("B1#h9#top", new[] { hit.A.RuleId, hit.B.RuleId });
-            Assert.Contains(new[] { hit.A.RuleId, hit.B.RuleId }, id => id.Contains("#stirrups#"));
-        }
-
-        [Fact]
-        public void A_declared_lap_in_contact_is_excused_and_without_its_declaration_the_same_pieces_are_a_finding()
-        {
-            StructuralRequirementSet s = StructuralRequirementSet.Load(JObject.Parse(@"{
-  'schema': 'horizun.structural-requirements/1', 'units': 'millimeter',
-  'requirement_set': { 'id': 'lap', 'version': '1' },
-  'bar_types': [ { 'id': 'N16', 'type_name': '16M' } ],
-  'section_rules': [ { 'id': 'V1', 'host': { 'element_ids': [ 7 ] }, 'cover': { 'distance_mm': 40 },
-    'layers': [ { 'name': 'top', 'face': 'top', 'count': 2, 'bar_type': 'N16', 'extend': 'host_length', 'allow_new_shape': true,
-                  'laps': [ { 'at_mm': 3000, 'length_mm': 800 } ] } ] } ] }".Replace('\'', '"')));
-            Assert.True(s.Ok, s.Error);
-            var beam = new SectionHostFrame
-            {
-                ElementId = 7, OriginMm = new[] { 0.0, 0, 0 }, U = new[] { 1.0, 0, 0 }, V = new[] { 0, 1.0, 0 }, W = new[] { 0, 0, 1.0 },
-                UMin = 0, UMax = 6000, VMin = -150, VMax = 150, WMin = -500, WMax = 0
-            };
-            SectionResult res = SectionRules.Expand(s.SectionRules.Single(), beam, id => 16, null, out List<StructuralRebarRule> bars, out _);
-            Assert.True(res.Ok, res.Why);
-            JObject[] rows = bars.Select((b, i) => RowOf(b, 7, 16, i)).ToArray();
-            Assert.Equal("V1#h7#top#p2", (string)rows[0]["belongs_to"]["lap_next_rule_id"]);
-            OverlapReport r = Plan(Clear(25), rows);
-            Assert.Empty(r.Pairs);
-            Assert.Equal(1, r.Excused[RebarOverlap.ExcuseLap]);
-
-            foreach (JObject row in rows) ((JObject)row["belongs_to"]).Remove("lap_next_rule_id");
-            OverlapPair p = Assert.Single(Plan(Clear(25), rows).Pairs);
-            Assert.Equal(RebarOverlap.KindTooClose, p.Kind);          // one diameter apart, in contact
-            Assert.Equal(0.0, p.ClearMm, 6);
-        }
+        
 
         [Fact]
         public void A_declared_coupler_joint_end_to_end_is_excused_and_undeclared_it_is_an_intersection()
@@ -523,80 +386,13 @@ namespace Horizun.Core.Tests
             Assert.Equal(RebarOverlap.AlongsideDegrees, (double)j["alongside_within_degrees"]);
         }
 
-        // ------------------------------------------------------------ the schema
+        
 
-        private static StructuralRequirementSet SetWith(string clearances) => StructuralRequirementSet.Load(JObject.Parse((@"{
-  'schema': 'horizun.structural-requirements/1', 'units': 'millimeter',
-  'requirement_set': { 'id': 'cl', 'version': '1' },
-  'bar_types': [ { 'id': 'N16', 'type_name': '16M' } ],
-  'clearances': " + clearances + @",
-  'reinforcement_rules': [
-    { 'id': 'r1', 'host': { 'element_ids': [ 1 ] }, 'bar_type': 'N16', 'allow_new_shape': true, 'style': 'standard',
-      'curve_mm': [ [0,0,0], [1000,0,0] ], 'normal': [0,1,0], 'layout': { 'rule': 'single' } },
-    { 'id': 'r2', 'host': { 'element_ids': [ 2 ] }, 'bar_type': 'N16', 'allow_new_shape': true, 'style': 'standard',
-      'curve_mm': [ [0,0,0], [1000,0,0] ], 'normal': [0,1,0], 'layout': { 'rule': 'single' } } ] }").Replace('\'', '"')));
+        
 
-        [Fact]
-        public void Clearances_are_declared_numbers_and_a_set_without_them_checks_intersections_only()
-        {
-            StructuralRequirementSet s = SetWith("{ 'between_rules_mm': 25, 'crossing_mm': 0, 'pairs': [ { 'rules': [ 'r1', 'r2' ], 'min_clear_mm': 40 } ] }");
-            Assert.True(s.Ok, s.Error);
-            Assert.Equal(25.0, s.Clearances.BetweenRulesMm.Value, 9);
-            Assert.True(s.Clearances.CrossingDeclared);
-            Assert.Equal(40.0, s.Clearances.Pairs.Single().MinClearMm, 9);
-            Assert.True(s.Clearances.Declared);
+        
 
-            StructuralRequirementSet none = SetWith("{ }");
-            Assert.True(none.Ok, none.Error);
-            Assert.False(none.Clearances.Declared);
-            Assert.Null(none.Clearances.BetweenRulesMm);
-        }
-
-        [Theory]
-        [InlineData("{ 'between_rules_mm': -1 }", "value_not_in_vocabulary")]
-        [InlineData("{ 'between_rules_mm': 'NaN' }", "value_is_not_a_finite_number")]
-        [InlineData("{ 'between_rules_mn': 25 }", "unknown_key")]
-        [InlineData("{ 'pairs': [ { 'rules': [ 'r1', 'nope' ], 'min_clear_mm': 0 } ] }", "reference_not_declared")]
-        [InlineData("{ 'pairs': [ { 'rules': [ 'r1' ], 'min_clear_mm': 0 } ] }", "value_not_in_vocabulary")]
-        [InlineData("{ 'pairs': [ { 'rules': [ 'r1', 'r2' ] } ] }", "required_field_missing")]
-        [InlineData("{ 'between_rules_mm': 900 }", "value_not_in_vocabulary")]
-        public void A_clearance_that_cannot_be_read_refuses_the_set_by_name(string clearances, string code)
-        {
-            StructuralRequirementSet s = SetWith(clearances);
-            Assert.False(s.Ok);
-            Assert.Equal(code, s.Code);
-            Assert.StartsWith("clearances", s.Path ?? "clearances");
-        }
-
-        [Fact]
-        public void A_piece_of_a_chunked_set_keeps_only_the_pairs_whose_rules_it_still_carries()
-        {
-            JObject set = JObject.Parse(@"{
-  'schema': 'horizun.structural-requirements/1', 'units': 'millimeter',
-  'requirement_set': { 'id': 'ch', 'version': '1' },
-  'bar_types': [ { 'id': 'N5', 'type_name': '#5' } ],
-  'clearances': { 'between_rules_mm': 25, 'pairs': [ { 'rules': [ 'V1', 'V2' ], 'min_clear_mm': 0 }, { 'rules': [ 'V1', 'V1' ], 'min_clear_mm': 10 } ] },
-  'section_rules': [
-    { 'id': 'V1', 'host': { 'mark': 'V-1' }, 'cover': { 'distance_mm': 40 },
-      'layers': [ { 'name': 'top', 'face': 'top', 'count': 2, 'bar_type': 'N5', 'extend': 'host_length' } ] },
-    { 'id': 'V2', 'host': { 'mark': 'V-2' }, 'cover': { 'distance_mm': 40 },
-      'layers': [ { 'name': 'top', 'face': 'top', 'count': 2, 'bar_type': 'N5', 'extend': 'host_length' } ] } ] }".Replace('\'', '"'));
-            var hosts = new List<RequirementSetChunks.Host>
-            {
-                new RequirementSetChunks.Host { ElementId = 11, Category = "OST_StructuralFraming", TypeName = "B", Mark = "V-1", Level = "L1" },
-                new RequirementSetChunks.Host { ElementId = 21, Category = "OST_StructuralFraming", TypeName = "B", Mark = "V-2", Level = "L2" }
-            };
-            RequirementSetChunks.Plan p = RequirementSetChunks.Split(set, hosts, RequirementSetChunks.ByLevel, 5);
-            Assert.True(p.Ok, p.Why);
-            foreach (RequirementSetChunks.Chunk c in p.Chunks)
-            {
-                StructuralRequirementSet s = StructuralRequirementSet.Load(c.RequirementSet);
-                Assert.True(s.Ok, c.Key + ": " + s.Error);
-                Assert.Equal(25.0, s.Clearances.BetweenRulesMm.Value, 9);
-            }
-            StructuralRequirementSet l1 = StructuralRequirementSet.Load(p.Chunks.Single(c => c.Key == "L1").RequirementSet);
-            Assert.Equal("V1", l1.Clearances.Pairs.Single().RuleA);
-        }
+        
 
         // ------------------------------------------------------ duplicate_bar
         //

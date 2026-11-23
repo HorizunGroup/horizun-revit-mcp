@@ -8,6 +8,31 @@ namespace Horizun.Core.Tests
 {
     public class EnclosedRulesTests
     {
+        [Fact]
+        public void Point_and_topology_placement_have_one_unambiguous_phase_contract()
+        {
+            var point = JObject.Parse(@"{'kind':'room','level_id':1,'point':[2,3]}");
+            Assert.Null(EnclosedRules.PlacementFieldsProblem(point));
+            point["phase_id"] = 7;
+            Assert.Contains("Revit assigns the phase", EnclosedRules.PlacementFieldsProblem(point));
+            point.Remove("phase_id"); point["min_area_m2"] = 1;
+            Assert.Contains("requires placement", EnclosedRules.PlacementFieldsProblem(point));
+            point.Remove("point"); point["placement"] = "all_enclosed"; point["phase_id"] = 7;
+            Assert.Null(EnclosedRules.PlacementFieldsProblem(point));
+        }
+
+        [Fact]
+        public void Separator_closure_is_opt_in_and_never_duplicates_the_closing_edge()
+        {
+            var points = new[] { new double[] {0,0,0}, new double[] {3,0,0}, new double[] {3,2,0} };
+            Assert.Equal(3, EnclosedRules.SeparatorChain(points, false).Count);
+            var closed = EnclosedRules.SeparatorChain(points, true);
+            Assert.Equal(4, closed.Count);
+            Assert.Equal(closed[0], closed[3]);
+            Assert.Equal(4, EnclosedRules.SeparatorChain(closed, true).Count);
+            Assert.Throws<ArgumentException>(() => EnclosedRules.SeparatorChain(points.Take(2).ToList(), true));
+        }
+
         [Fact] public void An_empty_circuit_above_min_area_is_created() => Assert.Equal("create", EnclosedRules.CircuitAction("room", false, 12.5, 10));
         [Fact] public void A_circuit_of_exactly_min_area_is_kept() => Assert.Equal("create", EnclosedRules.CircuitAction("space", false, 10, 10));
         [Fact] public void A_smaller_circuit_is_skipped() => Assert.Equal("skipped_min_area", EnclosedRules.CircuitAction("room", false, 2.4, 10));

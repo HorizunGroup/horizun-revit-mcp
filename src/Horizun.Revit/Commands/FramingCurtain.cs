@@ -139,7 +139,7 @@ namespace Horizun.Revit.Commands
             b.SetSchemaName(SchemaName);
             b.SetReadAccessLevel(AccessLevel.Public);
             b.SetWriteAccessLevel(AccessLevel.Vendor);
-            b.SetVendorId(CadProvenanceStore.VendorId);
+            b.SetVendorId(HorizunVendor.Id);
             b.SetDocumentation("Horizun framing (curtain method): the resolved plan and the carrier's original state, for re-verification and remove.");
             b.AddSimpleField(FVersion, typeof(int));
             foreach (string f in new[] { FCarrier, FRecord, FMemberUid }) b.AddSimpleField(f, typeof(string));

@@ -5,8 +5,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
-using Autodesk.Revit.UI;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
 
@@ -22,263 +20,6 @@ namespace Horizun.Revit.Commands
         public string Name => "horizun_manage_views";
         public string Description => "Create plans, sections, elevations, drafting/3D views and sheets in one verified transaction.";
 
-        public CommandResult Execute(UIApplication app, string paramsJson)
-        {
-            JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : ParseVerbatim(paramsJson); }
-            catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
-            GateResult gate = DocumentGate.ForMutation(app, request, Name);
-            if (!gate.Ok) return gate.Refusal;
-            Document doc = gate.Document;
-            JArray input = request["actions"] as JArray;
-            if (input == null || input.Count == 0 || input.Count > 500)
-                return CommandResult.Fail("actions must contain 1..500 entries.");
-            double scale;
-            if (!Scale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out scale))
-                return CommandResult.Fail("units must be mm, m or feet.");
-
-            var knownKeys = new Dictionary<string, Type>(StringComparer.Ordinal);
-            var errors = new JArray();
-            var plans = new List<JObject>();
-            // Every action's outcome, so the fallback is decided once over the whole
-            // batch rather than granted because one entry was uncovered.
-            var outcomes = new List<ActionOutcome>();
-            for (int i = 0; i < input.Count; i++)
-            {
-                JObject a = input[i] as JObject;
-                string reason = null;
-                string error = Validate(doc, a, knownKeys, out reason);
-                if (error != null)
-                {
-                    errors.Add(new JObject { ["index"] = i, ["error"] = error });
-                    outcomes.Add(new ActionOutcome { Index = i, Error = error, UnsupportedReason = reason });
-                }
-                else
-                {
-                    string key = a.Value<string>("key");
-                    if (!string.IsNullOrWhiteSpace(key)) knownKeys.Add(key, ResultType(a.Value<string>("operation")));
-                    var planRow = new JObject { ["index"] = i, ["operation"] = a.Value<string>("operation"), ["key"] = key };
-                    // The precedence report is a READ: the rehearsal already carries it.
-                    if (string.Equals(a.Value<string>("operation"), "explain_graphics", StringComparison.OrdinalIgnoreCase) &&
-                        a["view_id"] != null && doc.GetElement(Rid.Make(a.Value<long>("view_id"))) is View explained)
-                        planRow["report"] = ExplainGraphics(doc, explained, ReadElementIds(doc, a, "element_ids"));
-                    // So is the sheet-set census (measured 2026-09-25: a list asked as a
-                    // rehearsal came back without the sets it exists to list).
-                    if (string.Equals(a.Value<string>("operation"), "sheet_set_list", StringComparison.OrdinalIgnoreCase))
-                        planRow["report"] = SheetSetCensus(doc);
-                    // The renumbering is shown step by step, temporaries included, before any write.
-                    if (IsRenumberOperation(a.Value<string>("operation"))) planRow["renumber"] = RenumberPreview(doc, a);
-                    if (IsPerspectiveOperation(a.Value<string>("operation"))) planRow["perspective"] = PerspectivePreview(a, scale);
-                    if (IsSunStudyOperation(a.Value<string>("operation"))) planRow["sun"] = SunStudyPreview(doc, a);
-                    plans.Add(planRow);
-                }
-            }
-            bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
-            string planHash = DocumentGate.PlanHash(request, "units", "actions");
-
-            // ---- The MATERIALISED plan: what the batch's ID REFERENCES resolve to. ------
-            // planHash binds the graph as written. But this batch builds documentation on
-            // top of existing elements it names by id - a source view to duplicate, a
-            // template to apply, a titleblock, a level for a new plan - and an id is a
-            // pointer, not a meaning. Between rehearsal and apply the template can be
-            // edited, the source view cropped, the titleblock swapped for another type
-            // under the same id family. The plan records each referenced element's
-            // UniqueId AND NAME as resolved now: the name is what the person read when
-            // they approved, so a renamed reference refuses as stale even though the id
-            // still resolves. In-batch aliases (keys) are not ambient state and carry no
-            // drift; they are deliberately absent.
-            var resolvedPlan = new ResolvedPlan
-            {
-                Command = Name,
-                DocumentKey = gate.Fingerprint,
-                RevitVersion = app?.Application?.VersionNumber,
-                DocumentFingerprint = gate.Identity?.FingerprintDigest()
-            };
-            for (int i = 0; i < input.Count; i++)
-            {
-                JObject a = input[i] as JObject;
-                if (a == null) continue;
-                string op = a.Value<string>("operation") ?? "";
-                var row = new PlannedElement
-                {
-                    UniqueId = "action:" + i,
-                    Category = op,
-                    // apply_template and place_* CHANGE an existing object; the rest mint
-                    // new ones. The distinction keeps the counts a person reads honest.
-                    Action = ModifyingOperations.Contains(op) ? PlannedAction.Modify : PlannedAction.Create,
-                    BeforeValues = new Dictionary<string, string>()
-                };
-                row.ProposedValues = new Dictionary<string,string> { { "specification", a.ToString(Formatting.None) } };
-                if (IsRenumberOperation(op)) BindRenumber(doc, row.BeforeValues);
-                if (IsSunStudyOperation(op)) BindSunStudy(doc, a, row.BeforeValues);
-                if (op == "apply_template" && a["view_id"] != null)
-                {
-                    View targetView = doc.GetElement(Rid.Make(a.Value<long>("view_id"))) as View;
-                    if (targetView != null)
-                    {
-                        row.ElementId = Rid.Value(targetView.Id);
-                        row.BeforeValues["template_view_id"] = Rid.Value(targetView.ViewTemplateId).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                        row.ProposedValues["template_view_id"] = a.Value<string>("template_view_id");
-                    }
-                }
-                foreach (string field in RefIdFields)
-                {
-                    long? id = a.Value<long?>(field);
-                    if (id == null) continue;
-                    row.BeforeValues[field] = SafePlanRef(doc, id.Value);
-                }
-                resolvedPlan.Elements.Add(row);
-            }
-
-            if (dryRun)
-            {
-                var result = new JObject
-                {
-                    ["dry_run"] = true, ["transaction_status"] = "not_started", ["actions"] = input.Count,
-                    ["valid"] = plans.Count, ["invalid"] = errors.Count, ["errors"] = errors, ["plan"] = new JArray(plans),
-                    ["note"] = "Nothing was created or changed. Aliases are resolved in action order."
-                };
-                if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
-                // Invalid entries make this a partial rehearsal, not a clean one: the token
-                // below is already withheld for them, and a plan must read the same fact.
-                ApplicationOutcome.StampRehearsal(result, input.Count, errors.Count, 0, 0);
-                DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
-                    errors.Count == 0
-                        ? "the token binds the ordered dependency graph AND what every referenced id resolves to " +
-                          "right now, by identity and by name - a template edited into a different template, a " +
-                          "renamed source view or a swapped titleblock refuses as a stale plan."
-                        : "no usable token is issued while an action is invalid");
-                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so this
-                // is the first call a caller makes; without the block here they got
-                // success=true with invalid rows and no way to tell a capability gap
-                // from a typo except by sending an apply they had no reason to send.
-                return FallbackDecision.Attach(
-                    CommandResult.Ok(result),
-                    FallbackDecision.Decide(outcomes, writeStarted: false));
-            }
-            if (errors.Count > 0)
-                return FallbackDecision.Refuse(
-                    "Invalid action graph; nothing ran: " + errors.ToString(Formatting.None),
-                    FallbackDecision.Decide(outcomes, writeStarted: false));
-            // Recomputed by THIS call's own resolution of the same references.
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
-                                                                     resolvedPlan, null);
-            if (refusal != null) return refusal;
-            refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
-            if (refusal != null) return refusal;
-
-            string txName = request.Value<string>("transaction_name");
-            if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: manage views and sheets";
-            var aliases = new Dictionary<string, ElementId>(StringComparer.Ordinal);
-            var applied = new List<Applied>();
-            using (var tx = new Transaction(doc, txName))
-            {
-                tx.Start();
-                try
-                {
-                    for (int i = 0; i < input.Count; i++)
-                    {
-                        JObject action = (JObject)input[i];
-                        Element result = Apply(doc, action, aliases, scale);
-                        if (action["view_scale"] != null)
-                        {
-                            if (!(result is View scaleView))
-                                throw new InvalidOperationException("operation '" + action.Value<string>("operation") +
-                                    "' asked for view_scale but produced a " + (result?.GetType().Name ?? "null") + ", not a view.");
-                            ApplyViewScale(doc, scaleView, action.Value<int>("view_scale"), action.Value<string>("operation"));
-                        }
-                        if (result == null)
-                            throw new InvalidOperationException(
-                                "operation '" + action.Value<string>("operation") + "' returned no element. " +
-                                "The whole batch is being rolled back before commit.");
-                        string key = action.Value<string>("key");
-                        if (!string.IsNullOrWhiteSpace(key)) aliases[key] = result.Id;
-                        applied.Add(new Applied { Index = i, Operation = action.Value<string>("operation"), Id = result.Id,
-                            TargetId = TargetId(doc, action, aliases), Action = action, Scale = scale,
-                            Batch = input,
-                            SheetId = action.Value<string>("operation") == "place_view" || action.Value<string>("operation") == "place_schedule"
-                                ? Resolve<ViewSheet>(doc, action, "sheet_id", "sheet_key", aliases).Id : null,
-                            ViewId = action.Value<string>("operation") == "place_view"
-                                ? Resolve<View>(doc, action, "view_id", "view_key", aliases).Id : null });
-                    }
-                    doc.Regenerate();
-                    foreach (Applied action in applied)
-                    {
-                        Element reread = doc.GetElement(action.Id);
-                        if (!Verify(doc, action, reread))
-                            throw new InvalidOperationException(
-                                "operation '" + action.Operation + "' failed verification while the transaction " +
-                                "was still reversible. The whole batch is being rolled back before commit.");
-                    }
-                    Guard.Commit(tx, txName);
-                }
-                catch (Exception ex)
-                {
-                    bool attempted = false; string rb = PlanFailure.NotAttempted;
-                    if (tx.GetStatus() == TransactionStatus.Started) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
-                    return CommandResult.Fail("Atomic views/sheets batch failed: " + ex.Message + ". " +
-                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing in it was kept"));
-                }
-            }
-
-            var rows = new JArray(); int verified = 0;
-            foreach (Applied a in applied)
-            {
-                Element e = a.Id == null ? null : doc.GetElement(a.Id);
-                bool ok = Verify(doc, a, e);
-                if (ok) verified++;
-                var row = new JObject
-                {
-                    ["index"] = a.Index, ["operation"] = a.Operation,
-                    ["element_id"] = a.Id == null ? JValue.CreateNull() : new JValue(Rid.Value(a.Id)),
-                    ["present_after_commit"] = e != null, ["verified"] = ok, ["actual_class"] = e?.GetType().Name
-                };
-                if (a.Action["view_scale"] != null && e is View scaled)
-                {
-                    row["view_scale_requested"] = a.Action.Value<int>("view_scale");
-                    int reread; try { reread = scaled.Scale; } catch { reread = -1; }
-                    row["view_scale"] = reread;
-                    row["view_scale_verified"] = reread == a.Action.Value<int>("view_scale");
-                }
-                if (e is Viewport placed && string.Equals(a.Operation, "place_view", StringComparison.OrdinalIgnoreCase))
-                {
-                    XYZ center = placed.GetBoxCenter();
-                    row["sheet_id"] = Rid.Value(placed.SheetId);
-                    row["view_id"] = Rid.Value(placed.ViewId);
-                    row["actual_center_internal_feet"] = new JArray(center.X, center.Y, center.Z);
-                    row["center_error_on_sheet_internal_feet"] = SheetDistance(center, Point(a.Action["point"]) * a.Scale);
-                }
-                // What a graphic-control action produced beyond its id: the colour
-                // legend, and whether a hide was the temporary view mode or the
-                // permanent one. Both are things the caller would otherwise have to
-                // guess at, and guessing wrong about the second means expecting a
-                // printed sheet to show something that was never stored.
-                JObject detail = GraphicsDetail(doc, a.Action, a.Operation.ToLowerInvariant(), e)
-                                 ?? ControlDetail(a.Action, a.Operation.ToLowerInvariant());
-                if (detail != null) row["graphics"] = detail;
-                if (string.Equals(a.Operation, "set_crop", StringComparison.OrdinalIgnoreCase) && e is View croppedView)
-                    row["crop"] = CropDetail(doc, a, croppedView);
-                if (IsRenumberOperation(a.Operation)) row["renumber"] = RenumberDetail(a.Action);
-                if (IsPerspectiveOperation(a.Operation)) row["perspective"] = PerspectiveDetail(a.Action);
-                if (IsSunStudyOperation(a.Operation)) row["sun"] = SunStudyDetail(a.Action);
-                rows.Add(row);
-            }
-            if (verified != applied.Count)
-                return CommandResult.Fail("The transaction committed, but only " + verified + " of " + applied.Count +
-                    " actions passed post-commit verification. Inspect the model: " + rows.ToString(Formatting.None));
-            var mvResult = new JObject
-            {
-                ["transaction_status"] = "Committed", ["transaction_name"] = txName,
-                ["actions_verified"] = verified,
-                ["aliases"] = new JObject(aliases.Select(kv => new JProperty(kv.Key, Rid.Value(kv.Value)))),
-                ["rows"] = rows
-            };
-            // Reached only when every applied action passed its post-commit check.
-            ApplicationOutcome.StampApplied(mvResult, ApplicationOutcome.Committed,
-                                            applied.Count, verified, verified, 0, 0, 0);
-            return CommandResult.Ok(mvResult);
-        }
-
         /// <summary>
         /// The operations that CHANGE an existing object rather than minting a new one.
         /// The distinction keeps the modify/create counts a person approves honest.
@@ -291,7 +32,7 @@ namespace Horizun.Revit.Commands
             "convert_placeholder_sheet", "set_phase", "assign_scope_box", "set_view_range",
             "set_crop", "set_annotation_crop", "set_viewport_type", "align_viewports",
             "edit_filter", "order_filters", "set_template_controls", "explain_graphics",
-            "sheet_set_list", "sheet_set_update", "sheet_set_delete", "renumber_sheets", "set_sun_study"
+            "sheet_set_list", "sheet_set_update", "sheet_set_delete", "renumber_sheets", "set_sun_study", "set_graphic_display", "set_starting_view", "extend_grids_3d", "set_view_properties"
         };
 
         /// <summary>
@@ -312,6 +53,31 @@ namespace Horizun.Revit.Commands
         /// while MEASURING. A dangling id reads as "unresolved" - the validator has its
         /// own, louder opinion about those; the plan just has to be stable about them.
         /// </summary>
+        /// <summary>
+        /// One regeneration for every viewport this batch placed, then each box re-centred on
+        /// its requested point (Revit drifts it on creation). Verification re-reads after this.
+        /// </summary>
+        private static void CenterPlacedViewports(Document doc, List<Applied> applied)
+        {
+            var placed = applied.Where(x => !x.Centered &&
+                string.Equals(x.Operation, "place_view", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (placed.Count == 0) return;
+            doc.Regenerate();
+            foreach (Applied x in placed)
+            {
+                if (doc.GetElement(x.Id) is Viewport vp)
+                    vp.SetBoxCenter(Point(x.Action["point"]) * x.Scale);
+                x.Centered = true;
+            }
+            doc.Regenerate();
+        }
+
+        /// <summary>Best-effort progress for horizun_job_status; never fails the batch.</summary>
+        private static void ReportProgress(string label, int done, int total)
+        {
+            try { Job.Ambient?.Write(label, done, total); } catch { }
+        }
+
         private static string SafePlanRef(Document doc, long id)
         {
             try
@@ -331,8 +97,6 @@ namespace Horizun.Revit.Commands
         {
             unsupportedReason = null;
             if (a == null) return "action is not an object";
-            if (a["view_scale"] != null && (a["view_scale"].Type != JTokenType.Integer || a.Value<int>("view_scale") < 1 || a.Value<int>("view_scale") > 24000))
-                return "view_scale must be an integer in 1..24000";
             // Revit's own static validity check runs before any transaction opens, so a
             // scale it will not accept refuses here instead of rolling a batch back.
             if (a["view_scale"] != null && !View.IsValidViewScale(a.Value<int>("view_scale")))
@@ -342,20 +106,40 @@ namespace Horizun.Revit.Commands
                        string.Join(", ", ScalableOperations) + "); '" + a.Value<string>("operation") +
                        "' produces nothing with a drawing scale, so the argument would be ignored and is refused";
             string op = (a.Value<string>("operation") ?? "").ToLowerInvariant();
+            if (a["detail_number"] != null && op != "place_view") return "detail_number applies to place_view only; '" + op + "' would ignore it";
             string key = a.Value<string>("key");
             if (!string.IsNullOrWhiteSpace(key) && known.ContainsKey(key)) return "key '" + key + "' is duplicated";
+            // E2 (field report, 2026-10-18): a plan was created from level_id alone and the
+            // start/end the caller sent were dropped without a word, so a "cropped" detail
+            // plan came out with the whole tower. A plan has no section box: refuse the
+            // arguments instead of ignoring them, and name the tool that does crop.
+            string ignored = ViewArgumentRules.PlanIgnoredArgument(op, a.Properties().Select(p => p.Name));
+            if (ignored != null)
+                return op + " does not take '" + ignored + "' (a plan is cut by its level, not by a section box). " +
+                       "Create the plan, then crop it with horizun_view_crop (set_crop_box / set_crop_from_elements / " +
+                       "set_crop_from_room). Nothing was created.";
+            // Field cycle (2026-10-22): a sheet name with ':' passed the rehearsal and
+            // the apply rolled the whole group back in Revit's words. Revit's forbidden
+            // characters are known before any transaction opens.
+            if (NamedOps.Contains(op) && a["name"] != null && a["name"].Type == JTokenType.String &&
+                !string.IsNullOrWhiteSpace(a.Value<string>("name")))
+            {
+                string nameError = PlanimetryFixRules.NameError("name", a.Value<string>("name"));
+                if (nameError != null) return nameError + " Nothing was created.";
+            }
             try
             {
                 switch (op)
                 {
-                    case "create_floor_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.FloorPlan); break;
-                    case "create_ceiling_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.CeilingPlan); break;
-                    case "create_structural_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.StructuralPlan); break;
-                    case "create_3d": OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); Reserve3DViewName(a.Value<string>("name"), known); break;
+                    case "create_floor_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.FloorPlan); RefuseScaleUnderDefaultTemplate(doc, a, ViewFamily.FloorPlan); break;
+                    case "create_ceiling_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.CeilingPlan); RefuseScaleUnderDefaultTemplate(doc, a, ViewFamily.CeilingPlan); break;
+                    case "create_structural_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.StructuralPlan); RefuseScaleUnderDefaultTemplate(doc, a, ViewFamily.StructuralPlan); break;
+                    case "create_3d": Validate3DView(a, true); OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); break;
                     case "create_drafting": OptionalViewFamilyType(doc, a, ViewFamily.Drafting); break;
-                    case "create_section": OptionalViewFamilyType(doc, a, ViewFamily.Section); SectionBox(a, 1); break;
+                    case "create_section": OptionalViewFamilyType(doc, a, ViewFamily.Section); SectionBox(a, 1); ValidateNewDetailView(doc, a); break;
                     case "create_elevation":
                         OptionalViewFamilyType(doc, a, ViewFamily.Elevation); Need<ViewPlan>(doc, a, "plan_view_id"); Point(a["point"]);
+                        if (a["depth"] != null && Finite(a.Value<double>("depth"), "depth") <= 0) throw new ArgumentException("depth must be positive");
                         int index = a.Value<int?>("elevation_index") ?? 0;
                         if (index < 0 || index > 3) throw new ArgumentException("elevation_index must be 0..3");
                         int markerScale = a.Value<int?>("marker_scale") ?? 100;
@@ -395,8 +179,13 @@ namespace Horizun.Revit.Commands
                         if (!string.IsNullOrWhiteSpace(a.Value<string>("number")))
                             RequireUnusedSheetNumber(doc, a, known);
                         break;
-                    case "place_view": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); ReferenceViewportView(doc, a, known); Point(a["point"]); break;
-                    case "place_schedule": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); Reference<ViewSchedule>(doc, a, "schedule_id", "schedule_key", known); Point(a["point"]); break;
+                    case "place_view": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); ReferenceViewportView(doc, a, known); Point(a["point"]); PlaceViewPreflight(doc, a, known); break;
+                    case "place_schedule":
+                        Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known);
+                        Reference<ViewSchedule>(doc, a, "schedule_id", "schedule_key", known);
+                        Point(a["point"]);
+                        if (a["segment_index"] != null) RequireScheduleSegment(doc, a);
+                        break;
                     case "create_area_plan":
                         Need<Level>(doc, a, "level_id");
                         AreaSchemeOf(doc, a);
@@ -405,6 +194,7 @@ namespace Horizun.Revit.Commands
                         Reference<View>(doc, a, "parent_view_id", "parent_view_key", known);
                         Point(a["start"]); Point(a["end"]);
                         if (a["view_family_type_id"] != null) Need<ViewFamilyType>(doc, a, "view_family_type_id");
+                        ValidateNewDetailView(doc, a);
                         break;
                     case "create_placeholder_sheet":
                         RequireUnusedSheetNumber(doc, a, known);
@@ -468,6 +258,7 @@ namespace Horizun.Revit.Commands
                     case "assign_scope_box":
                     {
                         Reference<View>(doc, a, "view_id", "view_key", known);
+                        if (a.Value<long?>("scope_box_id") == -1) break;   // -1 clears the scope box
                         Element box = Need<Element>(doc, a, "scope_box_id");
                         if (!InCategory(box, BuiltInCategory.OST_VolumeOfInterest))
                             throw new ArgumentException("scope_box_id must identify a scope box (Volume of Interest)");
@@ -584,9 +375,20 @@ namespace Horizun.Revit.Commands
                         // Register-wide renumbering by map. See ManageViewsRenumber.cs.
                         if (IsRenumberOperation(op)) { ValidateRenumber(doc, a, known); break; }
                         // A camera from eye/target/up, or a fan of them. See ManageViewsPerspective.cs.
-                        if (IsPerspectiveOperation(op)) { ValidatePerspective(doc, a, known); break; }
+                        if (IsPerspectiveOperation(op)) { ValidatePerspective(doc, a); break; }
+                        // One room from one corner, the section box fitted to it (4.2-N4). See ManageViewsRoomIsometric.cs.
+                        if (IsRoomIsometricOperation(op)) { ValidateRoomIsometric(doc, a); OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); break; }
                         // A view's sun: still, single-day or multi-day. See ManageViewsSunStudy.cs.
                         if (IsSunStudyOperation(op)) { ValidateSunStudy(doc, a, known); break; }
+                        if (IsGraphicDisplayOperation(op)) { ValidateGraphicDisplay(doc, a, known); break; }
+                        // Scale, detail level, discipline, style and phase of existing views. See ManageViewsProperties.cs.
+                        if (IsViewPropertiesOperation(op)) { ValidateViewProperties(doc, a, known); break; }
+                        // A filter that holds a fixed set of element ids. See ManageViewsSelectionFilter.cs.
+                        if (IsSelectionFilterOperation(op)) { ValidateSelectionFilter(doc, a, known); break; }
+                        // The document's Starting View. See ManageViewsStartingView.cs.
+                        if (IsStartingViewOperation(op)) { ValidateStartingView(doc, a, known); break; }
+                        // Existing grids made to span every level. See ManageViewsGridExtent.cs.
+                        if (IsGridExtentOperation(op)) { ValidateGridExtent(doc, a, known); break; }
                         // A capability gap, not a fixable argument: this command implements a
                         // fixed set of documentation operations and this is not one of them.
                         unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
@@ -607,7 +409,7 @@ namespace Horizun.Revit.Commands
         {
             "create_floor_plan", "create_ceiling_plan", "create_structural_plan", "create_area_plan",
             "create_drafting", "create_3d", "create_callout", "create_section", "create_elevation",
-            "duplicate_view", "apply_template"
+            "duplicate_view", "apply_template", "set_view_properties"
         };
 
         /// <summary>
@@ -617,40 +419,98 @@ namespace Horizun.Revit.Commands
         /// the value is re-read after assignment because "did not throw" is not
         /// "was kept".
         /// </summary>
-        private static void ApplyViewScale(Document doc, View view, int wanted, string op)
+        internal static void ApplyViewScale(Document doc, View view, int wanted, string op)
         {
-            if (view is ViewSheet || view is ViewSchedule)
-                throw new InvalidOperationException(op + ": view_scale cannot apply to a " + view.GetType().Name + "; it has no drawing scale.");
-            if (view is View3D three && three.IsPerspective)
-                throw new InvalidOperationException(op + ": view_scale cannot apply to a perspective 3D view.");
-            if (!View.IsValidViewScale(wanted))
-                throw new InvalidOperationException(op + ": Revit rejects view_scale " + wanted + " (View.IsValidViewScale).");
-            ElementId templateId = view.ViewTemplateId;
-            if (templateId != null && templateId != ElementId.InvalidElementId && doc.GetElement(templateId) is View template)
-            {
-                var controlled = new HashSet<ElementId>(template.GetTemplateParameterIds());
-                foreach (ElementId id in template.GetNonControlledTemplateParameterIds()) controlled.Remove(id);
-                foreach (BuiltInParameter bp in new[] { BuiltInParameter.VIEW_SCALE, BuiltInParameter.VIEW_SCALE_PULLDOWN_METRIC, BuiltInParameter.VIEW_SCALE_PULLDOWN_IMPERIAL })
-                    if (controlled.Contains(new ElementId(bp)))
-                        throw new InvalidOperationException(op + ": view_scale " + wanted + " cannot be applied because view template '" +
-                            template.Name + "' (" + Rid.Value(templateId) + ") controls View Scale; the assignment would be overridden. " +
-                            "Apply a template that leaves scale uncontrolled, or change the scale on the template itself.");
-            }
+            string refusal = ViewScaleRefusal(doc, view, wanted, op);
+            if (refusal != null) throw new InvalidOperationException(refusal);
             if (view.Scale != wanted) view.Scale = wanted;
             int actual = view.Scale;
             if (actual != wanted)
                 throw new InvalidOperationException(op + ": view_scale " + wanted + " was assigned but the view reads back " + actual + "; Revit did not keep it.");
         }
 
-        private static Element Apply(Document doc, JObject a, Dictionary<string, ElementId> aliases, double scale)
+        /// <summary>Why <paramref name="view"/> cannot take <paramref name="wanted"/> as its scale, or null. Asked before any transaction by the planners that change a scale.</summary>
+        internal static string ViewScaleRefusal(Document doc, View view, int wanted, string op)
         {
-            string op = a.Value<string>("operation").ToLowerInvariant();
+            if (view is ViewSheet || view is ViewSchedule)
+                return op + ": view_scale cannot apply to a " + view.GetType().Name + "; it has no drawing scale.";
+            if (view is View3D three && three.IsPerspective)
+                return op + ": view_scale cannot apply to a perspective 3D view.";
+            if (!View.IsValidViewScale(wanted))
+                return op + ": Revit rejects view_scale " + wanted + " (View.IsValidViewScale).";
+            ElementId templateId = view.ViewTemplateId;
+            if (templateId != null && templateId != ElementId.InvalidElementId && doc.GetElement(templateId) is View template &&
+                ControlsViewScale(template))
+                return op + ": view_scale " + wanted + " cannot be applied because view template '" +
+                    template.Name + "' (" + Rid.Value(templateId) + ") controls View Scale; the assignment would be overridden. " +
+                    "Apply a template that leaves scale uncontrolled, or change the scale on the template itself.";
+            return null;
+        }
+
+        /// <summary>
+        /// 5.0.4 (course, Revit 2024): an apply_template whose template controls View Scale overrides a view_scale asked in
+        /// the same batch - on this action, or on the action that created the view (view_key) - and the postcondition then
+        /// rolled the whole batch back. Asked here, before any transaction, and said with the template's own scale.
+        /// </summary>
+        private static string TemplateScaleConflict(Document doc, JObject a, Dictionary<string, KeyValuePair<int, int>> scaleByKey)
+        {
+            if (a == null || !string.Equals(a.Value<string>("operation"), "apply_template", StringComparison.OrdinalIgnoreCase)) return null;
+            long? templateId = a.Value<long?>("template_view_id");
+            if (templateId == null || templateId == -1 || !(doc.GetElement(Rid.Make(templateId.Value)) is View template) ||
+                !template.IsTemplate || !ControlsViewScale(template)) return null;
+            int templateScale = template.Scale;
+            string fix = " Send view_scale without that template (or with template_view_id=-1), use a template that leaves View Scale " +
+                         "uncontrolled, or change the scale on the template itself. Nothing was written.";
+            if (a["view_scale"] != null && a.Value<int>("view_scale") != templateScale)
+                return "apply_template: view template '" + template.Name + "' (" + template.Id + ") controls View Scale at 1:" + templateScale +
+                       ", so view_scale " + a.Value<int>("view_scale") + " cannot be kept." + fix;
+            string viewKey = a.Value<string>("view_key");
+            if (!string.IsNullOrWhiteSpace(viewKey) && scaleByKey.TryGetValue(viewKey, out var asked) && asked.Value != templateScale)
+                return "apply_template: view template '" + template.Name + "' (" + template.Id + ") controls View Scale at 1:" + templateScale +
+                       " and would override view_scale " + asked.Value + " asked by action " + asked.Key + " for view_key '" + viewKey + "'." + fix;
+            return null;
+        }
+
+        private static bool ControlsViewScale(View template)
+        {
+            var controlled = new HashSet<ElementId>(template.GetTemplateParameterIds());
+            foreach (ElementId id in template.GetNonControlledTemplateParameterIds()) controlled.Remove(id);
+            return new[] { BuiltInParameter.VIEW_SCALE, BuiltInParameter.VIEW_SCALE_PULLDOWN_METRIC, BuiltInParameter.VIEW_SCALE_PULLDOWN_IMPERIAL }
+                .Any(bp => controlled.Contains(new ElementId(bp)));
+        }
+
+        /// <summary>
+        /// A new plan takes its ViewFamilyType's default template, and ApplyViewScale then
+        /// refuses a scale that template controls - mid-transaction, after the rehearsal had
+        /// accepted it (field MEP cycle, 2026-10-22, three disciplines, Mechanical Plan). The same
+        /// question is asked here, before anything opens.
+        /// </summary>
+        private static void RefuseScaleUnderDefaultTemplate(Document doc, JObject a, ViewFamily family)
+        {
+            if (a["view_scale"] == null) return;
+            ElementId templateId = ResolveVft(doc, a, family).DefaultTemplateId;
+            if (templateId == null || templateId == ElementId.InvalidElementId || !(doc.GetElement(templateId) is View template) ||
+                !template.IsTemplate || !ControlsViewScale(template)) return;
+            throw new ArgumentException("view_scale " + a.Value<int>("view_scale") + " cannot be kept: a new " + family +
+                " takes its view type's default template '" + template.Name + "' (" + Rid.Value(templateId) + "), which controls " +
+                "View Scale. Create the view without view_scale, then send apply_template with template_view_id=-1 (or a template " +
+                "that leaves scale uncontrolled) and the view_scale you want.");
+        }
+
+        private static Element ApplyOther(Document doc, JObject a, Dictionary<string, ElementId> aliases, double scale, List<Applied> applied, string op)
+        {
             if (IsGraphicsOperation(op)) return ApplyGraphics(doc, a, op, aliases);
             if (IsLegendOperation(op)) return ApplyLegend(doc, a, op, aliases, scale);
             if (IsControlOperation(op)) return ApplyControl(doc, a, op, aliases);
             if (IsRenumberOperation(op)) return ApplyRenumber(doc, a);
             if (IsPerspectiveOperation(op)) return ApplyPerspective(doc, a, scale);
+            if (IsRoomIsometricOperation(op)) return ApplyRoomIsometric(doc, a, ResolveVft(doc, a, ViewFamily.ThreeDimensional));
             if (IsSunStudyOperation(op)) return ApplySunStudy(doc, a, aliases);
+            if (IsGraphicDisplayOperation(op)) return ApplyGraphicDisplay(doc, a, aliases);
+            if (IsViewPropertiesOperation(op)) return ApplyViewProperties(doc, a, aliases);
+            if (IsSelectionFilterOperation(op)) return ApplySelectionFilter(doc, a, aliases);
+            if (IsStartingViewOperation(op)) return ApplyStartingView(doc, a, aliases);
+            if (IsGridExtentOperation(op)) return ApplyGridExtent(doc, a);
             if (op == "create_floor_plan" || op == "create_ceiling_plan" || op == "create_structural_plan")
             {
                 ViewFamily family = op == "create_floor_plan" ? ViewFamily.FloorPlan :
@@ -658,12 +518,11 @@ namespace Horizun.Revit.Commands
                 Level level = Need<Level>(doc, a, "level_id"); ViewFamilyType type = ResolveVft(doc, a, family);
                 ViewPlan view = ViewPlan.Create(doc, type.Id, level.Id); SetName(view, a); return view;
             }
-            if (op == "create_3d") { View3D view = View3D.CreateIsometric(doc, ResolveVft(doc, a, ViewFamily.ThreeDimensional).Id); SetName(view, a); return view; }
-            if (op == "create_drafting") { ViewDrafting view = ViewDrafting.Create(doc, ResolveVft(doc, a, ViewFamily.Drafting).Id); SetName(view, a); return view; }
+            if (op == "create_3d") { View3D view = View3D.CreateIsometric(doc, ResolveVft(doc, a, ViewFamily.ThreeDimensional).Id); SetName(view, a); Apply3DView(view, a, scale); return view; }
             if (op == "create_section")
             {
                 ViewSection view = ViewSection.CreateSection(doc, ResolveVft(doc, a, ViewFamily.Section).Id, SectionBox(a, scale));
-                SetName(view, a); return view;
+                SetName(view, a); ApplyNewDetailView(doc, view, a); return view;
             }
             if (op == "create_elevation")
             {
@@ -672,6 +531,17 @@ namespace Horizun.Revit.Commands
                 ElevationMarker marker = ElevationMarker.CreateElevationMarker(doc, type.Id, elevationPoint, a.Value<int?>("marker_scale") ?? 100);
                 ViewSection view = marker.CreateElevation(doc, Need<ViewPlan>(doc, a, "plan_view_id").Id,
                     a.Value<int?>("elevation_index") ?? 0);
+                // depth used to be accepted and ignored: Revit's default far clip (3048 mm) left the
+                // elevation almost empty. It is the view's Far Clip Offset, set here and re-read.
+                if (a["depth"] != null)
+                {
+                    double depthFeet = Finite(a.Value<double>("depth"), "depth") * scale;
+                    Parameter far = view.get_Parameter(BuiltInParameter.VIEWER_BOUND_OFFSET_FAR);
+                    if (far == null || far.IsReadOnly)
+                        throw new InvalidOperationException("the new elevation exposes no editable far clip offset, so depth cannot be applied. Nothing was kept.");
+                    far.Set(depthFeet);
+                    a["__elevation_depth_feet"] = depthFeet;
+                }
                 double? rotation = a.Value<double?>("rotation");
                 if (rotation != null && Math.Abs(rotation.Value) > 1e-9)
                 {
@@ -694,6 +564,7 @@ namespace Horizun.Revit.Commands
                 ViewDuplicateOption option;
                 if (!Enum.TryParse(a.Value<string>("duplicate_option") ?? "Duplicate", true, out option) ||
                     !Enum.IsDefined(typeof(ViewDuplicateOption), option)) throw new ArgumentException("invalid duplicate_option");
+                a["__duplicate_source_id"] = Rid.Value(source.Id); a["__duplicate_option"] = option.ToString();
                 View copy = doc.GetElement(source.Duplicate(option)) as View; SetName(copy, a); return copy;
             }
             if (op == "apply_template")
@@ -702,15 +573,6 @@ namespace Horizun.Revit.Commands
                 view.ViewTemplateId = a.Value<long?>("template_view_id") == -1
                     ? ElementId.InvalidElementId : Need<View>(doc, a, "template_view_id").Id;
                 return view;
-            }
-            if (op == "create_sheet")
-            {
-                ElementId title = ElementId.InvalidElementId;
-                if (a["title_block_type_id"] != null) title = Need<FamilySymbol>(doc, a, "title_block_type_id").Id;
-                ViewSheet sheet = ViewSheet.Create(doc, title);
-                if (!string.IsNullOrWhiteSpace(a.Value<string>("name"))) sheet.Name = a.Value<string>("name");
-                if (!string.IsNullOrWhiteSpace(a.Value<string>("number"))) sheet.SheetNumber = a.Value<string>("number");
-                return sheet;
             }
             if (op == "create_area_plan")
             {
@@ -726,7 +588,7 @@ namespace Horizun.Revit.Commands
                     : ResolveVft(doc, a, ViewFamily.Detail);
                 View callout = ViewSection.CreateCallout(doc, parent.Id, vft.Id,
                                                          Point(a["start"]) * scale, Point(a["end"]) * scale);
-                SetName(callout, a); return callout;
+                SetName(callout, a); ApplyNewDetailView(doc, callout, a); return callout;
             }
             if (op == "create_placeholder_sheet")
             {
@@ -788,7 +650,7 @@ namespace Horizun.Revit.Commands
                 if (scopeParam == null || scopeParam.IsReadOnly)
                     throw new InvalidOperationException("view '" + scopedView.Name + "' does not accept a scope " +
                         "box; the batch is rolling back");
-                scopeParam.Set(Need<Element>(doc, a, "scope_box_id").Id);
+                scopeParam.Set(a.Value<long?>("scope_box_id") == -1 ? ElementId.InvalidElementId : Need<Element>(doc, a, "scope_box_id").Id);
                 return scopedView;
             }
             if (op == "set_view_range")
@@ -884,12 +746,43 @@ namespace Horizun.Revit.Commands
             XYZ point = Point(a["point"]) * scale;
             if (op == "place_view")
             {
-                Viewport placed = Viewport.Create(doc, targetSheet.Id, Resolve<View>(doc, a, "view_id", "view_key", aliases).Id, point);
-                doc.Regenerate();
-                placed.SetBoxCenter(point);
-                return placed;
+                // E8: the regeneration that lets SetBoxCenter correct Revit's placement drift
+                // used to run once PER viewport (27 viewports, ~9 min on a tower). It now runs
+                // once for the whole batch, in CenterPlacedViewports, before verification.
+                Viewport created = Viewport.Create(doc, targetSheet.Id, Resolve<View>(doc, a, "view_id", "view_key", aliases).Id, point);
+                // 5.2 (P2): the number is set right after the create, in the same transaction, and re-read in Verify.
+                if (created != null && a["detail_number"] != null && a["detail_number"].Type == JTokenType.String)
+                {
+                    string wanted = a.Value<string>("detail_number").Trim();
+                    // The preflight found the number free on the sheet; a viewport holding it now was placed earlier in
+                    // THIS batch and auto-numbered by Revit. It moves to a free number so the asked number can be set.
+                    var others = targetSheet.GetAllViewports().Where(id => id != created.Id).Select(id => doc.GetElement(id) as Viewport).Where(v => v != null).ToList();
+                    KeyValuePair<long, string>? holder = SheetPaperRules.Holder(wanted, others.Select(v => new KeyValuePair<long, string>(Rid.Value(v.Id), DetailNumberOf(v))));
+                    if (holder.HasValue)
+                    {
+                        Applied earlier = applied?.FirstOrDefault(x => x.Id != null && Rid.Value(x.Id) == holder.Value.Key);
+                        if (earlier == null)
+                            throw new InvalidOperationException("viewport " + holder.Value.Key + " holds detail number '" + wanted + "' but was not placed by this batch; it is not renumbered");
+                        Parameter moved = (doc.GetElement(Rid.Make(holder.Value.Key)) as Viewport)?.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER);
+                        string free = SheetPaperRules.FreeDetailNumber(others.Select(DetailNumberOf).Concat(new[] { wanted, DetailNumberOf(created) }));
+                        if (moved == null || moved.IsReadOnly || !moved.Set(free))
+                            throw new InvalidOperationException("viewport " + holder.Value.Key + ", placed earlier in this batch, took detail number '" + wanted + "' and could not be moved to a free one");
+                        earlier.Renumbered = PdfQaPaper.DetailNumberMoved(holder.Value.Key, holder.Value.Value, free, wanted);
+                    }
+                    Parameter number = created.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER);
+                    if (number == null || number.IsReadOnly) throw new InvalidOperationException("the new viewport's Detail Number cannot be written");
+                    if (!number.Set(wanted)) throw new InvalidOperationException("Revit refused Detail Number '" + wanted + "' on the new viewport");
+                }
+                return created;
             }
-            if (op == "place_schedule") return ScheduleSheetInstance.Create(doc, targetSheet.Id, Resolve<ViewSchedule>(doc, a, "schedule_id", "schedule_key", aliases).Id, point);
+            if (op == "place_schedule")
+            {
+                ElementId scheduleId = Resolve<ViewSchedule>(doc, a, "schedule_id", "schedule_key", aliases).Id;
+                // A split schedule is placed one SEGMENT at a time: the segment_index names which one.
+                return a["segment_index"] != null
+                    ? ScheduleSheetInstance.Create(doc, targetSheet.Id, scheduleId, point, a.Value<int>("segment_index"))
+                    : ScheduleSheetInstance.Create(doc, targetSheet.Id, scheduleId, point);
+            }
             throw new InvalidOperationException("unsupported operation");
         }
 
@@ -908,7 +801,7 @@ namespace Horizun.Revit.Commands
         /// that does not read is left at its "nothing in the way" value only where the
         /// write itself would then fail loudly (template/scope box), never silently.
         /// </summary>
-        private static CropPreflightFacts CropPreflight(Document doc, View view)
+        internal static CropPreflightFacts CropPreflight(Document doc, View view)
         {
             var f = new CropPreflightFacts { ViewId = Rid.Value(view.Id) };
             try { f.ViewName = view.Name; } catch { }
@@ -1104,11 +997,72 @@ namespace Horizun.Revit.Commands
             { "center", "center_x", "center_y", "left", "right", "top", "bottom" };
 
         /// <summary>
+        /// place_schedule with segment_index: the index must be a non-negative integer and, when the
+        /// schedule is named by id (not by a key created in this batch), name a segment it really has.
+        /// </summary>
+        private static void RequireScheduleSegment(Document doc, JObject a)
+        {
+            JToken token = a["segment_index"];
+            if (token.Type != JTokenType.Integer || token.Value<int>() < 0)
+                throw new ArgumentException("segment_index must be a whole number from 0 (the first segment)");
+            long id = a.Value<long?>("schedule_id") ?? -1;
+            if (!Rid.CanRepresent(id)) return;
+            ViewSchedule schedule = doc.GetElement(Rid.Make(id)) as ViewSchedule;
+            if (schedule == null) return;
+            int count = schedule.GetSegmentCount();
+            if (!schedule.IsSplit())
+                throw new ArgumentException("segment_index names a segment of a split schedule, and schedule " + id +
+                    " is not split (horizun_manage_schedules operation=split splits it)");
+            if (token.Value<int>() >= count)
+                throw new ArgumentException("segment_index " + token.Value<int>() + " is out of range: schedule " + id +
+                    " has " + count + " segments (0.." + (count - 1) + ")");
+        }
+
+        /// <summary>
         /// A sheet number must be unique across the DOCUMENT and across the BATCH.
         /// Revit would refuse the second copy anyway - but mid-transaction, taking the
         /// whole batch down with an exception whose wording nobody chose. Checked here
         /// so the refusal happens before anything runs and names the collision.
         /// </summary>
+        private static string DetailNumberOf(Viewport vp)
+        {
+            try { return vp.get_Parameter(BuiltInParameter.VIEWPORT_DETAIL_NUMBER)?.AsString(); } catch { return null; }
+        }
+
+        /// <summary>
+        /// 5.2 (P2, field report): before Viewport.Create. A view Revit will not add to the sheet
+        /// (Viewport.CanAddViewToSheet) and a detail_number already used on the sheet - or twice in the
+        /// batch - refuse here, by name, instead of a viewport that silently ends up with another number.
+        /// </summary>
+        private static void PlaceViewPreflight(Document doc, JObject a, Dictionary<string, Type> known)
+        {
+            string numberError = SheetPaperRules.ValidateDetailNumber(a["detail_number"]);
+            if (numberError != null) throw new ArgumentException(numberError);
+            ViewSheet sheet = string.IsNullOrWhiteSpace(a.Value<string>("sheet_key")) ? Need<ViewSheet>(doc, a, "sheet_id") : null;
+            View view = string.IsNullOrWhiteSpace(a.Value<string>("view_key")) ? Need<View>(doc, a, "view_id") : null;
+            if (sheet != null && view != null && !Viewport.CanAddViewToSheet(doc, sheet.Id, view.Id))
+                throw new ArgumentException("view " + Rid.Value(view.Id) + " ('" + view.Name + "') cannot be placed on sheet " + sheet.SheetNumber +
+                    " (Viewport.CanAddViewToSheet is false: it is already on a sheet, or it is not a placeable view). Nothing was written.");
+            if (a["detail_number"] == null) return;
+            string wanted = a.Value<string>("detail_number").Trim();
+            if (sheet != null)
+            {
+                var numbers = sheet.GetAllViewports().Select(id => doc.GetElement(id) as Viewport).Where(v => v != null)
+                    .Select(v => new KeyValuePair<long, string>(Rid.Value(v.Id), DetailNumberOf(v)));
+                KeyValuePair<long, string>? holder = SheetPaperRules.Holder(wanted, numbers);
+                if (holder.HasValue)
+                {
+                    string holderView = null;
+                    try { holderView = (doc.GetElement((doc.GetElement(Rid.Make(holder.Value.Key)) as Viewport)?.ViewId ?? ElementId.InvalidElementId) as View)?.Name; } catch { }
+                    throw new ArgumentException(SheetPaperRules.DetailNumberRefusal(wanted, sheet.SheetNumber, holder.Value.Key, holderView));
+                }
+            }
+            string sheetRef = sheet != null ? Rid.Value(sheet.Id).ToString(System.Globalization.CultureInfo.InvariantCulture) : "key:" + a.Value<string>("sheet_key");
+            string reserved = "detail-number:" + sheetRef + ":" + wanted.ToUpperInvariant();
+            if (known.ContainsKey(reserved)) throw new ArgumentException("detail_number '" + wanted + "' appears twice for the same sheet in this batch. Nothing was written.");
+            known.Add(reserved, typeof(Viewport));
+        }
+
         private static void RequireUnusedSheetNumber(Document doc, JObject a, Dictionary<string, Type> known)
         {
             string number = a.Value<string>("number");
@@ -1140,39 +1094,46 @@ namespace Horizun.Revit.Commands
         {
             "create_floor_plan", "create_ceiling_plan", "create_structural_plan", "create_3d", "create_drafting",
             "create_section", "create_elevation", "duplicate_view", "create_sheet", "create_area_plan",
-            "create_callout", "create_placeholder_sheet", "duplicate_sheet",
+            "create_callout", "create_placeholder_sheet", "duplicate_sheet", "create_room_isometric",
         };
 
         /// <summary>
-        /// A requested name is only a promise when the request GAVE one - a duplicate
-        /// with no explicit name inherits Revit's own "Copy of ..." naming, which is
-        /// not something this command chose and so not something it re-reads here.
+        /// The duplicate is checked against its source (review 2026-11-20, M8), not only for being a View:
+        /// same view type, same view family type, same level, and a dependent's primary view is the source.
         /// </summary>
-        private static bool NameMatches(Element e, JObject action)
+        private static bool DuplicateHolds(Document doc, View copy, JObject action)
         {
-            string want = action.Value<string>("name");
-            if (string.IsNullOrWhiteSpace(want)) return true;
-            string got;
-            try { got = (e as View)?.Name; } catch { return false; }
-            return got != null && string.Equals(got, want, StringComparison.Ordinal);
+            long? sourceId = action?.Value<long?>("__duplicate_source_id");
+            if (sourceId == null) return false;
+            if (!(doc.GetElement(Rid.Make(sourceId.Value)) is View source)) return false;
+            try
+            {
+                if (copy.Id == source.Id || copy.ViewType != source.ViewType || copy.GetTypeId() != source.GetTypeId()) return false;
+                if ((copy.GenLevel?.Id ?? ElementId.InvalidElementId) != (source.GenLevel?.Id ?? ElementId.InvalidElementId)) return false;
+                if (string.Equals(action.Value<string>("__duplicate_option"), nameof(ViewDuplicateOption.AsDependent), StringComparison.Ordinal) &&
+                    copy.GetPrimaryViewId() != source.Id) return false;
+                return true;
+            }
+            catch { return false; }
         }
 
-        private static bool Verify(Document doc, Applied a, Element e)
+        private static bool VerifyOther(Document doc, Applied a, Element e, string op)
         {
-            if (e == null) return false;
-            if (a.Action["view_scale"] != null && (!(e is View scaleView) || scaleView.Scale != a.Action.Value<int>("view_scale"))) return false;
-            if (NamedOps.Contains(a.Operation) && !NameMatches(e, a.Action)) return false;
-            switch (a.Operation.ToLowerInvariant())
+            switch (op)
             {
                 case "create_floor_plan": return e is ViewPlan floor && floor.ViewType == ViewType.FloorPlan;
                 case "create_ceiling_plan": return e is ViewPlan ceiling && ceiling.ViewType == ViewType.CeilingPlan;
                 case "create_structural_plan": return e is ViewPlan structural && structural.ViewType == ViewType.EngineeringPlan;
-                case "create_3d": return e is View3D threeD && threeD.ViewType == ViewType.ThreeD;
-                case "create_drafting": return e is ViewDrafting drafting && drafting.ViewType == ViewType.DraftingView;
-                case "create_section": return e is ViewSection section && section.ViewType == ViewType.Section;
+                case "create_3d": return e is View3D threeD && threeD.ViewType == ViewType.ThreeD && Verify3DView(doc, a.Action, e);
+                case "create_section": return e is ViewSection section && section.ViewType == ViewType.Section && NewDetailViewHolds(doc, section, a.Action);
                 case "create_elevation":
                 {
                     if (!(e is ViewSection elevation) || elevation.ViewType != ViewType.Elevation) return false;
+                    if (a.Action["__elevation_depth_feet"] != null)
+                    {
+                        Parameter farNow = elevation.get_Parameter(BuiltInParameter.VIEWER_BOUND_OFFSET_FAR);
+                        if (farNow == null || Math.Abs(farNow.AsDouble() - a.Action.Value<double>("__elevation_depth_feet")) > 1e-6) return false;
+                    }
                     JArray before = a.Action["__direction_before_rotation"] as JArray;
                     double? rotation = a.Action.Value<double?>("rotation");
                     if (before == null || rotation == null) return true;
@@ -1184,26 +1145,21 @@ namespace Horizun.Revit.Commands
                     try { got = elevation.ViewDirection; } catch { return false; }
                     return got.DistanceTo(want) <= 1e-6;
                 }
-                case "duplicate_view": return e is View;
+                case "duplicate_view": return e is View duplicated && DuplicateHolds(doc, duplicated, a.Action);
                 case "apply_template": return e is View && a.TargetId != null && ((View)e).ViewTemplateId == a.TargetId;
-                case "create_sheet":
-                    if (!(e is ViewSheet sheet) || !NumberMatches(sheet, a.Action)) return false;
-                    // name is checked generically above (NamedOps), by the same
-                    // NameMatches every other named create/duplicate op goes through.
-                    if (a.Action["title_block_type_id"] != null && !new FilteredElementCollector(doc, sheet.Id)
-                        .OfCategory(BuiltInCategory.OST_TitleBlocks).WhereElementIsNotElementType()
-                        .Any(b => Rid.Value(b.GetTypeId()) == a.Action.Value<long>("title_block_type_id"))) return false;
-                    return true;
                 case "place_view": return e is Viewport viewport && viewport.SheetId == a.SheetId &&
-                    viewport.ViewId == a.ViewId && SheetDistance(viewport.GetBoxCenter(), Point(a.Action["point"]) * a.Scale) < 1e-6;
-                case "place_schedule": return e is ScheduleSheetInstance schedule && schedule.OwnerViewId == a.SheetId;
+                    viewport.ViewId == a.ViewId && SheetDistance(viewport.GetBoxCenter(), Point(a.Action["point"]) * a.Scale) < 1e-6 &&
+                    (a.Action["detail_number"] == null || string.Equals(DetailNumberOf(viewport), a.Action.Value<string>("detail_number").Trim(), StringComparison.Ordinal));
+                case "place_schedule":
+                    return e is ScheduleSheetInstance schedule && schedule.OwnerViewId == a.SheetId &&
+                           (a.Action["segment_index"] == null || schedule.SegmentIndex == a.Action.Value<int>("segment_index"));
                 case "create_area_plan": return e is ViewPlan area && area.ViewType == ViewType.AreaPlan;
                 case "create_callout":
                     // A callout of a plan is a Detail view; of a section, a Section or
                     // Detail. What is being verified is that a real graphical view came
                     // back, not which of Revit's spellings it wears.
                     return e is View calloutView && !(e is ViewSheet) && !(e is ViewSchedule) &&
-                           !calloutView.IsTemplate;
+                           !calloutView.IsTemplate && NewDetailViewHolds(doc, calloutView, a.Action);
                 case "create_placeholder_sheet":
                 {
                     if (!(e is ViewSheet ph) || !NumberMatches(ph, a.Action)) return false;
@@ -1270,8 +1226,9 @@ namespace Horizun.Revit.Commands
                 case "assign_scope_box":
                 {
                     Parameter scope = (e as View)?.get_Parameter(BuiltInParameter.VIEWER_VOLUME_OF_INTEREST_CROP);
-                    return scope != null &&
-                           Rid.Value(scope.AsElementId()) == (a.Action.Value<long?>("scope_box_id") ?? -1);
+                    long wantBox = a.Action.Value<long?>("scope_box_id") ?? -1;
+                    return scope != null && (wantBox == -1 ? scope.AsElementId() == ElementId.InvalidElementId
+                                                           : Rid.Value(scope.AsElementId()) == wantBox);
                 }
                 case "set_view_range":
                 {
@@ -1352,18 +1309,16 @@ namespace Horizun.Revit.Commands
                     if (IsControlOperation(graphicsOp)) return VerifyControl(doc, a.Action, graphicsOp, e);
                     if (IsRenumberOperation(graphicsOp)) return VerifyRenumber(doc, a.Action);
                     if (IsPerspectiveOperation(graphicsOp)) return VerifyPerspective(doc, a.Action, e);
+                    if (IsRoomIsometricOperation(graphicsOp)) return VerifyRoomIsometric(doc, a.Action, e);
                     if (IsSunStudyOperation(graphicsOp)) return VerifySunStudy(doc, a.Action, e);
+                    if (IsGraphicDisplayOperation(graphicsOp)) return VerifyGraphicDisplay(doc, a.Action, e);
+                    if (IsViewPropertiesOperation(graphicsOp)) return VerifyViewProperties(doc, a.Action, e);
+                    if (IsSelectionFilterOperation(graphicsOp)) return VerifySelectionFilter(doc, a.Action, e);
+                    if (IsStartingViewOperation(graphicsOp)) return VerifyStartingView(doc, a.Action, e);
+                    if (IsGridExtentOperation(graphicsOp)) return VerifyGridExtent(doc, a.Action, e);
                     return false;
                 }
             }
-        }
-
-        private static bool NumberMatches(ViewSheet sheet, JObject action)
-        {
-            string wanted = action.Value<string>("number");
-            if (string.IsNullOrWhiteSpace(wanted)) return true;
-            try { return string.Equals(sheet.SheetNumber, wanted, StringComparison.Ordinal); }
-            catch { return false; }
         }
 
         private static double SheetDistance(XYZ actual, XYZ expected) =>
@@ -1407,7 +1362,6 @@ namespace Horizun.Revit.Commands
             throw new ArgumentException("create_area_plan needs area_scheme_id or area_scheme_name. Schemes: " + available + ".");
         }
 
-        private static void SetName(View view, JObject a) { string name = a.Value<string>("name"); if (!string.IsNullOrWhiteSpace(name)) view.Name = name; }
         private static BoundingBoxXYZ SectionBox(JObject a, double scale)
         {
             XYZ start = Point(a["start"]) * scale;
@@ -1444,7 +1398,7 @@ namespace Horizun.Revit.Commands
               ?? throw new ArgumentException("no ViewFamilyType for " + family);
         private static void OptionalViewFamilyType(Document doc, JObject a, ViewFamily family) { ViewFamilyType t = ResolveVft(doc, a, family); if (t.ViewFamily != family) throw new ArgumentException("view_family_type_id is " + t.ViewFamily + ", not " + family); }
         private static T Need<T>(Document doc, JObject a, string field) where T : Element
-        { long id = a.Value<long?>(field) ?? -1; if (!Rid.CanRepresent(id) || !(doc.GetElement(Rid.Make(id)) is T value)) throw new ArgumentException(field + " must identify a " + typeof(T).Name); return value; }
+        { long id = a.Value<long?>(field) ?? -1; if (!Rid.CanRepresent(id) || !(doc.GetElement(Rid.Make(id)) is T value)) throw new ArgumentException(field + " must identify a " + typeof(T).Name + DocumentContext.Hint<T>(doc, id.ToString())); return value; }
         private static void Reference<T>(Document doc, JObject a, string idField, string keyField, Dictionary<string, Type> known) where T : Element
         {
             string key = a.Value<string>(keyField);
@@ -1487,7 +1441,7 @@ namespace Horizun.Revit.Commands
             switch ((operation ?? "").ToLowerInvariant())
             {
                 case "create_floor_plan": case "create_ceiling_plan": case "create_structural_plan": return typeof(ViewPlan);
-                case "create_3d": case "create_perspective": return typeof(View3D);
+                case "create_3d": case "create_perspective": case "create_room_isometric": return typeof(View3D);
                 case "create_drafting": return typeof(ViewDrafting);
                 case "create_section": case "create_elevation": return typeof(ViewSection);
                 case "duplicate_view": case "apply_template": return typeof(View);
@@ -1501,7 +1455,9 @@ namespace Horizun.Revit.Commands
                 case "set_phase": case "assign_scope_box": case "set_crop": case "set_annotation_crop":
                     return typeof(View);
                 case "set_view_range": return typeof(ViewPlan);
-                case "set_sun_study": return typeof(View);
+                case "set_sun_study": case "set_graphic_display": case "set_starting_view": case "set_view_properties": return typeof(View);
+                case "create_selection_filter": return typeof(SelectionFilterElement);
+                case "extend_grids_3d": return typeof(Grid);
                 case "set_viewport_type": case "align_viewports": return typeof(Viewport);
                 // Graphic control. create_filter yields the filter itself, so a later
                 // action in the same batch can reference it by key; everything else
@@ -1522,12 +1478,5 @@ namespace Horizun.Revit.Commands
         }
         private static bool InCategory(Element element, BuiltInCategory category)
         { return element?.Category != null && Rid.Value(element.Category.Id) == (long)category; }
-        private sealed class Applied
-        {
-            public int Index; public string Operation; public ElementId Id, TargetId, SheetId, ViewId;
-            public JObject Action; public double Scale;
-            /// <summary>The whole batch, so a verifier can see what LATER actions did to its subject.</summary>
-            public JArray Batch;
-        }
     }
 }

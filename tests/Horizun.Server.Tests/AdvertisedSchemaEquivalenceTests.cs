@@ -340,10 +340,9 @@ namespace Horizun.Server.Tests
         }
 
         [Theory]
-        [InlineData("horizun_create_elements", "properties.elements.items.properties.kind.enum", 33)]
-        [InlineData("horizun_manage_views", "properties.actions.items.properties.operation.enum", 46)]
-        [InlineData("horizun_export", "properties.format.enum", 13)]
-        [InlineData("horizun_create_family", "properties.forms.items.properties.kind.enum", 5)]
+        [InlineData("horizun_create_elements", "properties.elements.items.properties.kind.enum", 37)]
+        [InlineData("horizun_manage_views", "properties.actions.items.properties.operation.enum", 53)]
+        [InlineData("horizun_export", "properties.format.enum", 16)]
         public void Discriminator_enums_are_complete_and_equal_the_branch_consts(string tool, string path, int count)
         {
             JToken adv = Advertised(tool).SelectToken(path);
@@ -368,6 +367,9 @@ namespace Horizun.Server.Tests
             Assert.True(failures.Count == 0, string.Join("\n", failures));
         }
 
+        private static bool StringChoices(JObject schema) => schema["const"]?.Type == JTokenType.String ||
+            (schema["enum"] is JArray values && values.Count > 0 && values.All(v => v.Type == JTokenType.String));
+
         [Fact]
         public void No_boolean_or_empty_subschema_is_emitted()
         {
@@ -382,7 +384,7 @@ namespace Horizun.Server.Tests
                     bool bad = t is JValue || (t is JObject o && o.Count == 0);
                     bool wasBad = f == null || f is JValue || (f is JObject fo && fo.Count == 0);
                     if (bad && !wasBad) failures.Add(c.Name + p + " is advertised as " + t.ToString(Newtonsoft.Json.Formatting.None));
-                    if (System.Text.RegularExpressions.Regex.IsMatch(p, "/properties/[^/]+$") && f is JObject fobj && fobj["type"] != null && (!(t is JObject tobj) || tobj["type"] == null))
+                    if (System.Text.RegularExpressions.Regex.IsMatch(p, "/properties/[^/]+$") && f is JObject fobj && fobj["type"] != null && (!(t is JObject tobj) || (tobj["type"] == null && !StringChoices(tobj))))
                         failures.Add(c.Name + p + " lost its type");
                 });
             }
@@ -405,8 +407,9 @@ namespace Horizun.Server.Tests
                     shortInAdvertised += Count(adv, kv.Value);
                 }
                 // MEASURED 2026-09-26: the idempotency_key text is repeated 65 times. The
-                // 2026-10-10 short forms each replace a text repeated in at least three tools.
-                int floor = kv.Key.StartsWith("REQUIRED whenever this call will mutate", StringComparison.Ordinal) ? 65 : 3;
+                // 2026-10-10 short forms each replace a text repeated in at least three tools; in the
+                // Community edition, without the Pro tools, some repeat in two.
+                int floor = kv.Key.StartsWith("REQUIRED whenever this call will mutate", StringComparison.Ordinal) ? 65 : 2;
                 Assert.True(inContract >= floor, "the contract holds the full text " + inContract + " times (at least " + floor +
                     " expected - did its wording change?): " + kv.Key);
                 Assert.Equal(0, inAdvertised);

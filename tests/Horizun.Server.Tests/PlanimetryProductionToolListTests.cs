@@ -51,9 +51,10 @@ namespace Horizun.Server.Tests
                 string[] ops = plan["properties"]["operation"]["enum"].Select(x => (string)x).ToArray();
                 Assert.Equal(new[]
                 {
-                    "auto_tags", "intent_dimension", "dimension_set",
+                    "auto_tags", "model_notes", "intent_dimension", "dimension_set",
                     "auto_dimension_grids", "auto_dimension_levels",
-                    "auto_dimension_curtain_walls", "auto_dimension_openings"
+                    "auto_dimension_curtain_walls", "auto_dimension_openings",
+                    "auto_dimension_heights", "auto_dimension_room", "dimension_mode"
                 }, ops);
                 // auto_dimension_* may sweep a view, so element_ids left the top-level
                 // required list - and the two operations that DO need it must still
@@ -61,15 +62,26 @@ namespace Horizun.Server.Tests
                 string[] required = plan["required"].Select(x => (string)x).ToArray();
                 Assert.DoesNotContain("element_ids", required);
                 JArray allOf = (JArray)plan["allOf"];
+                // auto_tags without element_ids sweeps the view (5.2): it keeps the 500 cap but
+                // no longer requires element_ids, and categories/include_links filter that sweep.
                 Assert.Contains(allOf.OfType<JObject>(), c =>
                     (string)c["if"]?["properties"]?["operation"]?["const"] == "auto_tags" &&
-                    c["then"]?["required"] != null &&
-                    c["then"]["required"].Any(r => (string)r == "element_ids"));
+                    c["then"]?["required"] == null &&
+                    (int?)c["then"]?["properties"]?["element_ids"]?["maxItems"] == 500);
+                Assert.NotNull(plan["properties"]["categories"]);
+                Assert.NotNull(plan["properties"]["include_links"]);
                 Assert.Contains(allOf.OfType<JObject>(), c =>
                     (string)c["if"]?["properties"]?["operation"]?["const"] == "intent_dimension" &&
                     c["then"]?["oneOf"] is JArray alternatives &&
                     alternatives.Any(a=>a["required"].Any(r=>(string)r=="element_ids")) &&
                     alternatives.Any(a=>a["required"].Any(r=>(string)r=="reference_targets")));
+                Assert.Contains(allOf.OfType<JObject>(), c =>
+                    (string)c["if"]?["properties"]?["operation"]?["const"] == "auto_dimension_heights" &&
+                    c["then"]?["required"]?.Any(r => (string)r == "level_id") == true &&
+                    c["then"]?["required"]?.Any(r => (string)r == "element_ids") == true);
+                Assert.Contains(allOf.OfType<JObject>(), c =>
+                    (string)c["if"]?["properties"]?["operation"]?["const"] == "auto_dimension_room" &&
+                    c["then"]?["required"]?.Any(r => (string)r == "room_id") == true);
                 Assert.NotNull(plan["properties"]["link_instance_id"]);
                 Assert.NotNull(plan["properties"]["chain_separation"]);
 

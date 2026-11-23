@@ -103,6 +103,13 @@ namespace Horizun.Revit.Core
             public long Id;
             public string Name, Category, Code;
             public int Instances;
+            /// <summary>
+            /// A type that only REFERS to another file - a Revit link, an imported or linked CAD
+            /// file. It is not modelled content: it has no classification of its own and is
+            /// never judged as "placed without code" (INFORME_P6 6.1: a linked structural model
+            /// blocked the kit audit as one uncoded type).
+            /// </summary>
+            public bool IsReference;
         }
 
         /// <summary>Table codes no type carries.</summary>
@@ -127,7 +134,10 @@ namespace Horizun.Revit.Core
         public static JObject Missing(IEnumerable<string> tableKeys, IEnumerable<TypeCode> types, int maxRows)
         {
             var keys = new HashSet<string>(tableKeys.Where(k => k != null).Select(k => k.Trim()), StringComparer.Ordinal);
-            var all = types.ToList();
+            var everything = types.ToList();
+            // Links and imports are reported apart, never judged: their "type" is the file.
+            var references = everything.Where(t => t.IsReference).OrderBy(t => t.Id).ToList();
+            var all = everything.Where(t => !t.IsReference).ToList();
             var without = all.Where(t => t.Instances > 0 && string.IsNullOrWhiteSpace(t.Code))
                              .OrderByDescending(t => t.Instances).ThenBy(t => t.Id).ToList();
             var unknown = all.Where(t => !string.IsNullOrWhiteSpace(t.Code) && !keys.Contains(t.Code.Trim()))
@@ -138,7 +148,11 @@ namespace Horizun.Revit.Core
                 ["types_with_unknown_code"] = unknown.Count,
                 ["truncated"] = without.Count > maxRows || unknown.Count > maxRows,
                 ["without_code"] = new JArray(without.Take(maxRows).Select(Row)),
-                ["unknown_code"] = new JArray(unknown.Take(maxRows).Select(Row))
+                ["unknown_code"] = new JArray(unknown.Take(maxRows).Select(Row)),
+                ["reference_types_not_judged"] = references.Count,
+                ["reference_types"] = new JArray(references.Take(maxRows).Select(Row)),
+                ["reference_types_note"] = references.Count == 0 ? null :
+                    "Revit links and imported/linked CAD files are references to other files, not modelled types: they carry no code and are not counted above."
             };
         }
 

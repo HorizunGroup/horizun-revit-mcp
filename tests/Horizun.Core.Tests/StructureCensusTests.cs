@@ -76,6 +76,50 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_system_bar_whose_own_host_is_the_slab_has_a_host()
+        {
+            // Field case (Revit 2026): the 90 bars of an area reinforcement are RebarInSystem, not
+            // Rebar. The census only asked Rebar, so they all came out hostless although
+            // GetHostId() was the slab.
+            Assert.True(StructureCensusRules.HostState(RebarHostSource.SystemBar, false, 4321, null));
+            Assert.Equal(4321, StructureCensusRules.ResolvedHostId(RebarHostSource.SystemBar, 4321, null));
+        }
+
+        [Fact]
+        public void A_system_bar_with_no_host_of_its_own_takes_the_host_of_its_system()
+        {
+            Assert.True(StructureCensusRules.HostState(RebarHostSource.SystemBar, false, null, 777));
+            Assert.Equal(777, StructureCensusRules.ResolvedHostId(RebarHostSource.SystemBar, -1, 777));
+            // A set never borrows from a system it does not have.
+            Assert.False(StructureCensusRules.HostState(RebarHostSource.RebarSet, false, null, 777));
+        }
+
+        [Fact]
+        public void An_element_nobody_could_ask_for_its_host_is_unknown_not_hostless()
+        {
+            Assert.Null(StructureCensusRules.HostState(RebarHostSource.NotAsked, false, null, null));
+            Assert.Null(StructureCensusRules.HostState(RebarHostSource.SystemBar, true, null, null));
+            Assert.False(StructureCensusRules.HostState(RebarHostSource.SystemBar, false, null, null));
+        }
+
+        [Fact]
+        public void System_bars_with_a_host_do_not_show_up_in_the_hostless_count()
+        {
+            var bars = new List<RebarFact>();
+            for (int i = 0; i < 90; i++)
+                bars.Add(new RebarFact
+                {
+                    ElementId = 1000 + i,
+                    SystemId = 55,
+                    HasHost = StructureCensusRules.HostState(RebarHostSource.SystemBar, false, 4321, null),
+                    HostId = 4321
+                });
+            JObject s = StructureCensusRules.Summary(null, bars);
+            Assert.Equal(0, s.Value<long>("rebar_without_host"));
+            Assert.Equal(90, s.Value<long>("rebar_total"));
+        }
+
+        [Fact]
         public void A_cover_that_could_not_be_read_is_null_and_not_zero()
         {
             // Zero cover is a specification. Unreadable is an absence of one, and

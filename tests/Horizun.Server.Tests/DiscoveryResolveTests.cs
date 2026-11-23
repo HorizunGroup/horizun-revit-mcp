@@ -20,6 +20,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipes;
+using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -43,6 +45,7 @@ namespace Horizun.Server.Tests
         {
             PipeClient.DirectoryOverride = null;
             PipeClient.LivenessProbe = null;
+            PipeClient.ProcessStartProbe = null;
             PipeClient.Target = TargetSelection.Automatic;
             try { Directory.Delete(_dir, true); } catch { }
         }
@@ -123,6 +126,72 @@ namespace Horizun.Server.Tests
         }
 
         // ---- liveness ----------------------------------------------------------
+
+        [Fact]
+        public async Task Durable_job_cancellation_returns_when_peer_accepts_but_does_not_read()
+        {
+            string pipeName = "hz-c3-" + Guid.NewGuid().ToString("N");
+            Publish("2026", 100, true);
+            string path = Path.Combine(_dir, "revit-2026-100.json");
+            var file = JObject.Parse(File.ReadAllText(path));
+            file["pipe_name"] = pipeName;
+            file["auth_token"] = new string('a', 64);
+            File.WriteAllText(path, file.ToString());
+            using (var peer = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0))
+            {
+                Task connected = peer.WaitForConnectionAsync();
+                var call = Task.Run(() => PipeClient.TryCancelJob(new string('j', 26), 100));
+                await connected;
+                bool bounded = await Task.WhenAny(call, Task.Delay(6000)) == call;
+                peer.Dispose();
+                var result = await call;
+                Assert.True(bounded);
+                Assert.Null(result);
+            }
+        }
+
+        [Fact]
+        public async Task Durable_job_cancellation_does_not_trust_an_early_uncorrelated_reply()
+        {
+            string pipeName = "hz-c3-" + Guid.NewGuid().ToString("N");
+            Publish("2026", 100, true);
+            string path = Path.Combine(_dir, "revit-2026-100.json");
+            var file = JObject.Parse(File.ReadAllText(path));
+            file["pipe_name"] = pipeName;
+            File.WriteAllText(path, file.ToString());
+            using (var peer = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0))
+            {
+                var response = Task.Run(async () =>
+                {
+                    await peer.WaitForConnectionAsync();
+                    using (var writer = new StreamWriter(peer) { AutoFlush = true })
+                        await writer.WriteLineAsync("{\"id\":\"wrong\",\"success\":true,\"data\":{\"job_id\":\"job\",\"cancelled_before_start\":true}}");
+                });
+                var answer = await Task.Run(() => PipeClient.TryCancelJob("job", 100));
+                await response;
+                Assert.Null(answer);
+            }
+        }
+
+        [Fact]
+        public void Recycled_pid_does_not_make_an_old_registration_a_second_live_instance()
+        {
+            Publish("2025", 100, alive: true);
+            string old = Path.Combine(_dir, "revit-2025-100.json");
+            JObject registration = JObject.Parse(File.ReadAllText(old));
+            registration["started_utc"] = DateTime.UtcNow.AddHours(-2).ToString("o");
+            File.WriteAllText(old, registration.ToString());
+            Publish("2026", 100, alive: true);
+            PipeClient.ProcessStartProbe = _ => DateTime.UtcNow.AddMinutes(-1);
+            var all = PipeClient.ListAll();
+            Assert.False(all.Find(x => x.Year == "2025").ProcessAlive);
+            Assert.True(all.Find(x => x.Year == "2026").ProcessAlive);
+            string refusal;
+            var chosen = PipeClient.Resolve("", null, out refusal);
+            Assert.Null(refusal);
+            Assert.Equal("2026", chosen.Year);
+            Assert.Equal("2026", PipeClient.Resolve("", 100, out refusal).Year);
+        }
 
         [Fact]
         public void A_live_instance_beats_a_stale_file_without_being_ambiguous()

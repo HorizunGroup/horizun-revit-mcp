@@ -1,13 +1,117 @@
 # Python fallback recipes
 
+## API by year (2023–2027)
+
+- To create a project from a template use `horizun_document_session` with
+  `operation=new_project`; it rehearses by default.
+- For every deliberate write use a fresh UUID as `idempotency_key`; reuse it only
+  to retry the identical request. For example, generate one with
+  `str(uuid.uuid4())` and keep it for retries of that request.
+- The prelude binds `Autodesk`, `clr` and the names from `Autodesk.Revit.DB`.
+  Explicit imports remain valid.
+- Element ids: `ElementId.IntegerValue` was removed in Revit 2026 (deprecated
+  since 2024) and `ElementId.Value` does not exist before 2024. Use
+  `horizun.id_value(element.Id)`, which returns the number on every Revit
+  2023–2027; a script that fails on either property gets this advice in its reply.
+- `horizun.param_data_type(definition)` calls `GetDataType()` when present,
+  otherwise reads `ParameterType`. The return types differ across API versions.
+- Filter by class before reading class-specific members: check
+  `isinstance(e, Wall)` before accessing `e.WallType`.
+- Setting `FamilyManager.CurrentType` requires a transaction. To read values for
+  each type without changing the current type, use `FamilyType.AsDouble(p)`,
+  `AsInteger(p)`, `AsString(p)` or `AsElementId(p)` as appropriate.
+- Write paths into JSON with `json.dump` rather than hand-building JSON strings:
+  Windows backslashes can otherwise form an invalid JSON escape such as `\e`.
+
+Portable helpers in the per-run `horizun` module:
+
+```python
+n = horizun.id_value(element.Id)  # int on 2023-2027 (no IntegerValue / Value split)
+walls = horizun.of_class(elements, Wall)  # filter before reading WallType
+data_type = horizun.param_data_type(definition)
+value = horizun.family_type_value(family_type, family_parameter)  # dispatches by StorageType
+path_literal = horizun.safe_json_path(path)  # JSON string literal, including quotes
+```
+
+`family_type_value` uses `AsDouble`, `AsInteger`, `AsString` or `AsElementId`
+without changing `CurrentType`; unsupported storage types raise `ValueError`.
+Prefer `json.dumps` on the entire object when building JSON. For subtransactions,
+open a transaction in the same document first. `with horizun.transaction('outer'):`
+starts one when needed, and a nested `with horizun.transaction('inner'):` uses a
+subtransaction; the context commits on success and rolls back on error.
+
 How to turn a missing typed capability into a minimal, transactional, verified
 `horizun_execute_python` script. This is the companion to the fallback policy in
 the server instructions: **typed first, Python as the fallback — never "not
 supported"**.
 
 The engine is IronPython 3 with the standard library bundled (`json`, `re`,
-`csv`, `datetime`, `math`). Element ids are 64-bit in Revit 2024+: wrap
-`ElementId.Value` in `int()` before serializing.
+`csv`, `datetime`, `math`). The shared `hz_compat` module is available as a global
+inside `horizun_execute_python` and can also be imported by shipped recipes. It
+covers the API transitions across Revit 2023–2027; prefer its helpers over
+version checks or direct access to members that moved.
+
+```python
+# ElementId is 32-bit in Revit 2023 and 64-bit from 2024. These helpers handle
+# both reading an id and constructing one from an int (including large ids).
+number = hz_compat.eid_int(element.Id)
+element_id = hz_compat.element_id(number)
+
+# Python 3 removed the Python 2 names still found in older snippets.
+if isinstance(value, hz_compat.string_types):
+    text = hz_compat.unicode(value)
+large_number = hz_compat.long(number)  # alias for int in Python 3
+
+# ForgeTypeId / UnitTypeId and legacy DisplayUnitType use distinct enum names.
+millimeters = hz_compat.unit_type_id("Millimeters", "DUT_MILLIMETERS")
+definition_type = hz_compat.parameter_data_type(parameter.Definition)
+unit = hz_compat.parameter_unit_type(parameter)
+group = hz_compat.parameter_group("Data")
+```
+
+When the replacement depends on the API loaded by the running Revit, inspect it
+before choosing a member. For example:
+
+```json
+{"tool":"horizun_api_help","arguments":{"operation":"describe","type_name":"Autodesk.Revit.DB.ElementId","member_filter":"Value"}}
+```
+
+`horizun_api_help` reads the selected Revit's loaded API without changing the
+model. Its answer tells you whether this Revit exposes `Value`, `IntegerValue`,
+or another member; `hz_compat.eid_int` is the portable choice for scripts that
+must run across years.
+
+**Execution has no enforced runtime limit.** Python runs on Revit's UI thread.
+A response timeout or cancellation stops waiting, not an already started script;
+`timeout_phase=execution` and `execution_may_still_run=true` mean its outcome is
+still unknown. Follow the returned job ID when available, and do not retry while
+it may be running. Other Revit requests can remain queued indefinitely. A Python
+trace callback can interrupt some Python loops, but a script can disable or catch
+it and it cannot interrupt a native call already in progress; it is not a reliable
+deadline for arbitrary scripts.
+
+`horizun_submit_job` refuses `horizun_execute_python`; cancellation through a
+job submitted by that tool therefore does not apply to Python. Python's separate
+`run_async` path has its own job record and cancellation mechanism.
+
+### Cooperative deadlines and checkpoint cancellation
+
+Call `checkpoint()` inside each long loop. `timeout_s` and the optional
+`deadline_s` count from script start; when both are present, `deadline_s` must
+be no greater than `timeout_s`. Cancellation is cooperative: at a checkpoint
+the bridge raises `HorizunCancelled`, unwinds open transactions and rolls back
+the active document's transaction group, including transactions the script
+already committed. A failed response contains `cancelled_at_checkpoint` with
+the line when available, elapsed seconds, `rolled_back_verified` and
+`rollback_gaps`. Verification requires a confirmed group rollback, no observed
+changes in another document, and re-reading created and deleted elements.
+Modified values are not compared individually: the group rollback is their
+guarantee. Files and other effects outside the group are not reverted by it.
+
+The bridge cannot interrupt a native call or a script that never reaches a
+checkpoint. If `timeout_s` expires with no checkpoint, `not_preemptible` gives
+the real elapsed time; it does not claim the script was cancelled. Inspect the
+result and model before retrying.
 
 **What is in scope, without importing anything:**
 

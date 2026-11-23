@@ -33,7 +33,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class QueryPlanimetryCommand : ICommand
+    public sealed partial class QueryPlanimetryCommand : ICommand
     {
         public string Name => "horizun_query_planimetry";
 
@@ -45,9 +45,6 @@ namespace Horizun.Revit.Commands
 
         public const int MaxRows = 500;
         public const int DefaultRows = 100;
-
-        private static readonly string[] Modes =
-        { "inventory", "sheets", "views", "placements", "annotations", "references" };
 
         /// <summary>The annotation populations `categories` may name. Published in the schema
         /// and refused by name here, so a typo is an error rather than an empty answer.</summary>
@@ -65,23 +62,65 @@ namespace Horizun.Revit.Commands
 
             Document doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
 
-            string mode = (request.Value<string>("mode") ?? "inventory").ToLowerInvariant();
-            if (!Modes.Contains(mode, StringComparer.Ordinal))
-                return CommandResult.Fail("mode must be one of: " + string.Join(", ", Modes) + ".");
+            string mode;
+            string modeError = PlanimetryInventoryArgs.ParseMode(request, out mode);
+            if (modeError != null) return CommandResult.Fail(modeError);
 
             string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
             double scale;
             if (!PlanimetryGeometry.TryScaleFromFeet(units, out scale))
                 return CommandResult.Fail("units must be mm, m or feet.");
 
+            var fingerprintArgs = (JObject)request.DeepClone();
+            fingerprintArgs.Remove("time_budget_s");
+            string coopFingerprint = CooperativeOptions.FingerprintOf(fingerprintArgs, Name, doc);
+            CooperativeOptions cooperative = CooperativeOptions.Read(request, coopFingerprint);
+            if (cooperative.Refusal != null) return CommandResult.Fail("cooperative: " + cooperative.Refusal);
+            if (!PlanimetryReadBudget.TryResolve(request["time_budget_s"], cooperative.UiBudgetMs,
+                    out int budgetMs, out JObject assumption))
+                return CommandResult.FailCoded(ErrorCodes.EntradaInvalida, "time_budget_s must be an integer from 1 to 120.");
+            cooperative.UiBudgetMs = budgetMs;
             int maxRows = Math.Max(1, Math.Min(MaxRows, request.Value<int?>("max_rows") ?? DefaultRows));
+            bool resumeCollection = cooperative.Requested && (mode == "annotations" || mode == "sheets");
+            if (request["cooperative"]?["cursor"] != null && !resumeCollection)
+                return CommandResult.Fail("cooperative.cursor is supported only for mode=annotations or sheets. Nothing was read.");
+            if (resumeCollection && request["cursor"] != null)
+                return CommandResult.Fail("Use cooperative.cursor for collection pages, not the top-level row cursor. Nothing was read.");
+            if (resumeCollection)
+                cooperative.MaxUnits = cooperative.MaxUnits > 0 ? Math.Min(cooperative.MaxUnits, maxRows) : maxRows;
+
+            var budget = cooperative.Begin("query_planimetry", 0) ?? CooperativeRead.Begin("query_planimetry", budgetMs);
+            CommandResult result = PlanimetryReadBudget.Read(budget, rows =>
+            {
+                if (NoteLeaderRules.ReadModes.Contains(mode, StringComparer.Ordinal)) return NotesMode(doc, request, mode, maxRows, rows);
+                if (mode == "iso_inventory" || mode == "rasters") return NewInventory(doc, request, mode, scale, maxRows);
+                return ReadInventory(doc, request, mode, units, scale, maxRows, cooperative, budget, coopFingerprint, resumeCollection);
+            }, rows => new JObject { ["document"] = doc.Title, ["mode"] = mode, ["rows"] = rows });
+            var assumptions = new[] { assumption };
+            return result.Success ? AssumptionNotes.StampResult(result, assumptions)
+                : AssumptionNotes.MarkFailure(result, "SUPUESTO for the planimetry time budget. ", assumptions);
+        }
+
+        private static CommandResult ReadInventory(Document doc, JObject request, string mode, string units,
+            double scale, int maxRows, CooperativeOptions cooperative, CooperativeRead.Scope coopScope,
+            string coopFingerprint, bool resumeCollection)
+        {
+            string ignored = PlanimetryInventoryArgs.IgnoredFieldRefusal(request, mode);
+            if (ignored != null) return CommandResult.FailCoded(ErrorCodes.EntradaInvalida, ignored);
 
             var scope = new PlanimetryScope();
             string error;
             if (!Ids(request, "sheet_ids", out scope.SheetIds, out error)) return CommandResult.Fail(error);
             if (!Ids(request, "view_ids", out scope.ViewIds, out error)) return CommandResult.Fail(error);
             if (!Ids(request, "element_ids", out scope.ElementIds, out error)) return CommandResult.Fail(error);
+            if (mode == "unplaced_views" && (scope.SheetIds != null || scope.ElementIds != null))
+                return CommandResult.Fail("unplaced_views accepts view_ids, not sheet_ids or element_ids.");
+            if (mode == "annotation_overlaps" && (scope.ViewIds != null || scope.ElementIds != null))
+                return CommandResult.Fail("annotation_overlaps accepts sheet_ids only; narrowing annotations " +
+                    "or views would make a clean sheet verdict incomplete.");
 
             JArray categories = request["categories"] as JArray;
             if (categories != null && categories.Count > 0)
@@ -128,17 +167,33 @@ namespace Horizun.Revit.Commands
 
             // What this mode actually needs. Collecting only that keeps a `sheets` answer
             // from walking every dimension in the model.
-            scope.NeedSheets = !scope.CensusOnly && mode != "views" && mode != "references";
+            scope.NeedSheets = !scope.CensusOnly && mode != "views" && mode != "unplaced_views" && mode != "references";
             scope.NeedViews = !scope.CensusOnly;          // placements and annotations name views
             scope.NeedPlacements = !scope.CensusOnly &&
                                    (mode == "inventory" || mode == "sheets" || mode == "placements" ||
-                                    mode == "views" || mode == "annotations");
-            scope.NeedAnnotations = !scope.CensusOnly && (mode == "annotations" || mode == "inventory");
+                                    mode == "views" || mode == "annotations" || mode == "annotation_overlaps");
+            scope.NeedAnnotations = !scope.CensusOnly && (mode == "annotations" || mode == "inventory" ||
+                                                          mode == "annotation_overlaps");
             scope.NeedReferences = mode == "references" || mode == "inventory";
 
+            scope.ResumeCollection = resumeCollection;
+            if (scope.ResumeCollection)
+            {
+                scope.NeedSheets = mode == "sheets";
+                scope.NeedViews = false;
+                scope.NeedPlacements = false;
+                scope.CollectionWalk = new PositionWalk(coopScope, cooperative.StartAt, int.MaxValue);
+            }
+
             PlanimetrySnapshot snap;
-            try { snap = PlanimetryInventory.Collect(doc, scope, RevitYear()); }
+            try
+            {
+                snap = PlanimetryInventory.Collect(doc, scope, RevitYear());
+            }
             catch (Exception ex) { return CommandResult.Fail("The planimetry inventory could not be read: " + ex.Message); }
+
+            if (mode == "unplaced_views" && snap.ChecksFailed.Any(x => x.Check == "viewport_index" || x.Check == "views_index"))
+                return CommandResult.Fail("Cannot determine unplaced views: the viewport or view index was unreadable.");
 
             var result = new JObject
             {
@@ -159,7 +214,35 @@ namespace Horizun.Revit.Commands
                 ["unmatched_ids"] = new JArray(scope.UnmatchedIds.OrderBy(x => x).Select(x => (JToken)x))
             };
 
+            if (mode != "annotation_overlaps" && cooperative.Requested)
+                ApplyCooperative(result, cooperative, coopScope, coopFingerprint, snap, scope);
+
             if (mode == "inventory") return Inventory(snap, scope, result);
+            if (mode == "annotation_overlaps")
+            {
+                result["population"] = "annotation_overlaps";
+                // A verdict about overlaps over a collection the budget cut short would read the
+                // annotations nobody collected as annotations that do not overlap.
+                if (!snap.BudgetStopped)
+                {
+                    try
+                    {
+                        result["overlap_report"] = SheetAnnotationOverlapRules.Build(
+                            snap, scope.SheetIds, scale, PlanimetryReadBudget.Checkpoint);
+                    }
+                    catch (PlanimetryReadBudget.Interrupted) { }
+                }
+                if (result["overlap_report"] == null)
+                    result["overlap_report"] = new JObject
+                    {
+                        ["status"] = "not_assessable",
+                        ["reason"] = "The read stopped before measuring all overlaps. Re-run with a larger time budget or narrower sheet_ids."
+                    };
+                if (cooperative.Requested)
+                    ApplyCooperative(result, cooperative, coopScope, coopFingerprint, snap, scope);
+                Coverage(snap, result);
+                return CommandResult.Ok(result);
+            }
 
             List<JObject> rows;
             string population;
@@ -179,6 +262,12 @@ namespace Horizun.Revit.Commands
                         .ThenBy(v => v.Name ?? "￿", StringComparer.Ordinal)
                         .ThenBy(v => v.Id)
                         .Select(v => v.ToJson(scale)).ToList();
+                    break;
+                case "unplaced_views":
+                    population = "unplaced_views";
+                    rows = snap.Views.Where(v => v.IsUnplacedGraphical()).OrderBy(v => v.Id)
+                        .Select(v => v.ToJson(scale)).ToList();
+                    result["unclassifiable_views"] = snap.Views.Count(v => !v.Readable || !v.IsTemplate.HasValue || !v.IsGraphical.HasValue || !v.CanBePrinted.HasValue);
                     break;
                 case "placements":
                     population = "placements";
@@ -212,6 +301,15 @@ namespace Horizun.Revit.Commands
             string setHash = SetHash(rows);
             int offset = 0;
             string cursor = request.Value<string>("cursor");
+            if (!string.IsNullOrWhiteSpace(cursor) && snap.BudgetStopped)
+            {
+                result["population"] = population;
+                result["rows"] = new JArray();
+                result["matched_total"] = JValue.CreateNull();
+                result["page_note"] = "The time budget prevented re-reading the result set bound to this cursor.";
+                Coverage(snap, result);
+                return CommandResult.Ok(result);
+            }
             if (!string.IsNullOrWhiteSpace(cursor))
             {
                 string cursorError;
@@ -234,7 +332,69 @@ namespace Horizun.Revit.Commands
             result["result_set_fingerprint"] = setHash.Substring(0, 16);
             result["rows"] = new JArray(page.Select(r => (JToken)r));
             Coverage(snap, result);
+            if (scope.ResumeCollection)
+            {
+                result["coverage_complete"] = false;
+                result["unmatched_ids"] = JValue.CreateNull();
+                result["matched_total"] = JValue.CreateNull();
+                result["page_note"] = "The matched total and unmatched IDs are not measured on collection pages. Combine all pages before assessing coverage. Indexing and individual Revit API calls cannot be interrupted.";
+                result["coverage_note"] = result["page_note"];
+                if (cooperative.StartAt > 0 || !coopScope.Complete) result["partial"] = true;
+            }
             return CommandResult.Ok(result);
+        }
+
+        /// <summary>
+        /// The cooperative block: which collection passes this mode needs, which finished, which
+        /// the budget cut mid-way (with how many items they had read) and which never began.
+        /// The census totals are exact collector counts taken BEFORE any budgeted pass.
+        /// </summary>
+        private static void ApplyCooperative(JObject result, CooperativeOptions cooperative,
+                                             CooperativeRead.Scope coopScope, string fingerprint,
+                                             PlanimetrySnapshot snap, PlanimetryScope scope)
+        {
+            var needed = new List<string>();
+            if (scope.ResumeCollection) needed.Add(scope.NeedSheets ? "sheets" : "annotations");
+            else if (scope.CensusOnly) { if (scope.NeedReferences) needed.Add("references"); }
+            else
+            {
+                if (scope.NeedViews || scope.NeedAnnotations || scope.NeedReferences) needed.Add("views");
+                if (scope.NeedSheets) needed.Add("sheets");
+                if (scope.NeedPlacements) needed.Add("placements");
+                if (scope.NeedAnnotations) needed.Add("annotations");
+                if (scope.NeedReferences) needed.Add("references");
+                if (scope.TagCoverageCategories.Count > 0) needed.Add("tag_coverage");
+            }
+            needed.AddRange(new[] { "visibility_coverage", "link_coverage", "totals", "views_index", "viewport_index" });
+            if (!scope.CensusOnly) needed.Add("schedule_placement_index");
+
+            var cutMidway = new JObject();
+            foreach (KeyValuePair<string, string> stopped in snap.PassStopped.OrderBy(k => k.Key, StringComparer.Ordinal))
+            {
+                int read;
+                snap.PassItems.TryGetValue(stopped.Key, out read);
+                cutMidway[stopped.Key] = new JObject { ["reason"] = stopped.Value, ["items_read"] = read };
+            }
+            string BasePass(string p) { int c = p.IndexOf(':'); return c < 0 ? p : p.Substring(0, c); }
+            var touched = new HashSet<string>(snap.PassStopped.Keys.Select(BasePass), StringComparer.Ordinal);
+            foreach (string notStarted in snap.PassNotStarted) touched.Add(notStarted);
+            var finished = new JArray(needed.Where(n => !touched.Contains(n)).Select(n => (JToken)n));
+            var notMeasured = new JObject
+            {
+                ["never_started"] = new JArray(snap.PassNotStarted.Select(n => (JToken)n)),
+                ["cut_midway"] = cutMidway,
+                ["means"] = "never_started passes read nothing. cut_midway passes read only `items_read` items, in " +
+                            "element-id order, and everything after them is unknown. Neither is empty or clean."
+            };
+            CooperativePartial.Apply(result, cooperative, coopScope, fingerprint,
+                CooperativePartial.Account("passes", finished.Count, needed.Count, finished,
+                    snap.BudgetStopped ? notMeasured : null,
+                    "between items inside each pass, and before each pass starts; one element's geometry is never split"),
+                scope.ResumeCollection && snap.ChecksFailed.Count == 0 && coopScope.Done > 0,
+                scope.ResumeCollection ? cooperative.StartAt + coopScope.Done : 0,
+                "the collection is not a prefix a position can name (passes depend on each other). `next_cursor`, when " +
+                "present, pages only the rows that WERE collected. Re-run with a larger time_budget_s or narrower " +
+                "sheet_ids/view_ids to measure the rest.");
         }
 
         private static CommandResult Inventory(PlanimetrySnapshot snap, PlanimetryScope scope, JObject result)
@@ -282,7 +442,7 @@ namespace Horizun.Revit.Commands
                     "dimensions_total", "tags_total", "text_notes_total", "detail_curves_total",
                     "filled_regions_total", "detail_components_total", "generic_annotations_total",
                     "revision_clouds_total"),
-                ["references"] = snap.References.Count
+                ["references"] = SumTotals(snap, "view_references_total")
             };
             result["annotations_by_kind"] = TotalsByName(snap, new Dictionary<string, string>
             {
@@ -304,7 +464,7 @@ namespace Horizun.Revit.Commands
                 JsonObjectKey.SummaryCounts(snap.References.Select(f => f.TargetState));
             result["totals_unreadable"] = new JArray(
                 snap.ChecksFailed.Select(c => (JToken)c.Check).Distinct());
-            result["note"] =
+            result["note"] = snap.BudgetStopped ? "The census was interrupted. Missing totals were not measured." :
                 "totals and collected are an exact lightweight census of the WHOLE document. The census does " +
                 "not request viewport or annotation geometry; use placements or annotations mode for those " +
                 "rows. A total listed in totals_unreadable is null in collected rather than reported as zero.";
@@ -378,6 +538,8 @@ namespace Horizun.Revit.Commands
             var copy = (JObject)request.DeepClone();
             copy.Remove("cursor");
             copy.Remove("max_rows");
+            copy.Remove("time_budget_s");
+            copy.Remove("cooperative");   // a budget changes how far a read gets, not what it asks
             return RequestFingerprint.Sha256Hex(RequestFingerprint.Canonical(copy));
         }
 

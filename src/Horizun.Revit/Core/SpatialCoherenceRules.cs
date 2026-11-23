@@ -200,7 +200,7 @@ namespace Horizun.Revit.Core
                     {
                         Kind = Kind.Clash, Severity = "error",
                         Reason = Label(mep) + " runs through " + Label(other),
-                        Suggestion = "reroute the " + Label(mep) + " (horizun_resolve_clash) - structure is not cut for MEP without the engineer"
+                        Suggestion = "reroute the " + Label(mep) + " (horizun_resolve_clash (Pro edition)) - structure is not cut for MEP without the engineer"
                     };
                 return new Verdict
                 {

@@ -432,9 +432,27 @@ namespace Horizun.Revit.Commands
                     editNames.Add("set_type_id");
                 }
 
-                if (a["move_by"] != null)
+                if (a["move_by"] != null && a["move_by_sheet"] != null)
+                    throw new ArgumentException("move_by and move_by_sheet are two ways to say the same move; send one.");
+                if (a["move_by"] != null || a["move_by_sheet"] != null)
                 {
-                    p.MoveBy = Point(a["move_by"], scale, "move_by");
+                    if (a["move_by"] != null) p.MoveBy = Point(a["move_by"], scale, "move_by");
+                    else
+                    {
+                        // [dx, dy] in paper mm in the SHEET frame, turned through the viewport rotation into a model vector.
+                        JArray sv = a["move_by_sheet"] as JArray;
+                        if (sv == null || sv.Count != 2 || sv.Any(x => x.Type != JTokenType.Integer && x.Type != JTokenType.Float))
+                            throw new ArgumentException("move_by_sheet must be [dx, dy] in paper millimetres");
+                        View dv = d.View ?? throw new ArgumentException("dimension " + raw + " has no owner view for move_by_sheet");
+                        // Review m9: every viewport of the view, not the first - a legend can sit on several sheets.
+                        List<string> rotations = new FilteredElementCollector(d.Document).OfClass(typeof(Viewport)).Cast<Viewport>()
+                            .Where(x => x.ViewId == dv.Id).Select(x => x.Rotation.ToString()).ToList();
+                        string rotation = ViewportRotationChoice.Resolve(rotations, raw.ToString(), out string rotationError);
+                        if (rotation == null) throw new ArgumentException(rotationError);
+                        double[] turned = NoteLeaderRules.SheetToView(sv[0].Value<double>() / 304.8 * dv.Scale, sv[1].Value<double>() / 304.8 * dv.Scale,
+                            NoteLeaderRules.QuarterTurns(rotation));
+                        p.MoveBy = dv.RightDirection * turned[0] + dv.UpDirection * turned[1];
+                    }
                     string kind;
                     List<XYZ> samples = SamplePoints(d, out kind);
                     if (samples == null)

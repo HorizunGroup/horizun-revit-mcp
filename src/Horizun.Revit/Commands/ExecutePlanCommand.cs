@@ -18,18 +18,13 @@ namespace Horizun.Revit.Commands
         private static readonly HashSet<string> Allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "horizun_write_params_verified", "horizun_delete_verified", "horizun_create_schedule",
-            "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param",
-            "horizun_create_elements", "horizun_manage_system_types", "horizun_transform_elements", "horizun_manage_views", "horizun_annotate",
+            "horizun_set_keynote", "horizun_bind_shared_param",
+            "horizun_create_elements", "horizun_transform_elements", "horizun_manage_views", "horizun_annotate",
             "horizun_pack_sheets",
             "horizun_split_floor_loops", "horizun_split_multilayer_walls", "horizun_split_multilayer_slabs",
             "horizun_ungroup_and_mark", "horizun_regroup_by_param", "horizun_copy_slab_elevations",
             "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
-            "horizun_rectangularize_walls",
-            // The one correction horizun_audit_model has always fully specified - a
-            // typed pin - could not be composed into a plan until this line. A test
-            // holds this list to be a superset of every tool the correction registry
-            // names, so the next recipe cannot dead-end the same way.
-            "horizun_manage_links"
+            "horizun_rectangularize_walls", "horizun_view_visibility"
         };
 
         public ExecutePlanCommand(Func<string, ICommand> resolve) { _resolve = resolve; }
@@ -92,6 +87,10 @@ namespace Horizun.Revit.Commands
                 {
                     JObject action = (JObject)actions[i];
                     string key = action.Value<string>("key");
+                    // INT-7 m-e: a cancel asked for this job stops the rehearsal too, between two actions.
+                    if (ledger.StopBeforeAction(PythonRunRegistry.IsCancelRequested(Job.Ambient?.Id), i, key, action.Value<string>("tool")))
+                        return BeforeGroupFailure("dry_run", rows, ledger.FailedAction,
+                            "Atomic plan rehearsal cancelled before action '" + key + "'", null, cancelled: true);
                     JObject original = (JObject)action["arguments"];
                     JObject supplied = original;
                     JObject referenceBinding = null;
@@ -156,21 +155,19 @@ namespace Horizun.Revit.Commands
                     ["rehearsed_cleanly_means"] =
                         "every action was concretely rehearsed, every reference resolved, and every child declared " +
                         "a clean rehearsal. Any action in not_rehearsed makes this false and withholds confirmation.",
-                    ["note"] = rehearsedCleanly
+                    ["note"] = "The top-level transaction_status applies to the parent plan only. Child rehearsal transaction statuses are in the action data. " + (rehearsedCleanly
                         ? "Every action was semantically rehearsed. References that resolved are bound to their " +
                           "exact canonical values and are checked again before their consumer executes."
-                        : "NO EXECUTABLE CONFIRMATION WAS ISSUED. At least one action rehearsed to something other " +
-                          "than a clean dry run - read each row's application_state. A rehearsal that could not " +
-                          "resolve what it was given has not previewed this plan, and a token over it would " +
-                          "authorise an apply nobody saw. Fix those actions and rehearse again." };
+                        : "NO EXECUTABLE CONFIRMATION WAS ISSUED. At least one action blocked the plan. Read each row's " +
+                          "application_state and any not_clean_in_plan reason. Fix those actions and rehearse again.") };
                 // The recorded plan and the token travel together, and neither is issued over
                 // a rehearsal that did not resolve. Same shape the other commands use: the
                 // flag that gates the token is the flag that gates the plan.
                 // Never a child's: each rehearsal above may have left its own plan recorded (#17).
-                DocumentGate.RecordResolvedPlan(rehearsedCleanly ? GraphPlan(app, gate, rows, actions) : null);
+                DocumentGate.RecordResolvedPlan(rehearsedCleanly ? ResolveGraph(app, gate, rows) : null);
                 DocumentGate.StampConfirmation(data, gate, Name, planHash, rehearsedCleanly,
                     "one token authorizes this exact ordered graph, AND it is bound to what each independent " +
-                    "action's own rehearsal resolved: the apply re-rehearses them (read-only) and refuses as a " +
+                    "action's own rehearsal resolved: the apply repeats the rehearsals before opening the group and refuses as a " +
                     "stale plan if any resolves differently. A reference that cannot resolve during rehearsal " +
                     "withholds confirmation; references that do resolve are bound to the exact canonical value " +
                     "seen then. Every action must come back fully applied and verified or the whole group rolls " +
@@ -179,9 +176,10 @@ namespace Horizun.Revit.Commands
             }
 
             // ---- The materialised plan, RECOMPUTED: re-rehearse every independent action
-            // read-only before anything runs. Inside the confirmed group the children's
-            // own plan checks degrade to a document-identity check (EnterConfirmedAtomicPlan),
-            // so this is the moment the element-level guarantee is enforced for a graph.
+            // before opening the TransactionGroup. Inside the confirmed group the children's
+            // token checks defer to the outer confirmation (EnterConfirmedAtomicPlan).
+            // Keep each rechecked fingerprint for children that also guard the resolved
+            // state immediately before applying, after any earlier actions have run.
             // The cost is running each child's dry run twice per apply; the alternative is
             // an approval that froze the words of the graph and nothing it resolved to.
             var recheck = new JArray();
@@ -194,6 +192,9 @@ namespace Horizun.Revit.Commands
                 {
                     JObject action = (JObject)actions[i];
                     string key = action.Value<string>("key");
+                    if (recheckLedger.StopBeforeAction(PythonRunRegistry.IsCancelRequested(Job.Ambient?.Id), i, key, action.Value<string>("tool")))
+                        return BeforeGroupFailure("pre_apply_recheck", recheck, recheckLedger.FailedAction,
+                            "Atomic plan cancelled before the pre-apply rehearsal of action '" + key + "'", null, cancelled: true);
                     JObject original = (JObject)action["arguments"];
                     JObject supplied = original;
                     JObject referenceBinding = null;
@@ -222,27 +223,21 @@ namespace Horizun.Revit.Commands
                                                                      again.Detail, FallbackJson(again),
                                                                      again.CapabilityGaps);
                     if (referenceBinding != null) againRow["reference_binding"] = referenceBinding;
-                    string expectedChildPlan = null;
-                    try { expectedChildPlan = (string)againRow["data"]?["plan_resolved"]?["fingerprint"]; }
-                    catch { expectedChildPlan = null; }
+                    string expectedChildPlan = PlanLedger.ReadChildFingerprint(againRow);
                     if (!string.IsNullOrWhiteSpace(expectedChildPlan))
                         expectedChildPlans[i] = expectedChildPlan;
                     recheck.Add(againRow);
                     if (!again.Success)
                         return BeforeGroupFailure("pre_apply_recheck", recheck, recheckLedger.FailedAction,
                             "Pre-apply rehearsal failed at action '" + key + "': " + again.Error, again);
-                    ApplicationState againState = ApplicationOutcome.Read(again.Data);
                     if (!recheckLedger.RehearsedCleanly)
                         return BeforeGroupFailure("pre_apply_recheck", recheck, recheckLedger.FailedAction,
-                            "Pre-apply rehearsal of action '" + key + "' came back '" +
-                            ApplicationOutcome.Name(againState) + "', not a clean dry run. Nothing ran, and no " +
-                            "TransactionGroup was opened. The graph approved a rehearsal that resolved; this one " +
-                            "does not, so applying it would write something nobody previewed.", again);
+                            PlanFailure.PreApplyRehearsalError(key, againRow), again);
                     known[key] = ToToken(again.Data);
                 }
             }
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
-                                                                     GraphPlan(app, gate, recheck, actions), null);
+                                                                     ResolveGraph(app, gate, recheck), null);
             if (refusal != null) return refusal;
             string groupName = request.Value<string>("transaction_name");
             if (string.IsNullOrWhiteSpace(groupName)) groupName = "Horizun: atomic plan";
@@ -265,6 +260,11 @@ namespace Horizun.Revit.Commands
                         {
                             JObject action = (JObject)actions[i];
                             string key = action.Value<string>("key");
+                            // INT-6 m-6 / INT-7 m-e: a cancel asked for this job (before its first step, or while one ran) stops the plan BEFORE the
+                            // next action starts; the atomic group rolls back. The action that did not start is named as cancelled in failed_action
+                            // and is NOT entered in the trace of executed actions.
+                            if (applyLedger.StopBeforeAction(PythonRunRegistry.IsCancelRequested(Job.Ambient?.Id), i, key, action.Value<string>("tool")))
+                                throw new InvalidOperationException("action '" + key + "' was not started: cancellation of the job was requested. The atomic plan rolls back.");
                             string resolveError;
                             JObject original = action["arguments"] as JObject;
                             JObject child = PlanReferences.Resolve(original, results, out resolveError) as JObject;
@@ -296,10 +296,8 @@ namespace Horizun.Revit.Commands
                                         "': reference_binding_changed; the consumer was not executed");
                                 }
                             }
-                            child = ChildArguments(child, gate, false);
-                            string expectedChildPlan;
-                            if (expectedChildPlans.TryGetValue(i, out expectedChildPlan))
-                                child["__expected_plan_fingerprint"] = expectedChildPlan;
+                            expectedChildPlans.TryGetValue(i, out string expectedChildPlan);
+                            child = ChildArguments(child, gate, false, expectedChildPlan);
                             CommandResult result = _resolve(action.Value<string>("tool")).Execute(app, child.ToString(Formatting.None));
 
                             // THE CHECK THIS WHOLE CHANGE EXISTS FOR. Success means the child
@@ -325,6 +323,9 @@ namespace Horizun.Revit.Commands
                                     throw new InvalidOperationException("Progress could not be persisted; rolling back the atomic plan: " + Job.Ambient.WriteFault);
                             }
                         }
+                        // INT-7 m-e: a cancel that came in while the LAST action ran is honoured too - the group is rolled back, not kept.
+                        if (applyLedger.StopBeforeCommit(PythonRunRegistry.IsCancelRequested(Job.Ambient?.Id)))
+                            throw new InvalidOperationException("cancellation of the job was requested before the group was kept: the atomic plan rolls back instead of committing.");
                     }
                     Guard.Assimilate(group, groupName);
                 }
@@ -386,7 +387,8 @@ namespace Horizun.Revit.Commands
                         rollbackStatus: rollbackStatus,
                         executionTrace: executed,
                         error: ex.Message,
-                        failedAction: applyLedger.FailedAction);
+                        failedAction: applyLedger.FailedAction,
+                        cancelled: applyLedger.Cancelled);
 
                     // Explicit nulls when nothing went wrong, so "the rollback threw" and "this
                     // reply does not carry that field" stay different facts.
@@ -407,67 +409,36 @@ namespace Horizun.Revit.Commands
             // only live probe pointed at execute_plan's apply path was one that
             // deliberately FAILS, to prove rollback. The success path had never
             // been run against Revit at all.
+            //
+            // AND NOTHING PAST THIS POINT MAY TURN A COMMIT INTO AN ERROR (field report E1: an
+            // ArgumentException answered a plan whose changes were in the model). The group
+            // has been assimilated; a failure to BUILD the reply is reported inside a success
+            // as committed_with_report_error (PlanLedger.CommittedWithReportError), never as
+            // a Fail a caller would retry.
             var outputs = new JObject();
-            foreach (KeyValuePair<string, JToken> pair in results)
-                outputs[pair.Key] = pair.Value;
-            return CommandResult.Ok(applyLedger.SuccessPayload(groupName, outputs));
+            try
+            {
+                foreach (KeyValuePair<string, JToken> pair in results)
+                    outputs[pair.Key] = pair.Value;
+                return CommandResult.Ok(applyLedger.SuccessPayload(groupName, outputs));
+            }
+            catch (Exception reportError)
+            {
+                Log.Warn("horizun_execute_plan: the group committed and the reply could not be built: " + reportError);
+                return CommandResult.Ok(applyLedger.CommittedWithReportError(groupName, outputs, reportError));
+            }
         }
 
-        /// <summary>
-        /// The graph's materialised plan, built identically from the rehearsal rows and
-        /// from the pre-apply recheck rows. One element per action; the fact that binds is
-        /// the CHILD's own plan fingerprint where the child materialises one - the same
-        /// mechanism, composed. A child that does not (or a row deferred behind a
-        /// reference) contributes its status instead, so wired and unwired children are
-        /// distinguishable in what the token covers.
-        /// </summary>
-        private static Core.ResolvedPlan GraphPlan(UIApplication app, GateResult gate, JArray rows, JArray actions)
-        {
-            var plan = new Core.ResolvedPlan
-            {
-                Command = "horizun_execute_plan",
-                DocumentKey = gate.Fingerprint,
-                RevitVersion = SafeVersion(app),
-                DocumentFingerprint = gate.Identity?.FingerprintDigest()
-            };
-            for (int i = 0; i < rows.Count; i++)
-            {
-                JObject row = rows[i] as JObject;
-                if (row == null) continue;
-                string childFp = null;
-                try { childFp = (string)row["data"]?["plan_resolved"]?["fingerprint"]; } catch { }
-                plan.Elements.Add(new Core.PlannedElement
-                {
-                    UniqueId = "action:" + (row.Value<int?>("index") ?? i),
-                    Category = row.Value<string>("tool"),
-                    Action = Core.PlannedAction.Modify,
-                    BeforeValues = new Dictionary<string, string>
-                    {
-                        { "key", row.Value<string>("key") ?? "" },
-                        { "child", childFp ?? (row.Value<string>("status") == "deferred_until_execution"
-                                                  ? "deferred" : "no_child_plan") },
-                        { "reference_original", row["reference_binding"]?.Value<string>("original_hash") ?? "" },
-                        { "reference_resolved", row["reference_binding"]?.Value<string>("resolved_hash") ?? "" }
-                    }
-                });
-            }
-            return plan;
-        }
+        private static ResolvedPlan ResolveGraph(UIApplication app, GateResult gate, JArray rows) =>
+            PlanLedger.ResolveGraph(rows, gate.Fingerprint, SafeVersion(app), gate.Identity?.FingerprintDigest());
 
         private static string SafeVersion(UIApplication app)
         {
             try { return app?.Application?.VersionNumber; } catch { return null; }
         }
 
-        private static JObject ChildArguments(JObject source, GateResult gate, bool dryRun)
-        {
-            JObject child = source == null ? new JObject() : (JObject)source.DeepClone();
-            child["target_document"] = gate.Identity.Path ?? gate.Identity.Title;
-            child["target_document_title"] = gate.Identity.Title;
-            child["dry_run"] = dryRun;
-            child.Remove("confirmation_token"); child.Remove("idempotency_key");
-            return child;
-        }
+        private static JObject ChildArguments(JObject source, GateResult gate, bool dryRun, string expectedChildPlan = null) =>
+            PlanLedger.ChildArguments(source, gate.Identity.Path, gate.Identity.Title, dryRun, expectedChildPlan);
 
         /// <summary>
         /// A child's fallback signal as JSON, or null when it carried none. Serialized the
@@ -482,12 +453,8 @@ namespace Horizun.Revit.Commands
         }
 
         private static CommandResult BeforeGroupFailure(string phase, JArray trace, JObject failedAction,
-                                                        string error, CommandResult child)
-        {
-            JObject detail = PlanFailure.BeforeGroup(phase, trace, failedAction, error);
-            return CommandResult.FailWithDetail(error + ". Nothing ran.", detail,
-                                                child?.Fallback, child?.CapabilityGaps);
-        }
+                                                        string error, CommandResult child, bool cancelled = false)
+            => PlanFailure.BeforeGroupResult(phase, trace, failedAction, error, child, cancelled);
 
         private static JObject Error(int index, string error) => new JObject { ["index"] = index, ["error"] = error };
 

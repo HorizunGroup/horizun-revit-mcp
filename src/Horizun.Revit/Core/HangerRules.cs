@@ -1,7 +1,7 @@
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
-// THE REVIT-FREE HALF OF the "hangers" operation of horizun_mep_routing: where
+// THE REVIT-FREE HALF OF the "hangers" operation of horizun_mep_routing (Pro edition): where
 // along a run a support station goes, given the run's own length, the end
 // clearance the caller asked for, the maximum spacing, and the interior
 // fittings (taps) a support must also stay clear of.

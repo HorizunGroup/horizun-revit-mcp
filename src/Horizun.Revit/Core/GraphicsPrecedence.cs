@@ -20,7 +20,9 @@
 // visible does not bring back a hidden category, and an element hidden in the view
 // stays hidden whatever its filters say.
 // -----------------------------------------------------------------------------
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
@@ -84,6 +86,54 @@ namespace Horizun.Revit.Core
                 ["decided_by"] = hiddenBy ?? "no layer hides it"
             };
             return winners;
+        }
+
+        internal static void AddFilterExplanation(JObject row, JObject graphics)
+        {
+            var layers = (JArray)graphics["layers"];
+            row["filters"] = new JArray(layers.OfType<JObject>()
+                .Where(layer => layer.Value<string>("source") == "filter" &&
+                    (layer.Value<bool?>("matches") == true || layer["read_error"] != null))
+                .Select(layer => layer.DeepClone()));
+            row["graphics_winners"] = graphics["winners"]?.DeepClone();
+            if (graphics["filter_warning"] != null) row["filter_warning"] = graphics["filter_warning"].DeepClone();
+        }
+
+        internal static void ReadFilter(JObject row, IList<GraphicsLayer> layers, Func<bool> readEnabled,
+            Func<bool> readMatches, Func<bool> readVisible, Func<IDictionary<string, string>> readOverrides)
+        {
+            var errors = new List<string>();
+            T Read<T>(string field, Func<T> read)
+            {
+                try { return read(); }
+                catch (Exception ex) { errors.Add(field + ": " + ex.Message); return default(T); }
+            }
+
+            bool? enabled = Read<bool?>("enabled", () => readEnabled());
+            bool? matches = Read<bool?>("matches", () => readMatches());
+            bool? visible = Read<bool?>("visible", () => readVisible());
+            IDictionary<string, string> fields = Read("overrides", readOverrides);
+            row["enabled"] = enabled;
+            row["matches"] = matches;
+            row["visible"] = visible;
+            row["overrides"] = fields == null ? null : JObject.FromObject(fields);
+            if (errors.Count > 0) row["read_error"] = string.Join("; ", errors);
+            if (enabled == true && matches == true && errors.Count == 0)
+                layers.Add(new GraphicsLayer
+                {
+                    Source = "filter", Label = "filter:" + row.Value<long>("filter_id"),
+                    Visible = visible == false ? false : (bool?)null, Fields = fields
+                });
+        }
+
+        internal static void AddWinners(JObject report, IList<GraphicsLayer> layers, JArray trace)
+        {
+            var unread = trace.OfType<JObject>().Where(row => row["read_error"] != null).ToList();
+            if (unread.Count > 0)
+                report["filter_warning"] = string.Join("; ", unread.Select(row =>
+                    "filter " + row.Value<long>("filter_id") + " (" + row.Value<string>("name") + "): " + row.Value<string>("read_error")));
+            report["winners"] = unread.Any(row => row.Value<bool?>("enabled") != false && row.Value<bool?>("matches") != false)
+                ? null : Resolve(layers);
         }
     }
 }

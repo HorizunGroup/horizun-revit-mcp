@@ -86,7 +86,16 @@ namespace Horizun.Server
         /// </summary>
         public static TargetSelection Target
         {
-            get { return System.Threading.Volatile.Read(ref _target); }
+            get
+            {
+                TargetSelection t = System.Threading.Volatile.Read(ref _target);
+                if (t.Document == null) return t;
+                // CT-P2-1a: a pinned DOCUMENT follows the model to the instance that shows it.
+                TargetSelection moved = DocumentTarget.Refresh(t);
+                // An unresolved answer is for THIS call only: the pin stays, and the next call looks again.
+                if (DocumentTarget.ShouldStore(t, moved)) System.Threading.Interlocked.CompareExchange(ref _target, moved, t);
+                return moved;
+            }
             set { System.Threading.Volatile.Write(ref _target, value ?? TargetSelection.Automatic); }
         }
 
@@ -106,6 +115,7 @@ namespace Horizun.Server
         /// "this instance is running and that one is not" without owning a Revit.
         /// </summary>
         internal static Func<int, bool> LivenessProbe { get; set; }
+        internal static Func<int, DateTime?> ProcessStartProbe { get; set; }
 
         /// <summary>
         /// Legacy discovery files predate the shared contract hash. Reads may retain
@@ -142,24 +152,6 @@ namespace Horizun.Server
         /// </summary>
         public static Discovered Discover(string year) => Resolve(year, null, out _);
 
-
-        /// <summary>
-        /// What to tell a caller who must choose between Revit instances. horizun_target is the
-        /// answer only where it is callable; with `local` as the whole toolset it is hidden, and
-        /// pointing the agent at it would send it to a tool it cannot reach.
-        /// </summary>
-        internal static string TargetAdvice(bool yearAlreadyGiven = false)
-            => Tools.IsCallable("horizun_target")
-                ? "Call horizun_target with a pid to choose one" +
-                  (yearAlreadyGiven ? "." : ", or with a year if only one instance of it is running.")
-                : "This session cannot choose a target itself: ask the user to close the other Revit instance(s), " +
-                  "or to set HORIZUN_REVIT_YEAR in the MCP client configuration to the one to use.";
-
-        /// <summary>The "which Revits are there" sentence, with the same condition as <see cref="TargetAdvice"/>.</summary>
-        internal static string TargetListAdvice()
-            => Tools.IsCallable("horizun_target")
-                ? "Call horizun_target with no arguments to see the ones that have."
-                : "Ask the user which Revit instances are running with the Horizun add-in loaded.";
         /// <summary>
         /// Pick the Revit to talk to, and REFUSE rather than guess when more than one fits.
         ///
@@ -178,8 +170,11 @@ namespace Horizun.Server
             if (pid.HasValue)
             {
                 foreach (Discovered d in all)
+                    if (d.Pid == pid.Value && d.ProcessAlive) return d;
+                foreach (Discovered d in all)
                     if (d.Pid == pid.Value) return d;
-                refusal = "No Revit with process id " + pid.Value + " has published a bridge. " + TargetListAdvice();
+                refusal = "No Revit with process id " + pid.Value + " has published a bridge. Call horizun_target " +
+                          "with no arguments to see the ones that have.";
                 return null;
             }
 
@@ -200,8 +195,9 @@ namespace Horizun.Server
                 foreach (Discovered c in live) names.Add("Revit " + c.Year + " pid " + c.Pid);
                 refusal = live.Count + " Revit instances are running with the bridge loaded (" +
                           string.Join(", ", names) + ") and nothing says which one you mean. Refusing to pick: a " +
-                          "command sent to the wrong session is a correct edit to the wrong model. " +
-                          TargetAdvice(!string.IsNullOrEmpty(year));
+                          "command sent to the wrong session is a correct edit to the wrong model. Call " +
+                          "horizun_target with a pid to choose one" +
+                          (string.IsNullOrEmpty(year) ? ", or with a year if only one instance of it is running." : ".");
                 return null;
             }
 
@@ -350,7 +346,7 @@ namespace Horizun.Server
                     Token = (string)o["auth_token"],
                     Year = (string)o["revit_year"],
                     Pid = pid,
-                    ProcessAlive = IsRevitAlive(pid),
+                    ProcessAlive = RegistrationIsLive(pid, o["started_utc"], file),
                     SourceFile = file,
                     AddinVersion = (string)o["addin_version"],
                     Commands = commands,
@@ -386,6 +382,30 @@ namespace Horizun.Server
             catch { return false; }
         }
 
+        private static bool RegistrationIsLive(int pid, JToken publishedUtc, string file)
+        {
+            if (!IsRevitAlive(pid)) return false;
+            // Existing tests inject liveness without a real process. Production always
+            // checks process identity; tests can inject the process start explicitly.
+            if (LivenessProbe != null && ProcessStartProbe == null) return true;
+            try
+            {
+                DateTime? started;
+                if (ProcessStartProbe != null) started = ProcessStartProbe(pid);
+                else using (var process = System.Diagnostics.Process.GetProcessById(pid))
+                    started = process.StartTime.ToUniversalTime();
+                if (!started.HasValue) return false;
+                DateTime published;
+                if (publishedUtc == null || publishedUtc.Type == JTokenType.Null) published = File.GetLastWriteTimeUtc(file);
+                else if (publishedUtc.Type == JTokenType.Date) published = publishedUtc.Value<DateTime>().ToUniversalTime();
+                else if (!DateTime.TryParse((string)publishedUtc, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal,
+                    out published)) return false;
+                return started.Value.ToUniversalTime() <= published.ToUniversalTime();
+            }
+            catch { return false; }
+        }
+
         /// <summary>
         /// Send one command to the plugin and return its reply envelope.
         ///
@@ -400,12 +420,22 @@ namespace Horizun.Server
         /// here: connect, write and read all blocked to their own timeouts regardless,
         /// so a cancel notification changed nothing about when this returned.
         /// </summary>
+        /// <summary>The request field that marks an instance probe; the add-in reads it as Horizun.Revit.Core.ProbeFlag.Field.</summary>
+        internal const string ProbeField = "probe";
+
         public static JObject Send(Discovered d, string command, JObject args, int timeoutMs,
-                                   CancellationToken ct = default(CancellationToken), Action<JObject> observe = null)
+                                   CancellationToken ct = default(CancellationToken), Action<JObject> observe = null, bool probe = false)
         {
+            if (timeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutMs));
+            // All callers, including instance probes, observe the diagnostic ceiling.
+            // Other commands retain the dispatcher's reply grace supplied by Program.
+            if (command == "horizun_health")
+                timeoutMs = Horizun.Revit.Core.CommandDeadlinePolicy.WaitMs(command, timeoutMs);
             string wireId = Guid.NewGuid().ToString("N");
             bool possiblySubmitted = false, cancelledBeforeStart = false;
             string phase = "connect";
+            JObject timeoutNotice = null;
+            JObject cancellationNotice = null;
             var sendClock = System.Diagnostics.Stopwatch.StartNew();
             try
             {
@@ -418,6 +448,9 @@ namespace Horizun.Server
                     ["params"] = args ?? new JObject(),
                     ["token"] = d.Token
                 };
+                // An instance PROBE (health without a target, routing by document) is the server looking, not a client working:
+                // the add-in does not count it as presence (ClientPresence), or every agent would flag every other one.
+                if (probe) req[ProbeField] = true;
                 byte[] requestBytes = new UTF8Encoding(false).GetBytes(req.ToString(Newtonsoft.Json.Formatting.None) + "\n");
 
                 // Refused HERE, before anything is sent (backlog #37): the add-in reads at
@@ -433,13 +466,13 @@ namespace Horizun.Server
                     // Connect in slices so a cancel between them is noticed. ConnectAsync
                     // exists on newer targets only, and this file is shared, so the wait is
                     // chunked rather than made async.
-                    const int connectBudgetMs = 5000;
+                    int connectBudgetMs = Math.Min(5000, timeoutMs);
                     const int sliceMs = 250;
                     var connectClock = System.Diagnostics.Stopwatch.StartNew();
                     while (true)
                     {
                         ct.ThrowIfCancellationRequested();
-                        try { pipe.Connect(sliceMs); break; }
+                        try { pipe.Connect(Math.Max(1, Math.Min(sliceMs, connectBudgetMs - (int)connectClock.ElapsedMilliseconds))); break; }
                         catch (TimeoutException)
                         {
                             if (connectClock.ElapsedMilliseconds >= connectBudgetMs)
@@ -465,10 +498,13 @@ namespace Horizun.Server
                     // Last check before the write. Past this point the command IS in Revit's
                     // hands and cancelling can only stop us listening for the answer.
                     ct.ThrowIfCancellationRequested();
+                    int writeBudgetMs = Math.Min(WriteTimeoutMs, (int)Math.Max(0, timeoutMs - sendClock.ElapsedMilliseconds));
+                    if (writeBudgetMs == 0)
+                        throw new TimeoutException("Revit call deadline exceeded before the request was sent. Nothing ran.");
                     phase = "send";
                     // A partial pipe write is already an uncertain submission.
                     possiblySubmitted = true;
-                    if (!WriteRequest(pipe, requestBytes, task, ct))
+                    if (!WriteRequest(pipe, requestBytes, task, ct, writeBudgetMs))
                     {
                         // Answered before it had read the whole request: the add-in only does
                         // that when it refuses the request unread, and a request it never read
@@ -484,43 +520,50 @@ namespace Horizun.Server
                     }
                     phase = "receive";
 
-                    var waiting = System.Diagnostics.Stopwatch.StartNew();
                     int waited;
                     do
                     {
-                        int remaining = (int)Math.Max(0, timeoutMs - waiting.ElapsedMilliseconds);
+                        int remaining = (int)Math.Max(0, timeoutMs - sendClock.ElapsedMilliseconds);
                         waited = WaitHandle.WaitAny(new[] { ((IAsyncResult)task).AsyncWaitHandle, ct.WaitHandle }, observe == null ? remaining : Math.Min(remaining, 5000));
-                        if (waited != WaitHandle.WaitTimeout || waiting.ElapsedMilliseconds >= timeoutMs) break;
+                        if (waited != WaitHandle.WaitTimeout || sendClock.ElapsedMilliseconds >= timeoutMs) break;
                         try { observe?.Invoke(ReadRequestStatus(d, wireId)); } catch { /* Observability never cancels work. */ }
                     } while (true);
 
                     if (waited == WaitHandle.WaitTimeout)
                     {
-                        CancelAttempt cancel = TryCancelQueued(d, wireId);
+                        JObject observed = ReadRequestStatus(d, wireId);
+                        // The WAIT expired. The add-in removes queued work and signals a synchronous planimetry read.
+                        CancelAttempt cancel = TryCancelQueued(d, wireId, CancelIntent.Timeout);
                         cancelledBeforeStart = cancel.CancelledBeforeStart == true;
+                        timeoutNotice = TransportProgress.Notice(observed, cancelledBeforeStart, sendClock.ElapsedMilliseconds);
                         if (cancel.CancelledBeforeStart == true)
                             throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. The request " +
                                 "was still waiting in Revit's FIFO queue and was removed. It NEVER STARTED: nothing " +
                                 "was executed and nothing was written. " +
-                                RetrySentence(args, true, sendClock.ElapsedMilliseconds));
+                                RetrySentence(command, args, true, sendClock.ElapsedMilliseconds));
+                        bool followable = !string.IsNullOrEmpty((string)(cancel.Progress?["job_id"]) ?? (string)(observed?["progress"]?["job_id"]));
                         throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. " +
-                            CancellationUncertainty(command, cancel) + " " +
-                            RetrySentence(args, false, sendClock.ElapsedMilliseconds));
+                            CancellationUncertainty(command, cancel, followable) + " " +
+                            RetrySentence(command, args, false, sendClock.ElapsedMilliseconds) + TransportProgress.Sentence(timeoutNotice));
                     }
 
                     if (waited == 1)
                     {
-                        CancelAttempt cancel = TryCancelQueued(d, wireId);
+                        CancelAttempt cancel = TryCancelQueued(d, wireId, CancelIntent.Cancel);
                         cancelledBeforeStart = cancel.CancelledBeforeStart == true;
+                        if (string.Equals(cancel.State, "cancel_requested", StringComparison.Ordinal))
+                            cancellationNotice = TransportProgress.CancellationNotice(new JObject
+                                { ["state"] = "executing", ["progress"] = cancel.Progress?.DeepClone() });
                         if (cancel.CancelledBeforeStart == true)
                             throw new OperationCanceledException(
                                 "Cancelled while waiting for Revit to answer '" + command + "'. The request was still " +
                                 "in the FIFO queue and was removed before it started. Nothing was executed or written. " +
-                                RetrySentence(args, true, sendClock.ElapsedMilliseconds), ct);
+                                RetrySentence(command, args, true, sendClock.ElapsedMilliseconds), ct);
                         throw new OperationCanceledException(
                             "Cancelled while waiting for Revit to answer '" + command + "'. " +
                             CancellationUncertainty(command, cancel) + " " +
-                            RetrySentence(args, false, sendClock.ElapsedMilliseconds), ct);
+                            RetrySentence(command, args, false, sendClock.ElapsedMilliseconds) +
+                            (cancellationNotice == null ? "" : TransportProgress.Sentence(cancellationNotice)), ct);
                     }
 
                     BoundedLine reply = task.Result;
@@ -560,9 +603,33 @@ namespace Horizun.Server
                     // What an identical retry does, machine-readable: runs freshly,
                     // replays the durable record, or cannot be proven. See CancellationAdvice.
                     ["retry"] = CancellationAdvice.ToJson(CancellationAdvice.Classify(nothingStarted, hasKey),
-                        hasKey, CancellationAdvice.BatchSize(args), sendClock.ElapsedMilliseconds,
-                        submitJobAvailable: Tools.IsCallable("horizun_submit_job"))
+                        hasKey, CancellationAdvice.BatchSize(args), sendClock.ElapsedMilliseconds, command)
                 };
+                // THE CAUSE, as a stable code. A timeout names the limit that was hit.
+                string transportMsg = ex.Message ?? "";
+                if (ex is TimeoutException)
+                {
+                    detail["timeout_notice"] = timeoutNotice ?? TransportProgress.Notice(null, nothingStarted);
+                    if (transportMsg.StartsWith("Could not connect", StringComparison.Ordinal))
+                        detail["error_code"] = Horizun.Revit.Core.ErrorCodes.RevitNoDisponible;
+                    else
+                    {
+                        detail["error_code"] = Horizun.Revit.Core.ErrorCodes.TiempoAgotado;
+                        detail["limite_ms"] = transportMsg.StartsWith("Revit's bridge did not read", StringComparison.Ordinal)
+                            ? Math.Min(WriteTimeoutMs, timeoutMs) : timeoutMs;
+                    }
+                }
+                else if (ex is OperationCanceledException)
+                {
+                    detail["error_code"] = Horizun.Revit.Core.ErrorCodes.Cancelado;
+                    if (cancellationNotice != null) detail["cancellation_notice"] = cancellationNotice;
+                }
+                else if (ex is IOException && transportMsg.IndexOf("byte limit", StringComparison.Ordinal) >= 0)
+                    detail["error_code"] = Horizun.Revit.Core.ErrorCodes.RespuestaDemasiadoGrande;
+                else if (ex is IOException && transportMsg.StartsWith("Pipe closed", StringComparison.Ordinal))
+                    detail["error_code"] = Horizun.Revit.Core.ErrorCodes.RevitNoDisponible;
+                else detail["error_code"] = Horizun.Revit.Core.ErrorCodes.TransporteFallido;
+                detail["exception_type"] = Horizun.Revit.Core.ErrorCodes.TypeNameOf(ex);
                 ex.Data["horizun_transport_detail"] = detail;
                 throw;
             }
@@ -575,12 +642,12 @@ namespace Horizun.Server
         /// disposal of the pipe then ends the pending write.
         /// </summary>
         private static bool WriteRequest(Stream pipe, byte[] bytes, System.Threading.Tasks.Task<BoundedLine> reply,
-                                         CancellationToken ct)
+                                         CancellationToken ct, int budgetMs)
         {
             System.Threading.Tasks.Task write = pipe.WriteAsync(bytes, 0, bytes.Length);
             int which = WaitHandle.WaitAny(
                 new[] { ((IAsyncResult)write).AsyncWaitHandle, ((IAsyncResult)reply).AsyncWaitHandle, ct.WaitHandle },
-                WriteTimeoutMs);
+                budgetMs);
             // Both finished: an ordinary reply to a request written whole.
             if (which == 1 && ((IAsyncResult)write).AsyncWaitHandle.WaitOne(200) &&
                 write.Status == System.Threading.Tasks.TaskStatus.RanToCompletion)
@@ -612,7 +679,7 @@ namespace Horizun.Server
             }
             ct.ThrowIfCancellationRequested();
             throw new TimeoutException(
-                "Revit's bridge did not read the request within " + WriteTimeoutMs + " ms, so the write was abandoned. " +
+                "Revit's bridge did not read the request within " + budgetMs + " ms, so the write was abandoned. " +
                 "Whether any of it was acted on cannot be proven from here. Do not resend it assuming nothing happened.");
         }
 
@@ -631,38 +698,29 @@ namespace Horizun.Server
             catch { return false; }
         }
 
-        private static string RetrySentence(JObject args, bool nothingStarted, long elapsedMs)
+        private static string RetrySentence(string command, JObject args, bool nothingStarted, long elapsedMs)
             => CancellationAdvice.Sentence(
                 CancellationAdvice.Classify(nothingStarted, CancellationAdvice.HasKey(args)),
-                CancellationAdvice.BatchSize(args), elapsedMs, Tools.IsCallable("horizun_submit_job"));
+                CancellationAdvice.BatchSize(args), elapsedMs, command);
 
-        private sealed class CancelAttempt
+        internal sealed class CancelAttempt
         {
             public bool? CancelledBeforeStart;
             public string State;
             /// <summary>The add-in will refuse the request if it has not arrived yet (backlog #36).</summary>
             public bool RefusedOnArrival;
+            public JObject Progress;
         }
 
         private static JObject ReadRequestStatus(Discovered target, string wireId)
         {
             try
             {
-                using (var pipe = new NamedPipeClientStream(".", target.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
-                {
-                    pipe.Connect(250);
-                    var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
-                    string id = "observe-" + Guid.NewGuid().ToString("N");
-                    writer.WriteLine(new JObject { ["id"] = id, ["command"] = "__horizun_request_status", ["params"] = new JObject { ["wire_id"] = wireId }, ["token"] = target.Token }.ToString(Newtonsoft.Json.Formatting.None));
-                    var task = System.Threading.Tasks.Task.Factory.StartNew(() => new BoundedLineReader(pipe, 65536).ReadLine(), CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
-                    if (!task.Wait(500)) return new JObject { ["state"] = "unobserved", ["reason"] = "status_timeout" };
-                    var line = task.Result;
-                    if (line.Outcome != BoundedLineOutcome.Ok) throw new IOException("Status response unavailable.");
-                    var reply = Horizun.Revit.Core.JsonText.ParseObject(line.Line);
-                    if ((string)reply["id"] != id || reply.Value<bool?>("success") != true || !(reply["data"] is JObject data) || (string)data["wire_id"] != wireId)
-                        throw new IOException("Status response was not correlated with this request.");
-                    return data;
-                }
+                string id = "observe-" + Guid.NewGuid().ToString("N");
+                JObject reply = ControlExchange(target, new JObject { ["id"] = id, ["command"] = "__horizun_request_status", ["params"] = new JObject { ["wire_id"] = wireId }, ["token"] = target.Token }, 250, 750);
+                if ((string)reply["id"] != id || reply.Value<bool?>("success") != true || !(reply["data"] is JObject data) || (string)data["wire_id"] != wireId)
+                    throw new IOException("Status response was not correlated with this request.");
+                return data;
             }
             catch (Exception ex) { return new JObject { ["state"] = "unobserved", ["reason"] = ex.GetType().Name }; }
         }
@@ -672,39 +730,66 @@ namespace Horizun.Server
         /// blocked waiting for the queued command. This control message never enters
         /// Revit's UI queue; the pipe server removes the entry under RequestGate's lock.
         /// </summary>
-        private static CancelAttempt TryCancelQueued(Discovered d, string wireId)
+        internal static class CancelIntent
+        {
+            /// <summary>The caller asked to stop (client cancellation): running cooperative work is asked to stop.</summary>
+            public const string Cancel = "cancel";
+            /// <summary>The caller's deadline passed. Running jobs retain their own lifetime.</summary>
+            public const string Timeout = "timeout";
+        }
+
+        private static CancelAttempt TryCancelQueued(Discovered d, string wireId, string intent)
         {
             var outcome = new CancelAttempt { CancelledBeforeStart = null, State = "cancel_control_unavailable" };
             try
             {
-                using (var pipe = new NamedPipeClientStream(".", d.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
-                {
-                    pipe.Connect(2000);
-                    var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
-                    writer.WriteLine(new JObject
+                string id = "cancel-" + Guid.NewGuid().ToString("N");
+                JObject envelope = ControlExchange(d, new JObject
                     {
-                        ["id"] = "cancel-" + Guid.NewGuid().ToString("N"),
+                        ["id"] = id,
                         ["command"] = "__horizun_cancel_queued",
-                        ["params"] = new JObject { ["wire_id"] = wireId },
+                        ["params"] = new JObject { ["wire_id"] = wireId, ["intent"] = intent },
                         ["token"] = d.Token
-                    }.ToString(Newtonsoft.Json.Formatting.None));
-
-                    var reader = new BoundedLineReader(pipe, 65536);
-                    var task = System.Threading.Tasks.Task.Factory.StartNew(() => reader.ReadLine(), CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
-                    if (!task.Wait(3000)) return outcome;
-                    BoundedLine line = task.Result;
-                    if (line.Outcome != BoundedLineOutcome.Ok) return outcome;
-                    JObject envelope = Horizun.Revit.Core.JsonText.ParseObject(line.Line);
+                    }, 1000, 2000);
+                    // A reply for another request proves nothing about removal from the queue.
+                    if ((string)envelope["id"] != id || envelope.Value<bool?>("success") != true) return outcome;
                     JObject data = envelope["data"] as JObject;
-                    if (data == null) return outcome;
+                    if (data == null || (string)data["wire_id"] != wireId) return outcome;
                     outcome.CancelledBeforeStart = (bool?)data["cancelled_before_start"];
                     outcome.State = (string)data["state"] ?? "unknown";
+                    outcome.Progress = data["progress"] as JObject;
                     outcome.RefusedOnArrival = data["refused_on_arrival"]?.Type == JTokenType.Boolean &&
                                                (bool)data["refused_on_arrival"];
                     return outcome;
-                }
             }
             catch { return outcome; }
+        }
+
+        // Control traffic must be bounded BEFORE reading a reply: a zero-buffer pipe
+        // whose peer stopped reading used to block forever in StreamWriter.WriteLine.
+        // Reading concurrently also avoids a write/write deadlock with an early refusal.
+        private static JObject ControlExchange(Discovered target, JObject request, int connectMs, int budgetMs)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            using (var pipe = new NamedPipeClientStream(".", target.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+            {
+                pipe.Connect(Math.Min(connectMs, budgetMs));
+                var reader = new BoundedLineReader(pipe, 65536);
+                var read = System.Threading.Tasks.Task.Factory.StartNew(() => reader.ReadLine(), CancellationToken.None,
+                    System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
+                byte[] bytes = new UTF8Encoding(false).GetBytes(request.ToString(Newtonsoft.Json.Formatting.None) + "\n");
+                var write = pipe.WriteAsync(bytes, 0, bytes.Length);
+                write.ContinueWith(t => { var ignored = t.Exception; }, System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
+                int remaining = (int)Math.Max(0, budgetMs - clock.ElapsedMilliseconds);
+                int first = WaitHandle.WaitAny(new[] { ((IAsyncResult)write).AsyncWaitHandle, ((IAsyncResult)read).AsyncWaitHandle }, remaining);
+                if (first == WaitHandle.WaitTimeout) throw new TimeoutException("Control request send deadline exceeded.");
+                if (first == 0) write.GetAwaiter().GetResult();
+                remaining = (int)Math.Max(0, budgetMs - clock.ElapsedMilliseconds);
+                if (!((IAsyncResult)read).AsyncWaitHandle.WaitOne(remaining)) throw new TimeoutException("Control response deadline exceeded.");
+                BoundedLine line = read.GetAwaiter().GetResult();
+                if (line.Outcome != BoundedLineOutcome.Ok) throw new IOException("Control response unavailable.");
+                return Horizun.Revit.Core.JsonText.ParseObject(line.Line);
+            }
         }
 
         /// <summary>
@@ -718,36 +803,48 @@ namespace Horizun.Server
             {
                 Discovered d = Resolve(null, pid, out _);
                 if (d == null) return null;
-                using (var pipe = new NamedPipeClientStream(".", d.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+                string id = "cancel-job-" + Guid.NewGuid().ToString("N");
+                JObject envelope = ControlExchange(d, new JObject
                 {
-                    pipe.Connect(2000);
-                    var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
-                    writer.WriteLine(new JObject
-                    {
-                        ["id"] = "cancel-job-" + Guid.NewGuid().ToString("N"),
+                        ["id"] = id,
                         ["command"] = "__horizun_cancel_job",
                         ["params"] = new JObject { ["job_id"] = jobId },
                         ["token"] = d.Token
-                    }.ToString(Newtonsoft.Json.Formatting.None));
-                    var task = System.Threading.Tasks.Task.Factory.StartNew(() => new BoundedLineReader(pipe, 65536).ReadLine(), CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
-                    if (!task.Wait(3000)) return null;
-                    BoundedLine line = task.Result;
-                    if (line.Outcome != BoundedLineOutcome.Ok) return null;
-                    JObject data = Horizun.Revit.Core.JsonText.ParseObject(line.Line)["data"] as JObject;
+                }, 2000, 5000);
+                    if ((string)envelope["id"] != id || envelope.Value<bool?>("success") != true) return null;
+                    JObject data = envelope["data"] as JObject;
                     if (data == null || (string)data["job_id"] != jobId || data["cancelled_before_start"]?.Type != JTokenType.Boolean)
                         return null;   // an older add-in answers an unknown control with a failure, not this shape
                     return new McpTasks.JobCancelAnswer
                     {
                         Removed = (bool)data["cancelled_before_start"],
-                        State = (string)data["state"] ?? "unknown"
+                        State = (string)data["state"] ?? "unknown",
+                        InterruptRequested = data["interrupt_requested"]?.Type == JTokenType.Boolean &&
+                                             (bool)data["interrupt_requested"]
                     };
-                }
             }
             catch { return null; }
         }
 
-        private static string CancellationUncertainty(string command, CancelAttempt cancel)
+        private static bool IsScriptCommand(string command)
+            => string.Equals(command, "horizun_execute_python", StringComparison.Ordinal) ||
+               string.Equals(command, "horizun_execute_plan", StringComparison.Ordinal);
+
+        internal static string CancellationUncertainty(string command, CancelAttempt cancel, bool followable = true)
         {
+            if (cancel != null && string.Equals(cancel.State, "cancel_requested", StringComparison.Ordinal))
+                return IsScriptCommand(command)
+                    ? "Cancellation was requested for the running script: it stops at its next checkpoint()/safe_point() and a script that " +
+                      "never reaches one runs to its end. Check the model before resending."
+                    : "Cancellation was requested for a cooperative job; poll its job record for the terminal state and partial result.";
+            if (cancel != null && string.Equals(cancel.State, "job_continues", StringComparison.Ordinal) && !followable)
+                return "Only the WAIT expired: the cooperative job was NOT cancelled and keeps running in Revit, but Revit reports no " +
+                       "job record for it (job_id unavailable). It cannot be followed with horizun_job_status or cancelled from here: " +
+                       "check the model in Revit when it finishes. Do not resend it.";
+            if (cancel != null && string.Equals(cancel.State, "job_continues", StringComparison.Ordinal))
+                return "Only the WAIT expired: the cooperative job was NOT cancelled and keeps running in Revit between " +
+                       "callbacks. Follow it by its job_id with horizun_job_status; cancel it there if it is no longer wanted. " +
+                       "Do not resend it.";
             if (cancel != null && string.Equals(cancel.State, "already_running", StringComparison.Ordinal))
                 return "The command had already started inside Revit. The API cannot interrupt work on its UI " +
                        "thread, so it CONTINUES and may finish after this caller stops waiting. Do not resend it " +

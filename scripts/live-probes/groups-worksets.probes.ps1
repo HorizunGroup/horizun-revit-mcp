@@ -25,7 +25,17 @@ $script:HzProbeModules += [pscustomobject]@{
         $G = 'horizun_manage_groups'; $W = 'horizun_manage_worksets'
         function Case($name, $tool, $outcome, $detail) { $cases.Add(@{ Name = $name; Tool = $tool; Outcome = $outcome; Detail = [string]$detail }) }
         function Ok($applied) { $applied.stage -eq 'apply' -and -not $applied.answer.isError -and $applied.answer.data.host_verified -eq $true }
-        function Why($applied) { "stage=$($applied.stage) " + [string]$applied.answer.text }
+        function Why($applied) {
+            # A refused regeneration names the deletions it judged: they are the diagnosis.
+            $del = @()
+            foreach ($src in @($applied.answer.structured, $applied.answer.data)) { if ($src) { $del += @($src.deletions); $del += @($src.detail.deletions); $del += @($src.rehearsal.deleted_elements) } }
+            $del = @($del | Where-Object { $_ })
+            $dtext = if ($del.Count) { ' deletions=' + ($del | ConvertTo-Json -Compress -Depth 4) } else {
+                # The rehearsal block may sit deeper: show what follows deleted_elements wherever it is.
+                $all = [string]$applied.answer.text + ' ' + [string]($applied.answer.structured | ConvertTo-Json -Depth 25 -Compress)
+                $at = $all.IndexOf('deleted_elements')
+                if ($at -ge 0) { ' ' + $all.Substring($at, [math]::Min(1500, $all.Length - $at)) } else { ' (no deleted_elements anywhere in the reply)' } }
+            "stage=$($applied.stage) " + [string]$applied.answer.text + $dtext }
         $doc = $Ctx.Document
         if ($Ctx.WriteGate) {
             foreach ($n in @('groups: list reads group types, instances and members', 'groups: create a model group of two walls and re-read its members',
@@ -63,7 +73,10 @@ $script:HzProbeModules += [pscustomobject]@{
             if (Ok $c) { $gid = [long]$c.answer.data.result.group_id; $tid = [long]$c.answer.data.result.type_id; $created.Add($tid)
                 Case $rest[0] $G 'pass' "group $gid type $tid" } else { Case $rest[0] $G 'fail' (Why $c) }
             if ($gid) {
-                $a = & $Ctx.Apply $G @{ operation = 'add_members'; target_document = $doc; group_ids = @($gid); element_ids = @($free[2]) } 'grp-add'
+                # add_members regenerates every member, and the members are fixture walls with no Horizun mark of
+                # this user: the guard refuses that unless the owner agreed. The release fixture is this run's own
+                # disposable model, so the probe says so (accept_member_regeneration) instead of borrowing a pass.
+                $a = & $Ctx.Apply $G @{ operation = 'add_members'; target_document = $doc; group_ids = @($gid); element_ids = @($free[2]); accept_member_regeneration = $true } 'grp-add'
                 if (Ok $a) { $gid = [long]$a.answer.data.result.group_id; $tid = [long]$a.answer.data.result.type_id; $created.Add($tid)
                     Case $rest[1] $G 'pass' "group now $gid" } else { Case $rest[1] $G 'fail' (Why $a) }
                 $r = & $Ctx.Apply $G @{ operation = 'remove_members'; target_document = $doc; group_ids = @($gid); element_ids = @($free[2]) } 'grp-remove'

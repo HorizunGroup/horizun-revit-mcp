@@ -287,7 +287,7 @@ namespace Horizun.Revit.Commands
                     report.LayerChecks.Add(check);
                     report.Fail(WallSplitCodes.VerifyLayerGeometry,
                         "layer " + layer.LayerNumberText + " sits " +
-                        (double.IsNaN(deviation) ? "an unmeasurable distance" : deviation.ToString("F2") + " mm") +
+                        (double.IsNaN(deviation) ? "an unmeasurable distance" : deviation.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm") +
                         " from where the plan puts it (tolerance " + WallLayerRules.ToleranceMm + " mm).");
                     return;
                 }
@@ -566,7 +566,7 @@ namespace Horizun.Revit.Commands
                 check["placement_deviation_mm"] = Math.Round(deviation, 3);
                 check["placement_verified"] = deviation <= WallLayerRules.ToleranceMm;
                 if (deviation > WallLayerRules.ToleranceMm)
-                    return "it is " + deviation.ToString("F2") + " mm from where the carrier's displacement of " +
+                    return "it is " + deviation.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm from where the carrier's displacement of " +
                            Math.Round(WallLayerRules.FeetToMm(expected.CarrierOffsetFeet), 2).ToString(CultureInfo.InvariantCulture) + " mm puts it.";
             }
 
@@ -745,7 +745,7 @@ namespace Horizun.Revit.Commands
             check["bounds_verified"] = worst <= WallLayerRules.ToleranceMm;
             return worst <= WallLayerRules.ToleranceMm
                 ? null
-                : "its extent along the wall or in height moved by " + worst.ToString("F2") + " mm.";
+                : "its extent along the wall or in height moved by " + worst.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm.";
         }
 
         private static string CompareParameters(Element after, DependencySnapshot snapshot, JObject check)
@@ -948,7 +948,7 @@ namespace Horizun.Revit.Commands
                 double delta = WallLayerRules.FeetToMm(Math.Abs(length - before.OpeningBoundaryLengthFeet));
                 check["boundary_length_deviation_mm"] = Math.Round(delta, 3);
                 if (delta > WallLayerRules.ToleranceMm)
-                    return "its boundary length moved by " + delta.ToString("F2") + " mm.";
+                    return "its boundary length moved by " + delta.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm.";
             }
 
             // The boundary MOVED with the carrier, exactly as the carrier moved.
@@ -965,7 +965,7 @@ namespace Horizun.Revit.Commands
             check["boundary_verified"] = worst <= WallLayerRules.ToleranceMm;
             return worst <= WallLayerRules.ToleranceMm
                 ? null
-                : "its boundary is " + worst.ToString("F2") + " mm from where the carrier's displacement puts it.";
+                : "its boundary is " + worst.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm from where the carrier's displacement puts it.";
         }
 
         // ---- sweeps and reveals ------------------------------------------------------
@@ -1070,7 +1070,7 @@ namespace Horizun.Revit.Commands
                 check["position_verified"] = deviation <= WallLayerRules.ToleranceMm;
                 if (deviation > WallLayerRules.ToleranceMm)
                     return "it is neither where it was nor where the carrier's displacement puts it; the nearest " +
-                           "verified interpretation is still " + deviation.ToString("F2") + " mm away.";
+                           "verified interpretation is still " + deviation.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm away.";
             }
 
             return null;
@@ -1286,7 +1286,7 @@ namespace Horizun.Revit.Commands
                 // displacement, so it must not move at all.
                 if (check.Value<bool>("head_position_preserved") == false)
                     return "its head moved " + (double.IsNaN(delta) ? "an unmeasurable distance"
-                                                                    : delta.ToString("F2") + " mm") + ".";
+                                                                    : delta.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm") + ".";
             }
 
             return null;
@@ -1336,7 +1336,7 @@ namespace Horizun.Revit.Commands
                 check["position_deviation_mm"] = Math.Round(deviation, 3);
                 check["position_verified"] = deviation <= WallLayerRules.ToleranceMm;
                 if (deviation > WallLayerRules.ToleranceMm)
-                    return WallSplitCodes.VerifyFoundationGeometry + "|it is " + deviation.ToString("F2") +
+                    return WallSplitCodes.VerifyFoundationGeometry + "|it is " + deviation.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
                            " mm from where the carrier's displacement puts it, so its alignment with the wall " +
                            "it supports was not preserved.";
             }
@@ -1493,7 +1493,7 @@ namespace Horizun.Revit.Commands
             check["centreline_constraint_preserved"] = worstCentrelineMm <= WallLayerRules.ToleranceMm;
             if (worstCentrelineMm > WallLayerRules.ToleranceMm)
                 return WallSplitCodes.VerifyRebarLayout + "|the drawn bar centreline is " +
-                       worstCentrelineMm.ToString("F2") +
+                       worstCentrelineMm.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
                        " mm from every permitted constraint-preserving position (world, carrier curve, exterior " +
                        "face or interior face). Steel is not relocated merely to make it fit.";
 
@@ -1548,7 +1548,7 @@ namespace Horizun.Revit.Commands
                        "|this reinforcement is '" + containment.Word + "' with respect to the core carrier" +
                        (containment.WorstPosition >= 0
                             ? " - position " + containment.WorstPosition + " is " +
-                              containment.WorstOutsideMm.ToString("F1") + " mm outside"
+                              containment.WorstOutsideMm.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " mm outside"
                             : "") +
                        ". It is hosted by the compound wall and does not fit the core layer. It has NOT been moved to " +
                        "fit: relocating reinforcement is a structural decision, not a side effect of splitting a " +

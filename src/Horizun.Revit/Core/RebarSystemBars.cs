@@ -524,6 +524,12 @@ namespace Horizun.Revit.Core
             return s;
         }
 
+        /// <summary>Every bar and sheet in scope - sets, system bars and fabric sheets - once, in id order.</summary>
+        public List<long> AllInOrder()
+        {
+            return SetIds.Concat(SystemBarIds).Concat(FabricIds).Distinct().OrderBy(v => v).ToList();
+        }
+
         /// <summary>
         /// Keep only what `host` carries - sets, system bars and fabric sheets alike. One whose host would not
         /// read is not silently dropped: it is a reason, because whether it belongs to this host is unknown.

@@ -72,6 +72,20 @@ namespace Horizun.Core.Tests
         // ---- guard: the wrong bridge -------------------------------------------
 
         [Fact]
+        public void Wrong_host_message_explains_file_year_and_upgrade_choice()
+        {
+            var v = OpenDecision.Decide(LocalFile("2023", host: "2026"), Intent(expected: "2023"));
+            Assert.False(v.Ok);
+            Assert.Contains("file", v.Refusal);
+            Assert.Contains("2023", v.Refusal);
+            Assert.Contains("2026", v.Refusal);
+            Assert.Contains("allow_upgrade=true", v.Refusal);
+            Assert.Contains("expected_version", v.Refusal);
+            // Live 5.0.4: valid arguments refused by the file's version are a precondition, not a schema error.
+            Assert.Equal("precondicion_no_cumplida", v.RefusalCode);
+        }
+
+        [Fact]
         public void A_stated_version_that_disagrees_with_the_host_is_the_wrong_bridge()
         {
             // The file and the host can both be 2026 and the caller can still be talking

@@ -39,6 +39,17 @@ namespace Horizun.Revit.Core
         public string FullOutputPath { get; internal set; }
         public int? OriginalChars { get; internal set; }
 
+        /// <summary>
+        /// Kind "paged" only: the COMPLETE value, of which <see cref="Value"/> is the first page as text. Evidence
+        /// is classified from this, so paging never costs the self_reported_verified / partial / failed status.
+        /// </summary>
+        public JToken FullValue { get; internal set; }
+        public int? PageChars { get; internal set; }
+        public int? Pages { get; internal set; }
+
+        /// <summary>Why the complete output could not be saved, when it could not (the output may still have been returned whole).</summary>
+        public string PersistenceError { get; internal set; }
+
         /// <summary>True when the caller is getting less than the script produced.</summary>
         public bool Lossy => Kind == "text_only";
     }
@@ -67,13 +78,14 @@ namespace Horizun.Revit.Core
         }
 
         public static ScriptOutputRendering Render(object value, int maxChars = Horizun.Contracts.Contract.MaxScriptTextChars,
-                                                   Func<string,string> persist = null)
+                                                   Func<string,string> persist = null, int pageChars = 0,
+                                                   Func<string,string> persistUnpaged = null)
         {
             if (value == null)
                 return new ScriptOutputRendering { Value = JValue.CreateNull(), Kind = "absent" };
 
             if (value is string s)
-                return Bound(new ScriptOutputRendering { Value = new JValue(s), Kind = "scalar" }, maxChars, persist);
+                return Bound(new ScriptOutputRendering { Value = new JValue(s), Kind = "scalar" }, maxChars, persist, pageChars, persistUnpaged);
 
             if (value is bool || value is int || value is long || value is short || value is byte ||
                 value is uint || value is ulong || value is ushort || value is sbyte ||
@@ -87,7 +99,7 @@ namespace Horizun.Revit.Core
             {
                 try
                 {
-                    return Bound(new ScriptOutputRendering { Value = JToken.FromObject(value), Kind = "structure" }, maxChars, persist);
+                    return Bound(new ScriptOutputRendering { Value = JToken.FromObject(value), Kind = "structure" }, maxChars, persist, pageChars, persistUnpaged);
                 }
                 catch (Exception ex)
                 {
@@ -110,37 +122,98 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// A structure too big to return is REFUSED, never trimmed.
+        /// A structure too big to return whole is never TRIMMED.
         ///
         /// Text can be cut and marked, because a reader can see the marker and know what
         /// they have. A JSON structure cannot: half a list is a valid list, and a caller
-        /// that iterates it gets a confident, complete-looking, wrong answer. So an
-        /// oversized structure comes back as a note saying how big it was and what to do,
-        /// and the data is not there at all - which is the one thing that cannot be
-        /// mistaken for the data.
+        /// that iterates it gets a confident, complete-looking, wrong answer. So above the
+        /// page size (<paramref name="pageChars"/>, the caller's max_output_chars or 20,000) the output is saved
+        /// whole and page 1 comes back as TEXT - a slice of the JSON, which cannot be mistaken for the data -
+        /// with the way to read the rest. When it cannot be saved: up to <paramref name="maxChars"/> it is
+        /// returned whole (the run already happened; losing its output is the worst answer), above that it is
+        /// withheld as "too_large" and the reply says the run must NOT be repeated to get it back.
+        /// With <paramref name="pageChars"/> = 0 (no paging) the original rule holds: above maxChars, withheld.
         /// </summary>
         private static ScriptOutputRendering Bound(ScriptOutputRendering r,
-                                                   int maxChars = Horizun.Contracts.Contract.MaxScriptTextChars, Func<string,string> persist = null)
+                                                   int maxChars = Horizun.Contracts.Contract.MaxScriptTextChars, Func<string,string> persist = null,
+                                                   int pageChars = 0, Func<string,string> persistUnpaged = null)
         {
             string json;
             try { json = r.Value.ToString(Newtonsoft.Json.Formatting.None); }
             catch { return r; }
-            if (json.Length <= maxChars) return r;
 
             string fullPath = null, persistenceError = null;
-            try { fullPath = persist?.Invoke(json); }
-            catch(Exception ex) { persistenceError = ex.Message; }
+            bool notKept = false;
+            if (pageChars > 0)
+            {
+                if (json.Length <= pageChars) return r;
+                if (OutputPages.Keepable(json.Length, System.Text.Encoding.UTF8.GetByteCount(json)))
+                {
+                    try { fullPath = persist?.Invoke(json); }
+                    catch (Exception ex) { persistenceError = ex.Message; }
+                }
+                else
+                {
+                    // Above what output_page reads (4 MB) it is STILL saved whole, as a file for the person to read; only the
+                    // reading by pages is closed. Losing the output of a run that already happened is never the answer.
+                    notKept = true;
+                    try { fullPath = (persistUnpaged ?? persist)?.Invoke(json); }
+                    catch (Exception ex) { persistenceError = ex.Message; }
+                    return TooLarge(r, json, maxChars, fullPath, persistenceError, true);
+                }
+                if (fullPath != null)
+                {
+                    int pages = OutputPages.PageCount(json.Length, pageChars);
+                    return new ScriptOutputRendering
+                    {
+                        OriginalChars = json.Length, FullOutputPath = fullPath,
+                        Value = new JValue(OutputPages.Slice(json, 1, pageChars)),
+                        FullValue = r.Value,
+                        Kind = "paged", PageChars = pageChars, Pages = pages,
+                        Note = "__output__ serialized to " + json.Length + " characters. This reply carries page 1 of " + pages +
+                               " (" + pageChars + " characters each) as TEXT, not as a structure: it is a slice of the JSON, " +
+                               "not the data. The complete JSON is saved at " + fullPath + ". " +
+                               "The status of the run was classified from the COMPLETE output."
+                    };
+                }
+                if (json.Length <= maxChars)
+                {
+                    // Could not be saved, but it still fits: the run's output is not lost. Said, with the cause, and that the
+                    // page size asked for (or the default) was ignored.
+                    r.PersistenceError = persistenceError ?? "no place to save the output was available";
+                    r.Note = "The complete output could not be saved (" + r.PersistenceError + "), so the requested page size of " + pageChars +
+                             " characters was ignored and the whole output (" + json.Length + " characters) is returned.";
+                    return r;
+                }
+            }
+            else
+            {
+                if (json.Length <= maxChars) return r;
+                try { fullPath = persist?.Invoke(json); }
+                catch (Exception ex) { persistenceError = ex.Message; }
+            }
+
+            return TooLarge(r, json, maxChars, fullPath, persistenceError, notKept);
+        }
+
+        private static ScriptOutputRendering TooLarge(ScriptOutputRendering r, string json, int maxChars, string fullPath,
+                                                      string persistenceError, bool notKept)
+        {
             return new ScriptOutputRendering
             {
-                OriginalChars = json.Length, FullOutputPath = fullPath,
+                OriginalChars = json.Length, FullOutputPath = fullPath, PersistenceError = persistenceError,
                 Value = JValue.CreateNull(),
+                FullValue = r.Value,
                 Kind = "too_large",
                 Note = "__output__ serialized to " + json.Length + " characters, over the " + maxChars +
                        " limit, so NONE of it is returned. It is not truncated: half a structure is still a " +
                        "valid structure, and a caller iterating it would get a complete-looking wrong answer. " +
-                       "Return a summary, or write the full result to a file from inside the script - " +
-                       "json.dump(...) - and put the path in __output__ instead." +
+                       "THE SCRIPT ALREADY RAN: whatever it wrote to the model is written. Do NOT run it again to get this output; " +
+                       "check what it did with typed reads (horizun_query_model, horizun_list_elements, horizun_verify_changes). " +
+                       "In a future script, return a summary, or write the full result to a file from inside it - " +
+                       "json.dump(...) - and put the path in __output__ instead. The run's status was classified from the complete output." +
                        (fullPath == null ? "" : " The complete JSON was preserved at: " + fullPath) +
+                       (notKept ? " It is above the " + (OutputPages.MaxPagedBytes / (1024 * 1024)) + " MB that horizun_job_status output_page reads, so it is not available by pages: open the file." : "") +
                        (persistenceError == null ? "" : " Preserving full output failed: " + persistenceError)
             };
         }

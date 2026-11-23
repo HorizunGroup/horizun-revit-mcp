@@ -34,7 +34,7 @@ namespace Horizun.Server.Tests
     {
         /// <summary>Modules that support recipes rather than being one. No plan/apply expected.</summary>
         private static readonly HashSet<string> Helpers =
-            new HashSet<string>(StringComparer.Ordinal) { "hz" };
+            new HashSet<string>(StringComparer.Ordinal) { "hz", "hz_compat" };
 
         [Fact]
         public void The_recipe_folder_is_where_the_add_in_expects_it()

@@ -9,6 +9,19 @@ namespace Horizun.Revit.Core
     /// <summary>One bounded read, shared by admission and execution. No Revit dependencies.</summary>
     public sealed class PythonSourceSnapshot
     {
+        public static JObject AsyncReadOnlyRefusal(JObject request)
+        {
+            var args = (JObject)request.DeepClone();
+            args["run_async"] = false;
+            string reason = "The asynchronous dispatcher does not carry read_only into the queued request, so it would run without the read-only TransactionGroup and its rollback. Run synchronously. Nothing ran.";
+            return new JObject { ["reason"] = reason, ["suggested_call"] = new JObject { ["tool"] = "horizun_execute_python", ["args"] = args } };
+        }
+        public static string PreflightTimeoutAdvice(bool readOnly) =>
+            "Preflight cannot predict runtime. If the client stops waiting, the script may still run; " +
+            "check its job or outcome before retrying or splitting work. " +
+            (readOnly
+                ? "For read_only, allow enough client timeout; run_async cannot be combined with read_only."
+                : "For potentially long work, use run_async=true with an idempotency_key and poll horizun_job_status.");
         public string Code, Path, Encoding, Error;
         public bool ReadNow, NewlinesNormalized;
         public JArray Includes = new JArray();
@@ -23,7 +36,8 @@ namespace Horizun.Revit.Core
             {
                 string code = request.Value<string>("code"), path = request.Value<string>("code_path");
                 bool hasCode = !string.IsNullOrWhiteSpace(code), hasPath = !string.IsNullOrWhiteSpace(path);
-                if (hasCode == hasPath) throw new ArgumentException("Send exactly one of code or code_path.");
+                if (!hasCode && !hasPath) throw new ArgumentException("Provide non-empty code or code_path. For a file, pass its path as code_path, not its contents.");
+                if (hasCode && hasPath) throw new ArgumentException("Send exactly one of code or code_path; remove the other field.");
                 if (hasCode)
                 {
                     result.Code = code;
@@ -63,7 +77,8 @@ namespace Horizun.Revit.Core
                         while ((read = stream.Read(buffer, 0, Math.Min(buffer.Length, cap + 1 - (int)bytes.Length))) > 0)
                         {
                             bytes.Write(buffer, 0, read);
-                            if (bytes.Length > cap) throw new ArgumentException("code_path exceeds the source byte limit.");
+                            if (bytes.Length > cap) throw new ArgumentException("code_path exceeds the source byte limit of " +
+                                cap + " bytes. Reduce the file or split the work across separate calls; inline code also has a character limit.");
                         }
                         var decoded = PythonSourceText.Decode(bytes.ToArray());
                         if (!decoded.Ok) throw new ArgumentException(decoded.Error);
@@ -72,7 +87,7 @@ namespace Horizun.Revit.Core
                     }
                 }
                 if (string.IsNullOrWhiteSpace(result.Code)) throw new ArgumentException("The script is empty.");
-                if (result.Code.Length > Contract.MaxScriptTextChars) throw new ArgumentException("The script exceeds the source character limit.");
+                if (result.Code.Length > Contract.MaxScriptTextChars) throw new ArgumentException("The script exceeds the source character limit of " + Contract.MaxScriptTextChars + ". Reduce it or split the work across separate calls; code_path has the same limit.");
                 if (request["includes"] != null && request["source_includes"] != null)
                     throw new ArgumentException("Cannot mix includes and an admitted source snapshot.");
                 if (request["includes"] != null)
@@ -96,7 +111,17 @@ namespace Horizun.Revit.Core
                 }
                 int totalChars = result.Code.Length;
                 foreach (var include in result.Includes) totalChars = checked(totalChars + ((string)include["code"]).Length);
-                if (totalChars > Contract.MaxScriptTextChars) throw new ArgumentException("Combined main source and includes exceed the source character limit.");
+                if (totalChars > Contract.MaxScriptTextChars) throw new ArgumentException("Combined main source and includes exceed the source character limit of " + Contract.MaxScriptTextChars + ". Reduce them or split the work across separate calls; code_path has the same limit.");
+            }
+            catch (FileNotFoundException ex)
+            {
+                result.Error = "Cannot resolve Python source: " + ex.Message +
+                    " Check that code_path names an existing file on the Revit machine; with scripts_root, use a path relative to that root. Nothing ran.";
+            }
+            catch (DirectoryNotFoundException ex)
+            {
+                result.Error = "Cannot resolve Python source: " + ex.Message +
+                    " Check that the directory exists on the Revit machine and that code_path is relative to scripts_root when supplied. Nothing ran.";
             }
             catch (Exception ex) { result.Error = "Cannot resolve Python source: " + ex.Message + ". Nothing ran."; }
             return result;

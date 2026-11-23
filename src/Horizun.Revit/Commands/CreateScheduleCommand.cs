@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP — create a native Revit schedule, including linked models.
 // -----------------------------------------------------------------------------
 using System;
@@ -92,6 +92,47 @@ namespace Horizun.Revit.Commands
 
             string planHash = DocumentGate.PlanHash(request, "category", "name", "fields", "include_links", "itemized", "key_schedule", "key_rows", "group_by");
 
+            // ---- WHICH FIELDS the schedule will carry, decided now - in the rehearsal AND again in the
+            // apply - by creating the schedule inside a transaction that is ALWAYS rolled back and asking
+            // Revit which fields it offers. The rehearsal shows what will be substituted, added once or
+            // left out, and that decision is bound into the token (ScheduleFieldPlan).
+            //
+            // Before that transaction: what does not depend on the plan. A document that cannot start a
+            // transaction is said for what it is, and an apply whose token is missing, spent, expired or
+            // unknown - or whose document moved - is refused HERE, so no schedule is created and rolled
+            // back on behalf of an approval that cannot be spent. The plan itself is compared later, by
+            // RequireConfirmation, against the plan this call resolves. The order is ScheduleFieldProbe.BeforeProbe.
+            bool docReadOnly = false, docModifiable = false;
+            try { docReadOnly = doc.IsReadOnly; } catch (Exception) { }
+            try { docModifiable = doc.IsModifiable; } catch (Exception) { }
+            bool tokenRefused;
+            string beforeProbe = ScheduleFieldProbe.BeforeProbe(docReadOnly, docModifiable, categoryName, dryRun,
+                () => ApplyTokenRefusal(gate, request), out tokenRefused);
+            if (beforeProbe != null)
+                return !tokenRefused
+                    ? CommandResult.Fail(beforeProbe)
+                    : CommandResult.FailWithDetail(beforeProbe, new JObject
+                    {
+                        ["error_code"] = string.IsNullOrWhiteSpace(request.Value<string>("confirmation_token"))
+                            ? ErrorCodes.ConfirmacionRequerida : ErrorCodes.TokenInvalidoOVencido,
+                        ["state"] = "refused",
+                        ["checked_before"] = "field_probe"
+                    });
+            if (!dryRun)
+            {
+                CommandResult moved = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
+                if (moved != null) return moved;
+            }
+
+            ScheduleFieldPlan fieldPlan;
+            List<string> offered;
+            var probeProgress = new ProbeProgress();
+            try { fieldPlan = ResolveFieldPlan(doc, categoryId, key, includeLinks, itemized, requestedFields, probeProgress, out offered); }
+            catch (Exception ex)
+            {
+                // The message says how far the probe got: "created and rolled back" only when it was.
+                return ScheduleFieldProbe.FailureResult(probeProgress.Stage, categoryName, ex.Message);
+            }
             // ---- The MATERIALISED plan. One creation, but two ambient facts decide what
             // it produces, and neither is in the request: WHICH category the name resolved
             // to (a localized display name is a lookup, not an identity), and the
@@ -118,16 +159,33 @@ namespace Horizun.Revit.Commands
                     { "fields", string.Join(",", requestedFields) },
                     { "include_links", includeLinks ? "1" : "0" },
                     { "itemized", itemized ? "1" : "0" },
-                    { "group_by", groupBy == null ? "<derived>" : string.Join(",", groupBy) }
+                    { "group_by", groupBy == null ? "<derived>" : string.Join(",", groupBy) },
+                    // What Revit offers decides what is added: a change there between rehearsal and apply is drift.
+                    { "fields_resolved", fieldPlan.Fingerprint() }
                 }
             });
+
+            // The outer plan checked this before opening its group. An earlier action
+            // can since have changed the available fields. The probe has rolled back;
+            // compare its result before starting the actual schedule transaction.
+            if (!dryRun && DocumentGate.InConfirmedAtomicPlan)
+            {
+                CommandResult drift = resolvedPlan.RefuseChangedChild(
+                    request.Value<string>(PlanLedger.ExpectedChildPlanField), "schedule creation");
+                if (drift != null) return drift;
+            }
+            if (fieldPlan.NothingResolved)
+                return CommandResult.Fail(ScheduleFieldRescue.NothingResolved(categoryName, requestedFields, offered));
+            string planGroupByError = fieldPlan.GroupByProblem(categoryName, groupBy);
+            if (planGroupByError != null) return CommandResult.Fail(planGroupByError);
+            List<JObject> assumptions = FieldPlanAssumptions(fieldPlan, categoryName, offered);
+            List<string> omitted = fieldPlan.OmittedNames;
 
             if (dryRun)
             {
                 var rehearsal = new JObject
                 {
                     ["dry_run"] = true,
-                    ["transaction_status"] = "not_started",
                     ["category"] = categoryName,
                     ["category_id"] = Rid.Value(categoryId),
                     ["kind"] = kind,
@@ -141,15 +199,22 @@ namespace Horizun.Revit.Commands
                         : (JToken)(itemized ? "none (itemized)" : "derived after creation: identity fields only; quantity fields are totalled"),
                     ["host_element_count"] = multi ? (JToken)JValue.CreateNull() : new FilteredElementCollector(doc).OfCategoryId(categoryId)
                         .WhereElementIsNotElementType().GetElementCount(),
-                    ["note"] = "Nothing was written. Field availability and linked rows are verified after creation, not guessed from host elements."
+                    // Resolved against the fields Revit offers (a schedule created and rolled back to ask).
+                    ["field_plan"] = fieldPlan.ToJson(),
+                    ["fields_to_add"] = new JArray(fieldPlan.ToAdd.Select(e => (JToken)e.Requested)),
+                    ["fields_omitted"] = new JArray(omitted),
+                    ["fields_substituted"] = new JArray(fieldPlan.SubstitutedPairs.Select(p => new JObject { ["requested"] = p.Key, ["used"] = p.Value })),
+                    ["note"] = "The apply transaction has not started. The separate field probe created a temporary schedule, " +
+                               "rolled back and checked that the schedule was gone. If fields_omitted has entries, the apply " +
+                               "leaves them out and reports a partial result. Linked rows are verified after creation."
                 };
+                AssumptionNotes.Stamp(rehearsal, assumptions);
+                fieldPlan.StampRehearsal(rehearsal);
                 DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(rehearsal, gate, Name, planHash, true,
                     "the token is bound to this category AS RESOLVED (not just the text you typed), the schedule " +
-                    "name, field list and link/itemization settings. A category text that starts resolving to a " +
-                    "different category refuses as a stale plan.");
-                // One schedule, resolved end to end or this line is not reached.
-                ApplicationOutcome.StampRehearsal(rehearsal, 1, 0, 0, 0);
+                    "name, field list AS RESOLVED (substituted, added once, left out) and link/itemization settings. " +
+                    "A category text or a field that starts resolving differently refuses as a stale plan.");
                 return CommandResult.Ok(rehearsal);
             }
 
@@ -166,8 +231,10 @@ namespace Horizun.Revit.Commands
             // value that means "no commit has been read yet", and it is the one state that
             // must never survive to a declaration.
             TransactionStatus commitStatus = TransactionStatus.Uninitialized;
-            SilentRollbackException commitFailure = null;
-            var missing = new List<string>();
+            Exception applyFailure = null;
+            string rollbackStatus = "unknown";
+            string writeStage = "transaction_apply";
+            var addedNames = new List<string>();
             var expectedFields = new List<FieldIdentity>();
             ScheduleGroupingPlan grouping = null;
             var groupingFacts = new List<ScheduleGroupingField>();
@@ -175,11 +242,15 @@ namespace Horizun.Revit.Commands
             var expectedTotalIds = new List<int>();
             using (var tx = new Transaction(doc, "Horizun: create schedule"))
             {
-                tx.Start();
+                TransactionStatus started = tx.Start();
+                if (started != TransactionStatus.Started)
+                    return CommandResult.Fail("The transaction to create the schedule did not start (Revit answered " + started +
+                        "). No schedule was created. Nothing was changed.");
                 try
                 {
                     ViewSchedule schedule = key ? ViewSchedule.CreateKeySchedule(doc, categoryId)
                                                 : ViewSchedule.CreateSchedule(doc, categoryId);
+                    createdId = schedule.Id;
                     schedule.Name = scheduleName;
                     ScheduleDefinition definition = schedule.Definition;
                     if (!key)
@@ -190,30 +261,27 @@ namespace Horizun.Revit.Commands
                     // Revit adds fields of its own to some kinds (a key schedule's Key
                     // Name): they are part of what the re-read must find, in order.
                     foreach (ScheduleFieldId id in definition.GetFieldOrder())
-                        expectedFields.Add(FieldIdentity.From(definition.GetField(id)));
+                        expectedFields.Add(FieldIdentity.From(doc, definition.GetField(id)));
 
                     var available = definition.GetSchedulableFields().ToList();
 
                     var added = new List<ScheduleField>();
-                    foreach (string fieldName in requestedFields)
+                    // Exactly the columns the confirmed plan adds, once each, in request order. Each is
+                    // resolved again here and must land on the identity the rehearsal found.
+                    foreach (ScheduleFieldPlanEntry entry in fieldPlan.ToAdd)
                     {
-                        SchedulableField schedulable = ResolveField(doc, available, fieldName);
-                        if (schedulable == null)
+                        SchedulableField schedulable = ResolveField(doc, available, entry.Used);
+                        string now = schedulable == null ? null : IdentityOf(doc, schedulable);
+                        if (!string.Equals(now, entry.Identity, StringComparison.Ordinal))
                         {
-                            missing.Add(fieldName);
-                            continue;
+                            writeStage = "field_identity";
+                            throw new InvalidOperationException("Field '" + entry.Requested + "' resolved to " + (entry.Identity ?? "nothing") +
+                                " when the plan was confirmed and to " + (now ?? "nothing") + " now. Rehearse again.");
                         }
                         ScheduleField field = definition.AddField(schedulable);
                         added.Add(field);
-                        expectedFields.Add(FieldIdentity.From(field));
-                    }
-
-                    if (missing.Count > 0)
-                    {
-                        Guard.RollBack(tx);
-                        return CommandResult.Fail("The schedule was not created because these requested fields are not schedulable for " +
-                            categoryName + ": " + string.Join(", ", missing) + ". Use a displayed field name, Count/Family/Type, " +
-                            "or a BuiltInParameter token such as ELEM_TYPE_PARAM.");
+                        addedNames.Add(entry.Requested);
+                        expectedFields.Add(FieldIdentity.From(doc, field));
                     }
 
                     if (key)
@@ -232,18 +300,16 @@ namespace Horizun.Revit.Commands
                     }
                     else
                     {
+                        writeStage = "grouping";
                         // GROUP BY WHAT A FIELD IS, NOT BY WHERE IT SITS IN THE LIST. Grouping
                         // by every non-Count field put Length/Area/Volume in the sort: 119
                         // rows instead of 8 on a real model. Revit says what each field is;
                         // ScheduleGroupingRules decides.
                         for (int i = 0; i < added.Count; i++)
-                            groupingFacts.Add(GroupingFacts(requestedFields[i], added[i]));
+                            groupingFacts.Add(GroupingFacts(addedNames[i], added[i]));
                         grouping = ScheduleGroupingRules.Plan(groupingFacts, itemized, groupBy);
                         if (grouping.Error != null)
-                        {
-                            Guard.RollBack(tx);
-                            return CommandResult.Fail(grouping.Error);
-                        }
+                            throw new InvalidOperationException(grouping.Error);
                         foreach (int i in grouping.SortGroup)
                         {
                             definition.AddSortGroupField(new ScheduleSortGroupField(added[i].FieldId));
@@ -256,54 +322,52 @@ namespace Horizun.Revit.Commands
                         }
                     }
 
-                    createdId = schedule.Id;
                     // Guard refuses RolledBack and Pending. Only after it returns can this
                     // command enter a success/postcondition path, so the declaration never
                     // treats an in-flight or silently rolled-back transaction as applied.
+                    writeStage = "transaction_commit";
                     try { commitStatus = Guard.Commit(tx, "create schedule"); }
-                    catch (SilentRollbackException ex)
-                    {
-                        commitStatus = ex.Status;
-                        commitFailure = ex;
-                    }
+                    catch (SilentRollbackException ex) { commitStatus = ex.Status; }
                 }
-                catch
+                catch (Exception original)
                 {
-                    if (tx.GetStatus() == TransactionStatus.Started) Guard.RollBack(tx);
-                    throw;
+                    applyFailure = original;
+                    try { rollbackStatus = RollBackKeeping(tx, original).StatusName; }
+                    catch (Exception rollbackFailure) { applyFailure = rollbackFailure; }
                 }
             }
+
+            if (applyFailure != null)
+                return ScheduleFieldPlan.RollbackFailure(applyFailure.Message, writeStage, ScheduleId(createdId),
+                    rollbackStatus, ReadSchedulePresence(doc, createdId), assumptions);
 
             if (commitStatus != TransactionStatus.Committed)
             {
                 ApplicationState state = commitStatus == TransactionStatus.RolledBack
                     ? ApplicationState.RolledBack
                     : ApplicationState.Uncertain;
-                JObject detail = ScheduleFailureDetail(createdId, commitStatus, state,
-                    "transaction_commit", scheduleReread: false, postcondition: null);
-                return CommandResult.FailWithDetail(
-                    (commitFailure == null ? "The schedule transaction did not commit." : commitFailure.Message) +
-                    " The exact status was " + commitStatus + "; " +
+                return ScheduleFieldPlan.WriteFailure(
+                    "The schedule commit returned " + commitStatus + ". " +
                     (state == ApplicationState.RolledBack
                         ? "Revit confirmed rollback."
-                        : "this is not a terminal committed/rolled-back state, so model state is uncertain."),
-                    detail);
+                        : "The model state is uncertain."),
+                    ScheduleId(createdId), commitStatus.ToString(), state, "transaction_commit", false, null, assumptions);
             }
 
             ViewSchedule verified;
             try { verified = doc.GetElement(createdId) as ViewSchedule; }
             catch (Exception ex)
             {
-                return CommandResult.FailWithDetail(
+                return ScheduleFieldPlan.WriteFailure(
                     "The transaction committed, but the schedule could not be re-read: " + ex.Message,
-                    ScheduleFailureDetail(createdId, commitStatus, ApplicationState.Uncertain,
-                        "schedule_reread", scheduleReread: false, postcondition: null));
+                    ScheduleId(createdId), commitStatus.ToString(), ApplicationState.Uncertain,
+                    "schedule_reread", false, null, assumptions);
             }
             if (verified == null)
-                return CommandResult.FailWithDetail(
+                return ScheduleFieldPlan.WriteFailure(
                     "The transaction committed but the schedule could not be re-read from the model.",
-                    ScheduleFailureDetail(createdId, commitStatus, ApplicationState.Uncertain,
-                        "schedule_reread", scheduleReread: false, postcondition: null));
+                    ScheduleId(createdId), commitStatus.ToString(), ApplicationState.Uncertain,
+                    "schedule_reread", false, null, assumptions);
 
             // ---- EVERY property the request named, re-read from the COMMITTED schedule.
             //
@@ -356,9 +420,16 @@ namespace Horizun.Revit.Commands
                     .Select(id => verified.Definition.GetField(id)).ToList();
                 verifiedFields = new JArray(actualFields.Select(field => (JToken)field.GetName()));
                 bool fieldsMatch = actualFields.Count == expectedFields.Count &&
-                    actualFields.Select(FieldIdentity.From).SequenceEqual(expectedFields);
-                postcondition.Record("fields", new JArray(requestedFields.Select(f => (JToken)f)),
-                                     verifiedFields, fieldsMatch);
+                    actualFields.Select(f => FieldIdentity.From(doc, f)).SequenceEqual(expectedFields);
+                // Requested vs found: the omitted names are named here, and the declaration below
+                // counts them as unresolved, so a schedule missing a requested column is never "verified".
+                postcondition.Record("fields", new JObject
+                {
+                    ["requested"] = new JArray(requestedFields),
+                    ["added"] = new JArray(addedNames),
+                    ["omitted"] = new JArray(omitted),
+                    ["not_added_twice"] = new JArray(fieldPlan.Duplicates.Select(d => (JToken)d.Requested))
+                }, verifiedFields, fieldsMatch);
             }
             catch (Exception ex)
             {
@@ -422,12 +493,11 @@ namespace Horizun.Revit.Commands
                     ? ApplicationState.Partial
                     : ApplicationState.Uncertain;
                 JObject evidence = postcondition.ToJson();
-                return CommandResult.FailWithDetail(
+                return ScheduleFieldPlan.WriteFailure(
                     "The transaction committed, but post-commit verification did not match the request. " +
                     "The schedule EXISTS and may require correction; these are the comparisons: " +
                     evidence.ToString(Newtonsoft.Json.Formatting.None),
-                    ScheduleFailureDetail(createdId, commitStatus, state, "postcondition",
-                        scheduleReread: true, postcondition: evidence));
+                    ScheduleId(createdId), commitStatus.ToString(), state, "postcondition", true, evidence, assumptions);
             }
 
             try
@@ -447,34 +517,219 @@ namespace Horizun.Revit.Commands
                     ["itemized_verified"] = verified.Definition.IsItemized,
                     ["fields_verified"] = verifiedFields,
                     ["postcondition"] = postcondition.ToJson(),
-                    ["fields_missing"] = new JArray(missing),
+                    ["fields_requested"] = new JArray(requestedFields),
+                    ["fields_omitted"] = new JArray(omitted),
+                    ["fields_missing"] = new JArray(omitted),
+                    ["fields_substituted"] = new JArray(fieldPlan.SubstitutedPairs.Select(p => new JObject { ["requested"] = p.Key, ["used"] = p.Value })),
+                    ["fields_not_added_twice"] = new JArray(fieldPlan.Duplicates.Select(d => new JObject { ["requested"] = d.Requested, ["same_column_as"] = d.DuplicateOf })),
+                    ["field_plan"] = fieldPlan.ToJson(),
                     ["grouping"] = GroupingJson(grouping, groupingFacts),
                     ["body_rows"] = bodyRows,
                     ["has_body_rows"] = bodyRows > 0,
                     ["federated_coverage"] = FederatedVisibility.Measure(doc, includeLinks)
                 };
-                ApplicationOutcome.Stamp(csResult, WriteTally.OneObject(commitStatus.ToString(), postconditionVerified));
+                // Against what was REQUESTED: a field left out is unresolved, so the state is partial,
+                // never verified_applied (a requested name that shares a column counts as present).
+                ApplicationOutcome.Stamp(csResult, omitted.Count == 0
+                    ? WriteTally.OneObject(commitStatus.ToString(), postconditionVerified)
+                    : ScheduleFieldPlan.Tally(commitStatus.ToString(), requestedFields.Count, omitted.Count, postconditionVerified));
+                AssumptionNotes.Stamp(csResult, assumptions);
                 return CommandResult.Ok(csResult);
             }
             catch (Exception ex)
             {
-                return CommandResult.FailWithDetail(
+                return ScheduleFieldPlan.WriteFailure(
                     "The schedule committed and its requested properties matched, but a later result read failed: " +
                     ex.Message + ". The write is not hidden behind this reporting failure.",
-                    ScheduleFailureDetail(createdId, commitStatus, ApplicationState.Uncertain,
-                        "result_read", scheduleReread: true, postcondition: postcondition.ToJson()));
+                    ScheduleId(createdId), commitStatus.ToString(), ApplicationState.Uncertain,
+                    "result_read", true, postcondition.ToJson(), assumptions);
             }
         }
 
-        private static JObject ScheduleFailureDetail(ElementId scheduleId, TransactionStatus status,
-                                                      ApplicationState state, string stage,
-                                                      bool scheduleReread, JObject postcondition)
+        private static long? ScheduleId(ElementId id)
+            => id == null || id == ElementId.InvalidElementId ? (long?)null : Rid.Value(id);
+
+        /// <summary>
+        /// The identity of a column, the same spelling for a SchedulableField and a ScheduleField: field type and
+        /// parameter id, plus the field name when the id is the invalid one (custom fields, combined parameters,
+        /// formulas and percentages share it) - see ScheduleFieldPlan.Identity. This command creates regular, key
+        /// and multi-category schedules, never a material takeoff; in a material takeoff the element's and the
+        /// material's quantities differ by field type (Instance vs MaterialQuantity), so the type tells them apart.
+        /// </summary>
+        private static string IdentityOf(Document doc, SchedulableField f) =>
+            ScheduleFieldPlan.Identity(f.FieldType.ToString(), Rid.Value(f.ParameterId), SafeName(() => f.GetName(doc)));
+        /// <summary>
+        /// A schedule column, spelt from ITS schedulable field (ScheduleField.GetSchedulableField), so the plan, the
+        /// apply and the post-commit re-read all take the name from the same source (SchedulableField.GetName). Only
+        /// when that cannot be read does it fall back to the column's own name.
+        /// </summary>
+        private static string IdentityOf(Document doc, ScheduleField f)
         {
-            long? id = scheduleId == null || scheduleId == ElementId.InvalidElementId
-                ? (long?)null
-                : Rid.Value(scheduleId);
-            return ApplicationOutcome.FailureAfterWrite(
-                "schedule_id", id, stage, status.ToString(), state, scheduleReread, postcondition);
+            SchedulableField schedulable = null;
+            try { schedulable = f.GetSchedulableField(); } catch (Exception) { }
+            if (schedulable != null) return IdentityOf(doc, schedulable);
+            return ScheduleFieldPlan.Identity(f.FieldType.ToString(), Rid.Value(f.ParameterId), SafeName(() => f.GetName()));
+        }
+
+        private static string SafeName(Func<string> read)
+        {
+            try { return read(); } catch (Exception) { return null; }
+        }
+
+        /// <summary>How far the probe transaction got; read by the caller when the probe throws.</summary>
+        private sealed class ProbeProgress
+        {
+            public ScheduleProbeStage Stage = ScheduleProbeStage.NotStarted;
+        }
+
+        /// <summary>
+        /// Rolls <paramref name="t"/> back after <paramref name="original"/> and returns what Revit ANSWERED
+        /// (Guard.RollBack reports a status, it does not throw on a rollback that did not happen). When the rollback
+        /// itself throws, the ORIGINAL cause is kept and the rollback's added (ScheduleFieldProbe.KeepOriginal). A
+        /// transaction that is no longer started counts as rolled back only when Revit explicitly says RolledBack;
+        /// every other status remains unconfirmed.
+        /// </summary>
+        private static Guard.RollbackResult RollBackKeeping(Transaction t, Exception original)
+        {
+            try
+            {
+                TransactionStatus status = t.GetStatus();
+                if (status == TransactionStatus.Started) return Guard.RollBack(t);
+                return new Guard.RollbackResult(status);
+            }
+            catch (Exception rollback)
+            {
+                throw ScheduleFieldProbe.KeepOriginal(original, rollback);
+            }
+        }
+
+        /// <summary>Whether the schedule is still in the model. Null means the lookup could not be completed.</summary>
+        private static bool? ReadSchedulePresence(Document doc, ElementId id)
+        {
+            if (id == null || id == ElementId.InvalidElementId) return false;
+            try { return doc.GetElement(id) != null; } catch (Exception) { return null; }
+        }
+
+        /// <summary>
+        /// The apply's token check that does not depend on the plan, made BEFORE the probe transaction and spending
+        /// nothing: a token was sent, is still spendable (known, unused, not expired) and was issued for THIS
+        /// command on THIS document (ConfirmationStore.Precheck). Inside a confirmed execute_plan the outer token
+        /// binds the graph: nothing to check here. Null to go on; otherwise why not.
+        /// </summary>
+        private string ApplyTokenRefusal(GateResult gate, JObject request)
+        {
+            if (DocumentGate.InConfirmedAtomicPlan) return null;
+            string token = request.Value<string>("confirmation_token");
+            if (string.IsNullOrWhiteSpace(token))
+                return "no confirmation_token was sent (run this command with dry_run=true first; it returns the plan and a token for exactly that plan)";
+            return DocumentGate.Confirmations.Precheck(token, Name, gate.Fingerprint, DateTime.UtcNow);
+        }
+
+        /// <summary>
+        /// Resolve every requested name against the fields Revit offers for the category, by creating the schedule
+        /// in a transaction that is ALWAYS rolled back (and checked to be gone). Revit's own columns (a key
+        /// schedule's Key Name) are passed as base identities so a request for one is not added twice.
+        /// </summary>
+        private static ScheduleFieldPlan ResolveFieldPlan(Document doc, ElementId categoryId, bool key, bool includeLinks, bool itemized,
+                                                          List<string> requestedFields, ProbeProgress progress, out List<string> offered)
+        {
+            offered = new List<string>();
+            var resolutions = new List<ScheduleFieldResolution>();
+            var baseIds = new List<string>();
+            ElementId provisional = ElementId.InvalidElementId;
+            progress.Stage = ScheduleProbeStage.NotStarted;
+            using (var t = new Transaction(doc, "Horizun: rehearse schedule fields"))
+            {
+                TransactionStatus started = t.Start();
+                if (started != TransactionStatus.Started)
+                    throw new InvalidOperationException("Revit answered " + started + " to starting the transaction used to ask for the fields");
+                progress.Stage = ScheduleProbeStage.StartedNothingCreated;
+                try
+                {
+                    ViewSchedule probe = key ? ViewSchedule.CreateKeySchedule(doc, categoryId) : ViewSchedule.CreateSchedule(doc, categoryId);
+                    progress.Stage = ScheduleProbeStage.CreatedRolledBack;
+                    provisional = probe.Id;
+                    ScheduleDefinition definition = probe.Definition;
+                    if (!key)
+                    {
+                        definition.IncludeLinkedFiles = includeLinks;
+                        definition.IsItemized = itemized;
+                    }
+                    foreach (ScheduleFieldId id in definition.GetFieldOrder())
+                        baseIds.Add(IdentityOf(doc, definition.GetField(id)));
+                    var available = definition.GetSchedulableFields().ToList();
+                    foreach (SchedulableField f in available)
+                    {
+                        try { offered.Add(f.GetName(doc)); } catch (Exception) { }
+                    }
+                    foreach (string fieldName in requestedFields)
+                    {
+                        string used = fieldName;
+                        SchedulableField schedulable = ResolveField(doc, available, fieldName);
+                        if (schedulable == null)
+                            foreach (string alias in ScheduleFieldRescue.AliasesFor(fieldName))
+                            {
+                                schedulable = ResolveField(doc, available, alias);
+                                if (schedulable != null) { used = alias; break; }
+                            }
+                        resolutions.Add(new ScheduleFieldResolution
+                        {
+                            Requested = fieldName,
+                            Used = schedulable == null ? null : used,
+                            Identity = schedulable == null ? null : IdentityOf(doc, schedulable)
+                        });
+                    }
+                }
+                catch (Exception original)
+                {
+                    // Not a finally: a rollback that throws there would replace WHY the probe failed. And the
+                    // rollback's ANSWER is read: an unconfirmed one, or a schedule still in the model, is said.
+                    Guard.RollbackResult undone;
+                    try { undone = RollBackKeeping(t, original); }
+                    catch (Exception) { progress.Stage = ScheduleProbeStage.RollbackFailed; throw; }
+                    progress.Stage = ScheduleFieldProbe.AfterRollback(progress.Stage, undone.Confirmed,
+                                                                      ReadSchedulePresence(doc, provisional));
+                    if (!ScheduleFieldProbe.ModelUntouched(progress.Stage))
+                        throw ScheduleFieldProbe.KeepOriginal(original,
+                            new InvalidOperationException(ProbeRollbackProblem(progress.Stage, undone.StatusName)));
+                    throw;
+                }
+                Guard.RollbackResult rolled;
+                try { rolled = Guard.RollBack(t); }
+                catch (Exception) { progress.Stage = ScheduleProbeStage.RollbackFailed; throw; }
+                progress.Stage = ScheduleFieldProbe.AfterRollback(progress.Stage, rolled.Confirmed,
+                                                                  ReadSchedulePresence(doc, provisional));
+                if (!ScheduleFieldProbe.ModelUntouched(progress.Stage))
+                    throw new InvalidOperationException(ProbeRollbackProblem(progress.Stage, rolled.StatusName));
+            }
+            return ScheduleFieldPlan.Build(resolutions, baseIds);
+        }
+
+        private static string ProbeRollbackProblem(ScheduleProbeStage stage, string status)
+        {
+            if (stage == ScheduleProbeStage.LeftInModel)
+                return "the schedule created to ask for the fields is still in the model after the rollback";
+            if (stage == ScheduleProbeStage.PresenceUnverified)
+                return "the schedule created to ask for the fields could not be re-read after the rollback";
+            return "Revit answered " + status + " to rolling back the transaction used to ask for the fields";
+        }
+
+        /// <summary>The SUPUESTO rows of a field plan: substitutions, columns not added twice, fields left out.</summary>
+        private static List<JObject> FieldPlanAssumptions(ScheduleFieldPlan plan, string categoryName, List<string> offered)
+        {
+            var rows = new List<JObject>();
+            var substituted = plan.SubstitutedPairs;
+            if (substituted.Count > 0) rows.Add(ScheduleFieldRescue.SubstitutedRow(substituted));
+            var duplicates = plan.Duplicates;
+            if (duplicates.Count > 0) rows.Add(ScheduleFieldPlan.DuplicateRow(duplicates));
+            var omitted = plan.OmittedNames;
+            if (omitted.Count > 0)
+            {
+                var suggestions = new Dictionary<string, IReadOnlyList<string>>();
+                foreach (string m in omitted) suggestions[m] = ScheduleFieldRescue.Suggest(m, offered);
+                rows.Add(ScheduleFieldRescue.SkippedRow(categoryName, omitted, suggestions));
+            }
+            return rows;
         }
 
         /// <summary>What Revit says the field IS - each answer guarded, an unreadable one left null.</summary>
@@ -579,23 +834,18 @@ namespace Horizun.Revit.Commands
             return null;
         }
 
+        /// <summary>A column as the post-commit comparison sees it: the same identity as the plan (IdentityOf).</summary>
         private sealed class FieldIdentity : IEquatable<FieldIdentity>
         {
-            private readonly ScheduleFieldType _type;
-            private readonly long _parameterId;
+            private readonly string _identity;
 
-            private FieldIdentity(ScheduleFieldType type, long parameterId)
-            {
-                _type = type;
-                _parameterId = parameterId;
-            }
+            private FieldIdentity(string identity) { _identity = identity ?? ""; }
 
-            public static FieldIdentity From(ScheduleField field) =>
-                new FieldIdentity(field.FieldType, Rid.Value(field.ParameterId));
+            public static FieldIdentity From(Document doc, ScheduleField field) => new FieldIdentity(IdentityOf(doc, field));
 
-            public bool Equals(FieldIdentity other) => other != null && _type == other._type && _parameterId == other._parameterId;
+            public bool Equals(FieldIdentity other) => other != null && string.Equals(_identity, other._identity, StringComparison.Ordinal);
             public override bool Equals(object obj) => Equals(obj as FieldIdentity);
-            public override int GetHashCode() => ((int)_type * 397) ^ _parameterId.GetHashCode();
+            public override int GetHashCode() => StringComparer.Ordinal.GetHashCode(_identity);
         }
     }
 }

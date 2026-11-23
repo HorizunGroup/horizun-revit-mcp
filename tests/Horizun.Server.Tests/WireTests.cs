@@ -378,39 +378,45 @@ namespace Horizun.Server.Tests
         {
             using (var release = new ManualResetEventSlim(false))
             {
-                int entered = 0;
-                for (int i = 0; i < HostCallRunner.MaxOutstandingTasks; i++)
+                // This fixture needs running non-cooperative handlers. A task
+                // cancelled before the scheduler starts it correctly frees its
+                // lease, so a 20 ms deadline was not a valid way to fill capacity.
+                ThreadPool.GetMinThreads(out int originalWorkers, out int originalIo);
+                Assert.True(ThreadPool.SetMinThreads(Math.Max(originalWorkers, HostCallRunner.MaxOutstandingTasks + 2), originalIo));
+                try
                 {
-                    Assert.Throws<TimeoutException>(() => HostCallRunner.Run("blocked", ct =>
+                    int entered = 0;
+                    for (int i = 0; i < HostCallRunner.MaxOutstandingTasks; i++)
                     {
-                        Interlocked.Increment(ref entered);
-                        // Deliberately ignores ct: this models an OS call already in progress.
-                        release.Wait();
+                        Assert.Throws<TimeoutException>(() => HostCallRunner.Run("blocked", ct =>
+                        {
+                            Interlocked.Increment(ref entered);
+                            release.Wait(); // deliberately ignores cancellation
+                            return new JObject();
+                        }, CancellationToken.None, 1000));
+                    }
+                    Assert.Equal(HostCallRunner.MaxOutstandingTasks, entered);
+                    Assert.Equal(HostCallRunner.MaxOutstandingTasks, HostCallRunner.OutstandingTaskCount);
+                    bool extraEntered = false;
+                    ToolRefusal refusal = Assert.Throws<ToolRefusal>(() => HostCallRunner.Run("blocked", ct =>
+                    {
+                        extraEntered = true;
                         return new JObject();
                     }, CancellationToken.None, 20));
+                    Assert.False(extraEntered);
+                    Assert.Contains("capacity", refusal.Message, StringComparison.OrdinalIgnoreCase);
+                    Assert.Contains("Nothing new was started", refusal.Message);
+                    release.Set();
+                    Assert.True(SpinWait.SpinUntil(() => HostCallRunner.OutstandingTaskCount == 0, 10000),
+                        "leases were not released when the residual Tasks terminated");
                 }
-
-                // A constrained Unix thread pool may not start every deliberately
-                // blocked Task before the 20 ms caller deadlines expire. Admission
-                // leases are acquired before Task.Run, so the safety property is the
-                // full lease count and refusal below, not scheduler eagerness.
-                Assert.InRange(entered, 1, HostCallRunner.MaxOutstandingTasks);
-                Assert.Equal(HostCallRunner.MaxOutstandingTasks, HostCallRunner.OutstandingTaskCount);
-
-                bool extraEntered = false;
-                ToolRefusal refusal = Assert.Throws<ToolRefusal>(() => HostCallRunner.Run("blocked", ct =>
+                finally
                 {
-                    extraEntered = true;
-                    return new JObject();
-                }, CancellationToken.None, 20));
-                Assert.False(extraEntered);
-                Assert.Contains("capacity", refusal.Message, StringComparison.OrdinalIgnoreCase);
-                Assert.Contains("Nothing new was started", refusal.Message);
-
-                release.Set();
-                Assert.True(SpinWait.SpinUntil(
-                    () => HostCallRunner.OutstandingTaskCount == 0, 3000),
-                    "leases were not released when the residual Tasks terminated");
+                    // Even a failed assertion must release the fixture's workers.
+                    release.Set();
+                    SpinWait.SpinUntil(() => HostCallRunner.OutstandingTaskCount == 0, 10000);
+                    ThreadPool.SetMinThreads(originalWorkers, originalIo);
+                }
             }
         }
     }

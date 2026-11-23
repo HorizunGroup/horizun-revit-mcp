@@ -22,6 +22,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace Horizun.Revit.Core
 {
@@ -32,6 +33,121 @@ namespace Horizun.Revit.Core
         public string ParamsJson;
         public Job Record;
         public DateTime QueuedUtc;
+        // A yielded continuation may be waiting even though earlier slices ran.
+        // The queue owns this flag after the UI thread sets it before requeueing.
+        public bool HasStarted;
+
+        // Opt-in only: ordinary commands remain non-interruptible once claimed.
+        // The UI thread observes this flag between indivisible read units.
+        public bool CooperativeCancellation;
+        private int _cancelRequested;
+        public bool CancellationRequested => Volatile.Read(ref _cancelRequested) != 0;
+        internal void RequestCancellation() => Interlocked.Exchange(ref _cancelRequested, 1);
+
+        // Immutable JSON snapshot, produced on the Revit thread before yielding.
+        // The queue lock transfers ownership to either the next callback or the
+        // cancelling pipe thread; the latter must never inspect Revit objects.
+        public string PartialResultJson;
+        public string PartialRevitSaidJson;
+        // Revit-thread-owned continuation; never inspected by the pipe thread.
+        internal object Continuation { get; set; }
+        internal RequestGate.Request SyncRequest { get; set; }
+        internal Action<string, string> OnInterrupted { get; set; }
+        private int _syncCompleted;
+        internal bool TryCompleteSync() => Interlocked.CompareExchange(ref _syncCompleted, 1, 0) == 0;
+
+        /// <summary>
+        /// Whether the cancellation's record reached disk: true, false, or null when that is not the question. A synchronous
+        /// cooperative job's caller receives the outcome in its own reply, and its record may be non-durable by design (review m5).
+        /// </summary>
+        internal bool? RecordPersisted()
+        {
+            if (Record != null && Record.RecordIsComplete) return true;
+            return SyncRequest != null ? (bool?)null : false;
+        }
+
+        public void FinishInterrupted(string status, string reason)
+        {
+            try
+            {
+                if (Record != null)
+                {
+                    if (HasStarted && PartialResultJson != null) Record.Result(PartialResultJson, PartialRevitSaidJson);
+                    Record.Finish(status, reason);
+                }
+            }
+            finally { OnInterrupted?.Invoke(status, reason); }
+        }
+
+        // A guard may reject a subsequent callback before it reaches Begin.
+        // Earlier callbacks still ran, so neither their result nor that fact may
+        // be replaced with a never-started record.
+        public void FinishBeforeCallback(string reason)
+        {
+            if (HasStarted)
+            {
+                MarkInterrupted(CooperativeInterruption.Failed, reason);
+                FinishInterrupted("failed", reason);
+            }
+            else
+            {
+                try { Record?.Finish("not_started", reason); }
+                finally { OnInterrupted?.Invoke("not_started", reason); }
+            }
+        }
+
+        // The pipe thread cannot inspect the active document or its change epoch.
+        // A snapshot cancelled while waiting is evidence of earlier work, but its
+        // continued validity has not been established at cancellation time.
+        public void FinishCancelledWhileWaiting(string reason)
+        {
+            if (HasStarted) MarkInterrupted(CooperativeInterruption.Cancelled, reason);
+            FinishInterrupted(HasStarted ? "cancelled_after_start" : "cancelled", reason);
+        }
+
+        // Set by a continuation that can compare its document stamp from any thread. It returns why the
+        // snapshot is no longer valid, or null while it still is.
+        internal Func<string> Revalidate { get; set; }
+
+        // ONE treatment for a run that ends early, whatever ended it and at whatever moment: a cancel
+        // that finds the job waiting, one observed in the callback, a change or a failure. Validity comes
+        // from the stamp (the evidence), never from when the cancel arrived (R2-N M4).
+        internal void MarkInterrupted(string kind, string reason)
+        {
+            string stale;
+            if (kind != CooperativeInterruption.Cancelled) stale = reason;
+            else if (Revalidate == null) stale = "Cancelled while waiting; document state could not be revalidated.";
+            else
+            {
+                try { stale = Revalidate(); }
+                catch (Exception ex) { stale = "The snapshot could not be revalidated: " + ex.Message; }
+            }
+            if (PartialResultJson != null)
+                PartialResultJson = CooperativeInterruption.Apply(PartialResultJson, kind, reason, JobId, stale);
+        }
+
+        internal void InvalidateSnapshot(string reason)
+        {
+                // A guard prevented revalidation of this snapshot. Do not leave an
+                // earlier valid=true in a result that can no longer be trusted.
+                if (PartialResultJson != null)
+                {
+                    try
+                    {
+                        var partial = Newtonsoft.Json.Linq.JObject.Parse(PartialResultJson);
+                        partial["result"] = "partial";
+                        partial["valid"] = false;
+                        partial["invalid_reason"] = reason;
+                        PartialResultJson = partial.ToString(Newtonsoft.Json.Formatting.None);
+                    }
+                    catch (Newtonsoft.Json.JsonException)
+                    {
+                        // A malformed snapshot is not evidence and must not hide the
+                        // reason the continuation was stopped.
+                        PartialResultJson = null;
+                    }
+                }
+        }
 
         /// <summary>
         /// Set when this job's work is an ordered SEQUENCE rather than a single call -
@@ -45,8 +161,32 @@ namespace Horizun.Revit.Core
 
     public static class AsyncQueue
     {
+        public sealed class Cancellation
+        {
+            public AsyncWork Work { get; internal set; }
+            public bool Requested { get; internal set; }
+            public bool Cancelled => Work != null;
+            public bool BeforeStart => Cancelled && !Work.HasStarted;
+            public string State => Requested ? "cancel_requested" : !Cancelled ? "not_in_queue" : BeforeStart ? "removed_before_start" : "cancelled_after_start";
+        }
+
+        public static Cancellation CancelWaiting(string jobId)
+        {
+            lock (_gate)
+            {
+                if (TryRemove(jobId, out AsyncWork work)) return new Cancellation { Work = work };
+                if (!string.IsNullOrEmpty(jobId) && _activeCooperative.TryGetValue(jobId, out work))
+                {
+                    work.RequestCancellation();
+                    return new Cancellation { Requested = true };
+                }
+                return new Cancellation();
+            }
+        }
+
         private static readonly object _gate = new object();
         private static readonly Queue<AsyncWork> _pending = new Queue<AsyncWork>();
+        private static readonly Dictionary<string, AsyncWork> _activeCooperative = new Dictionary<string, AsyncWork>(StringComparer.Ordinal);
 
         /// <summary>How many are waiting.</summary>
         public static int Count { get { lock (_gate) return _pending.Count; } }
@@ -82,9 +222,29 @@ namespace Horizun.Revit.Core
         {
             refusal = null;
             if (w == null) return false;
+            if (w.CooperativeCancellation && string.IsNullOrWhiteSpace(w.JobId))
+            {
+                refusal = "A cooperatively cancellable job must have an id.";
+                return false;
+            }
 
             lock (_gate)
             {
+                if (!string.IsNullOrEmpty(w.JobId))
+                {
+                    if (_activeCooperative.ContainsKey(w.JobId))
+                    {
+                        refusal = "A cooperative job with this id is already active.";
+                        return false;
+                    }
+                    foreach (AsyncWork pending in _pending)
+                        if ((w.CooperativeCancellation || pending.CooperativeCancellation) &&
+                            string.Equals(pending.JobId, w.JobId, StringComparison.Ordinal))
+                        {
+                            refusal = "A cooperative job with this id is already queued.";
+                            return false;
+                        }
+                }
                 if (_pending.Count >= MaxDepth)
                 {
                     refusal = "The async queue is full: " + _pending.Count + " of " + MaxDepth + " entries are " +
@@ -101,13 +261,77 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// Return an already-started slice to the tail, even if new admissions filled
+        /// the queue while it was running. One extra slot bounds that race; duplicate
+        /// continuations are refused so a repeated scheduling attempt cannot run twice.
+        /// The caller still owns terminal reporting if this method refuses.
+        /// </summary>
+        public static bool TryRequeueContinuation(AsyncWork work, out string refusal)
+        {
+            refusal = null;
+            lock (_gate)
+            {
+                if (work == null || !work.HasStarted || string.IsNullOrEmpty(work.JobId))
+                    refusal = "Only an identified, already-started job may be requeued as a continuation.";
+                else if (work.CooperativeCancellation &&
+                    (!_activeCooperative.TryGetValue(work.JobId, out AsyncWork active) || !ReferenceEquals(work, active)))
+                    refusal = "The cooperative continuation is not the active owner of this job.";
+                else if (work.CooperativeCancellation && work.CancellationRequested)
+                    refusal = "Cancellation was requested while the continuation was active.";
+                else if (_pending.Count >= MaxDepth + 1)
+                    refusal = "The reserved continuation slot is already occupied.";
+                else
+                {
+                    foreach (AsyncWork pending in _pending)
+                        if (string.Equals(pending.JobId, work.JobId, StringComparison.Ordinal))
+                        {
+                            refusal = "This job already has a queued continuation.";
+                            break;
+                        }
+                }
+                if (refusal != null) return false;
+                if (work.CooperativeCancellation) _activeCooperative.Remove(work.JobId);
+                _pending.Enqueue(work);
+                return true;
+            }
+        }
+
+        /// <summary>
         /// Claim the next entry, or null. DESTRUCTIVE: the entry is gone whether or not
         /// what follows succeeds. That is deliberate - see the header. A caller that
         /// takes an entry owns finishing its job record, including on the failure paths.
         /// </summary>
         public static AsyncWork Take()
         {
-            lock (_gate) return _pending.Count == 0 ? null : _pending.Dequeue();
+            lock (_gate)
+            {
+                if (_pending.Count == 0) return null;
+                AsyncWork work = _pending.Dequeue();
+                if (work.CooperativeCancellation && !string.IsNullOrEmpty(work.JobId))
+                    _activeCooperative.Add(work.JobId, work);
+                // Review m-2: a script's stop key is claimed in the SAME critical section that dequeues it. A cancel that comes in
+                // after this lock is released finds the claim (and is kept until the script registers); one that came before it
+                // found the entry still queued and removed it (TryRemove). There is no instant in which it is neither.
+                // INT-6 m-6: the same for an execute_plan, whose steps may run a script under the plan's job id and which has
+                // gaps between steps: a cancel that comes in before a child registers, or between two steps, is kept.
+                if (PythonRunRegistry.ClaimsAtTake(work.Command) && !string.IsNullOrEmpty(work.JobId))
+                    PythonRunRegistry.Claim(work.JobId, PythonRunRegistry.RunsChildren(work.Command));
+                return work;
+            }
+        }
+
+        // The terminal decision and cancellation request are linearized under
+        // the same lock. After this returns, cancellation cannot claim the job.
+        public static bool CompleteCooperative(AsyncWork work)
+        {
+            lock (_gate)
+            {
+                if (work == null || !work.CooperativeCancellation || string.IsNullOrEmpty(work.JobId) ||
+                    !_activeCooperative.TryGetValue(work.JobId, out AsyncWork active) || !ReferenceEquals(work, active))
+                    throw new InvalidOperationException("The cooperative job is not active.");
+                _activeCooperative.Remove(work.JobId);
+                return work.CancellationRequested;
+            }
         }
 
         /// <summary>

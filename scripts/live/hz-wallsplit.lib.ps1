@@ -292,8 +292,7 @@ function Limit-WsText {
 <#
   Run a python fixture script. Fixtures are BUILT with python because a compound
   wall type, a bar type and a wall foundation have no typed create command - this
-  is the same route scripts/live/verify-rebar.ps1 already takes, and the machine
-  owner granted the permission persistently on 2026-08-21.
+  is the bridge's own Python fallback route, and the machine owner granted the permission persistently on 2026-08-21.
 
   If the permission is not in force, every fixture that needs it becomes
   fixture_missing and the cases that depend on it are reported as such. It is

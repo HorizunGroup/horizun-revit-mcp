@@ -506,7 +506,7 @@ namespace Horizun.Revit.Core
 
         /// <summary>
         /// CAD IR entities (CadIrEntity.ToJson) that carry TEXT - the accoreconsole reading of a DWG;
-        /// horizun_cad_extract over a Revit link has none, Revit's import drops text: line and polyline
+        /// horizun_cad_extract (Pro edition) over a Revit link has none, Revit's import drops text: line and polyline
         /// points in millimetres, arcs with their start, middle and end, text with one point,
         /// text_height_mm and rotation_radians.
         /// A DWG text carries no extent, so WHERE its point sits on it must be declared:
@@ -851,7 +851,7 @@ namespace Horizun.Revit.Core
             if (o.Proposal == null)
                 reply["requirement_set_not_requested"] = "pass requirement_set: { bar_type_names, hook_type_names?, cover?, set_id? } to have the beam cards proposed as section_rules.";
             else if (proposal != null)
-                reply["next"] = "requirement_set is a PROPOSAL read from a drawing: run horizun_plan_reinforcement with it (a dry run that " +
+                reply["next"] = "requirement_set is a PROPOSAL read from a drawing: run horizun_plan_reinforcement (Pro edition) with it (a dry run that " +
                                 "resolves each mark to its hosts and refuses what does not fit), compare the hosts each mark selects with " +
                                 "cards[].members_stated, then apply.";
             return reply;

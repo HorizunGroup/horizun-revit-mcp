@@ -36,7 +36,8 @@
 param(
     [string]$Subject = 'CN=Horizun Group (self-signed add-in signing)',
     [string]$Thumbprint,
-    [int[]]$Years,
+    [string[]]$Years,
+    [switch]$SkipServer,
     [switch]$Report,
     [switch]$Remove
 )
@@ -46,22 +47,39 @@ $ErrorActionPreference = 'Stop'
 function Say($m, $c = 'Gray') { Write-Host "    $m" -ForegroundColor $c }
 Write-Host "[sign] $Subject" -ForegroundColor Cyan
 
+# powershell.exe -File does not bind `-Years 2025,2026` to [int[]]; parse it the way install.ps1 does.
+. (Join-Path $PSScriptRoot 'install-arguments.lib.ps1')
+if ($Years -and $Years.Count -gt 0) { $Years = @(ConvertTo-HorizunRevitYears $Years) }
 if (-not $Years -or $Years.Count -eq 0) {
     $addinRoot = Join-Path $env:APPDATA 'Autodesk\Revit\Addins'
     $Years = @(Get-ChildItem $addinRoot -Directory -ErrorAction SilentlyContinue |
         ForEach-Object { if ($_.Name -match '^\d{4}$') { [int]$_.Name } } | Sort-Object -Unique)
 }
 
-# Everything this signs: the add-in per year, plus the installed server.
+# Everything this signs: the add-in per year, plus the installed server (unless -SkipServer).
+# A year whose Revit is RUNNING is never written: Revit does not always lock the DLL it
+# loaded, so signing would rewrite the bytes of a live add-in under another session's
+# Revit (field 2026-11-12: an install for 2026 re-signed the 2025 DLL while a 2025 Revit
+# was open). Such a year is reported as in use and skipped; a process whose path cannot
+# be read counts as every year, because not knowing its year is not proof it is harmless.
+$runningRevitPaths = @(Get-Process -Name 'Revit' -ErrorAction SilentlyContinue | ForEach-Object {
+    $path = $null; try { $path = $_.Path } catch { }
+    if ($path) { $path } else { '*' } })
 $targets = @()
+$inUseYears = @()
 foreach ($y in $Years) {
     $dll = Join-Path $env:APPDATA ("Autodesk\Revit\Addins\$y\Horizun\Horizun.Revit.dll")
-    if (Test-Path -LiteralPath $dll) { $targets += $dll }
+    if (-not (Test-Path -LiteralPath $dll)) { continue }
+    $open = @($runningRevitPaths | Where-Object { $_ -eq '*' -or $_ -like ('*\Revit ' + $y + '\*') })
+    if ($open.Count -gt 0) { $inUseYears += $y; continue }
+    $targets += $dll
 }
-$server = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
-if (Test-Path -LiteralPath $server) { $targets += $server }
-$serverDll = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.dll'
-if (Test-Path -LiteralPath $serverDll) { $targets += $serverDll }
+if (-not $SkipServer) {
+    $server = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
+    if (Test-Path -LiteralPath $server) { $targets += $server }
+    $serverDll = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.dll'
+    if (Test-Path -LiteralPath $serverDll) { $targets += $serverDll }
+}
 
 $existing = @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
     Where-Object { $_.Subject -eq $Subject -and (-not $Thumbprint -or $_.Thumbprint -eq $Thumbprint) })
@@ -144,15 +162,29 @@ try {
 finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
 
 # ---- sign, and VERIFY the signature rather than trusting the call ----
+if ($targets.Count -eq 0 -and $inUseYears.Count -gt 0) {
+    Write-Host "[sign] nothing signed: Revit $($inUseYears -join ', ') is running, so its add-in was left untouched. Close it and run this again." -ForegroundColor Yellow
+    exit 3
+}
 if ($targets.Count -eq 0) {
     Write-Host "[sign] nothing installed to sign. Run install.ps1 first." -ForegroundColor Yellow
     exit 2
 }
 Write-Host "[sign] signing $($targets.Count) file(s)" -ForegroundColor Cyan
 $ok = 0; $bad = @(); $locked = @()
+foreach ($y in $inUseYears) {
+    $locked += "Horizun.Revit.dll ($y)"
+    Say "Horizun.Revit.dll ($y) : SKIPPED - Revit $y is running; its add-in is not rewritten" 'Yellow'
+}
 foreach ($t in $targets) {
     $name = Split-Path $t -Leaf
     if (-not $PSCmdlet.ShouldProcess($name, 'sign')) { continue }
+    # Already signed Valid by this very certificate: nothing to write, so nothing is rewritten.
+    $current = Get-AuthenticodeSignature -LiteralPath $t
+    if ($current.Status -eq 'Valid' -and $current.SignerCertificate -and $current.SignerCertificate.Thumbprint -eq $cert.Thumbprint) {
+        $ok++; Say "$name : already Valid with this certificate - left untouched" 'Green'
+        continue
+    }
     try {
         Set-AuthenticodeSignature -LiteralPath $t -Certificate $cert `
             -HashAlgorithm SHA256 -TimestampServer 'http://timestamp.digicert.com' `

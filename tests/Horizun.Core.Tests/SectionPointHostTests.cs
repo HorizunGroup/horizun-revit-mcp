@@ -49,15 +49,7 @@ namespace Horizun.Core.Tests
         public void Declaring_vertical_does_not_make_anything_else_a_column() =>
             Assert.NotNull(SectionRules.PointHostRefusal("OST_GenericModel", true));
 
-        [Fact]
-        public void The_axis_is_read_and_only_vertical_is_a_word()
-        {
-            StructuralRequirementSet ok = StructuralRequirementSet.Load(Newtonsoft.Json.Linq.JObject.Parse(Body("'axis': 'vertical', ")));
-            Assert.True(ok.Ok, ok.Error);
-            Assert.Equal("vertical", ok.SectionRules[0].Axis);
-            Assert.Equal(StructuralRequirementSet.CodeUnknownValue,
-                StructuralRequirementSet.Load(Newtonsoft.Json.Linq.JObject.Parse(Body("'axis': 'sideways', "))).Code);
-        }
+        
 
         private static string Body(string axis) => @"{
   'schema': 'horizun.structural-requirements/1', 'units': 'millimeter', 'requirement_set': { 'id': 'p', 'version': '1' },
@@ -65,13 +57,5 @@ namespace Horizun.Core.Tests
   'section_rules': [ { 'id': 'P1', 'host': { 'element_ids': [ 5 ] }, " + axis + @"'cover': { 'distance_mm': 50 },
     'layers': [ { 'face': 'perimeter', 'count': 4, 'bar_type': 'N16', 'extend': 'host_length' } ] } ] }";
 
-        [Fact]
-        public void The_resolver_asks_before_framing_a_point_placed_host()
-        {
-            var d = new DirectoryInfo(System.AppContext.BaseDirectory);
-            while (d != null && !File.Exists(Path.Combine(d.FullName, "AGENTS.md"))) d = d.Parent;
-            string text = File.ReadAllText(Path.Combine(d.FullName, "src", "Horizun.Revit", "Commands", "ReinforcementResolver.cs"));
-            Assert.Contains("SectionRules.PointHostRefusal(", text);
-        }
     }
 }

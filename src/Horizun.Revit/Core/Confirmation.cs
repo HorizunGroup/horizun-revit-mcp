@@ -71,6 +71,7 @@ namespace Horizun.Revit.Core
 
         /// <summary>A sentence naming what broke and what to do about it.</summary>
         public string Message { get; internal set; }
+        internal JArray RehearsedRows { get; set; }
     }
 
     public sealed class Confirmation
@@ -79,6 +80,12 @@ namespace Horizun.Revit.Core
         public string Command { get; internal set; }
         public string DocumentKey { get; internal set; }
         public string PlanHash { get; internal set; }
+
+        /// <summary>
+        /// The digest of the identity (unique_id / expected_* / identity map) the rehearsal carried, or null when it carried none.
+        /// An apply must carry the same identity: one that omits it, or changes it, is a different request.
+        /// </summary>
+        public string IdentityDigest { get; internal set; }
 
         /// <summary>
         /// The fingerprint of the ELEMENTS the dry run resolved - see ResolvedPlan. Null for
@@ -94,6 +101,7 @@ namespace Horizun.Revit.Core
         /// materialise their plan, and for tokens issued before this existed.
         /// </summary>
         public ResolvedPlan RehearsedPlan { get; internal set; }
+        internal JArray RehearsedRows { get; set; }
         public DateTime IssuedUtc { get; internal set; }
         public DateTime ExpiresUtc { get; internal set; }
         public bool Used { get; internal set; }
@@ -116,20 +124,56 @@ namespace Horizun.Revit.Core
             _now = utcNow ?? (() => DateTime.UtcNow);
         }
 
+        /// <summary>Publish a document and, for a confirmable rehearsal, issue its plan-bound token.</summary>
+        internal void StampResponse(JObject o, DocIdentity document, string commandName, string planHash,
+                                    bool issueToken, ResolvedPlan plan, string limitNote = null, TimeSpan? ttl = null)
+        {
+            o["document"] = document?.Describe();
+            o["document_fingerprint"] = document?.FingerprintDigest();
+            if (plan != null) o["change_preview"] = PlanPreview.Describe(plan);
+            if (!issueToken) return;
+
+            string fingerprint = plan?.Fingerprint();
+            Confirmation issued = Issue(commandName, document?.Fingerprint(), planHash, ttl, fingerprint, plan);
+            if (plan != null)
+            {
+                // What was approved, in the answer itself. A count in the reply is what a
+                // person actually reads before saying yes, and it is the same number the
+                // fingerprint is taken over.
+                o["plan_resolved"] = plan.DescribeResolution();
+            }
+            o["confirmation_token"] = issued.Token;
+            o["confirmation_expires_utc"] = issued.ExpiresUtc.ToString("u");
+            o["confirmation_note"] =
+                "To execute this, call again with dry_run=false and this confirmation_token. It is SINGLE USE, it " +
+                "expires, and it is bound to this document and this request - if either changes it is refused and " +
+                "nothing is written." +
+                (o["plan_resolved"] != null
+                    ? " It is ALSO bound to the elements resolved above: if the model moves before you spend it, " +
+                      "the apply is refused as a stale plan rather than applied to a different set."
+                    : " NOTE: it is bound to the REQUEST, not to the resolved element set - this command does not " +
+                      "materialise its plan yet, so a model that moves before you spend it would not be detected.") +
+                (limitNote == null ? "" : " STATED LIMIT: " + limitNote);
+        }
+
         /// <summary>Issue a token for a plan that was just computed. Never for one that was not.</summary>
         public Confirmation Issue(string command, string documentKey, string planHash, TimeSpan? ttl = null,
-                                  string elementFingerprint = null, ResolvedPlan rehearsedPlan = null)
+                                  string elementFingerprint = null, ResolvedPlan rehearsedPlan = null,
+                                  JArray rehearsedRows = null)
         {
+            DateTime issuedUtc = _now();
             var c = new Confirmation
             {
                 Token = NewToken(),
                 Command = command,
                 DocumentKey = documentKey,
                 PlanHash = planHash,
+                IdentityDigest = IdentityBinding.Digest,
                 ElementFingerprint = elementFingerprint,
                 RehearsedPlan = rehearsedPlan,
-                IssuedUtc = _now(),
-                ExpiresUtc = _now().Add(ttl ?? DefaultTtl)
+                RehearsedRows = (JArray)rehearsedRows?.DeepClone(),
+                IssuedUtc = issuedUtc,
+                ExpiresUtc = issuedUtc.Add(ttl ?? DefaultTtl)
             };
             lock (_lock)
             {
@@ -145,6 +189,91 @@ namespace Horizun.Revit.Core
         /// </summary>
         public ConfirmationCheck Validate(string token, string command, string documentKey, string planHash) =>
             ValidateCore(token, command, documentKey, planHash, null, null, null);
+
+        /// <summary>Refuse a mismatched request before measuring a reversible preview without spending its token.</summary>
+        internal ConfirmationCheck CheckRequest(string token, string command, string documentKey, string planHash) =>
+            ValidateCore(token, command, documentKey, planHash, null, null, null, spend: false);
+
+        /// <summary>Validate with expiry judged at the moment the call arrived (see ValidateAndRenew with asOfUtc).</summary>
+        public ConfirmationCheck Validate(string token, string command, string documentKey, string planHash, DateTime? asOfUtc) =>
+            ValidateCore(token, command, documentKey, planHash, null, null, null, asOfUtc);
+
+        /// <summary>
+        /// Whether a token could still be spent at <paramref name="asOfUtc"/>: known, unused, not expired. Spends nothing.
+        /// Null when it could; otherwise the refusal. Lets a long command refuse a dead approval before minutes of work.
+        /// </summary>
+        public string Liveness(string token, DateTime asOfUtc)
+        {
+            lock (_lock)
+            {
+                if (string.IsNullOrWhiteSpace(token) || !_issued.TryGetValue(token, out Confirmation c))
+                    return "no such confirmation token (run the dry run first; tokens do not survive a restart of the bridge)";
+                if (c.Used) return "that confirmation was already used";
+                DateTime at = asOfUtc > _now() ? _now() : asOfUtc;
+                if (at > c.ExpiresUtc) return "that confirmation expired (issued " + c.IssuedUtc.ToString("u") + ")";
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Liveness, plus whether the token was issued for <paramref name="command"/> on <paramref name="documentKey"/>.
+        /// Spends nothing. Null when it could still be spent here; otherwise the refusal. The plan is NOT compared
+        /// (the caller has not resolved it yet): Validate does that, and spends the token, once the plan is known.
+        /// </summary>
+        public string Precheck(string token, string command, string documentKey, DateTime asOfUtc)
+        {
+            lock (_lock)
+            {
+                string dead = Liveness(token, asOfUtc);
+                if (dead != null) return dead;
+                if (!_issued.TryGetValue(token, out Confirmation c))
+                    return "no such confirmation token (run the dry run first; tokens do not survive a restart of the bridge)";
+                if (!string.Equals(c.Command, command, StringComparison.Ordinal))
+                    return "that confirmation was issued for '" + c.Command + "', not for '" + command + "'";
+                if (!string.Equals(c.DocumentKey, documentKey, StringComparison.Ordinal))
+                    return "that confirmation was issued for a different document than the one this would run against";
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Validates and spends the caller's approval now, then issues a private single-use
+        /// continuation with the identical command, document, request hash and resolved-plan
+        /// fingerprint. Long composite operations use this only after validating every child
+        /// approval up front; child commands still re-resolve against the preserved fingerprint.
+        /// </summary>
+        public ConfirmationCheck ValidateAndRenew(string token, string command, string documentKey, string planHash,
+                                                   TimeSpan? ttl, out string continuationToken) =>
+            ValidateAndRenew(token, command, documentKey, planHash, ttl, null, out continuationToken);
+
+        /// <summary>
+        /// 5.0.4: the same, with expiry judged at <paramref name="asOfUtc"/> - the moment the composite call ARRIVED - instead
+        /// of now. A composite command that resolves its plan for minutes before it reaches its tokens (apply_scan_plan on a
+        /// large model) otherwise refused, as expired, an approval sent seconds after it was issued. Never later than now;
+        /// model drift is still caught by each child's stale-plan comparison.
+        /// </summary>
+        public ConfirmationCheck ValidateAndRenew(string token, string command, string documentKey, string planHash,
+                                                   TimeSpan? ttl, DateTime? asOfUtc, out string continuationToken)
+        {
+            continuationToken = null;
+            ConfirmationCheck check = ValidateCore(token, command, documentKey, planHash, null, null, null, asOfUtc);
+            if (!check.Ok) return check;
+            lock (_lock)
+            {
+                Confirmation original = _issued[token];
+                var continuation = new Confirmation
+                {
+                    Token = NewToken(), Command = original.Command, DocumentKey = original.DocumentKey,
+                    PlanHash = original.PlanHash, IdentityDigest = original.IdentityDigest,
+                    ElementFingerprint = original.ElementFingerprint, RehearsedPlan = original.RehearsedPlan,
+                    RehearsedRows = original.RehearsedRows,
+                    IssuedUtc = _now(), ExpiresUtc = ttl.HasValue ? _now().Add(ttl.Value) : DateTime.MaxValue
+                };
+                _issued[continuation.Token] = continuation;
+                continuationToken = continuation.Token;
+            }
+            return check;
+        }
 
         /// <summary>
         /// The same check, plus the one the old code said it could not make: whether the
@@ -170,10 +299,42 @@ namespace Horizun.Revit.Core
                                           ResolvedPlan atApply, string driftDescription) =>
             ValidateCore(token, command, documentKey, planHash, atApply?.Fingerprint(), driftDescription, atApply);
 
+        internal CommandResult Require(string token, string command, string documentKey, string planHash,
+            ResolvedPlan atApply, ResolvedPlan rehearsed)
+        {
+            ConfirmationCheck check = Validate(token, command, documentKey, planHash, atApply,
+                atApply != null && rehearsed != null ? ResolvedPlan.DescribeDrift(rehearsed, atApply) : null);
+            return check.Ok ? null : CommandResult.FailWithDetail(check.Message + " (Nothing was changed.)", new JObject
+            {
+                ["error_code"] = string.IsNullOrWhiteSpace(token)
+                    ? ErrorCodes.ConfirmacionRequerida : ErrorCodes.TokenInvalidoOVencido,
+                ["state"] = check.State == ConfirmationState.StalePlan ? "stale_plan" : "refused",
+                ["confirmation_state"] = check.State.ToString()
+            });
+        }
+
+        internal Confirmation IssueForPlan(string command, string documentKey, string planHash, TimeSpan? ttl, ResolvedPlan resolved) =>
+            Issue(command, documentKey, planHash, ttl, resolved?.Fingerprint(), resolved);
+
+        // Resolving the rehearsal's observed effects is a read. Require still validates
+        // and spends the approval against the freshly resolved plan before a write.
+        internal ResolvedPlan ReadRehearsedPlan(string token, string command, string documentKey, string planHash)
+        {
+            lock (_lock)
+            {
+                if (string.IsNullOrWhiteSpace(token) || !_issued.TryGetValue(token, out Confirmation c) ||
+                    c.Command != command || c.DocumentKey != documentKey || c.PlanHash != planHash ||
+                    c.IdentityDigest != IdentityBinding.Digest || c.Used || c.ExpiresUtc < _now()) return null;
+                return c.RehearsedPlan;
+            }
+        }
+
         private ConfirmationCheck ValidateCore(string token, string command, string documentKey, string planHash,
                                                string elementFingerprint, string driftDescription,
-                                               ResolvedPlan atApply)
+                                               ResolvedPlan atApply, DateTime? asOfUtc = null, bool spend = true)
         {
+            DateTime now = _now();
+            DateTime at = asOfUtc.HasValue && asOfUtc.Value < now ? asOfUtc.Value : now;
             lock (_lock)
             {
                 if (string.IsNullOrWhiteSpace(token) || !_issued.TryGetValue(token, out Confirmation c))
@@ -186,7 +347,7 @@ namespace Horizun.Revit.Core
                         "That confirmation was already used. One approval authorises one execution - re-run the " +
                         "dry run to see the CURRENT plan and get a new token.");
 
-                if (_now() > c.ExpiresUtc)
+                if (at > c.ExpiresUtc)
                     return Fail(ConfirmationState.Expired,
                         "That confirmation expired (issued " + c.IssuedUtc.ToString("u") + ", valid for " +
                         (int)(c.ExpiresUtc - c.IssuedUtc).TotalMinutes + " minutes). The model may have moved since. " +
@@ -215,6 +376,15 @@ namespace Horizun.Revit.Core
                         "model, so it cannot detect that the model moved underneath you. Staleness is covered " +
                         "by the token's expiry, and the document by its own separate check.");
 
+                if (!string.Equals(c.IdentityDigest, IdentityBinding.Digest, StringComparison.Ordinal))
+                    return Fail(ConfirmationState.PlanChanged,
+                        "THIS REQUEST IS NOT THE ONE THAT WAS REHEARSED: " + (c.IdentityDigest == null
+                            ? "the rehearsal carried no element identity (unique_id / expected_category / expected_type / identity) and this call does. "
+                            : IdentityBinding.Digest == null
+                                ? "the rehearsal carried an element identity and this call omits it. "
+                                : "the element identity of this call is not the one of the rehearsal. ") +
+                        "The token is bound to the identity that was checked. Nothing was changed. Re-run the dry run with the identity you intend to apply, and approve THAT one.");
+
                 // THE MODEL, not the request. Everything above compared the question; this
                 // compares the answer. Only when both sides materialised a plan: a token
                 // issued before this existed carries null, and inventing a comparison there
@@ -233,10 +403,11 @@ namespace Horizun.Revit.Core
                         "change, the answer did. Re-run the dry run, read the CURRENT plan, and approve that one.");
                 }
 
-                c.Used = true;
+                if (spend) c.Used = true;
                 return new ConfirmationCheck
                 {
                     State = ConfirmationState.Valid,
+                    RehearsedRows = (JArray)c.RehearsedRows?.DeepClone(),
                     // Said out loud when the token predates materialised plans or the command
                     // has not been taught to build one: the caller is entitled to know that
                     // "approved" covered the request and not the element set.
@@ -317,6 +488,11 @@ namespace Horizun.Revit.Core
                 }
                 else parts.Add(field + "=" + t.ToString(Newtonsoft.Json.Formatting.None));
             }
+            // THE IDENTITY COUNTS AS HASH, not as presentation. `identity` / unique_id / expected_* are not scope fields of any tool
+            // schema (the guard consumes them before the command parses), but they change what the caller asked to be protected
+            // against: a request that adds, drops or changes them is a different request. Their digest was taken by the guard
+            // BEFORE its commit erased them (ElementIdentityGuard / IdentityBinding), and joins every plan hash here.
+            if (IdentityBinding.Digest != null) parts.Add("identity_digest=" + IdentityBinding.Digest);
             return HashPlan(parts.ToArray());
         }
 

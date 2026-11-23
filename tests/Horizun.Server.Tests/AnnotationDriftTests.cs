@@ -48,7 +48,7 @@ namespace Horizun.Server.Tests
                 "horizun_execute_python",       // arbitrary API, no dry run possible
                 "horizun_document_session",     // closes documents
                 "horizun_export",               // overwrites files on disk
-                "horizun_create_family",        // replaces family geometry
+                // replaces family geometry
                 "horizun_power_bi_push"         // replaces a dataset
             };
             foreach (string name in mustBeDestructive)

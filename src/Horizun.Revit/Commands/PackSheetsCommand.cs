@@ -362,6 +362,24 @@ namespace Horizun.Revit.Commands
             {
                 if (!item.Estimated.Valid || !FinitePositive(item.Width) || !FinitePositive(item.Height))
                 { error = "item '" + item.Key + "' has no readable positive paper extent; no size was guessed"; return false; }
+                if (item.Source is View placedView && !(placedView is ViewSchedule))
+                {
+                    try
+                    {
+                        AnnotationSurvey survey = AnnotationLayout.Survey(doc, placedView);
+                        if (!survey.Complete)
+                        {
+                            error = "item '" + item.Key + "' has incomplete annotation crop/extent coverage; " +
+                                "its viewport box cannot be trusted for collision-free packing";
+                            return false;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        error = "item '" + item.Key + "' annotation crop/extent could not be read: " + ex.Message;
+                        return false;
+                    }
+                }
             }
             return true;
         }

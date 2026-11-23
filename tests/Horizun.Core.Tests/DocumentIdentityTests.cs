@@ -24,6 +24,19 @@ namespace Horizun.Core.Tests
             new DocIdentity { Title = title, Path = path, ModelGuid = guid };
 
         [Fact]
+        public void Activation_target_title_of_32_characters_and_normalized_path_resolve_without_guessing()
+        {
+            var title = new string('a', 32);
+            var open = new List<DocIdentity> { Doc(title, @"C:\Models\one.rvt"), Doc("other", @"C:\Models\two.rvt") };
+            Assert.Equal(0, DocumentMatcher.FindTarget(open, title).Index);
+            Assert.Equal(0, DocumentMatcher.FindTarget(open, "c:/models/ONE.rvt").Index);
+            open.Add(Doc(title, @"C:\Other\one.rvt"));
+            var ambiguous = DocumentMatcher.FindTarget(open, title);
+            Assert.Equal(DocMatchOutcome.Ambiguous, ambiguous.Outcome);
+            Assert.Equal(new[] { 0, 2 }, ambiguous.Candidates);
+        }
+
+        [Fact]
         public void The_active_document_is_found_among_the_open_ones()
         {
             // THE REGRESSION: this is the shape that reported "none of these is active".

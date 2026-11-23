@@ -577,9 +577,9 @@ namespace Horizun.Revit.Commands
                     return new Fail(WallSplitCodes.VerifyJoinDisjoint,
                         "layers " + a.LayerNumberText + " and " + b.LayerNumberText + " are consecutive in the " +
                         "chain but do not touch: their centres are " +
-                        WallLayerRules.FeetToMm(Math.Abs(a.ExpectedOffsetFeet - b.ExpectedOffsetFeet)).ToString("F2") +
+                        WallLayerRules.FeetToMm(Math.Abs(a.ExpectedOffsetFeet - b.ExpectedOffsetFeet)).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
                         " mm apart and half their widths add to " +
-                        WallLayerRules.FeetToMm((a.WidthFeet + b.WidthFeet) / 2.0).ToString("F2") +
+                        WallLayerRules.FeetToMm((a.WidthFeet + b.WidthFeet) / 2.0).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
                         " mm. Nothing was joined.");
 
                 if (!wallsByLayer.TryGetValue(edge[0], out Wall wa) || !wallsByLayer.TryGetValue(edge[1], out Wall wb))
@@ -896,7 +896,7 @@ namespace Horizun.Revit.Commands
 
             double off = Deviation(((LocationCurve)carrier.Location).Curve, target);
             return new Fail(WallSplitCodes.VerifyLayerGeometry,
-                "the carrier did not settle at its layer's position: it is " + off.ToString("F2") +
+                "the carrier did not settle at its layer's position: it is " + off.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) +
                 " mm away after two attempts, and the tolerance is " + WallLayerRules.ToleranceMm +
                 " mm. Rolled back whole.");
         }
@@ -921,7 +921,7 @@ namespace Horizun.Revit.Commands
                 ? null
                 : new Fail(WallSplitCodes.VerifyLayerGeometry,
                     "layer " + layer.LayerNumberText + " did not settle at its position (" +
-                    Deviation(((LocationCurve)wall.Location).Curve, target).ToString("F2") + " mm off).");
+                    Deviation(((LocationCurve)wall.Location).Curve, target).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " mm off).");
         }
 
         // ---- geometry helpers -----------------------------------------------------

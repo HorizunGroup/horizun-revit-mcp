@@ -19,6 +19,67 @@ namespace Horizun.Server.Tests
 {
     public sealed class TaskCancellationTests
     {
+        [Fact]
+        public void Cooperative_cancel_request_is_pending_until_the_job_finishes()
+        {
+            WithDataRoot(() =>
+            {
+                string taskId = NewTask(out Job job);
+                job.MarkRunning();
+                McpTasks.RequestCancellation(taskId, _ => new McpTasks.JobCancelAnswer { State = "cancel_requested" });
+                JObject record = JObject.Parse(File.ReadAllText(Path.Combine(HorizunPaths.DataRoot(), "mcp-tasks", taskId + ".json")));
+                Assert.Contains("safe point", (string)record["status_message"]);
+                Assert.Equal("working", (string)McpTasks.Get(new JObject { ["taskId"] = taskId })["status"]);
+            });
+        }
+
+        [Fact]
+        public void Removed_work_with_a_failed_record_does_not_promise_a_partial_result()
+        {
+            WithDataRoot(() =>
+            {
+                string taskId = NewTask(out Job job);
+                job.MarkRunning();
+                McpTasks.RequestCancellation(taskId, _ => new McpTasks.JobCancelAnswer
+                    { Removed = false, State = "cancelled_record_unavailable" });
+                JObject record = JObject.Parse(File.ReadAllText(Path.Combine(HorizunPaths.DataRoot(), "mcp-tasks", taskId + ".json")));
+                Assert.Contains("not guaranteed", (string)record["status_message"]);
+                Assert.DoesNotContain("still running", (string)record["status_message"]);
+            });
+        }
+
+        // Review M4: job_status cancel=true and tasks/cancel answered the same add-in state with two different texts
+        // (the cooperative states read "it runs to its end" in one). One mapping now serves both.
+        [Theory]
+        [InlineData("cancel_requested", false, false)]
+        [InlineData("cancelled_after_start", false, false)]
+        [InlineData("interrupt_requested", false, true)]
+        [InlineData("already_interrupted", false, true)]
+        [InlineData("cancelled_record_unavailable", false, false)]
+        [InlineData("removed_before_start", true, false)]
+        [InlineData("not_in_queue", false, false)]
+        public void Both_cancellation_doors_read_an_answer_the_same_way(string state, bool removed, bool interrupt)
+        {
+            var answer = new McpTasks.JobCancelAnswer { State = state, Removed = removed, InterruptRequested = interrupt };
+            string viaStatus = null, viaTask = null;
+            Job statusJob = Job.Start("horizun_execute_python");
+            statusJob.MarkRunning();
+            JObject reply = JobStatus.Handle(new JObject { ["job_id"] = statusJob.Id, ["cancel"] = true },
+                CancellationToken.None, (id, pid) => answer);
+            viaStatus = (string)reply["cancel_request"]["what_this_means"];
+            WithDataRoot(() =>
+            {
+                string taskId = NewTask(out Job job);
+                job.MarkRunning();
+                McpTasks.RequestCancellation(taskId, _ => answer);
+                JObject record = JObject.Parse(File.ReadAllText(Path.Combine(HorizunPaths.DataRoot(), "mcp-tasks", taskId + ".json")));
+                viaTask = (string)record["status_message"];
+            });
+            Assert.Equal(viaStatus, viaTask);
+            if (state == "cancel_requested" || state == "cancelled_after_start")
+                Assert.DoesNotContain("cannot be interrupted", viaStatus);
+        }
+
         private static void WithDataRoot(Action action)
         {
             string saved = Environment.GetEnvironmentVariable(HorizunPaths.RootOverrideVariable);
@@ -73,6 +134,63 @@ namespace Horizun.Server.Tests
                 Assert.Equal(job.Id, asked);
                 JObject state = McpTasks.Get(new JObject { ["taskId"] = taskId });
                 Assert.Equal("cancelled", (string)state["status"]);
+            });
+        }
+
+        [Fact]
+        public void A_cancelled_continuation_does_not_say_it_is_still_running()
+        {
+            WithDataRoot(() =>
+            {
+                string taskId = NewTask(out Job job);
+                job.MarkRunning();
+                McpTasks.RequestCancellation(taskId, jobId =>
+                {
+                    job.Finish("cancelled_after_start", "Cancelled between callbacks after work started.");
+                    return new McpTasks.JobCancelAnswer { Removed = false, State = "cancelled_after_start" };
+                });
+                JObject record = JObject.Parse(File.ReadAllText(Path.Combine(HorizunPaths.DataRoot(), "mcp-tasks", taskId + ".json")));
+                Assert.Contains("after", (string)record["status_message"]);
+                Assert.DoesNotContain("cannot be interrupted", (string)record["status_message"]);
+                Assert.Equal("cancelled", (string)McpTasks.Get(new JObject { ["taskId"] = taskId })["status"]);
+            });
+        }
+
+        [Fact]
+        public void A_cancelled_continuation_delivers_its_partial_result_through_tasks_result()
+        {
+            WithDataRoot(() =>
+            {
+                string taskId = NewTask(out Job job);
+                job.MarkRunning();
+                job.Write("sweep", 2, 5);
+                McpTasks.RequestCancellation(taskId, _ =>
+                {
+                    job.Result(@"{""result"":""partial"",""observed_clash_count"":2}");
+                    job.Finish("cancelled_after_start", "Cancelled between callbacks.");
+                    return new McpTasks.JobCancelAnswer { State = "cancelled_after_start" };
+                });
+                JObject result = McpTasks.WaitResult(new JObject { ["taskId"] = taskId }, null, CancellationToken.None);
+                Assert.True((bool)result["isError"]);
+                Assert.False((bool)result["structuredContent"]["partial_result_complete"]);
+                Assert.Equal(2, (int)result["structuredContent"]["partial_result"]["observed_clash_count"]);
+                Assert.Equal("partial", (string)result["structuredContent"]["partial_result"]["result"]);
+            });
+        }
+
+        [Fact]
+        public void A_failed_continuation_also_delivers_its_partial_result()
+        {
+            WithDataRoot(() =>
+            {
+                string taskId = NewTask(out Job job);
+                job.MarkRunning();
+                job.Result(@"{""result"":""partial"",""valid"":false}");
+                job.Finish("failed", "Document changed between callbacks.");
+                JObject result = McpTasks.WaitResult(new JObject { ["taskId"] = taskId }, null, CancellationToken.None);
+                Assert.True((bool)result["isError"]);
+                Assert.False((bool)result["structuredContent"]["partial_result_complete"]);
+                Assert.False((bool)result["structuredContent"]["partial_result"]["valid"]);
             });
         }
 
@@ -245,7 +363,8 @@ namespace Horizun.Server.Tests
                 var deadline = DateTime.UtcNow.AddSeconds(15);
                 while (DateTime.UtcNow < deadline)
                 {
-                    record = JObject.Parse(File.ReadAllText(path));
+                    try { record = JObject.Parse(File.ReadAllText(path)); }
+                    catch (IOException) { Thread.Sleep(50); continue; } // the writer is replacing the record
                     if ((string)record["cancellation_answer"] == "not_in_queue") break;
                     Thread.Sleep(50);
                 }

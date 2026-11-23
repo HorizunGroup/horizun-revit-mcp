@@ -41,7 +41,18 @@ $script:HzProbeModules += [pscustomobject]@{
         $created = New-Object System.Collections.ArrayList
         function Short($a) { $t = [string]$a.text; if ($t.Length -gt 400) { $t.Substring(0, 400) } else { $t } }
         function Verified($r) { $r.stage -eq 'apply' -and -not $r.answer.isError -and $r.answer.data -and $r.answer.data.postconditions.all_verified -eq $true }
-        function Why($r) { if ($r.stage -ne 'apply') { 'the rehearsal issued no token: ' + (Short $r.answer) } else { Short $r.answer } }
+        function Why($r) {
+            # An uncertain rehearsal says how its rollback ended: name it, it is the whole diagnosis.
+            $rd = if ($r.answer.data -and $null -ne $r.answer.data.rollback_confirmed) { $r.answer.data } elseif ($r.answer.structured -and $null -ne $r.answer.structured.rollback_confirmed) { $r.answer.structured } else { $null }
+            $rb = if ($rd) { ' [rollback_status=' + $rd.rollback_status + ' rollback_error=' + $rd.rollback_error + ' created_elements_absent=' + $rd.created_elements_absent + ']' } else { '' }
+            if (-not $rd) {
+                # The detail may sit deeper (structured.detail, or only in the text): find the fields wherever they are.
+                $all = [string]$r.answer.text + ' ' + [string]($r.answer.structured | ConvertTo-Json -Depth 20 -Compress) + ' ' + [string]($r.answer.data | ConvertTo-Json -Depth 20 -Compress)
+                $bits = @(foreach ($k in 'rollback_status', 'rollback_error', 'created_elements_absent', 'rollback_confirmed', 'state') {
+                    if ($all -match ('"' + $k + '":\s*("[^"]*"|true|false|null)')) { $k + '=' + $Matches[1] } })
+                if ($bits.Count -gt 0) { $rb = ' [' + ($bits -join ' ') + ']' }
+            }
+            if ($r.stage -ne 'apply') { 'the rehearsal issued no token: ' + (Short $r.answer) + $rb } else { (Short $r.answer) + $rb } }
         function Types($category) {
             # Every page: instances share the rows, and a copied type has a high id.
             $types = @(); $cursor = $null
@@ -95,21 +106,9 @@ $script:HzProbeModules += [pscustomobject]@{
             else { Case $catalog[1] 'horizun_manage_curtain' 'fail' (Why $add) }
 
             if ($lineId) {
+                # An HVAC sample has no curtain content (MEASURED 2026-09-27, release gate): then this case is not_covered.
                 $mullionType = Types 'OST_CurtainWallMullions' | Select-Object -First 1
                 $mullionWhy = 'the fixture offers no mullion type'
-                if (-not $mullionType) {
-                    # An HVAC sample has no curtain content (MEASURED 2026-09-27, release gate): the year's
-                    # own Autodesk template carries 'Rectangular Mullion: 50 x 150mm'.
-                    $tpl = 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates\English\DefaultMetric.rte'
-                    if ($Ctx.PSObject.Properties['TemplateRoot'] -and $Ctx.TemplateRoot) { $tpl = Join-Path ([string]$Ctx.TemplateRoot) 'English\DefaultMetric.rte' }
-                    if (Test-Path -LiteralPath $tpl) {
-                        $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = 'OST_CurtainWallMullions'
-                                type_names = @('Rectangular Mullion: 50 x 150mm'); duplicate_types = 'use_destination' } 'arch-cw-mulltype'
-                        $mullionType = @(Types 'OST_CurtainWallMullions' | Where-Object { [string]$_.type -eq '50 x 150mm' }) | Select-Object -First 1
-                        if (-not $mullionType) { $mullionWhy = 'the fixture offers no mullion type and the template copy brought none: ' + (Why $cp) }
-                    }
-                    else { $mullionWhy = "the fixture offers no mullion type and there is no template at $tpl" }
-                }
                 if (-not $mullionType) { Case $catalog[2] 'horizun_manage_curtain' 'not_covered' $mullionWhy }
                 else {
                     $m = & $Ctx.Apply 'horizun_manage_curtain' @{ target_document = $doc; operation = 'set_mullions'; element_id = $cwId; grid_line_id = $lineId; mode = 'add'; mullion_type_id = $mullionType.element_id } 'arch-cw-mullion'

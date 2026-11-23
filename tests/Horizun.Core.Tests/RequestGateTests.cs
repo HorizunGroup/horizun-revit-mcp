@@ -9,6 +9,88 @@ namespace Horizun.Core.Tests
 {
     public class RequestGateTests
     {
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void A_running_planimetry_read_receives_cancel_and_timeout_signals(bool timeout)
+        {
+            var gate = new RequestGate();
+            var request = gate.Begin("wire-planimetry", "horizun_query_planimetry", "{}", out _);
+            Assert.Same(request, gate.Take());
+            Assert.False(gate.CancelQueued(request.WireId, out string detail, timeout));
+            Assert.Equal("cancel_requested", detail);
+            Assert.True(request.Abandoned);
+            Assert.False(request.CancelledBeforeStart);
+            gate.Complete(request);
+        }
+
+        [Fact]
+        public void Detached_request_keeps_its_caller_and_cancellation_while_another_request_runs()
+        {
+            var gate = new RequestGate();
+            var first = gate.Begin("wire-first", "clash", "{}", out _);
+            var second = gate.Begin("wire-second", "health", "{}", out _);
+            Assert.Same(first, gate.Take());
+            bool cancelled = false;
+            Assert.True(gate.Detach(first, () => cancelled = true));
+            Assert.False(first.Wait(0));
+            Assert.Same(second, gate.Take());
+            Assert.Equal("executing", (string)gate.Observe("wire-first")["state"]);
+            Assert.False(gate.CancelQueued("wire-first", out string detail));
+            Assert.Equal("cancel_requested", detail);
+            Assert.True(cancelled);
+            gate.Complete(first);
+            Assert.True(first.Wait(0));
+            Assert.False(second.Wait(0));
+            Assert.Equal("executing", (string)gate.Observe("wire-second")["state"]);
+            gate.Complete(second);
+            Assert.True(second.Wait(0));
+        }
+
+        [Fact]
+        public void Cancellation_in_the_handoff_window_reaches_the_cooperative_owner()
+        {
+            var gate = new RequestGate();
+            var request = gate.Begin("wire-handoff", "clash", "{}", out _);
+            Assert.Same(request, gate.Take());
+            bool cancelled = false;
+            Assert.True(gate.PrepareDetach(request, () => cancelled = true));
+            Assert.False(gate.CancelQueued("wire-handoff", out string detail));
+            Assert.Equal("cancel_requested", detail);
+            Assert.True(cancelled);
+            Assert.False(request.Wait(0));
+            gate.Complete(request);
+        }
+
+        [Fact]
+        public void Cancellation_before_handoff_is_remembered_until_the_owner_is_ready()
+        {
+            var gate = new RequestGate();
+            var request = gate.Begin("wire-early", "clash", "{}", true, out _);
+            Assert.Same(request, gate.Take());
+            Assert.False(gate.CancelQueued("wire-early", out string state));
+            Assert.Equal("cancel_requested", state);
+            bool cancelled = false;
+            Assert.True(gate.PrepareDetach(request, () => cancelled = true));
+            Assert.True(cancelled);
+            gate.Complete(request);
+        }
+
+        [Fact]
+        public void Progress_is_correlated_with_only_the_claimed_request_and_cleared_on_completion()
+        {
+            var gate = new RequestGate();
+            var first = gate.Begin("wire-a", "script", "{}", out _);
+            var second = gate.Begin("wire-b", "script", "{}", out _);
+            gate.Take();
+            RequestGate.AttachProgress(() => new Newtonsoft.Json.Linq.JObject { ["job_id"] = "job-a" });
+            Assert.Equal("job-a", (string)gate.Observe("wire-a")["progress"]["job_id"]);
+            Assert.Null(gate.Observe("wire-b")["progress"]);
+            gate.Complete(first);
+            gate.Take();
+            Assert.Null(gate.Observe("wire-b")["progress"]);
+            gate.Complete(second);
+        }
         [Fact]
         public void Later_requests_wait_in_fifo_order_instead_of_being_refused()
         {

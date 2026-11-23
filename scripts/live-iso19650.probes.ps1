@@ -2,31 +2,21 @@
 <#
   ISO 19650 INFORMATION MANAGEMENT, LIVE.
 
-  The probes for horizun_deliver_ifc, horizun_export with an information
-  container, horizun_project_context and horizun_information_container, dot-
-  sourced by scripts/verify-live.ps1 and exercised WITHOUT Revit by
+  The probes for horizun_export with an information container,
+  horizun_project_context and horizun_information_container, dot-sourced by
+  scripts/verify-live.ps1 and exercised WITHOUT Revit by
   scripts/live-iso19650.tests.ps1. Every function talks to the bridge only
   through the -Call / -Apply scriptblocks it is handed, so the tests can drive
   the same code with recorded replies before a matrix run pays for Revit.
 
   WHAT THIS SECTION REFUSES TO ASSUME
 
-    the delivery class      the disposable fixture of each year is a different
-                            model. The class the mapping and the IDS name is
-                            DISCOVERED by counting elements in the model, never
-                            taken from the fixture this code was written against.
-    the IFC version         IFC4x3 exists in IFCVersion from Revit 2024 on. The
-                            delivery uses IFC4 (IfcDeliveryRules.VersionSchemaFamily:
-                            IFC4 -> FILE_SCHEMA family IFC4) in every year, and the
-                            IFC4x3 plan-or-refusal is its own probe with the
-                            expectation named per year.
     the permission profile  host-resident writes (stamp, transition) need
                             full_write. The probe reads the profile from health
                             and then believes the REPLY: a refusal must name the
                             profile, a success must be a verified, logged copy.
-    the model               nothing here writes a parameter unless the caller
-                            passes -ReadyWrite, which commits the mapped code on
-                            every element of the class in the DISPOSABLE model.
+    the model               nothing here writes a parameter. The export cases
+                            write files OUTSIDE the model, into the run folder.
 
   Every temporary file lives in ONE folder per run under the harness scratch
   directory (never under the repository), and every record is sanitised before
@@ -91,20 +81,7 @@ function Limit-HorizunIsoText {
 # reports the same set of rows to the matrix.
 # -----------------------------------------------------------------------------
 function Get-HorizunIsoCaseCatalog {
-    param([switch]$IncludeReadyWrite)
-    $catalog = @(
-        [pscustomobject]@{ Id = 'ISO-D1'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
-            Name = 'deliver_ifc dry run returns the plan, the model georeference and a token, and creates no file' }
-        [pscustomobject]@{ Id = 'ISO-D2'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
-            Name = 'deliver_ifc with a generated TAB mapping and IDS passes export, schema_header and the container seal, and the sidecar verifies as match' }
-        [pscustomobject]@{ Id = 'ISO-D3'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
-            Name = 'deliver_ifc decides ids_validate and pset_mapping on the exported file and deliverable_ready follows its gates' }
-        [pscustomobject]@{ Id = 'ISO-D7'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
-            Name = 'the pset_mapping gate carries a model_comparison row per declared property, with exported/empty_in_model/not_applied/parameter_missing' }
-        [pscustomobject]@{ Id = 'ISO-D4'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
-            Name = 'a second deliver_ifc onto the sealed name is refused and nothing is exported' }
-        [pscustomobject]@{ Id = 'ISO-D5'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
-            Name = 'IFC4x3 is planned where this Revit has it (2024+) and refused by name where it does not' }
+    return @(
         [pscustomobject]@{ Id = 'ISO-E1'; Tier = 'write'; Tool = 'horizun_export'
             Name = 'export ifc with information_container names the file after the container and seals it (verify = match)' }
         [pscustomobject]@{ Id = 'ISO-E2'; Tier = 'write'; Tool = 'horizun_export'
@@ -126,11 +103,6 @@ function Get-HorizunIsoCaseCatalog {
         [pscustomobject]@{ Id = 'ISO-H7'; Tier = 'host'; Tool = 'horizun_information_container'
             Name = 'shared->published apply lands a verified, logged copy that replays as already_transitioned, or the permission profile refuses it with nothing written' }
     )
-    if ($IncludeReadyWrite) {
-        $catalog += [pscustomobject]@{ Id = 'ISO-D6'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
-            Name = 'after the mapped parameter is written to every element of the class, deliver_ifc returns deliverable_ready=true' }
-    }
-    return $catalog
 }
 
 # One place turns a verify-live outcome into the consolidator's status. An
@@ -147,9 +119,8 @@ function ConvertTo-HorizunIsoStatus {
 }
 
 function New-HorizunIsoRecorder {
-    param([switch]$IncludeReadyWrite)
     return [pscustomobject]@{
-        Catalog = @(Get-HorizunIsoCaseCatalog -IncludeReadyWrite:$IncludeReadyWrite)
+        Catalog = @(Get-HorizunIsoCaseCatalog)
         Results = @{}
     }
 }
@@ -257,107 +228,8 @@ function Get-HorizunIsoFolderSnapshot {
 }
 
 # -----------------------------------------------------------------------------
-# Pure helpers: the plan per year, the container, the generated inputs.
+# Pure helpers: the container and its verification.
 # -----------------------------------------------------------------------------
-
-# IFC4 for the delivery in every year: IfcDeliveryRules.VersionSchemaFamily maps it
-# to FILE_SCHEMA family IFC4, which is also the IDS ifcVersion, and every IFCVersion
-# enum from 2023 to 2027 has it. IFC4x3 is probed separately, per year.
-function Get-HorizunIsoIfcPlan {
-    param([Parameter(Mandatory = $true)][int]$Year)
-    return [pscustomobject]@{
-        version = 'IFC4'
-        schema_family = 'IFC4'
-        ids_version = 'IFC4'
-        ifc4x3_available = ($Year -ge 2024)
-    }
-}
-
-function Get-HorizunIsoClassCandidates {
-    # In preference order. The IFC4 class each category exports as, the IDS
-    # entity names that class may carry in the file, and nothing else.
-    return @(
-        [pscustomobject]@{ category = 'OST_DuctCurves'; ifc_class = 'IfcDuctSegment'; ids_entities = @('IFCDUCTSEGMENT') }
-        [pscustomobject]@{ category = 'OST_PipeCurves'; ifc_class = 'IfcPipeSegment'; ids_entities = @('IFCPIPESEGMENT') }
-        [pscustomobject]@{ category = 'OST_CableTray'; ifc_class = 'IfcCableCarrierSegment'; ids_entities = @('IFCCABLECARRIERSEGMENT') }
-        [pscustomobject]@{ category = 'OST_Floors'; ifc_class = 'IfcSlab'; ids_entities = @('IFCSLAB') }
-        [pscustomobject]@{ category = 'OST_StructuralColumns'; ifc_class = 'IfcColumn'; ids_entities = @('IFCCOLUMN') }
-        [pscustomobject]@{ category = 'OST_StructuralFraming'; ifc_class = 'IfcBeam'; ids_entities = @('IFCBEAM') }
-        [pscustomobject]@{ category = 'OST_Walls'; ifc_class = 'IfcWall'; ids_entities = @('IFCWALL', 'IFCWALLSTANDARDCASE') }
-        [pscustomobject]@{ category = 'OST_GenericModel'; ifc_class = 'IfcBuildingElementProxy'; ids_entities = @('IFCBUILDINGELEMENTPROXY') }
-    )
-}
-
-# Ask the MODEL which candidate category holds elements. The preferred category
-# (the run's -QuantityCategory) goes first when it is a known candidate. Nothing
-# is chosen that the model did not count.
-function Find-HorizunIsoDeliveryClass {
-    param([scriptblock]$Call, [string]$PreferredCategory)
-    $candidates = @(Get-HorizunIsoClassCandidates)
-    $ordered = @()
-    if ($PreferredCategory) { $ordered += @($candidates | Where-Object { $_.category -eq $PreferredCategory }) }
-    $ordered += @($candidates | Where-Object { $_.category -ne $PreferredCategory })
-    $tried = @()
-    foreach ($candidate in $ordered) {
-        $answer = & $Call 'horizun_query_model' @{
-            categories = @($candidate.category); include_links = $false; response_mode = 'summary'; max_rows = 1 }
-        if ($answer.isError -or -not $answer.data) {
-            $tried += ('{0}: query failed ({1})' -f $candidate.category, (Limit-HorizunIsoText $answer.text 160))
-            continue
-        }
-        $count = 0
-        if ($null -ne $answer.data.matched_total) { $count = [int]$answer.data.matched_total }
-        $tried += ('{0}={1}' -f $candidate.category, $count)
-        if ($count -gt 0) {
-            return [pscustomobject]@{
-                found = $true; category = $candidate.category; ifc_class = $candidate.ifc_class
-                ids_entities = @($candidate.ids_entities); count = $count
-                coverage_complete = $answer.data.coverage_complete; tried = $tried
-            }
-        }
-    }
-    return [pscustomobject]@{ found = $false; tried = $tried }
-}
-
-# The mapping is the EXPORTER'S OWN FORMAT - TAB separated - and the IDS asks for
-# exactly the property the mapping declares, on exactly the class the model has.
-function New-HorizunIsoDeliveryInputs {
-    param([Parameter(Mandatory = $true)][string]$Directory, [Parameter(Mandatory = $true)]$Class,
-          [Parameter(Mandatory = $true)][string]$IdsVersion, [string]$Parameter = 'Comments',
-          [string]$PropertySet = 'HZ_Delivery', [string]$Property = 'Code')
-    $null = New-Item -ItemType Directory -Force -Path $Directory
-    $tab = "`t"
-    $mappingText = ('# Horizun live probe - generated per run; fields separated by TAB' + "`r`n" +
-                    'PropertySet:' + $tab + $PropertySet + $tab + 'I' + $tab + $Class.ifc_class + "`r`n" +
-                    $tab + $Property + $tab + 'Text' + $tab + $Parameter + "`r`n")
-    $entities = @($Class.ids_entities)
-    if ($entities.Count -eq 1) {
-        $entityXml = '<name><simpleValue>' + $entities[0] + '</simpleValue></name>'
-    } else {
-        $entityXml = '<name><xs:restriction base="xs:string">' +
-            (($entities | ForEach-Object { '<xs:enumeration value="' + $_ + '"/>' }) -join '') +
-            '</xs:restriction></name>'
-    }
-    $idsText = '<?xml version="1.0" encoding="UTF-8"?>' + "`r`n" +
-        '<ids xmlns="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema">' +
-        '<info><title>Horizun live delivery probe</title></info><specifications>' +
-        '<specification name="' + $Class.ifc_class + ' carries ' + $PropertySet + '.' + $Property + '" ifcVersion="' + $IdsVersion + '">' +
-        '<applicability><entity>' + $entityXml + '</entity></applicability>' +
-        '<requirements><property><propertySet><simpleValue>' + $PropertySet + '</simpleValue></propertySet>' +
-        '<baseName><simpleValue>' + $Property + '</simpleValue></baseName></property></requirements>' +
-        '</specification></specifications></ids>'
-    $mappingPath = Join-Path $Directory 'delivery-psets.txt'
-    $idsPath = Join-Path $Directory 'delivery.ids'
-    $utf8 = New-Object System.Text.UTF8Encoding($false)
-    [IO.File]::WriteAllText($mappingPath, $mappingText, $utf8)
-    [IO.File]::WriteAllText($idsPath, $idsText, $utf8)
-    return [pscustomobject]@{
-        mapping = $mappingPath; ids = $idsPath
-        mapping_sha256 = (Get-FileHash -LiteralPath $mappingPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        ids_sha256 = (Get-FileHash -LiteralPath $idsPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        property_set = $PropertySet; property = $Property; parameter = $Parameter
-    }
-}
 
 # The seven ISO 19650-2 fields with their default patterns, so the name is
 # checked by the SAME defaults the bridge ships.
@@ -389,43 +261,6 @@ function Copy-HorizunIsoArgs {
     return $copy
 }
 
-function Get-HorizunIsoGates {
-    param($Data)
-    $byName = @{}
-    if ($null -eq $Data -or $null -eq $Data.gates) { return $byName }
-    foreach ($gate in @($Data.gates)) {
-        if ($gate -and $gate.gate) { $byName[[string]$gate.gate] = $gate }
-    }
-    return $byName
-}
-
-function Get-HorizunIsoGateStatus {
-    param([hashtable]$Gates, [string]$Name)
-    if ($Gates.ContainsKey($Name)) { return [string]$Gates[$Name].status }
-    return '(absent)'
-}
-
-# The ONE readiness rule, recomputed from the gates the reply carried. The
-# probe does not trust deliverable_ready: it checks it against this.
-function Test-HorizunIsoReadinessFollowsGates {
-    param($Data)
-    $gates = @($Data.gates)
-    $expected = $true
-    foreach ($mandatory in @('export', 'schema_header')) {
-        $g = $gates | Where-Object { $_.gate -eq $mandatory } | Select-Object -First 1
-        if (-not $g -or [string]$g.status -ne 'passed') { $expected = $false }
-    }
-    foreach ($g in $gates) {
-        if ($g.requested -ne $true -or $g.advisory -eq $true) { continue }
-        if ([string]$g.status -ne 'passed' -and [string]$g.status -ne 'skipped') { $expected = $false }
-    }
-    $blocking = @($Data.blocking)
-    $consistent = ([bool]$Data.deliverable_ready -eq $expected)
-    if ($Data.deliverable_ready -ne $true -and $blocking.Count -eq 0) { $consistent = $false }
-    if ($Data.deliverable_ready -eq $true -and $blocking.Count -ne 0) { $consistent = $false }
-    return [pscustomobject]@{ expected = $expected; consistent = $consistent }
-}
-
 function Invoke-HorizunIsoVerify {
     param([scriptblock]$Call, [string]$FilePath)
     $verify = & $Call 'horizun_information_container' @{ operation = 'verify'; file_path = $FilePath }
@@ -439,260 +274,7 @@ function Invoke-HorizunIsoVerify {
 }
 
 # -----------------------------------------------------------------------------
-# 1. horizun_deliver_ifc - the write tier, disposable document.
-# -----------------------------------------------------------------------------
-function Invoke-HorizunIsoDeliveryProbes {
-    param([string]$Document, [int]$Year, [string]$RunDirectory, [string]$RunId, [string]$PreferredCategory,
-          [scriptblock]$Call, [scriptblock]$Apply, $Recorder, [switch]$ReadyWrite, [string]$MappedParameter = 'Comments')
-    $plan = Get-HorizunIsoIfcPlan -Year $Year
-    $class = Find-HorizunIsoDeliveryClass -Call $Call -PreferredCategory $PreferredCategory
-    $deliveryIds = @('ISO-D1', 'ISO-D2', 'ISO-D3', 'ISO-D4', 'ISO-D6', 'ISO-D7')
-    if (-not $class.found) {
-        foreach ($id in $deliveryIds) {
-            if ($Recorder.Catalog | Where-Object { $_.Id -eq $id }) {
-                Complete-HorizunIsoCase $Recorder $id 'not_covered' ('the disposable model has no element in any candidate category, so no delivery class could be discovered: ' + ($class.tried -join ', ')) $null
-            }
-        }
-    }
-    $outDir = Join-Path $RunDirectory 'deliver'
-    $null = New-Item -ItemType Directory -Force -Path $outDir
-
-    if ($class.found) {
-        $inputs = New-HorizunIsoDeliveryInputs -Directory (Join-Path $RunDirectory 'inputs') -Class $class `
-            -IdsVersion $plan.ids_version -Parameter $MappedParameter
-        $container = New-HorizunIsoContainer -Number '0001' -Type 'M3'
-        $name = Get-HorizunIsoContainerName $container
-        $ifcPath = Join-Path $outDir ($name + '.ifc')
-        $sidecarPath = $ifcPath + '.container.json'
-        $discovered = @{ category = $class.category; ifc_class = $class.ifc_class; elements = $class.count
-                         tried = $class.tried; ifc_version = $plan.version; mapping_sha256 = $inputs.mapping_sha256
-                         ids_sha256 = $inputs.ids_sha256 }
-        $base = @{
-            target_document = $Document; output_folder = $outDir; information_container = $container
-            ifc_version = $plan.version; pset_mapping_path = $inputs.mapping; ids_path = $inputs.ids; bcf = $true
-        }
-
-        # ---- D1: the rehearsal -------------------------------------------------
-        $before = Get-HorizunIsoFolderSnapshot $outDir
-        $dry = & $Call 'horizun_deliver_ifc' (Copy-HorizunIsoArgs $base @{ dry_run = $true })
-        $after = Get-HorizunIsoFolderSnapshot $outDir
-        $d = $dry.data
-        $problems = @()
-        if ($dry.isError -or -not $d) { $problems += ('the rehearsal failed: ' + (Limit-HorizunIsoText $dry.text 300)) }
-        else {
-            if ($d.dry_run -ne $true) { $problems += 'dry_run is not true' }
-            if ([string]::IsNullOrWhiteSpace([string]$d.confirmation_token)) { $problems += 'no confirmation_token' }
-            if (-not [string]::Equals([string]$d.ifc_path, $ifcPath, [StringComparison]::OrdinalIgnoreCase)) {
-                $problems += ('ifc_path is ' + [string]$d.ifc_path + ', expected the container name in the output folder') }
-            if ([string]$d.information_container_name -ne $name) { $problems += ('information_container_name is ' + [string]$d.information_container_name) }
-            $geo = $d.georeference_in_model
-            if (-not $geo -or $null -eq $geo.survey_point -or $null -eq $geo.project_base_point -or $null -eq $geo.active_location) {
-                $problems += 'georeference_in_model lacks the survey point, the project base point or the active location' }
-            $plannedSeal = @($d.gates_planned) | Where-Object { $_.gate -eq 'information_container' } | Select-Object -First 1
-            if (-not $plannedSeal -or $plannedSeal.requested -ne $true) { $problems += 'the information_container gate is not planned' }
-            if (-not $d.pset_mapping -or [string]$d.pset_mapping.sha256 -ne $inputs.mapping_sha256) { $problems += 'the plan does not bind the mapping by its SHA-256' }
-            if (-not $d.ids -or [string]$d.ids.sha256 -ne $inputs.ids_sha256) { $problems += 'the plan does not bind the IDS by its SHA-256' }
-        }
-        if ($before -ne $after) { $problems += 'the rehearsal changed the output folder' }
-        if ($problems.Count -eq 0) {
-            Complete-HorizunIsoCase $Recorder 'ISO-D1' 'pass' ('rehearsal of ' + $name + '.ifc (' + $plan.version + ', class ' + $class.ifc_class +
-                ' discovered from ' + $class.count + ' ' + $class.category + ') returned the plan, the model georeference and a token; the output folder is unchanged') `
-                @{ discovered = $discovered; georeference_in_model = $d.georeference_in_model; gates_planned = $d.gates_planned }
-        } elseif ($dry.isError -or -not $d) {
-            Complete-HorizunIsoCase $Recorder 'ISO-D1' 'unverified' ($problems -join '; ') @{ discovered = $discovered }
-        } else {
-            Complete-HorizunIsoCase $Recorder 'ISO-D1' 'fail' ($problems -join '; ') @{ discovered = $discovered }
-        }
-
-        # ---- D2/D3: the apply --------------------------------------------------
-        $applied = & $Apply 'horizun_deliver_ifc' $base 'iso-deliver'
-        $sealed = $false
-        if ($applied.stage -ne 'apply') {
-            $why = 'the rehearsal did not issue a token, so the delivery was never applied: ' + (Limit-HorizunIsoText $applied.answer.text 300)
-            Complete-HorizunIsoCase $Recorder 'ISO-D2' 'unverified' $why $null
-            Complete-HorizunIsoCase $Recorder 'ISO-D3' 'unverified' $why $null
-            Complete-HorizunIsoCase $Recorder 'ISO-D7' 'unverified' $why $null
-        } elseif ($applied.answer.isError -or -not $applied.answer.data) {
-            Complete-HorizunIsoCase $Recorder 'ISO-D2' 'fail' ('the delivery apply failed: ' + (Limit-HorizunIsoText $applied.answer.text 400)) $null
-            Complete-HorizunIsoCase $Recorder 'ISO-D3' 'unverified' 'the delivery apply failed, so no gate could be judged' $null
-            Complete-HorizunIsoCase $Recorder 'ISO-D7' 'unverified' 'the delivery apply failed, so no gate could be judged' $null
-        } else {
-            $a = $applied.answer.data
-            $gates = Get-HorizunIsoGates $a
-            $export = Get-HorizunIsoGateStatus $gates 'export'
-            $header = Get-HorizunIsoGateStatus $gates 'schema_header'
-            $seal = Get-HorizunIsoGateStatus $gates 'information_container'
-            $verify = Invoke-HorizunIsoVerify -Call $Call -FilePath $ifcPath
-            $problems = @()
-            if ($export -ne 'passed') { $problems += "export=$export" }
-            if ($header -ne 'passed') { $problems += "schema_header=$header" }
-            if ($seal -ne 'passed') { $problems += "information_container=$seal" }
-            if (-not (Test-Path -LiteralPath $ifcPath -PathType Leaf)) { $problems += 'no IFC at the planned path' }
-            if (-not (Test-Path -LiteralPath $sidecarPath -PathType Leaf)) { $problems += 'no sidecar beside the IFC' }
-            if (-not $verify.ok) { $problems += ('information_container verify: ' + $(if ($verify.verdict) { $verify.verdict } else { Limit-HorizunIsoText $verify.text 200 })) }
-            elseif ($verify.sha256 -ne [string]$a.sha256) { $problems += 'the verified SHA-256 is not the one the delivery reported' }
-            $schemaFamily = $null
-            if ($gates.ContainsKey('schema_header') -and $gates['schema_header'].evidence) { $schemaFamily = [string]$gates['schema_header'].evidence.file_schema_family }
-            if ($header -eq 'passed' -and $schemaFamily -ne $plan.schema_family) { $problems += ('FILE_SCHEMA family is ' + $schemaFamily + ', expected ' + $plan.schema_family) }
-            $evidence = @{ discovered = $discovered; sha256 = $a.sha256; bytes = $a.bytes; gates = $a.gates
-                           verify = $verify.verdict; georeference_in_file = $a.georeference_in_file }
-            if ($problems.Count -eq 0) {
-                $sealed = $true
-                Complete-HorizunIsoCase $Recorder 'ISO-D2' 'pass' ('export, schema_header (' + $schemaFamily + ') and information_container passed; ' +
-                    'horizun_information_container verify reads match with the delivered SHA-256') $evidence
-            } else {
-                Complete-HorizunIsoCase $Recorder 'ISO-D2' 'fail' ($problems -join '; ') $evidence
-            }
-
-            $ids = Get-HorizunIsoGateStatus $gates 'ids_validate'
-            $pset = Get-HorizunIsoGateStatus $gates 'pset_mapping'
-            $bcf = Get-HorizunIsoGateStatus $gates 'bcf'
-            $ready = Test-HorizunIsoReadinessFollowsGates $a
-            $problems = @()
-            if ($ids -ne 'passed' -and $ids -ne 'failed') { $problems += "ids_validate=$ids (not decided on the file)" }
-            if ($pset -ne 'passed' -and $pset -ne 'failed') { $problems += "pset_mapping=$pset (not decided on the file)" }
-            if ($ids -eq 'failed' -and $bcf -ne 'passed') { $problems += "the IDS failed but bcf=$bcf" }
-            if ($ids -eq 'passed' -and $bcf -ne 'skipped') { $problems += "the IDS passed but bcf=$bcf" }
-            if (-not $ready.consistent) { $problems += ('deliverable_ready=' + $a.deliverable_ready + ' does not follow the gates (expected ' + $ready.expected + ') or blocking disagrees') }
-            if ($null -eq $a.georeference_in_file) { $problems += 'georeference_in_file is missing' }
-            if ($problems.Count -eq 0) {
-                Complete-HorizunIsoCase $Recorder 'ISO-D3' 'pass' ('ids_validate=' + $ids + ', pset_mapping=' + $pset + ', bcf=' + $bcf +
-                    '; deliverable_ready=' + $a.deliverable_ready + ' is what the gates imply (blocking: ' + (@($a.blocking) -join '; ') + ')') `
-                    @{ gates = $a.gates; blocking = $a.blocking; deliverable_ready = $a.deliverable_ready }
-            } else {
-                Complete-HorizunIsoCase $Recorder 'ISO-D3' 'fail' ($problems -join '; ') @{ gates = $a.gates; blocking = $a.blocking }
-            }
-
-            # ---- D7: the pset_mapping gate tells empty apart from not-applied ----
-            # An empty Revit parameter and a mapping the exporter did not apply both
-            # look like "missing" to the file alone (docs/INFORMATION-MANAGEMENT.md);
-            # model_comparison is the BEFORE-export read merged with the file's own
-            # coverage, so this checks its shape, not a specific model state - the
-            # disposable model's Comments parameter may be empty or already coded.
-            $mcProblems = @()
-            if (-not $gates.ContainsKey('pset_mapping') -or -not $gates['pset_mapping'].evidence -or
-                -not $gates['pset_mapping'].evidence.model_comparison) {
-                $mcProblems += 'the pset_mapping gate carries no model_comparison evidence'
-            } else {
-                $mc = @($gates['pset_mapping'].evidence.model_comparison)
-                if ($mc.Count -eq 0) { $mcProblems += 'model_comparison is empty' }
-                foreach ($row in $mc) {
-                    $rowNames = @($row.PSObject.Properties.Name)
-                    foreach ($key in @('exported', 'empty_in_model', 'not_applied', 'parameter_missing', 'model')) {
-                        if ($rowNames -notcontains $key) { $mcProblems += ("row for '" + [string]$row.property + "' carries no '" + $key + "'") }
-                    }
-                }
-            }
-            if ($mcProblems.Count -eq 0) {
-                Complete-HorizunIsoCase $Recorder 'ISO-D7' 'pass' ('model_comparison carries ' + $mc.Count +
-                    ' row(s), each with exported/empty_in_model/not_applied/parameter_missing/model') @{ model_comparison = $mc }
-            } else {
-                Complete-HorizunIsoCase $Recorder 'ISO-D7' 'fail' ($mcProblems -join '; ') @{ gates = $a.gates }
-            }
-        }
-
-        # ---- D4: the seal holds ------------------------------------------------
-        if (-not $sealed) {
-            Complete-HorizunIsoCase $Recorder 'ISO-D4' 'unverified' 'no sealed delivery exists to be refused (ISO-D2 did not pass)' $null
-        } else {
-            $ifcBefore = Get-HorizunIsoFileStamp $ifcPath
-            $sidecarBefore = Get-HorizunIsoFileStamp $sidecarPath
-            $folderBefore = Get-HorizunIsoFolderSnapshot $outDir
-            $again = & $Call 'horizun_deliver_ifc' (Copy-HorizunIsoArgs $base @{
-                dry_run = $false; overwrite = $true; idempotency_key = ('live-iso-reseal-' + $RunId) })
-            $unchanged = ((Get-HorizunIsoFileStamp $ifcPath) -eq $ifcBefore -and (Get-HorizunIsoFileStamp $sidecarPath) -eq $sidecarBefore -and
-                          (Get-HorizunIsoFolderSnapshot $outDir) -eq $folderBefore)
-            if ($again.isError -and $again.text -match 'sidecar' -and $again.text -match 'Nothing was exported' -and $unchanged) {
-                Complete-HorizunIsoCase $Recorder 'ISO-D4' 'pass' ('an apply with overwrite=true onto the sealed name was refused before export (' +
-                    (Limit-HorizunIsoText $again.text 200) + '); the IFC, its sidecar and the folder are byte-for-byte unchanged') $null
-            } elseif (-not $again.isError) {
-                Complete-HorizunIsoCase $Recorder 'ISO-D4' 'fail' 'the second delivery onto the sealed name was ACCEPTED' $null
-            } else {
-                Complete-HorizunIsoCase $Recorder 'ISO-D4' 'fail' ('refused=' + $again.isError + ' unchanged=' + $unchanged + ': ' + (Limit-HorizunIsoText $again.text 300)) $null
-            }
-        }
-
-        # ---- D6 (opt-in): commit the code, and the same delivery becomes ready --
-        if ($ReadyWrite) {
-            Invoke-HorizunIsoReadyProbe -Document $Document -Class $class -Inputs $inputs -Plan $plan -OutDir $outDir `
-                -RunId $RunId -Call $Call -Apply $Apply -Recorder $Recorder
-        }
-    }
-
-    # ---- D5: IFC4x3 per year (independent of the discovered class) ------------
-    $x3Name = 'HZ_ISO_4X3_' + $RunId
-    $x3Path = Join-Path $outDir ($x3Name + '.ifc')
-    $x3 = & $Call 'horizun_deliver_ifc' @{ target_document = $Document; output_folder = $outDir; output_name = $x3Name
-                                            ifc_version = 'IFC4x3'; dry_run = $true }
-    $x3Created = Test-Path -LiteralPath $x3Path
-    if ($plan.ifc4x3_available) {
-        $row = $null
-        if ($x3.data) { $row = @($x3.data.options) | Where-Object { $_.option -eq 'FileVersion' } | Select-Object -First 1 }
-        if (-not $x3.isError -and $x3.data.dry_run -eq $true -and $x3.data.confirmation_token -and $row -and [string]$row.value -eq 'IFC4x3' -and -not $x3Created) {
-            Complete-HorizunIsoCase $Recorder 'ISO-D5' 'pass' ("Revit $Year planned an IFC4x3 delivery (FileVersion IFC4x3, token issued) and wrote nothing") $null
-        } else {
-            Complete-HorizunIsoCase $Recorder 'ISO-D5' 'fail' ("Revit $Year has IFCVersion.IFC4x3 but the rehearsal did not plan it: " + (Limit-HorizunIsoText $x3.text 300)) $null
-        }
-    } else {
-        if ($x3.isError -and $x3.text -match 'IFCVersion\.IFC4x3' -and -not $x3Created) {
-            Complete-HorizunIsoCase $Recorder 'ISO-D5' 'pass' ("Revit $Year has no IFCVersion.IFC4x3 and the delivery was refused by name before anything was exported") $null
-        } else {
-            Complete-HorizunIsoCase $Recorder 'ISO-D5' 'fail' ("Revit $Year predates IFC4x3 but the request was not refused by name: " + (Limit-HorizunIsoText $x3.text 300)) $null
-        }
-    }
-}
-
-# Opt-in, because it COMMITS: the mapped parameter on every element of the class
-# in the disposable model, then the same delivery under a new container number.
-function Invoke-HorizunIsoReadyProbe {
-    param([string]$Document, $Class, $Inputs, $Plan, [string]$OutDir, [string]$RunId,
-          [scriptblock]$Call, [scriptblock]$Apply, $Recorder)
-    $rows = & $Call 'horizun_query_model' @{ categories = @($Class.category); include_links = $false; max_rows = 5000 }
-    if ($rows.isError -or -not $rows.data) {
-        Complete-HorizunIsoCase $Recorder 'ISO-D6' 'unverified' ('the elements of the class could not be listed: ' + (Limit-HorizunIsoText $rows.text 200)) $null
-        return
-    }
-    if ($rows.data.truncated -eq $true -or $rows.data.coverage_complete -eq $false) {
-        Complete-HorizunIsoCase $Recorder 'ISO-D6' 'unverified' ('the element list of ' + $Class.category + ' is truncated or incomplete; a partial write cannot prove readiness') $null
-        return
-    }
-    $ids = @(@($rows.data.rows) | Where-Object { $_.is_element_type -ne $true -and $null -ne $_.element_id } | ForEach-Object { [long]$_.element_id })
-    if ($ids.Count -eq 0) {
-        Complete-HorizunIsoCase $Recorder 'ISO-D6' 'unverified' 'the listed rows carried no element id' $null
-        return
-    }
-    $code = 'HZ-' + $RunId
-    $writes = @($ids | ForEach-Object { @{ target_id = $_; parameter = 'ALL_MODEL_INSTANCE_COMMENTS'; value = $code } })
-    $written = & $Apply 'horizun_write_params_verified' @{ target_document = $Document; writes = $writes
-                                                         transaction_name = 'Horizun live: ISO delivery code' } 'iso-ready-write'
-    if ($written.stage -ne 'apply' -or $written.answer.isError -or [int]$written.answer.data.writes_confirmed -ne $ids.Count) {
-        Complete-HorizunIsoCase $Recorder 'ISO-D6' 'unverified' ('the code could not be written and re-read on all ' + $ids.Count + ' elements: ' +
-            (Limit-HorizunIsoText $written.answer.text 300)) $null
-        return
-    }
-    $container = New-HorizunIsoContainer -Number '0004' -Type 'M3'
-    $again = & $Apply 'horizun_deliver_ifc' @{
-        target_document = $Document; output_folder = $OutDir; information_container = $container
-        ifc_version = $Plan.version; pset_mapping_path = $Inputs.mapping; ids_path = $Inputs.ids; bcf = $true } 'iso-deliver-ready'
-    if ($again.stage -ne 'apply' -or $again.answer.isError -or -not $again.answer.data) {
-        Complete-HorizunIsoCase $Recorder 'ISO-D6' 'fail' ('the delivery after the write failed: ' + (Limit-HorizunIsoText $again.answer.text 300)) $null
-        return
-    }
-    $gates = Get-HorizunIsoGates $again.answer.data
-    $states = 'ids_validate={0} pset_mapping={1} information_container={2}' -f (Get-HorizunIsoGateStatus $gates 'ids_validate'),
-        (Get-HorizunIsoGateStatus $gates 'pset_mapping'), (Get-HorizunIsoGateStatus $gates 'information_container')
-    if ($again.answer.data.deliverable_ready -eq $true -and (Get-HorizunIsoGateStatus $gates 'ids_validate') -eq 'passed' -and
-        (Get-HorizunIsoGateStatus $gates 'pset_mapping') -eq 'passed' -and (Get-HorizunIsoGateStatus $gates 'information_container') -eq 'passed') {
-        Complete-HorizunIsoCase $Recorder 'ISO-D6' 'pass' ('after a verified write on ' + $ids.Count + ' ' + $Class.category + ', deliverable_ready=true; ' + $states) `
-            @{ gates = $again.answer.data.gates }
-    } else {
-        Complete-HorizunIsoCase $Recorder 'ISO-D6' 'fail' ('deliverable_ready=' + $again.answer.data.deliverable_ready + '; ' + $states + '; blocking: ' +
-            (@($again.answer.data.blocking) -join '; ')) @{ gates = $again.answer.data.gates }
-    }
-}
-
-# -----------------------------------------------------------------------------
-# 2. horizun_export with an information container.
+# 1. horizun_export with an information container.
 # -----------------------------------------------------------------------------
 function New-HorizunIsoCde {
     param([Parameter(Mandatory = $true)][string]$Root)
@@ -796,7 +378,7 @@ function Invoke-HorizunIsoExportProbes {
 }
 
 # -----------------------------------------------------------------------------
-# 3. Host-resident: project context and the CDE. No Revit is needed for any of
+# 2. Host-resident: project context and the CDE. No Revit is needed for any of
 #    these; they run in every verify-live run, write tier or not.
 # -----------------------------------------------------------------------------
 function Test-HorizunIsoProfileAllowsExternalWrite {
@@ -1002,26 +584,14 @@ function Invoke-HorizunIsoHostProbes {
 # -----------------------------------------------------------------------------
 function Invoke-HorizunIsoSection {
     param([int]$Year, [string]$Document, [Parameter(Mandatory = $true)][string]$ScratchRoot, [string]$RepoRoot,
-          [Parameter(Mandatory = $true)][string]$RunId, [string]$WriteGate, [string]$PreferredCategory,
-          [switch]$ReadyWrite, [string]$MappedParameter = 'Comments', [string]$PermissionProfile,
+          [Parameter(Mandatory = $true)][string]$RunId, [string]$WriteGate, [string]$PermissionProfile,
           [Parameter(Mandatory = $true)][scriptblock]$Call, [Parameter(Mandatory = $true)][scriptblock]$Apply)
-    $recorder = New-HorizunIsoRecorder -IncludeReadyWrite:$ReadyWrite
+    $recorder = New-HorizunIsoRecorder
     $runDir = New-HorizunIsoRunDirectory -Root $ScratchRoot -RunId $RunId -RepoRoot $RepoRoot
     $sealed = $null; $sealedRoot = $null
     if ($WriteGate) {
         Complete-HorizunIsoTier $recorder 'write' 'not_covered' $WriteGate
     } else {
-        try {
-            Invoke-HorizunIsoDeliveryProbes -Document $Document -Year $Year -RunDirectory $runDir -RunId $RunId `
-                -PreferredCategory $PreferredCategory -Call $Call -Apply $Apply -Recorder $recorder `
-                -ReadyWrite:$ReadyWrite -MappedParameter $MappedParameter
-        } catch {
-            foreach ($id in @('ISO-D1', 'ISO-D2', 'ISO-D3', 'ISO-D4', 'ISO-D5', 'ISO-D6', 'ISO-D7')) {
-                if (($recorder.Catalog | Where-Object { $_.Id -eq $id }) -and -not $recorder.Results.ContainsKey($id)) {
-                    Complete-HorizunIsoCase $recorder $id 'unverified' ('HARNESS: the delivery probes threw: ' + $_.Exception.Message) $null
-                }
-            }
-        }
         try {
             $export = Invoke-HorizunIsoExportProbes -Document $Document -RunDirectory $runDir -RunId $RunId `
                 -Call $Call -Apply $Apply -Recorder $recorder

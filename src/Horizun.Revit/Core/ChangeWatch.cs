@@ -24,9 +24,16 @@ namespace Horizun.Revit.Core
 {
     internal sealed class ChangeWatch : IDisposable
     {
+        // Touched only on the Revit thread. A finalized transaction's commit event,
+        // if raised, has been delivered by the time Revit starts the next command.
+        private static readonly HashSet<ChangeWatch> FinalizedWatches = new HashSet<ChangeWatch>();
         private readonly Autodesk.Revit.ApplicationServices.Application _app;
         private readonly Dictionary<string, DocChanges> _docs = new Dictionary<string, DocChanges>(StringComparer.Ordinal);
+        private readonly Document _commitDocument;
+        private readonly string _commitName;
+        private readonly Action _commitObserved;
         private bool _attached;
+        public bool ObservationComplete { get; private set; } = true;
 
         internal sealed class DocChanges
         {
@@ -34,17 +41,35 @@ namespace Horizun.Revit.Core
             public readonly HashSet<long> Added = new HashSet<long>();
             public readonly HashSet<long> Modified = new HashSet<long>();
             public readonly HashSet<long> Deleted = new HashSet<long>();
+            /// <summary>Ids in <see cref="Deleted"/> that this same watch saw ADDED first: elements made and removed inside
+            /// the call (a group rebuild does this), which existed neither before nor after it.</summary>
+            public readonly HashSet<long> Transient = new HashSet<long>();
+            /// <summary>Revit's own browser panes it refreshed during the call (RevitInternalTouchRules): reported, never counted as a change.</summary>
+            public readonly HashSet<long> InternalTouches = new HashSet<long>();
+            /// <summary>Revit raised a rollback or undo for this document during the call.</summary>
+            public bool SawRollback;
             public readonly List<string> Transactions = new List<string>();
         }
 
-        public ChangeWatch(Autodesk.Revit.ApplicationServices.Application app)
+        public ChangeWatch(Autodesk.Revit.ApplicationServices.Application app, Document commitDocument = null,
+            string commitName = null, Action commitObserved = null)
         {
+            if (commitDocument == null)
+                foreach (ChangeWatch finalized in FinalizedWatches.ToArray()) finalized.Dispose();
             _app = app;
-            if (_app == null) return;
-            try { _app.DocumentChanged += OnChanged; _attached = true; } catch { _attached = false; }
+            _commitDocument = commitDocument;
+            _commitName = commitName;
+            _commitObserved = commitObserved;
+            if (_app == null) { ObservationComplete = false; return; }
+            try { _app.DocumentChanged += OnChanged; _attached = true; } catch { _attached = false; ObservationComplete = false; }
         }
 
         public IEnumerable<DocChanges> Documents => _docs.Values;
+
+        public void ReleaseAtNextCommand()
+        {
+            if (_attached) FinalizedWatches.Add(this);
+        }
 
         private void OnChanged(object sender, DocumentChangedEventArgs e)
         {
@@ -53,26 +78,39 @@ namespace Horizun.Revit.Core
                 Document doc = e.GetDocument();
                 if (doc == null || doc.IsLinked) return;
                 string key = Key(doc);
+                if (_commitDocument != null && (key != Key(_commitDocument) ||
+                    e.Operation != UndoOperation.TransactionCommitted || !e.GetTransactionNames().Contains(_commitName))) return;
                 if (!_docs.TryGetValue(key, out DocChanges d)) _docs[key] = d = new DocChanges { Document = doc };
                 ICollection<ElementId> added = e.GetAddedElementIds(), modified = e.GetModifiedElementIds(), deleted = e.GetDeletedElementIds();
                 bool reverted = e.Operation == UndoOperation.TransactionUndone || e.Operation == UndoOperation.TransactionGroupRolledBack ||
                                 e.Operation == UndoOperation.TransactionRolledBack;
                 if (reverted)
                 {
+                    d.SawRollback = true;
                     // An undo or rollback reports what it touched while taking the change back.
                     foreach (ElementId id in added.Concat(modified).Concat(deleted))
                     {
                         long v = Rid.Value(id);
-                        d.Added.Remove(v); d.Modified.Remove(v); d.Deleted.Remove(v);
+                        d.Added.Remove(v); d.Modified.Remove(v); d.Deleted.Remove(v); d.Transient.Remove(v);
                     }
                     return;
                 }
                 foreach (ElementId id in added) d.Added.Add(Rid.Value(id));
                 foreach (ElementId id in modified) { long v = Rid.Value(id); if (!d.Added.Contains(v)) d.Modified.Add(v); }
-                foreach (ElementId id in deleted) { long v = Rid.Value(id); d.Deleted.Add(v); d.Added.Remove(v); d.Modified.Remove(v); }
+                foreach (ElementId id in deleted) { long v = Rid.Value(id); d.Deleted.Add(v); if (d.Added.Remove(v)) d.Transient.Add(v); d.Modified.Remove(v); }
                 foreach (string t in e.GetTransactionNames()) if (!d.Transactions.Contains(t)) d.Transactions.Add(t);
             }
-            catch { /* never let an observer break the command it observes */ }
+            catch { ObservationComplete = false; /* never let an observer break the command it observes */ }
+            finally
+            {
+                // A deferred transaction has exactly one matching commit event.
+                if (_commitDocument != null && _docs.Count != 0)
+                {
+                    Dispose();
+                    try { _commitObserved?.Invoke(); }
+                    catch (Exception ex) { Log.Error("Could not record deferred transaction changes", ex); }
+                }
+            }
         }
 
         /// <summary>
@@ -88,12 +126,12 @@ namespace Horizun.Revit.Core
             {
                 try
                 {
-                    if (d.Document == null || !d.Document.IsValidObject) continue;
-                    d.Added.RemoveWhere(v => !Exists(d.Document, v));
-                    d.Modified.RemoveWhere(v => !Exists(d.Document, v) || Bookkeeping(d.Document, v));
-                    d.Deleted.RemoveWhere(v => Exists(d.Document, v));
+                    if (d.Document == null || !d.Document.IsValidObject) { ObservationComplete = false; continue; }
+                    Document doc = d.Document;
+                    RevitInternalTouchRules.Reconcile(d.Added, d.Modified, d.Deleted, d.InternalTouches, d.SawRollback,
+                        v => Exists(doc, v), v => Bookkeeping(doc, v), v => BrowserPane(doc, v));
                 }
-                catch { /* an unreadable document keeps the event tally, never a guess */ }
+                catch { ObservationComplete = false; /* retain the tally, but do not claim complete observation */ }
             }
         }
 
@@ -113,6 +151,17 @@ namespace Horizun.Revit.Core
             catch { return false; }
         }
 
+        /// <summary>The System Browser / Project Browser view (measured 2026-11-17: modified by an apply_cad_plan rehearsal that rolled back). Moved only per RevitInternalTouchRules.SetAside.</summary>
+        private static bool BrowserPane(Document doc, long id)
+        {
+            try
+            {
+                View v = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) as View : null;
+                return v != null && RevitInternalTouchRules.IsBrowserPane(true, v.ViewType.ToString());
+            }
+            catch { return false; }
+        }
+
         private static bool Exists(Document doc, long id)
         {
             if (!Rid.CanRepresent(id)) return true;
@@ -121,6 +170,7 @@ namespace Horizun.Revit.Core
 
         public void Dispose()
         {
+            FinalizedWatches.Remove(this);
             if (_attached) try { _app.DocumentChanged -= OnChanged; } catch { }
             _attached = false;
         }
@@ -131,7 +181,7 @@ namespace Horizun.Revit.Core
             {
                 string path = doc.PathName;
                 // Two unsaved "Project1" documents share a title; the runtime hash keeps them apart.
-                return string.IsNullOrEmpty(path) ? "title:" + doc.Title + "#" + doc.GetHashCode() : "path:" + path.ToLowerInvariant();
+                return string.IsNullOrEmpty(path) ? "title:" + doc.Title + "#" + doc.GetHashCode() : DocumentLifecycleRules.PathKey(path);
             }
             catch { return "unknown"; }
         }
@@ -153,6 +203,8 @@ namespace Horizun.Revit.Core
             public string Tool, DocumentTitle;
             public DateTime AtUtc;
             public long[] Added, Modified;
+            /// <summary>The UniqueIds of <see cref="Added"/>, read when the write was recorded (R2U M-A): an ElementId is renumbered by a synchronize, a UniqueId is not.</summary>
+            public string[] AddedUniqueIds = new string[0];
             public string[] Transactions;
             public int Deleted;
         }
@@ -176,12 +228,42 @@ namespace Horizun.Revit.Core
             };
             try { entry.DocumentTitle = d.Document.Title; } catch { }
             string key = ChangeWatch.Key(d.Document);
+            // R2U M-A: what this write CREATED is remembered by UniqueId (an ElementId is renumbered by a synchronize and can be handed to
+            // another element). The ledger of creations is what the identity guard asks whether a mark of this session is genuine.
+            entry.AddedUniqueIds = UniqueIdsOf(d.Document, d.Added).ToArray();
+            // R2V M-1: what a script or a copy between documents added stays in this change ledger (verify_changes reads it) but is NOT a creation of ours.
+            SessionCreationLedger.RecordFor(tool, key, entry.AddedUniqueIds);
             lock (Gate)
             {
                 Last[key] = entry;
                 if (!History.TryGetValue(key, out List<Entry> list)) History[key] = list = new List<Entry>();
                 list.Add(entry);
                 while (list.Count > HistoryCap) list.RemoveAt(0);
+            }
+        }
+
+        private static IEnumerable<string> UniqueIdsOf(Document doc, IEnumerable<long> ids)
+        {
+            var uids = new List<string>();
+            foreach (long id in ids)
+            {
+                try
+                {
+                    Element e = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+                    if (e != null && e.IsValidObject && !string.IsNullOrEmpty(e.UniqueId)) uids.Add(e.UniqueId);
+                }
+                catch { /* an element that cannot be read is simply not remembered: fail closed */ }
+            }
+            return uids;
+        }
+
+        /// <summary>The document is now known under another key (the first save, Save As): its history follows it.</summary>
+        public static void Rename(string oldKey, string newKey)
+        {
+            if (string.IsNullOrEmpty(oldKey) || string.IsNullOrEmpty(newKey) || oldKey == newKey) return;
+            lock (Gate)
+            {
+                LedgerRenameRules.Move(Last, History, oldKey, newKey);       // R2Y m-3: the destination keeps only the renamed document's content
             }
         }
 

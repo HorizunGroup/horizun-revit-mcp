@@ -43,7 +43,7 @@ namespace Horizun.Server
         /// Nothing chosen: the one running instance, and a REFUSAL when more than one is
         /// running. Shared, because it carries no state to tell two of them apart.
         /// </summary>
-        public static readonly TargetSelection Automatic = new TargetSelection(null, null);
+        public static readonly TargetSelection Automatic = new TargetSelection(null, null, null);
 
         /// <summary>The year chosen by horizun_target, or null. Never set with Pid.</summary>
         public string Year { get; }
@@ -51,25 +51,53 @@ namespace Horizun.Server
         /// <summary>The instance chosen by horizun_target, or null. Never set with Year.</summary>
         public int? Pid { get; }
 
-        private TargetSelection(string year, int? pid) { Year = year; Pid = pid; }
+        /// <summary>Where a selection that did not come from horizun_target in THIS process came from
+        /// (HORIZUN_REVIT_PID, a session remembered by TargetMemory); null otherwise.</summary>
+        public string Origin { get; }
 
-        public static TargetSelection ByYear(string year)
+        /// <summary>
+        /// The model name pinned by horizun_target document=..., or null. When set, Pid is the instance that
+        /// showed it when it was chosen and DocumentTarget.Refresh follows the document if that instance goes.
+        /// </summary>
+        public string Document { get; }
+
+        /// <summary>
+        /// Set only by DocumentTarget.Refresh, never stored as the session's target: a pinned document whose instance is alive but
+        /// shows another model, with no other instance showing it by exact name. Every call is refused with this sentence.
+        /// </summary>
+        public string Unresolved { get; private set; }
+
+        private TargetSelection(string year, int? pid, string origin, string document = null) { Year = year; Pid = pid; Origin = origin; Document = document; }
+
+        internal TargetSelection AsUnresolved(string reason) =>
+            new TargetSelection(Year, Pid, Origin, Document) { Unresolved = reason };
+
+        public static TargetSelection ByDocument(int pid, string document, string origin = null)
         {
-            if (string.IsNullOrWhiteSpace(year)) throw new ArgumentException("A year target needs a year.", nameof(year));
-            return new TargetSelection(year.Trim(), null);
+            if (pid <= 0) throw new ArgumentException("A document target needs the pid that shows it.", nameof(pid));
+            if (string.IsNullOrWhiteSpace(document)) throw new ArgumentException("A document target needs a name.", nameof(document));
+            return new TargetSelection(null, pid, origin, document.Trim());
         }
 
-        public static TargetSelection ByPid(int pid)
+        public static TargetSelection ByYear(string year, string origin = null)
+        {
+            if (string.IsNullOrWhiteSpace(year)) throw new ArgumentException("A year target needs a year.", nameof(year));
+            return new TargetSelection(year.Trim(), null, origin);
+        }
+
+        public static TargetSelection ByPid(int pid, string origin = null)
         {
             if (pid <= 0) throw new ArgumentException("A process id target needs a real pid.", nameof(pid));
-            return new TargetSelection(null, pid);
+            return new TargetSelection(null, pid, origin);
         }
 
         public bool IsAutomatic => Year == null && Pid == null;
 
         /// <summary>How this session was pointed, in the words the reply uses.</summary>
         public string Describe(string envYear) =>
-            Pid != null ? "horizun_target (a specific process)"
+            Document != null ? (Origin ?? "horizun_target") + " (the instance showing document '" + Document + "')"
+          : Origin != null ? Origin + (Pid != null ? " (a specific process)" : " (a year)")
+          : Pid != null ? "horizun_target (a specific process)"
           : Year != null ? "horizun_target (a year)"
           : !string.IsNullOrEmpty(envYear) ? "HORIZUN_REVIT_YEAR"
           : "automatic (the one running instance; MORE THAN ONE is refused, not guessed)";

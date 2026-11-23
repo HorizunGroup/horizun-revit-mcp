@@ -418,12 +418,15 @@ namespace Horizun.Server
             // The bSDD operations (2026-09-24) and the description search (2026-09-25) share
             // this tool rather than getting one of their own: tools/list has a 512 KiB budget.
             string operation = args?["operation"] is JValue op && op.Type == JTokenType.String ? (string)op : "leaf";
+            if (operation == "products") return TemplateKitTool.FindProductFamilies(args, cancellationToken);
             if (operation.StartsWith(BsddLookup.OperationPrefix, StringComparison.Ordinal))
                 return BsddLookup.Handle(args, cancellationToken);
             if (operation == "search")
                 return HandleSearch(args, cancellationToken);
+            if (operation == "match")
+                return CatalogMatch.Handle(args, cancellationToken);
             if (operation != "leaf")
-                throw new ArgumentException("Unknown operation '" + operation + "'. Use leaf (default), search, bsdd_search, " +
+                throw new ArgumentException("Unknown operation '" + operation + "'. Use leaf (default), search, match, products, bsdd_search, " +
                                             "bsdd_search_dictionary, bsdd_class, bsdd_property or bsdd_dictionaries.");
 
             string catalogPath = (string)args?["catalog_path"];
@@ -615,6 +618,19 @@ namespace Horizun.Server
         /// </summary>
         internal static string DecodeCatalog(byte[] bytes, out string encodingUsed)
         {
+            // UTF-16 with a byte-order mark is what Revit writes for a keynote file (and what
+            // Excel calls "Unicode text"). Read as UTF-8/latin-1 it became NUL-separated noise
+            // in which no code was ever found.
+            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+            {
+                encodingUsed = "utf-16le";
+                return Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
+            }
+            if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+            {
+                encodingUsed = "utf-16be";
+                return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+            }
             try
             {
                 string strict = new UTF8Encoding(false, true).GetString(bytes);
@@ -642,6 +658,8 @@ namespace Horizun.Server
                 return sb.ToString();
             }
         }
+
+        internal static byte[] StripUtf8Bom(byte[] bytes) => StripBom(bytes);
 
         /// <summary>Drop a leading UTF-8 BOM so a byte-order mark never becomes part of the first code.</summary>
         private static byte[] StripBom(byte[] bytes)

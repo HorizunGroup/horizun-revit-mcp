@@ -75,19 +75,6 @@ namespace Horizun.Core.Tests
             });
         }
 
-        [Fact]
-        public void The_update_plan_sees_no_divergence_for_a_number_written_as_a_number()
-        {
-            UnderEachCulture(() =>
-            {
-                var held = new CadAuditSubject();
-                held.ParameterValues["Width"] = "0.5";
-                held.ParameterDisplay["Width"] = "152,4 mm";
-                var write = new CadParameterWrite { Parameter = "Width", Value = new JValue(0.5) };
-                Assert.Null(CadUpdateRules.ParameterDivergence(write, held));
-                held.ParameterValues["Width"] = "0.75";
-                Assert.NotNull(CadUpdateRules.ParameterDivergence(write, held));
-            });
-        }
+        
     }
 }

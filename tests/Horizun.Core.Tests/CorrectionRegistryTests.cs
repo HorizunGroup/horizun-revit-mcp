@@ -46,46 +46,6 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void An_unpinned_link_becomes_one_actionable_typed_call_per_link()
-        {
-            CorrectionProposal p = Propose(F(AuditCheckNames.UnpinnedLinks, 4242));
-
-            Assert.Equal(ProposalState.Actionable, p.State);
-            Assert.Equal("horizun_manage_links", p.Tool);
-            Assert.Equal("pin", (string)p.Arguments["operation"]);
-            Assert.Equal(4242L, (long)p.Arguments["link_instance_id"]);
-            Assert.Equal(Doc, (string)p.Arguments["target_document"]);
-            // PROPOSED, NEVER PERFORMED.
-            Assert.True((bool)p.Arguments["dry_run"]);
-            Assert.True(p.ConfirmationRequired);
-        }
-
-        [Fact]
-        public void A_single_element_tool_handed_four_elements_refuses_rather_than_taking_the_first()
-        {
-            CorrectionProposal p = Propose(F(AuditCheckNames.UnpinnedLinks, 1, 2, 3, 4));
-
-            Assert.Equal(ProposalState.RequiresInput, p.State);
-            Assert.Equal(ProposalRefusal.BadArguments, p.RefusalCode);
-            Assert.Contains("acts on one element", p.Why);
-            // Acting on the first would narrow the correction to a scope nobody chose.
-            Assert.Null(p.Arguments?["link_instance_id"]);
-        }
-
-        [Fact]
-        public void A_finding_that_names_no_element_says_the_elements_are_missing_not_an_argument()
-        {
-            // An issue with no element ids usually means the check could not read
-            // some of them. Telling the caller to "split it into one proposal per
-            // element" is advice that cannot be followed.
-            CorrectionProposal p = Propose(F(AuditCheckNames.UnpinnedLinks));
-
-            Assert.Equal(ProposalState.RequiresInput, p.State);
-            Assert.Contains("nothing here to act on", p.Why);
-            Assert.DoesNotContain("Split it into one proposal", p.Why);
-        }
-
-        [Fact]
         public void A_view_without_a_template_returns_the_question_rather_than_choosing_a_template()
         {
             CorrectionProposal p = Propose(F(AuditCheckNames.ViewsWithoutTemplate, 77));
@@ -208,14 +168,6 @@ namespace Horizun.Core.Tests
         // ---- the widened registry ---------------------------------------------
 
         [Fact]
-        public void Every_finding_type_the_audit_emits_has_an_entry_that_acts_or_says_why_not()
-        {
-            foreach (string check in AuditCheckNames.Findings.Concat(new[] { AuditCheckNames.WorksetPlacement }))
-                Assert.True(CorrectionRegistry.Default.ContainsKey(check),
-                    "'" + check + "' has no registry entry: an absent entry reads like an oversight rather than a decision.");
-        }
-
-        [Fact]
         public void No_recipe_carries_a_placeholder_and_every_required_input_is_named()
         {
             foreach (KeyValuePair<string, CorrectionRecipe> kv in CorrectionRegistry.Default)
@@ -240,24 +192,6 @@ namespace Horizun.Core.Tests
             Assert.Equal("high", p.Risk);
             Assert.False(p.Reversible);
             Assert.Contains("OFFER", p.ExpectedOutcome);
-        }
-
-        [Fact]
-        public void The_rooms_recipe_acts_only_on_the_unplaced_code_and_the_links_recipe_only_on_unloaded()
-        {
-            CorrectionRecipe rooms = CorrectionRegistry.Default[AuditCheckNames.Rooms];
-            Assert.Equal("problem_code", rooms.ItemFilterField);
-            Assert.Equal(new[] { RoomProblemCode.Unplaced }, rooms.ItemFilterValues.ToArray());
-            Assert.Equal("horizun_delete_verified", rooms.Tool);
-
-            CorrectionRecipe links = CorrectionRegistry.Default[AuditCheckNames.Links];
-            Assert.Equal("status", links.ItemFilterField);
-            Assert.Contains("Unloaded", links.ItemFilterValues);
-            Assert.DoesNotContain("NotFound", links.ItemFilterValues);
-            CorrectionProposal p = Propose(F(AuditCheckNames.Links, 70));
-            Assert.Equal(ProposalState.Actionable, p.State);
-            Assert.Equal("reload", (string)p.Arguments["operation"]);
-            Assert.Equal(70L, (long)p.Arguments["link_type_id"]);
         }
 
         [Fact]

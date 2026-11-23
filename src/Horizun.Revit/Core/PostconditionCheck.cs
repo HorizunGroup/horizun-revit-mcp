@@ -187,10 +187,8 @@ namespace Horizun.Revit.Core
                 ["required"] = new JArray(Sorted(_required)),
                 ["missing"] = new JArray(Sorted(Missing)),
                 ["unexpected"] = new JArray(Sorted(Unexpected)),
-                ["verified_means"] = "true only when EXACTLY the required properties were checked - each once, " +
-                                     "none missing, none substituted - and every one of them was RE-READ from the " +
-                                     "committed model and matched. A property that could not be read counts as " +
-                                     "unmeasured, never as agreement, and an empty checklist is not a pass.",
+                ["verified_means"] = "True only when every required property was checked once, re-read after commit and matched; " +
+                                     "missing, unexpected, unreadable or empty checks do not pass.",
                 ["properties"] = new JArray(_checks.ToArray())
             };
         }

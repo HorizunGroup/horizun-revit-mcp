@@ -10,7 +10,7 @@ $fail = 0
 function Check($ok, $what) { if ($ok) { Write-Host "  PASS  $what" } else { Write-Host "  FAIL  $what"; $script:fail++ } }
 
 function New-Fake([string]$mode) {
-    $s = @{ Mode = $mode; Next = 100; Deleted = @(); Panel = $null; Column = $null; Moved = $false; Copied = @() }
+    $s = @{ Mode = $mode; Next = 100; Deleted = @(); Panel = $null; Column = $null; Moved = $false }
     $reply = { param($data, $isError = $false, $text = 'fake') [pscustomobject]@{ isError = $isError; data = $data; text = $text } }
     $call = {
         param($tool, $a)
@@ -18,17 +18,13 @@ function New-Fake([string]$mode) {
             'horizun_query_model' {
                 $cat = $a.categories[0]
                 if ($cat -eq 'OST_Walls') { return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 7; is_element_type = $true; family = 'Basic Wall'; type = 'Generic' }) }) }
-                if ($cat -eq 'OST_ElectricalEquipment' -and $s.Copied -contains 'OST_ElectricalEquipment') {
+                if ($cat -eq 'OST_ElectricalEquipment' -and $s.Mode -ne 'no-type') {
                     return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 8; is_element_type = $true; family = 'M_Lighting and Appliance Panelboard - 208V MLO'; type = '100 A' }) })
                 }
-                if ($cat -eq 'OST_Columns' -and ($s.Copied -contains 'OST_Columns' -or $s.Mode -eq 'column-type-exists')) {
+                if ($cat -eq 'OST_Columns' -and $s.Mode -ne 'no-type') {
                     return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 9; is_element_type = $true; family = 'M_Rectangular Column'; type = '610 x 610mm' }) })
                 }
                 return & $reply ([pscustomobject]@{ rows = @() })
-            }
-            'horizun_copy_between_documents' {
-                if ($s.Mode -eq 'no-template') { return & $reply $null $true 'source_path does not exist.' }
-                return & $reply $null $true 'no type named x. Types there: M_Rectangular Column: 610 x 610mm | Other: Type.'
             }
             'horizun_verify_changes' {
                 $bad = @($a.clearance_rules | Where-Object { -not ([string]$_.category).StartsWith('OST_') })
@@ -51,10 +47,6 @@ function New-Fake([string]$mode) {
     }.GetNewClosure()
     $apply = {
         param($tool, $a, $key)
-        if ($tool -eq 'horizun_copy_between_documents') {
-            if ($s.Mode -ne 'no-template') { $s.Copied += $a.category }
-            return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ state = 'committed_verified' })) }
-        }
         if ($tool -eq 'horizun_transform_elements') { $s.Moved = $true; return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ ok = $true })) } }
         if ($tool -eq 'horizun_delete_verified') { $s.Deleted = @($a.ids); return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ ok = $true })) } }
         $id = $s.Next; $s.Next++
@@ -71,7 +63,8 @@ function ByName($r, $pattern) { @($r | Where-Object { $_.Name -like $pattern }) 
 $h = New-Fake 'ok'; $r = Outcomes $h
 Check ($r.Count -eq 4) 'four cases, one per catalog entry'
 Check (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0) ('the invaded zone, the clean zone after the move, the refusal and the cleanup all pass: ' + (($r | ForEach-Object { $_.Outcome }) -join ','))
-Check ($h.State.Deleted.Count -eq 6) ('the column, panel, wall, level and both copied types are deleted: ' + ($h.State.Deleted -join ','))
+Check ($h.State.Deleted.Count -eq 4) ('the column, panel, wall and level are deleted: ' + ($h.State.Deleted -join ','))
+Check ($h.State.Deleted -notcontains 8 -and $h.State.Deleted -notcontains 9) 'the document''s own types are never deleted'
 Check ($h.State.Deleted[0] -eq $h.State.Column) 'the column is deleted first (reverse creation order)'
 
 $h = New-Fake 'still-there'; $r = Outcomes $h
@@ -88,12 +81,8 @@ $h = New-Fake 'not-zoned'; $r = Outcomes $h
 Check ((ByName $r '*invades*').Outcome -eq 'fail') 'a panel that got no zone fails the invaded case'
 Check ((ByName $r '*moved away*').Outcome -eq 'not_covered') 'and its "clean" answer is not_covered, not a pass'
 
-$h = New-Fake 'column-type-exists'; $r = Outcomes $h
-Check (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0) ('a column type the document already held still stages the probe: ' + (($r | ForEach-Object { $_.Outcome }) -join ','))
-Check ($h.State.Deleted -notcontains 9 -and $h.State.Deleted.Count -eq 5) ('the pre-existing column type is never deleted: ' + ($h.State.Deleted -join ','))
-
-$h = New-Fake 'no-template'; $r = Outcomes $h
-Check (@($r | Where-Object { $_.Name -like '*invades*' -or $_.Name -like '*moved away*' } | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq 2) 'no template to stage from is not_covered, never a pass'
+$h = New-Fake 'no-type'; $r = Outcomes $h
+Check (@($r | Where-Object { $_.Name -like '*invades*' -or $_.Name -like '*moved away*' } | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq 2) 'a document without the panel and column types is not_covered, never a pass'
 Check ($h.State.Deleted.Count -eq 1) 'the staged level is still deleted'
 
 $h = New-Fake 'ok'; $h.Ctx.WriteGate = $true; $r = Outcomes $h

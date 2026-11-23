@@ -49,6 +49,21 @@ namespace Horizun.Revit.Core
         /// A path in neither list existed before, was measured both times, and is
         /// byte-identical: this call did not touch it.
         /// </summary>
+        /// <summary>
+        /// Whether a produced file's stem belongs to the requested output stem: equal, or the
+        /// stem followed by '-', '_' or " - ". MEASURED (Revit 2024, format=image): ExportImage
+        /// names its file "&lt;stem&gt; - Floor Plan - &lt;view name&gt;.png"; without the " - "
+        /// form the export was reported as producing nothing although the file was there.
+        /// </summary>
+        public static bool StemMatches(string wantedStem, string actualStem)
+        {
+            if (string.IsNullOrEmpty(wantedStem) || actualStem == null) return false;
+            return actualStem.Equals(wantedStem, System.StringComparison.OrdinalIgnoreCase) ||
+                   actualStem.StartsWith(wantedStem + "-", System.StringComparison.OrdinalIgnoreCase) ||
+                   actualStem.StartsWith(wantedStem + "_", System.StringComparison.OrdinalIgnoreCase) ||
+                   actualStem.StartsWith(wantedStem + " - ", System.StringComparison.OrdinalIgnoreCase);
+        }
+
         public static (List<string> Produced, List<string> Unmeasured) Diff(
             IReadOnlyDictionary<string, ExportFileStamp> before,
             IReadOnlyDictionary<string, ExportFileStamp> after)
@@ -83,6 +98,23 @@ namespace Horizun.Revit.Core
         /// what is missing and what is unexpectedly extra by name, rather than a
         /// bare count mismatch.
         /// </summary>
+        /// <summary>
+        /// format=image: Revit's ExportImage names the file "&lt;stem&gt; - &lt;view type&gt; - &lt;view name&gt;.png"
+        /// instead of the requested path (MEASURED, Revit 2024 and 2027), so a correct export was
+        /// reported as "missing". When the requested path was NOT produced and exactly one produced
+        /// file follows its stem (and extension), that file is the export: the command moves it to
+        /// the requested path. Null in every other case, which keeps the strict check.
+        /// </summary>
+        public static string ImageToRename(IReadOnlyList<string> produced, string expectedPath)
+        {
+            if (produced == null || string.IsNullOrEmpty(expectedPath) || produced.Count != 1) return null;
+            string only = produced[0];
+            if (string.Equals(only, expectedPath, StringComparison.OrdinalIgnoreCase)) return null;
+            if (!string.Equals(System.IO.Path.GetDirectoryName(only), System.IO.Path.GetDirectoryName(expectedPath), StringComparison.OrdinalIgnoreCase)) return null;
+            if (!string.Equals(System.IO.Path.GetExtension(only), System.IO.Path.GetExtension(expectedPath), StringComparison.OrdinalIgnoreCase)) return null;
+            return StemMatches(System.IO.Path.GetFileNameWithoutExtension(expectedPath), System.IO.Path.GetFileNameWithoutExtension(only)) ? only : null;
+        }
+
         public static (List<string> Missing, List<string> Extra) AgainstExpectedSingleFile(
             IReadOnlyList<string> produced, string expectedPath)
         {

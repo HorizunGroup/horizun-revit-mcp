@@ -57,7 +57,7 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("dwg_layers needs dwg_setup.name: the export setup to read or write.");
             string folder = Path.GetDirectoryName(output);
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
-                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly.");
+                return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly: create that folder first, or point output_path (the full path of the file to write) at a folder that exists. Nothing was written.");
             bool overwrite = request.Value<bool?>("overwrite") == true;
             if (!overwrite && File.Exists(output))
                 return CommandResult.Fail("Output already exists and overwrite=false: " + output);

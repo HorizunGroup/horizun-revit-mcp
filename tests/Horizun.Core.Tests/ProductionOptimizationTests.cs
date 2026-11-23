@@ -68,28 +68,9 @@ namespace Horizun.Core.Tests
             Assert.Empty((JArray)result["response_omissions"]);
             Assert.True((bool)result["complete"]);
         }
-        [Theory][InlineData("rectangular_prism",1)][InlineData("rectangular_tube",2)]
-        public void Recipes_compile_to_associated_extrusions_and_force_acceptance_artifacts(string name, int loops)
-        {
-            var r = Recipe(name); if (loops == 2) r["recipe"]["wall"] = 20;
-            var built = FamilyRecipe.Expand(r);
-            Assert.Null(built["recipe"]); Assert.NotNull(r["recipe"]);
-            Assert.True((bool)built["flex"]); Assert.True((bool)built["emit_thumbnail"]);
-            Assert.Equal("Height", (string)built["forms"][0]["end_parameter"]);
-            Assert.Equal(loops, ((JArray)built["forms"][0]["profile"]).Count);
-            Assert.Equal(1000, (double)built["types"][1]["values"]["Height"]);
-        }
-        [Theory][InlineData("forms")][InlineData("parameters")][InlineData("connectors")]
-        public void Recipe_refuses_mixed_raw_spec(string key)
-        { var r = Recipe(); r[key] = new JArray(); Assert.Throws<ArgumentException>(() => FamilyRecipe.Expand(r)); }
-        [Fact] public void Recipe_refuses_no_flex_and_closed_tube()
-        {
-            var r = Recipe(); r["recipe"]["types"][1]["height"] = 500;
-            Assert.Throws<ArgumentException>(() => FamilyRecipe.Expand(r));
-            r = Recipe("rectangular_tube"); r["recipe"]["wall"] = 100;
-            Assert.Throws<ArgumentException>(() => FamilyRecipe.Expand(r));
-            r = Recipe(); r["flex"] = false; Assert.Throws<ArgumentException>(() => FamilyRecipe.Expand(r));
-        }
+        
+        
+        
         static JObject Rooms() => JObject.Parse(@"{
           'workflow':{'name':'document_rooms','room_plan':{'room_ids':[1],'plan_view_id':10,'template_view_id':20,
           'kinds':['plan'],'units':'mm','scale':50,'margin':500,'name_pattern':'{room_number}-{kind}','orient_to_walls':true},

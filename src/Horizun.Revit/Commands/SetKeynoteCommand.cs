@@ -65,13 +65,40 @@ namespace Horizun.Revit.Commands
 
             _census = null;   // the model may have changed since the last request
 
+            // TWO SHAPES. element_ids + keynote: one code for many elements. assignments:
+            // [{element_id, keynote}] - a different code per type/element in ONE rehearsal, ONE
+            // token and ONE transaction, which is how a model is coded from a catalog match.
+            var assignmentsToken = request["assignments"] as JArray;
+            bool batch = assignmentsToken != null;
             var idsToken = request["element_ids"] as JArray;
-            if (idsToken == null || idsToken.Count == 0)
-                return CommandResult.Fail("element_ids is required and must not be empty.");
+            string keynote = request.Value<string>("keynote");
+            if (batch)
+            {
+                if (assignmentsToken.Count == 0) return CommandResult.Fail("assignments must not be empty.");
+                if (idsToken != null || request["keynote"] != null)
+                    return CommandResult.Fail("Send either assignments, or element_ids with keynote - not both. Nothing was written.");
+                if (assignmentsToken.Count > 5000) return CommandResult.Fail("assignments is limited to 5000 entries per call.");
+            }
+            else
+            {
+                if (idsToken == null || idsToken.Count == 0)
+                    return CommandResult.Fail("element_ids is required and must not be empty (or send assignments).");
+                if (keynote == null)
+                    return CommandResult.Fail("keynote is required (use \"\" to clear it).");
+            }
+            JArray requestedToken = batch ? assignmentsToken : idsToken;
 
-            var keynote = request.Value<string>("keynote");
-            if (keynote == null)
-                return CommandResult.Fail("keynote is required (use \"\" to clear it).");
+            // Codes are checked against the table LOADED in this project: a code the table
+            // does not have is a tag that reads "?" and a quantity that joins no budget line.
+            // On by default for assignments; opt-in for the single-code shape (unchanged).
+            bool validate = request["validate_against_table"] != null
+                ? request.Value<bool>("validate_against_table") : batch;
+            Dictionary<string, string> tableCodes = null;
+            if (validate)
+            {
+                string tableError = ReadTableCodes(doc, out tableCodes);
+                if (tableError != null) return CommandResult.Fail(tableError + " Nothing was written.");
+            }
 
             var scope = (request.Value<string>("scope") ?? "auto").ToLowerInvariant();
             if (scope != "auto" && scope != "instance" && scope != "type")
@@ -85,25 +112,47 @@ namespace Horizun.Revit.Commands
             // The SCOPE of the request: which elements, which value, which rule. Not
             // anything that only changes what is displayed - a guard that fires on a
             // cosmetic option is one callers learn to work around.
-            string planHash = DocumentGate.PlanHash(request, "element_ids", "keynote", "scope");
+            string planHash = DocumentGate.PlanHash(request, "element_ids", "keynote", "scope", "assignments", "validate_against_table");
 
             var failed = new JArray();
             var ids = new List<long>();
-            foreach (var tok in idsToken)
+            var pairs = new List<KeyValuePair<long, string>>();
+            foreach (var tok in requestedToken)
             {
-                // An id we cannot read is an error, not something to drop quietly.
-                if (tok.Type != JTokenType.Integer)
+                JToken idTok = tok;
+                string code = keynote;
+                if (batch)
                 {
-                    failed.Add(new JObject { ["element_id"] = tok.ToString(), ["error"] = "Not an integer element id; ignored ids are how a caller thinks it coded elements it never touched." });
+                    var node = tok as JObject;
+                    idTok = node?["element_id"];
+                    code = node?["keynote"]?.Type == JTokenType.String ? (string)node["keynote"] : null;
+                    if (node == null || code == null)
+                    {
+                        failed.Add(new JObject { ["assignment"] = tok, ["error"] = "Each assignment needs element_id (integer) and keynote (string; \"\" clears)." });
+                        continue;
+                    }
+                }
+                // An id we cannot read is an error, not something to drop quietly.
+                if (idTok == null || idTok.Type != JTokenType.Integer)
+                {
+                    failed.Add(new JObject { ["element_id"] = idTok?.ToString(), ["error"] = "Not an integer element id; ignored ids are how a caller thinks it coded elements it never touched." });
                     continue;
                 }
-                ids.Add(tok.Value<long>());
+                if (tableCodes != null && code.Length > 0 && !tableCodes.ContainsKey(code))
+                {
+                    failed.Add(new JObject { ["element_id"] = idTok.Value<long>(), ["keynote"] = code,
+                        ["error"] = "Code not in the keynote table loaded in this project. Load the right table (horizun_manage_classification_table) or fix the code; nothing will be written for this entry." });
+                    continue;
+                }
+                ids.Add(idTok.Value<long>());
+                pairs.Add(new KeyValuePair<long, string>(idTok.Value<long>(), code));
             }
 
             // ---- Resolve where each write would land, before writing anything. ----
             var plans = new List<WritePlan>();
-            foreach (var id in ids)
+            foreach (var pair in pairs)
             {
+                long id = pair.Key;
                 if (!Rid.CanRepresentElementId(id))
                 {
                     failed.Add(new JObject { ["element_id"] = id, ["error"] = Rid.ElementIdRangeError(id) });
@@ -122,8 +171,25 @@ namespace Horizun.Revit.Commands
                     failed.Add(new JObject { ["element_id"] = id, ["error"] = why });
                     continue;
                 }
+                plan.Keynote = pair.Value;
                 plans.Add(plan);
             }
+
+            // Two codes aimed at one TYPE (two instances of it, or the type and an instance)
+            // cannot both land: the second would silently overwrite the first. Refused whole.
+            var conflicts = plans.GroupBy(p => p.Target.Id.ToString())
+                .Where(g => g.Select(p => p.Keynote).Distinct(StringComparer.Ordinal).Count() > 1)
+                .Select(g => new JObject
+                {
+                    ["target_id"] = g.Key,
+                    ["target_name"] = SafeName(g.First().Target),
+                    ["writes_to"] = g.First().IsTypeLevel ? "type" : "instance",
+                    ["requested"] = new JArray(g.Select(p => new JObject { ["element_id"] = p.Source.Id.ToString(), ["keynote"] = p.Keynote }))
+                }).ToList();
+            if (conflicts.Count > 0)
+                return CommandResult.Fail("Two or more different codes resolve to the same write target (the Keynote lives on the type, " +
+                    "so every instance of it carries one code). Send one code per type, or duplicate the type first. Nothing was written. Conflicts: " +
+                    new JArray(conflicts).ToString(Formatting.None));
 
             // THE COUNT OF IDS THAT NEVER BECAME A TARGET, taken HERE - before the write
             // loop appends its own refusals to the same `failed` array. Read afterwards it
@@ -153,9 +219,12 @@ namespace Horizun.Revit.Commands
                 {
                     ["writes_to"] = plan.IsTypeLevel ? "type" : "instance",
                     ["target_id"] = plan.Target.Id.ToString(),
+                    ["target_unique_id"] = SafePlanUniqueId(plan.Target),
                     ["target_name"] = SafeName(plan.Target),
                     ["parameter"] = plan.Parameter.Definition?.Name,
                     ["current_keynote"] = plan.Parameter.AsString() ?? "",
+                    ["keynote"] = plan.Keynote,
+                    ["keynote_text"] = tableCodes != null && tableCodes.TryGetValue(plan.Keynote, out string kt) ? kt : null,
                     ["requested_elements"] = new JArray(requested.Select(r => (JToken)r.ToString())),
                     ["elements_affected"] = affected.Count,
                     ["collateral_elements"] = collateral.Count,
@@ -204,6 +273,7 @@ namespace Horizun.Revit.Commands
                     {
                         // The value being replaced. This is the whole point.
                         { "keynote", SafePlanCurrent(t) },
+                        { "requested_keynote", t.Keynote ?? "" },
                         { "parameter", t.Parameter?.Definition == null ? "" : t.Parameter.Definition.Name },
                         // instance vs type is a different write with a different blast
                         // radius, so a plan that resolved one must not satisfy the other.
@@ -217,10 +287,13 @@ namespace Horizun.Revit.Commands
                 var dryResult = new JObject
                 {
                     ["dry_run"] = true,
-                    ["keynote"] = keynote,
+                    ["keynote"] = batch ? null : keynote,
+                    ["mode"] = batch ? "assignments" : "single",
+                    ["validated_against_table"] = tableCodes != null,
+                    ["by_keynote"] = ByKeynote(byTarget, doc, tableCodes),
                     // Every id sent, including the ones that were not integers - counting
                     // only the parsed ones under-reports what the caller asked for.
-                    ["requested_ids"] = idsToken.Count,
+                    ["requested_ids"] = requestedToken.Count,
                     ["parsed_ids"] = ids.Count,
                     ["writes_planned"] = byTarget.Count,
                     ["targets"] = targets,
@@ -268,7 +341,7 @@ namespace Horizun.Revit.Commands
                     {
                         var before = plan.Parameter.AsString() ?? "";
                         bool accepted;
-                        try { accepted = plan.Parameter.Set(keynote); }
+                        try { accepted = plan.Parameter.Set(plan.Keynote); }
                         catch (Exception ex)
                         {
                             writesRefused++;
@@ -295,19 +368,21 @@ namespace Horizun.Revit.Commands
                         // because it catches a refused write immediately; the verdict comes
                         // from the post-commit pass below.
                         var afterInTx = plan.Parameter.AsString() ?? "";
-                        bool acceptedInTx = string.Equals(afterInTx, keynote, StringComparison.Ordinal);
+                        bool acceptedInTx = string.Equals(afterInTx, plan.Keynote, StringComparison.Ordinal);
                         if (acceptedInTx) confirmed++;
 
                         written.Add(new JObject
                         {
                             ["writes_to"] = plan.IsTypeLevel ? "type" : "instance",
                             ["target_id"] = plan.Target.Id.ToString(),
+                            ["target_unique_id"] = SafePlanUniqueId(plan.Target),
                             ["target_name"] = SafeName(plan.Target),
                             ["before"] = before,
+                            ["keynote"] = plan.Keynote,
                             ["after_in_transaction"] = afterInTx,
                             ["accepted_in_transaction"] = acceptedInTx,
                             ["collateral_elements"] = plan.Collateral,
-                            ["error"] = acceptedInTx ? null : $"Set() was accepted but the model reads back '{afterInTx}', not '{keynote}'."
+                            ["error"] = acceptedInTx ? null : $"Set() was accepted but the model reads back '{afterInTx}', not '{plan.Keynote}'."
                         });
                     }
 
@@ -355,7 +430,7 @@ namespace Horizun.Revit.Commands
                     catch (Exception ex) { error = "the committed value could not be read: " + ex.Message; }
                 }
 
-                bool ok = error == null && string.Equals(readBack, keynote, StringComparison.Ordinal);
+                bool ok = error == null && string.Equals(readBack, plan.Keynote, StringComparison.Ordinal);
                 if (ok) verified++; else verifyFailed++;
 
                 // The count of elements now carrying it comes from ASKING the model again,
@@ -380,21 +455,23 @@ namespace Horizun.Revit.Commands
                     row["elements_carrying_after_commit"] = ok ? (JToken)carrying : JValue.CreateNull();
                     if (error != null) row["verification_error"] = error;
                     if (!ok && error == null)
-                        row["verification_error"] = "the committed document reads '" + readBack + "', not '" + keynote + "'.";
+                        row["verification_error"] = "the committed document reads '" + readBack + "', not '" + plan.Keynote + "'.";
                 }
             }
 
             var result = new JObject
             {
                 ["dry_run"] = false,
-                ["keynote"] = keynote,
+                ["keynote"] = batch ? null : keynote,
+                ["mode"] = batch ? "assignments" : "single",
+                ["validated_against_table"] = tableCodes != null,
 
                 // Six distinct numbers, because they answer six different questions and
                 // collapsing them is how a caller believes it coded elements it never
                 // touched. requested counts EVERY id the caller sent, including the ones
                 // that were not integers - it used to count only the ones that parsed, so
                 // a request with bad entries under-reported what had been asked for.
-                ["requested_ids"] = idsToken.Count,
+                ["requested_ids"] = requestedToken.Count,
                 ["parsed_ids"] = ids.Count,
                 ["targets_resolved"] = byTarget.Count,
                 ["writes_accepted_in_transaction"] = confirmed,
@@ -459,7 +536,7 @@ namespace Horizun.Revit.Commands
                 // that was rolled back underneath it.
                 // VerifyRequested: ids were sent, so zero resolved targets is an empty check,
                 // never "verified" - application already said failed, and now this agrees.
-                ["verification"] = Guard.VerifyRequested("keynote writes", idsToken.Count, byTarget.Count, verified),
+                ["verification"] = Guard.VerifyRequested("keynote writes", requestedToken.Count, byTarget.Count, verified),
                 ["written"] = written,
                 ["failed"] = failed
             };
@@ -493,6 +570,59 @@ namespace Horizun.Revit.Commands
             public Parameter Parameter;
             public bool IsTypeLevel;
             public int Collateral;
+            public string Keynote;      // the code this target receives (one per target)
+        }
+
+        /// <summary>
+        /// The codes of the keynote table LOADED in this project, with their text. A table
+        /// that is not loaded, or is empty, is a refusal - validating against nothing would
+        /// pass every code.
+        /// </summary>
+        private static string ReadTableCodes(Document doc, out Dictionary<string, string> codes)
+        {
+            codes = null;
+            try
+            {
+                KeynoteTable table = KeynoteTable.GetKeynoteTable(doc);
+                if (table == null) return "This project has no keynote table to validate codes against.";
+                if (table.IsExternalFileReference())
+                {
+                    var status = table.GetExternalFileReference().GetLinkedFileStatus();
+                    if (status != LinkedFileStatus.Loaded)
+                        return "The project's keynote table is " + status + ", not Loaded: codes cannot be validated. " +
+                               "Load it with horizun_manage_classification_table (operation=set_path or reload), or send validate_against_table=false.";
+                }
+                var found = new Dictionary<string, string>(StringComparer.Ordinal);
+                KeyBasedTreeEntries entries = table.GetKeyBasedTreeEntries();
+                if (entries != null)
+                    foreach (KeyBasedTreeEntry e in entries)
+                    {
+                        if (e == null || string.IsNullOrEmpty(e.Key) || found.ContainsKey(e.Key)) continue;
+                        found[e.Key] = (e as KeynoteEntry)?.KeynoteText ?? "";
+                    }
+                if (found.Count == 0)
+                    return "The project's keynote table has no entries: codes cannot be validated. Load the table first with horizun_manage_classification_table.";
+                codes = found;
+                return null;
+            }
+            catch (Exception ex) { return "The keynote table could not be read to validate codes: " + ex.Message; }
+        }
+
+        /// <summary>One row per code: how many types/instances it reaches. What a person checks before approving a batch.</summary>
+        private JArray ByKeynote(List<WritePlan> byTarget, Document doc, Dictionary<string, string> tableCodes)
+        {
+            var rows = new JArray();
+            foreach (var g in byTarget.GroupBy(p => p.Keynote ?? "", StringComparer.Ordinal).OrderBy(g => g.Key, StringComparer.Ordinal))
+            {
+                rows.Add(new JObject
+                {
+                    ["keynote"] = g.Key,
+                    ["keynote_text"] = tableCodes != null && tableCodes.TryGetValue(g.Key, out string t) ? t : null,
+                    ["targets"] = g.Count(),
+                    ["elements_affected"] = g.Sum(p => p.IsTypeLevel ? InstancesOfType(doc, p.Target.Id).Count : 1)
+                });
+            }
+            return rows;
         }
 
         /// <summary>
@@ -588,8 +718,8 @@ namespace Horizun.Revit.Commands
         /// Deliberately NOT FamilyInstanceFilter: that only matches FamilyInstances,
         /// so for a wall/floor/roof type it returns empty WITHOUT throwing, and we
         /// would report a blast radius of zero for exactly the categories where a
-        /// type-wide re-code does the most damage. One scan of the model, cached per
-        /// request, covers every category and costs less than a filter per target.
+        /// type-wide re-code does the most damage. ELEM_TYPE_PARAM matches instances of
+        /// every category; it is evaluated natively per target and cached per request.
         /// </summary>
         // Per-request only. The dispatcher keeps one handler instance alive for the
         // whole session, so a cache that outlived a request would answer the next
@@ -619,20 +749,20 @@ namespace Horizun.Revit.Commands
 
         private List<ElementId> InstancesOfType(Document doc, ElementId typeId)
         {
-            if (_census == null)
-            {
-                _census = new Dictionary<ElementId, List<ElementId>>();
-                foreach (var e in new FilteredElementCollector(doc).WhereElementIsNotElementType())
-                {
-                    ElementId tid;
-                    try { tid = e.GetTypeId(); } catch { continue; }
-                    if (tid == null || tid == ElementId.InvalidElementId) continue;
-                    if (!_census.TryGetValue(tid, out var list))
-                        _census[tid] = list = new List<ElementId>();
-                    list.Add(e.Id);
-                }
-            }
-            return _census.TryGetValue(typeId, out var hits) ? hits : new List<ElementId>();
+            // One collector PER TYPE, filtered natively by ELEM_TYPE_PARAM (narrowed by the type's
+            // category when it has one) and read as ids. Measured 2026-11-02: the previous census
+            // walked and wrapped every element of a 140 MB model and held Revit's UI thread for
+            // over 20 minutes on a 9-type rehearsal.
+            if (_census == null) _census = new Dictionary<ElementId, List<ElementId>>();
+            if (_census.TryGetValue(typeId, out var hits)) return hits;
+            var rule = ParameterFilterRuleFactory.CreateEqualsRule(new ElementId(BuiltInParameter.ELEM_TYPE_PARAM), typeId);
+            var collector = new FilteredElementCollector(doc).WhereElementIsNotElementType();
+            Category category = null;
+            try { category = doc.GetElement(typeId)?.Category; } catch { }
+            if (category != null) collector = collector.OfCategoryId(category.Id);
+            hits = collector.WherePasses(new ElementParameterFilter(rule)).ToElementIds().ToList();
+            _census[typeId] = hits;
+            return hits;
         }
 
         private static string SafeName(Element e)

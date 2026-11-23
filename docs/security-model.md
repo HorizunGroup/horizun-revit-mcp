@@ -350,17 +350,13 @@ small documented set of high-confidence static risk rules. JSON and SARIF make
 the result archivable. This is deterministic triage, not proof that the library
 is vulnerability-free or safe under arbitrary runtime inputs.
 
-## 8. Release signing and local trust
+## 8. Unsigned releases and local trust
 
 The package pipeline reports the signature state and never implies a public trust
-chain it does not carry. From v4.0.1 every signable binary of the payload and
-the Setup are signed with the Certum certificate of HORIZUN GROUP S.A.S. before
-packaging (`compile-installer`, behind the `firma-certum` approval;
-[RELEASING.md](RELEASING.md)), and `verify-release.ps1 -RequireSigned` refuses
-any other state, a self-signed or unsigned file included. Windows Smart App
-Control blocks unsigned binaries, which is why signing only the Setup (v3.0.2 to
-v4.0.0) was not enough. The bootstrap requires explicit `-AllowUnsigned` only for
-an unsigned Setup. Hashes, manifests and GitHub
+chain it does not carry. Public releases, including 1.0+, are permanently
+unsigned by policy: every owned payload binary and Setup must report
+`NotSigned`, the package declares that publisher identity is unavailable, and
+the bootstrap requires explicit `-AllowUnsigned`. Hashes, manifests and GitHub
 attestations prove byte identity and workflow provenance, not publisher identity.
 The source installer also supports an explicit, per-user self-signing workflow
 (`scripts/self-sign.ps1`):
@@ -399,17 +395,9 @@ release gate instead of being represented as trustworthy.
   command-specific invariants for every supported Revit year (§4).
 - Cancellation cannot stop work already inside Revit (§6).
 - Anything running as the same Windows user can drive this bridge (§2).
-- **A caller names the file to link.** `horizun_manage_cad_links` takes a
-  `file_path` and reads it from the machine running Revit. It is checked before
-  Revit sees it - it must exist, be non-empty, carry a `.dwg`/`.dxf` extension
-  AND begin with a DWG signature, because an extension is a claim and the first
-  bytes are evidence - but it is not confined to a directory. That is the same
-  posture as every other path this bridge takes (`horizun_export` writes where
-  it is told, `horizun_create_family` reads the template it is given), and it
-  rests on §2: the caller already runs as this Windows user and can read the
-  file anyway. A drawing is DATA, not instructions: nothing in a DWG is
-  executed, text is not even reachable from it, and what a rule may do with the
-  geometry is bounded by the requirement set the caller wrote.
+- **A caller names the files it reads and writes.** A path is not confined to
+  a directory (`horizun_export` writes where it is told). This rests on §2: the caller already runs as this Windows
+  user and can read the file anyway. File contents are DATA, not instructions.
 - No publicly trusted code-signing identity (§8).
 - Durable job/idempotency records may contain result data. Terminal jobs are
   bounded by default; idempotency records and explicitly configured zero/zero

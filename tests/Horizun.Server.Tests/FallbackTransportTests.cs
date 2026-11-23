@@ -16,7 +16,12 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.IO.Pipes;
+using System.Reflection;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Horizun.Contracts;
 using Horizun.Revit.Core;
 using Horizun.Revit.Transport;
 using Newtonsoft.Json.Linq;
@@ -24,11 +29,143 @@ using Xunit;
 
 namespace Horizun.Server.Tests
 {
+    [Collection("HorizunSettingsRoot")]
     public class FallbackTransportTests
     {
         /// <summary>The real hop: command result -> pipe envelope -> MCP tool result.</summary>
         private static JObject Hop(CommandResult result)
             => McpResult.FromPluginReply(PipeEnvelope.Of("req-1", result), null);
+
+        [Theory]
+        [InlineData(0, false)]
+        [InlineData(1, false)]
+        [InlineData(1, true)]
+        public async Task Wall_field_typo_keeps_its_schema_diagnostic_in_a_batch(int index, bool hasCapabilityGap)
+            => await AssertCreationTypo("wall", "start_point", "start", index, hasCapabilityGap);
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Family_coordinate_typo_takes_precedence_over_a_missing_coordinate_mode(bool hasCapabilityGap)
+        {
+            var args = new JObject
+            {
+                ["elements"] = new JArray(JObject.Parse("{'kind':'family_instance','coordinate_mod':'absolute'}"))
+            };
+            var single = (JObject)UndeclaredArgumentsTests.CallOverStdio("horizun_create_elements", args)["structuredContent"];
+            Assert.Equal("elements[0].coordinate_mod", single.Value<string>("field_path"));
+            Assert.Equal("coordinate_mode", single.Value<string>("suggested_field"));
+            await AssertCreationTypo("family_instance", "coordinate_mod", "coordinate_mode", 1, hasCapabilityGap);
+        }
+
+        private static async Task AssertCreationTypo(string kind, string typo, string suggestion, int index, bool hasCapabilityGap)
+        {
+            var bad = kind == "wall"
+                ? JObject.Parse("{'kind':'wall','start_point':[0,0,0],'end':[1000,0,0]}")
+                : JObject.Parse("{'kind':'family_instance','coordinate_mod':'absolute'}");
+            int otherIndex = 1 - index;
+            var other = hasCapabilityGap ? JObject.Parse("{'kind':'fixture'}") :
+                JObject.Parse("{'kind':'wall','start':[0,0,0],'end':[1000,0,0]}");
+            var input = index == 0 ? new JArray(bad, other) : new JArray(other, bad);
+            // Only Revit reference resolution is supplied by the test. The command's batch
+            // path validates the raw rows and builds the diagnostics before the real MCP hop.
+            var answer = await SendCreationThroughServer(input, rows =>
+            {
+                var batch = CreationBatch<JObject>.Plan(rows, (i, item, rowKind) =>
+                {
+                    Assert.Equal(otherIndex, i);
+                    return rowKind == "fixture" ? (null, "unsupported kind 'fixture'", FallbackSignal.ReasonUnsupportedKind) :
+                        (item, null, null);
+                });
+                return batch.CompleteRehearsal(new JObject { ["transaction_status"] = "not_started" });
+            });
+            var detail = (JObject)answer["structuredContent"];
+            Assert.True(answer.Value<bool>("isError"));
+            Assert.True(detail.Value<bool>("dry_run"));
+            Assert.Equal("rejected", detail["application"].Value<string>("state"));
+            Assert.Equal(2, detail.Value<int>("requested"));
+            Assert.Equal(hasCapabilityGap ? 0 : 1, detail.Value<int>("valid"));
+            Assert.Equal(ErrorCodes.EsquemaInvalido, detail.Value<string>("error_code"));
+            Assert.Equal("elements[" + index + "]." + typo, detail.Value<string>("field_path"));
+            Assert.Equal(suggestion, detail.Value<string>("suggested_field"));
+            Assert.Equal("horizun://contract/tools/horizun_create_elements/" + kind, detail.Value<string>("contract_uri"));
+            Assert.Equal(hasCapabilityGap ? 2 : 1, detail.Value<int>("invalid"));
+            var row = Assert.Single((JArray)detail["errors"], value => value.Value<int>("index") == index);
+            Assert.Equal(detail["field_path"], row["field_path"]);
+            Assert.Equal(suggestion, row.Value<string>("suggested_field"));
+            Assert.False(detail.Value<bool>("write_started"));
+            Assert.False(detail.Value<bool>("changes_applied"));
+            Assert.Null(detail["confirmation_token"]);
+            Assert.False(detail["fallback"].Value<bool>("allowed"));
+            Assert.False(detail["fallback"].Value<bool>("write_started"));
+            Assert.Equal(hasCapabilityGap ? "mixed_capability_and_invalid_input" : ErrorCodes.EsquemaInvalido,
+                detail["fallback"].Value<string>("reason"));
+            if (hasCapabilityGap) Assert.Equal(otherIndex, Assert.Single((JArray)detail["capability_gaps"]).Value<int>("index"));
+        }
+
+        private static async Task<JObject> SendCreationThroughServer(JArray input, Func<JArray, CommandResult> plan)
+        {
+            const string tool = "horizun_create_elements";
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
+            var root = new DirectoryInfo(AppContext.BaseDirectory);
+            while (root != null && !File.Exists(Path.Combine(root.FullName, "global.json"))) root = root.Parent;
+            Assert.NotNull(root);
+            var server = Assembly.LoadFrom(Path.Combine(root.FullName, "src", "Horizun.Server", "bin", "Release", "net8.0", "horizun-mcp.dll"));
+            var pipeClient = server.GetType("Horizun.Server.PipeClient", throwOnError: true);
+            var directoryOverride = pipeClient.GetProperty("DirectoryOverride", flags);
+            var livenessProbe = pipeClient.GetProperty("LivenessProbe", flags);
+            var callTool = server.GetType("Horizun.Server.Program", throwOnError: true)
+                .GetMethod("CallTool", flags, null, new[] { typeof(JObject), typeof(CancellationToken) }, null);
+
+            string name = "hz-creation-regression-" + Guid.NewGuid().ToString("N");
+            string directory = Path.Combine(Path.GetTempPath(), name);
+            string discovery = Path.Combine(directory, "revit-2026-123.json");
+            string previousDataRoot = Environment.GetEnvironmentVariable(HorizunPaths.RootOverrideVariable);
+            Directory.CreateDirectory(directory);
+            try
+            {
+                Environment.SetEnvironmentVariable(HorizunPaths.RootOverrideVariable, directory);
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                using var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                var peer = Task.Run(async () =>
+                {
+                    await pipe.WaitForConnectionAsync(deadline.Token);
+                    using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, true);
+                    var sent = JObject.Parse(await reader.ReadLineAsync(deadline.Token));
+                    Assert.Equal(tool, sent.Value<string>("command"));
+                    var rows = (JArray)sent["params"]["elements"];
+                    Assert.True(JToken.DeepEquals(input, rows));
+                    var envelope = PipeEnvelope.Of(sent.Value<string>("id"), plan(rows));
+                    byte[] bytes = Encoding.UTF8.GetBytes(envelope.ToString(Newtonsoft.Json.Formatting.None) + "\n");
+                    await pipe.WriteAsync(bytes, deadline.Token);
+                    await pipe.FlushAsync(deadline.Token);
+                });
+                File.WriteAllText(discovery, new JObject
+                {
+                    ["pid"] = 123, ["revit_year"] = "2026", ["pipe_name"] = name, ["auth_token"] = "test",
+                    ["contract_hash"] = Contract.Hash, ["protocol_version"] = Contract.ProtocolVersion
+                }.ToString());
+                directoryOverride.SetValue(null, directory);
+                livenessProbe.SetValue(null, (Func<int, bool>)(_ => true));
+                var call = new JObject { ["name"] = tool, ["arguments"] = new JObject { ["elements"] = input } };
+                var answer = (JObject)callTool.Invoke(null, new object[] { call, deadline.Token });
+                if (!peer.IsCompleted && !pipe.IsConnected)
+                {
+                    deadline.Cancel();
+                    Assert.Fail("The request did not reach the test pipe: " + answer);
+                }
+                await peer.WaitAsync(deadline.Token);
+                return answer;
+            }
+            finally
+            {
+                directoryOverride.SetValue(null, null);
+                livenessProbe.SetValue(null, null);
+                Environment.SetEnvironmentVariable(HorizunPaths.RootOverrideVariable, previousDataRoot);
+                if (File.Exists(discovery)) File.Delete(discovery);
+                Directory.Delete(directory);
+            }
+        }
 
         private static CommandResult GrantedBatch() => FallbackDecision.Refuse(
             "1 element plan(s) are invalid. Nothing was created.",
@@ -207,13 +344,16 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
-        public void An_ordinary_failure_reaches_the_client_as_plain_text_with_no_structure()
+        public void An_ordinary_failure_reaches_the_client_with_a_denial_and_unknown_write_state()
         {
             JObject mcp = Hop(CommandResult.Fail("units must be mm, m or feet."));
 
             Assert.True((bool)mcp["isError"]);
-            // Absence is the answer: a client that finds no block must not fall back.
-            Assert.Null(mcp["structuredContent"]);
+            Assert.False((bool)mcp["structuredContent"]["fallback"]["allowed"]);
+            Assert.Equal("esquema_invalido", (string)mcp["structuredContent"]["fallback"]["reason"]);
+            Assert.Equal(JTokenType.Null, mcp["structuredContent"]["fallback"]["write_started"].Type);
+            Assert.Null(mcp["structuredContent"]["capability_gaps"]);
+            Assert.Equal("esquema_invalido", (string)mcp["structuredContent"]["error_code"]);
             Assert.Contains("units must be mm", (string)mcp["content"][0]["text"]);
         }
 

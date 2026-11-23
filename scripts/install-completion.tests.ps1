@@ -50,35 +50,33 @@ try {
     'Claude' | Set-Content -LiteralPath $clientState -Encoding ASCII
 
     $status = Join-Path $env:LOCALAPPDATA 'Horizun\install-status.json'
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'complete-install.ps1') `
-        -Client Claude -ServerPath $server -StatusPath $status -WaitTimeoutMinutes 1 -NoResume -NoLiveWait `
-        -ClientStateFile $clientState
-    Assert 'an active client is safely scheduled, not treated as failure' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+    # A run key that does not exist: the helper must never create it.
+    $testRunKey = 'HKCU:\Software\HorizunTest\NoSuchRunKey-' + [guid]::NewGuid().ToString('N')
+    $complete = Join-Path $PSScriptRoot 'complete-install.ps1'
+    $started = Get-Date
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $complete `
+        -Client Claude -ServerPath $server -StatusPath $status -NoLiveWait `
+        -ClientStateFile $clientState -RunKey $testRunKey
+    Assert 'an active client is pending (exit 3), not treated as failure' ($LASTEXITCODE -eq 3) "exit $LASTEXITCODE"
+    Assert 'an open client answers at once: nothing waits' (((Get-Date) - $started).TotalSeconds -lt 60) "took $([int]((Get-Date) - $started).TotalSeconds) s"
+    $leftover = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe' OR Name='conhost.exe'" |
+        Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape($status) })
+    Assert 'no helper process is left running after an open-client answer' ($leftover.Count -eq 0) (($leftover | ForEach-Object { $_.ProcessId }) -join ', ')
 
     $first = Get-Content -LiteralPath $status -Raw | ConvertFrom-Json
     $before = Get-Content -LiteralPath (Join-Path $env:USERPROFILE '.claude.json') -Raw | ConvertFrom-Json
     Assert 'state records that registration is waiting for client exit' ($first.state -eq 'waiting_for_client_exit') $first.state
     Assert 'the active client configuration was not edited' ('horizun-revit' -notin @($before.mcpServers.PSObject.Properties.Name)) (($before.mcpServers.PSObject.Properties.Name) -join ', ')
 
+    # The user closes the client and runs the helper again (Setup's Retry or the
+    # Start menu entry): one pass, in the foreground.
     Clear-Content -LiteralPath $clientState
-    $deadline = (Get-Date).AddSeconds(25)
-    $final = $null
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 500
-        if (Test-Path -LiteralPath $status) {
-            $final = Get-Content -LiteralPath $status -Raw | ConvertFrom-Json
-            if ($final.state -eq 'installed_and_registered') { break }
-        }
-    }
-    if (-not $final -or $final.state -ne 'installed_and_registered') {
-        foreach ($log in "$status.worker.log", "$status.worker-error.log") {
-            if (Test-Path -LiteralPath $log) {
-                Write-Host "        worker log: $log"
-                Get-Content -LiteralPath $log | ForEach-Object { Write-Host "        $_" }
-            }
-        }
-    }
-    Assert 'registration completes automatically after the client exits' ($final -and $final.state -eq 'installed_and_registered') $(if ($final) { $final.state } else { 'no state' })
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $complete `
+        -Client Claude -ServerPath $server -StatusPath $status -NoLiveWait `
+        -ClientStateFile $clientState -RunKey $testRunKey
+    $againExit = $LASTEXITCODE
+    $final = Get-Content -LiteralPath $status -Raw | ConvertFrom-Json
+    Assert 'running it again with the client closed registers (exit 0)' ($againExit -eq 0 -and $final.state -eq 'installed_and_registered') "exit=$againExit state=$($final.state)"
 
     $after = Get-Content -LiteralPath (Join-Path $env:USERPROFILE '.claude.json') -Raw | ConvertFrom-Json
     Assert 'the expected Claude entry was added' ('horizun-revit' -in @($after.mcpServers.PSObject.Properties.Name)) (($after.mcpServers.PSObject.Properties.Name) -join ', ')
@@ -103,21 +101,17 @@ args = []
 '@ | Set-Content -LiteralPath (Join-Path $codexDir 'config.toml') -Encoding UTF8
     'Codex' | Set-Content -LiteralPath $clientState -Encoding ASCII
     $codexStatus = Join-Path $env:LOCALAPPDATA 'Horizun\codex-install-status.json'
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'complete-install.ps1') `
-        -Client Codex -ServerPath $server -StatusPath $codexStatus -WaitTimeoutMinutes 1 -NoResume -NoLiveWait `
-        -ClientStateFile $clientState
-    Assert 'an active Codex process is safely deferred' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $complete `
+        -Client Codex -ServerPath $server -StatusPath $codexStatus -NoLiveWait `
+        -ClientStateFile $clientState -RunKey $testRunKey
+    Assert 'an active Codex process is pending, nothing edited' ($LASTEXITCODE -eq 3 -and
+        (Get-Content -LiteralPath (Join-Path $codexDir 'config.toml') -Raw) -notmatch 'horizun-revit') "exit $LASTEXITCODE"
     Clear-Content -LiteralPath $clientState
-    $deadline = (Get-Date).AddSeconds(25)
-    $codexFinal = $null
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 500
-        if (Test-Path -LiteralPath $codexStatus) {
-            $codexFinal = Get-Content -LiteralPath $codexStatus -Raw | ConvertFrom-Json
-            if ($codexFinal.state -eq 'installed_and_registered') { break }
-        }
-    }
-    Assert 'Codex registration completes automatically after exit' `
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $complete `
+        -Client Codex -ServerPath $server -StatusPath $codexStatus -NoLiveWait `
+        -ClientStateFile $clientState -RunKey $testRunKey
+    $codexFinal = Get-Content -LiteralPath $codexStatus -Raw | ConvertFrom-Json
+    Assert 'Codex registration completes when run again after exit' `
         ($codexFinal -and $codexFinal.state -eq 'installed_and_registered') `
         $(if ($codexFinal) { $codexFinal.state } else { 'no state' })
     $codexText = Get-Content -LiteralPath (Join-Path $codexDir 'config.toml') -Raw
@@ -159,9 +153,9 @@ args = []
     $rollbackBefore = [IO.File]::ReadAllBytes($claudeConfig)
     Clear-Content -LiteralPath $clientState
     $rollbackStatus = Join-Path $env:LOCALAPPDATA 'Horizun\rollback-install-status.json'
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'complete-install.ps1') `
-        -Client Claude -ServerPath $server -StatusPath $rollbackStatus -WaitTimeoutMinutes 1 -NoResume -NoLiveWait `
-        -ClientStateFile $clientState *> $null
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $complete `
+        -Client Claude -ServerPath $server -StatusPath $rollbackStatus -NoLiveWait `
+        -ClientStateFile $clientState -RunKey $testRunKey *> $null
     $rollbackExit = $LASTEXITCODE
     $rollbackState = Get-Content -LiteralPath $rollbackStatus -Raw | ConvertFrom-Json
     $rollbackAfter = [IO.File]::ReadAllBytes($claudeConfig)
@@ -170,86 +164,33 @@ args = []
          [Convert]::ToBase64String($rollbackBefore) -eq [Convert]::ToBase64String($rollbackAfter)) `
         "exit=$rollbackExit state=$($rollbackState.state)"
 
-    # Two install generations sharing one status path: the newer claim must make
-    # the older worker relinquish the mutex, and only the newer journal is
-    # authoritative. This is also run while a real pre-fix finisher may exist on
-    # the workstation; its legacy mutex/run value cannot block V2.
+    # Two install generations sharing one status path: the newer claim is the
+    # authoritative one, and a run of the older generation afterwards writes
+    # nothing into the shared status (Write-State refuses a superseded generation).
     'fake server bytes for generation race' | Set-Content -LiteralPath $server -Encoding ASCII
     $serverHash = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLowerInvariant()
     [pscustomobject]@{ Schema=2; Server=[pscustomobject]@{Sha256=$serverHash;Payload=@([pscustomobject]@{Path='horizun-mcp.exe';Sha256=$serverHash})};Plugins=@() } |
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $serverDir) 'manifest.json') -Encoding UTF8
-    $oldServerDir = Join-Path $root 'old-product\MCP\server'
-    New-Item -ItemType Directory -Path $oldServerDir -Force | Out-Null
-    $oldServer = Join-Path $oldServerDir 'horizun-mcp.exe'
-    'superseded server bytes' | Set-Content -LiteralPath $oldServer -Encoding ASCII
-    $oldServerHash = (Get-FileHash -LiteralPath $oldServer -Algorithm SHA256).Hash.ToLowerInvariant()
-    [pscustomobject]@{ Schema=2; Server=[pscustomobject]@{Sha256=$oldServerHash;Payload=@([pscustomobject]@{Path='horizun-mcp.exe';Sha256=$oldServerHash})};Plugins=@() } |
-        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $oldServerDir) 'manifest.json') -Encoding UTF8
     $raceStatus = Join-Path $env:LOCALAPPDATA 'Horizun\generation-race.json'
     'Claude' | Set-Content -LiteralPath $clientState -Encoding ASCII
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'complete-install.ps1') `
-        -Client Claude -ServerPath $oldServer -StatusPath $raceStatus -WaitTimeoutMinutes 1 -NoResume -NoLiveWait `
-        -ClientStateFile $clientState -Generation oldgeneration01
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'complete-install.ps1') `
-        -Client Claude -ServerPath $server -StatusPath $raceStatus -WaitTimeoutMinutes 1 -NoResume -NoLiveWait `
-        -ClientStateFile $clientState -Generation newgeneration02
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $complete `
+        -Client Claude -ServerPath $server -StatusPath $raceStatus -NoLiveWait `
+        -ClientStateFile $clientState -Generation oldgeneration01 -RunKey $testRunKey *> $null
     Clear-Content -LiteralPath $clientState
-    $deadline = (Get-Date).AddSeconds(40)
-    $raceFinal = $null
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 500
-        $newJournal = "$raceStatus.generation-newgeneration02.json"
-        if (Test-Path -LiteralPath $newJournal) {
-            $raceFinal = Get-Content -LiteralPath $newJournal -Raw | ConvertFrom-Json
-            if ($raceFinal.state -eq 'installed_and_registered') { break }
-        }
-    }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $complete `
+        -Client Claude -ServerPath $server -StatusPath $raceStatus -NoLiveWait `
+        -ClientStateFile $clientState -Generation newgeneration02 -RunKey $testRunKey *> $null
+    $raceFinal = Get-Content -LiteralPath "$raceStatus.generation-newgeneration02.json" -Raw | ConvertFrom-Json
+    $oldJournal = Get-Content -LiteralPath "$raceStatus.generation-oldgeneration01.json" -Raw | ConvertFrom-Json
     $pointer = if (Test-Path "$raceStatus.current") { (Get-Content "$raceStatus.current" -Raw).Trim() } else { '' }
     $raceConfig = Get-Content -LiteralPath (Join-Path $env:USERPROFILE '.claude.json') -Raw | ConvertFrom-Json
-    Assert 'new completion generation supersedes an older worker without being blocked or erased' `
-        ($pointer -eq 'newgeneration02' -and $raceFinal -and $raceFinal.state -eq 'installed_and_registered' -and
-         $raceConfig.mcpServers.'horizun-revit'.command -eq $server) `
-        "pointer=$pointer state=$($raceFinal.state) command=$($raceConfig.mcpServers.'horizun-revit'.command)"
+    Assert 'a newer completion generation is authoritative' `
+        ($pointer -eq 'newgeneration02' -and $raceFinal.state -eq 'installed_and_registered' -and
+         $oldJournal.state -eq 'waiting_for_client_exit' -and $raceConfig.mcpServers.'horizun-revit'.command -eq $server) `
+        "pointer=$pointer new=$($raceFinal.state) old=$($oldJournal.state) command=$($raceConfig.mcpServers.'horizun-revit'.command)"
 
-    # Backlog #60. The client closes, then comes back inside the quiet window and
-    # stays open until the wait runs out. That is the same answer as a client that
-    # never closed - registration_pending, nothing written, no failed attempt
-    # counted - not a registration attempted underneath the running client.
-    $pendingConfig = Join-Path $env:USERPROFILE '.claude.json'
-    Set-Content -LiteralPath $pendingConfig -Value $rollbackConfig -Encoding UTF8
-    $pendingBefore = [IO.File]::ReadAllBytes($pendingConfig)
-    Clear-Content -LiteralPath $clientState
-    $pendingStatus = Join-Path $env:LOCALAPPDATA 'Horizun\quiet-window-status.json'
-    # A run key that does not exist: -NoResume never creates it, and nothing here
-    # reads or writes the real HKCU Run key.
-    $testRunKey = 'HKCU:\Software\HorizunTest\NoSuchRunKey-' + [guid]::NewGuid().ToString('N')
-    $p = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $PSScriptRoot 'complete-install.ps1') + '"'),
-        '-Client', 'Claude', '-ServerPath', ('"' + $server + '"'), '-StatusPath', ('"' + $pendingStatus + '"'),
-        '-WaitTimeoutMinutes', '1', '-Detached', '-NoResume', '-NoLiveWait', '-Generation', 'quietwindow01',
-        '-ClientStateFile', ('"' + $clientState + '"'), '-RunKey', ('"' + $testRunKey + '"'))
-    $null = $p.Handle
-    # The generation claim is the first thing the worker writes, and its first
-    # look at the clients follows within milliseconds (no client: nothing to wait
-    # for). The client "reopens" 800 ms later, in the middle of the two-second
-    # quiet window, so the second look is the one that sees it.
-    $claimDeadline = (Get-Date).AddSeconds(60)
-    while (-not (Test-Path -LiteralPath "$pendingStatus.current") -and (Get-Date) -lt $claimDeadline -and -not $p.HasExited) {
-        Start-Sleep -Milliseconds 20
-    }
-    Start-Sleep -Milliseconds 800
-    'Claude' | Set-Content -LiteralPath $clientState -Encoding ASCII
-    if (-not $p.WaitForExit(180000)) { Stop-Process -Id $p.Id -Force; throw 'the quiet-window worker did not finish within three minutes' }
-    $pendingExit = $p.ExitCode
-    Clear-Content -LiteralPath $clientState
-    $pendingState = Get-Content -LiteralPath "$pendingStatus.generation-quietwindow01.json" -Raw | ConvertFrom-Json
-    Assert 'a client back inside the quiet window until the deadline is registration_pending, exit 3 (backlog #60)' `
-        ($pendingExit -eq 3 -and $pendingState.state -eq 'registration_pending' -and $pendingState.detail -match 'quiet window') "exit=$pendingExit state=$($pendingState.state) detail=$($pendingState.detail)"
-    Assert 'no failed attempt is counted for a client that simply stayed open (backlog #60)' `
-        (-not (Test-Path -LiteralPath "$pendingStatus.generation-quietwindow01.json.attempts")) 'an attempts file was written'
-    Assert 'nothing is written underneath the reopened client (backlog #60)' `
-        ([Convert]::ToBase64String($pendingBefore) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($pendingConfig))) `
-        ([IO.File]::ReadAllText($pendingConfig))
+    # Backlog #60 is gone with the wait: a client open at the moment of the run
+    # is the only case, it is answered at once, and nothing ever runs later.
     Assert 'the test run key was never created' (-not (Test-Path -LiteralPath $testRunKey)) $testRunKey
 }
 finally {

@@ -63,6 +63,10 @@ namespace Horizun.Revit.Core
 
         public const int MaxUiBudgetMs = 600000;
 
+        // The bounded planimetry flow yields after at most two minutes between API calls.
+        public static int BoundedPlanimetryBudget(int? requestedMs) =>
+            Math.Max(1000, Math.Min(120000, requestedMs ?? DefaultUiBudgetMs));
+
         /// <summary>
         /// Has the request currently executing been abandoned by its caller? Installed by
         /// the dispatcher, which is the only thing that knows. Null means "nothing is
@@ -113,33 +117,75 @@ namespace Horizun.Revit.Core
             return scope == null || scope.Continue();
         }
 
-        public static Scope Begin(string what, int? uiBudgetMs = null, int knownUnits = 0)
+        public static Scope Begin(string what, int? uiBudgetMs = null, int knownUnits = 0, int maxUnits = 0, bool zeroIsUnlimited = false)
         {
             int budget = uiBudgetMs ?? DefaultUiBudgetMs;
-            if (budget < 1000) budget = 1000;
+            if (budget < 1000 && !(zeroIsUnlimited && budget == 0)) budget = 1000;
             if (budget > MaxUiBudgetMs) budget = MaxUiBudgetMs;
-            return new Scope(what, budget, knownUnits);
+            return new Scope(what, budget, knownUnits, maxUnits);
         }
 
         public sealed class Scope
         {
             private readonly Stopwatch _clock = Stopwatch.StartNew();
+            private readonly Func<long> _elapsedMilliseconds;
             private readonly string _what;
             private readonly int _budgetMs;
             private readonly int _knownUnits;
+            private readonly int _unitCap;
             private int _done;
             private string _stoppedBecause;
 
-            internal Scope(string what, int budgetMs, int knownUnits)
+            internal Scope(string what, int budgetMs, int knownUnits, int unitCap = 0, Func<long> elapsedMilliseconds = null)
             {
+                _elapsedMilliseconds = elapsedMilliseconds ?? (() => _clock.ElapsedMilliseconds);
                 _what = what;
                 _budgetMs = budgetMs;
                 _knownUnits = knownUnits;
+                _unitCap = unitCap > 0 ? unitCap : 0;
             }
 
             public int Done => _done;
+
+            /// <summary>Why the scope stopped, or null while it has not.</summary>
+            public string StoppedBecause => _stoppedBecause;
+
+            /// <summary>
+            /// May the NEXT piece of work start? Asks the same three questions as
+            /// <see cref="Continue"/> (caller gone, clock, unit cap) but counts nothing.
+            /// For the gate BETWEEN coarse stages (a scan section, an audit check): the
+            /// stage is not a unit of the element census, and counting it would make
+            /// max_units mean two things.
+            /// </summary>
+            public bool Poll() => Poll(checkUnitCap: true);
+
+            internal bool Poll(bool checkUnitCap)
+            {
+                if (_stoppedBecause != null) return false;
+                Func<bool> abandoned = Abandoned;
+                if (abandoned != null)
+                {
+                    bool gone;
+                    try { gone = abandoned(); } catch { gone = false; }
+                    if (gone) { _stoppedBecause = "client_abandoned"; return false; }
+                }
+                if (_budgetMs > 0 && _elapsedMilliseconds() >= _budgetMs) { _stoppedBecause = "ui_budget_exhausted"; return false; }
+                if (checkUnitCap && _unitCap > 0 && _done >= _unitCap) { _stoppedBecause = "max_units_exhausted"; return false; }
+                return true;
+            }
             public bool Complete => _stoppedBecause == null;
-            public long ElapsedMs => _clock.ElapsedMilliseconds;
+            public long ElapsedMs => _elapsedMilliseconds();
+
+            /// <summary>Stop before the next unit when the caller's unit limit is reached.</summary>
+            public bool ContinueWithin(int maxUnits)
+            {
+                if (maxUnits > 0 && _done >= maxUnits)
+                {
+                    if (_stoppedBecause == null) _stoppedBecause = "max_units_exhausted";
+                    return false;
+                }
+                return Continue();
+            }
 
             /// <summary>
             /// Count one unit of work and answer whether to carry on.
@@ -150,7 +196,6 @@ namespace Horizun.Revit.Core
             /// </summary>
             public bool Continue()
             {
-                _done++;
                 if (_stoppedBecause != null) return false;
 
                 // The abandonment check is the cheap one and the one that matters most:
@@ -164,11 +209,17 @@ namespace Horizun.Revit.Core
                     if (gone) { _stoppedBecause = "client_abandoned"; return false; }
                 }
 
-                if (_clock.ElapsedMilliseconds >= _budgetMs)
+                if (_budgetMs > 0 && _elapsedMilliseconds() >= _budgetMs)
                 {
                     _stoppedBecause = "ui_budget_exhausted";
                     return false;
                 }
+                if (_unitCap > 0 && _done >= _unitCap)
+                {
+                    _stoppedBecause = "max_units_exhausted";
+                    return false;
+                }
+                _done++;
                 return true;
             }
 
@@ -183,7 +234,7 @@ namespace Horizun.Revit.Core
                 ["complete"] = Complete,
                 ["units_done"] = _done,
                 ["units_known"] = _knownUnits > 0 ? (JToken)_knownUnits : JValue.CreateNull(),
-                ["elapsed_ms"] = _clock.ElapsedMilliseconds,
+                ["elapsed_ms"] = _elapsedMilliseconds(),
                 ["ui_budget_ms"] = _budgetMs,
                 ["stopped_because"] = _stoppedBecause == null ? (JToken)JValue.CreateNull() : _stoppedBecause,
                 ["means"] = Complete
@@ -192,6 +243,8 @@ namespace Horizun.Revit.Core
                         ? "THE RESULT IS PARTIAL. The caller went away, so the read stopped rather than spend " +
                           "Revit's UI thread producing an answer for nobody. What is here was measured; what is " +
                           "missing was never looked at, which is not the same as nothing being there."
+                        : _stoppedBecause == "max_units_exhausted"
+                        ? "THE RESULT IS PARTIAL. The caller's unit limit was reached; remaining units were not examined."
                         : "THE RESULT IS PARTIAL. The read held Revit's UI thread for its whole declared budget " +
                           "of " + _budgetMs + " ms and stopped. Revit is unresponsive for exactly as long as a " +
                           "command runs; the budget makes that a number somebody chose. Raise it, or narrow the " +

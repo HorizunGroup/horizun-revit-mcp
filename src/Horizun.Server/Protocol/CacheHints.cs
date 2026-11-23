@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP server - freshness and scope hints for cacheable results.
 // Original Horizun code.
 //
@@ -137,7 +137,6 @@ namespace Horizun.Server.Protocol
                 // Compiled text. Identical for every caller of this build.
                 // The MCP App is here too: it is one HTML file baked into the binary,
                 // it fetches nothing, and it says nothing about this machine.
-                case "ui://horizun/clash-viewer":
                 case "ui://horizun/impact-preview":
                 case "horizun://guidance/typed-first":
                 case "horizun://workflows/bim-production":

@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  AUDIT 2026-10-08, LOTE 6 TANDA 2 (6.6-6.9), LIVE.
+  AUDIT 2026-10-08, LOTE 6 TANDA 2 (6.7-6.9), LIVE.
 
   6.7  remove_fields resolves every position first (1,2 of four fields leaves the
        first and the last), and a filter's number_value is read in mm (a 3000 mm wall
@@ -9,12 +9,9 @@
   6.9  a write to a group member whose parameter does not vary is refused by default;
        with allow_vary_between_groups=true the definition change is listed, re-read,
        and horizun_undo reverts it.
-  6.6  with the project base point raised 2600 mm, plan_from_ifc derives each wall's
-       base offset from the level's internal elevation (ProjectElevation).
 
   Needs a DISPOSABLE fixture open and active (-Document) with a second document open
-  (the reset activates it), a door type in the model, and Python enabled (6.6 moves
-  the project base point through it: fixture set-up, not verification).
+  (the reset activates it) and a door type in the model.
 #>
 [CmdletBinding()]
 param(
@@ -45,7 +42,6 @@ $walls = Invoke-HzWrite -Run $run -Tool 'horizun_create_elements' -Label 'walls'
         @{ kind = 'wall'; start = @($X, 4000.0, 0.0); end = @($X, 0.0, 0.0); height = 3000.0; level_id = $lv }) }
 $wallIds = @(@($walls.Apply.Result.rows) | ForEach-Object { [long](Get-HzProp $_ 'element_id') })
 if ($wallIds.Count -ne 4) { throw "HARNESS: four walls were not created ($($wallIds.Count))" }
-$wallTypeName = [string](@(Get-HzElements -Run $run -Categories @('OST_Walls') -Label 'wall-type') | Where-Object { $wallIds -contains [long]$_.element_id } | Select-Object -First 1).type
 $doorTypes = @((Invoke-HzToolStrict -Run $run -Tool 'horizun_query_model' -Label 'door-types' -Arguments @{
     categories = @('OST_Doors'); include_links = $false; include_types = $true; max_rows = 50 }).Result.rows | Where-Object { $_.is_element_type })
 if ($doorTypes.Count -eq 0) { throw 'HARNESS: the fixture has no door type' }
@@ -144,44 +140,6 @@ Add-HzProbe -Run $run -Id 'P69c' -Name '6.9 horizun_undo reverts the value and t
                 else { 'no undo batch id in the reply' }) `
     -Ok ($undoOk -and (Get-HzPath $undo.Apply.Result 'postconditions', 'all_verified') -eq $true) `
     -Evidence @{ undo = $(if ($undoOk) { $undo.Apply.Result } else { $null }) }
-
-# ------------------------------------------------------------------ 6.6
-Write-Host "`n== 6.6 elevated project base point ==" -ForegroundColor Cyan
-$py = @"
-from Autodesk.Revit.DB import *
-bp = BasePoint.GetProjectBasePoint(doc)
-lv = doc.GetElement(ElementId($lv))
-t = Transaction(doc, 'HZ fixture: raise the project base point')
-t.Start()
-ElementTransformUtils.MoveElement(doc, bp.Id, XYZ(0, 0, 2600.0 / 304.8))
-t.Commit()
-lv = doc.GetElement(ElementId($lv))
-elev = lv.Elevation * 304.8
-proj = lv.ProjectElevation * 304.8
-__output__ = {'status': 'self_reported_verified', 'level_elevation_mm': elev, 'level_project_elevation_mm': proj,
-              'verification': {'evidence': [{'level_id': $lv, 'elevation_mm': elev, 'project_elevation_mm': proj}]}}
-"@
-$pyCall = Invoke-HzToolStrict -Run $run -Tool 'horizun_execute_python' -Label 'raise-pbp' -Arguments @{
-    target_document = $Document; code = $py; idempotency_key = (New-HzKey $run 'raise-pbp') }
-$elevMm = [double](Get-HzPath $pyCall.Result 'output', 'level_elevation_mm')
-$projMm = [double](Get-HzPath $pyCall.Result 'output', 'level_project_elevation_mm')
-$run.Fixture['level_elevation_mm'] = $elevMm; $run.Fixture['level_project_elevation_mm'] = $projMm
-if ([Math]::Abs($elevMm - $projMm) -lt 1000) { throw "HARNESS: the base point did not separate Elevation ($elevMm) from ProjectElevation ($projMm)" }
-$exp = Invoke-HzWrite -Run $run -Tool 'horizun_export' -Label 'export-ifc' -Arguments @{
-    target_document = $Document; format = 'ifc'; output_path = (Join-Path $OutputFolder "hz-t2-$tag.ifc"); overwrite = $true }
-$ifcPath = Join-Path $OutputFolder "hz-t2-$tag.ifc"
-$plan = (Invoke-HzToolStrict -Run $run -Tool 'horizun_plan_from_ifc' -Label 'plan-ifc' -Arguments @{
-    target_document = $Document; path = $ifcPath; level_id = $lv; only_kinds = @('wall')
-    type_mapping = @{ IFCWALL = [string]$wallTypeName; IFCWALLSTANDARDCASE = [string]$wallTypeName } }).Result
-# The rows create_elements would receive, where the offset is.
-$wallRows = @(@(Get-HzPath $plan 'execute_plan_request', 'actions') | ForEach-Object { @(Get-HzPath $_ 'arguments', 'elements') } |
-    Where-Object { $null -ne $_ -and [string](Get-HzProp $_ 'kind') -eq 'wall' -and $null -ne (Get-HzProp $_ 'offset') })
-$basis = @($wallRows | ForEach-Object { [double]$_.start[2] - [double](Get-HzProp $_ 'offset') })
-$offProj = @($basis | Where-Object { [Math]::Abs($_ - $projMm) -gt 1.0 })
-Add-HzProbe -Run $run -Id 'P66' -Name '6.6 IFC wall offsets are measured from the level''s internal elevation' `
-    -Expected ("every wall row: start.z - offset == ProjectElevation ({0} mm), not Elevation ({1} mm)" -f $projMm, $elevMm) `
-    -Observed ("wall_rows={0} basis={1} off_project={2}" -f $wallRows.Count, (($basis | Select-Object -Unique | ForEach-Object { [Math]::Round($_, 1) }) -join ','), $offProj.Count) `
-    -Ok ($wallRows.Count -ge 1 -and $offProj.Count -eq 0) -Evidence @{ rows = ($wallRows | Select-Object -First 6) }
 
 $end = Complete-HzRun -Run $run -ArtifactDir $ArtifactDir
 exit $end.ExitCode

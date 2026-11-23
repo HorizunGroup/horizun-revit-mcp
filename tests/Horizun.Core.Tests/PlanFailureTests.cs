@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Horizun.Revit.Core;
 using Horizun.Revit.Transport;
 using Newtonsoft.Json.Linq;
@@ -134,7 +135,13 @@ namespace Horizun.Core.Tests
         {
             JObject reply = PipeEnvelope.Of("id-2", CommandResult.Fail("just a plain error"));
             Assert.False((bool)reply["success"]);
-            Assert.Null(reply["detail"]);
+            // No DIAGNOSTIC (no rollback trace, no group status): the only thing an ordinary
+            // failure now carries is its stable cause.
+            JObject detail = (JObject)reply["detail"];
+            Assert.Equal(new[] { "error_code" }, detail.Properties().Select(p => p.Name).ToArray());
+            Assert.Equal("error_no_clasificado", (string)detail["error_code"]);
+            Assert.Null(detail["rollback_status"]);
+            Assert.Null(detail["transaction_group_started"]);
         }
 
         // ---- the single-transaction sentence, used by nine ordinary commands --------

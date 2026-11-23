@@ -32,11 +32,22 @@
 // Revit-free: pure string work, provable in CI.
 // -----------------------------------------------------------------------------
 using System.Text;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
 
 namespace Horizun.Revit.Core
 {
     public static class PythonSourceMask
     {
+        public static string[] S22Alternatives(string source)
+        {
+            string code = StripCommentsAndStrings(source) ?? "";
+            var found = new List<string>();
+            if (Regex.IsMatch(code, @"\b(GetWarnings|DeleteWarning|GetFailureMessages|IFailuresPreprocessor)\b")) found.Add("horizun_audit_model");
+            if (Regex.IsMatch(code, @"\b(get_Geometry|GetInstanceGeometry)\b")) found.Add("horizun_measure_geometry");
+            if (Regex.IsMatch(code, @"\b(GetAllViewports|GetAllPlacedViews|Viewport)\b")) found.Add("horizun_query_planimetry");
+            return found.ToArray();
+        }
         /// <summary>
         /// The source with every comment body and string literal body replaced by
         /// spaces, same length, same newlines. Null in, null out.

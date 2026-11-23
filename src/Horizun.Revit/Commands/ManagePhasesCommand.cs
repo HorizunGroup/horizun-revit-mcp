@@ -172,7 +172,7 @@ namespace Horizun.Revit.Commands
             {
                 Element e = doc.GetElement(id);
                 if (e == null) { rows.Add(new JObject { ["id"] = Rid.Value(id), ["error"] = "no element with this id" }); continue; }
-                var row = new JObject { ["id"] = Rid.Value(id), ["category"] = e.Category?.Name };
+                var row = new JObject { ["id"] = Rid.Value(id), ["category"] = e.Category?.Name, ["built_in_category"] = CategoryKey.Of(e) };
                 try
                 {
                     bool has = e.HasPhases();

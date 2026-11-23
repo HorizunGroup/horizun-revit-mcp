@@ -152,6 +152,12 @@ try {
     Assert 'two clients hold two independent states at once' `
         ($doc.integrations.'claude-desktop'.state -eq 'configured' -and $doc.integrations.'claude-code'.state -eq 'pending_client_restart') $null
 
+    Set-HorizunIntegrationState -StatusPath $statusPath -Client 'claude-desktop' -State 'failed' -Detail 'Access denied' | Out-Null
+    Set-HorizunIntegrationState -StatusPath $statusPath -Client 'claude-desktop' -State 'configured' -Detail 'retry succeeded' | Out-Null
+    $retry = (Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json).integrations.'claude-desktop'
+    Assert 'successful retry is current and preserves the access-denied attempt' `
+        ($retry.state -eq 'configured' -and $retry.detail -eq 'retry succeeded' -and $retry.previous_attempt.state -eq 'failed' -and $retry.previous_attempt.detail -eq 'Access denied') $null
+
     $threw = $false
     try { Set-HorizunIntegrationState -StatusPath $statusPath -Client 'x' -State 'nearly_done' -Detail 'd' | Out-Null }
     catch { $threw = $true }

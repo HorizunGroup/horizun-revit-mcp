@@ -39,12 +39,10 @@ Assert-True ($ci -match '(?s)build-stage:.*?needs:\s*\[revit-free,\s*windows-dep
     'The self-hosted stage build must not proceed when the Windows deployment gate failed.'
 Assert-True ($ci -match '(?s)revit-addin:.*?group:\s*\$\{\{\s*vars\.REVIT_RUNNER_GROUP\s*\}\}') `
     'Revit jobs must target the externally configured Revit runner group.'
-Assert-True ($ci -match "(?s)build-stage:.*?group:\s*\$\{\{\s*vars\.REVIT_RUNNER_GROUP\s*\}\}.*?labels:\s*\[self-hosted, windows, revit\]") `
-    'build-stage must target the licensed Revit runner group.'
-# compile-installer signs (issues #74, #75): only on the signing runner, behind the
-# reviewer of firma-certum, and only in the canonical repository.
-Assert-True ($ci -match "(?s)  compile-installer:\s*\r?\n\s+if:[^\r\n]*github\.repository == 'HorizunGroup/horizun-revit-mcp'[^\r\n]*\r?\n\s+needs: build-stage\r?\n\s+runs-on: \[self-hosted, windows, horizun-sign\]\r?\n\s+environment: firma-certum") `
-    'compile-installer must run on the signing runner behind the firma-certum environment, in the canonical repository only.'
+foreach ($jobName in 'build-stage','compile-installer') {
+    Assert-True ($ci -match "(?s)$([regex]::Escape($jobName)):.*?group:\s*\$\{\{\s*vars\.REVIT_RUNNER_GROUP\s*\}\}.*?labels:\s*\[self-hosted, windows, revit\]") `
+        "$jobName must target the licensed Revit runner group."
+}
 
 function Get-JobBlock([string]$name) {
     $match = [regex]::Match($ci, "(?ms)^  $([regex]::Escape($name)):\s*\r?\n(?:(?!^  [a-zA-Z0-9_-]+:\s*$).)*")
@@ -65,19 +63,11 @@ foreach ($jobName in 'package','public-integrity') {
         "$jobName must run on a disposable hosted runner without release secrets."
 }
 Assert-True ($ci -notmatch 'signpath/|SIGNPATH_|SIGNING_CERT_THUMBPRINT|sign-payload:|sign-installer:') `
-    'Release CI signs only through the local signing queue on the signing runner: no credential or third-party signing route.'
-# GitHub refuses a workflow with a key repeated in one mapping ("workflow file issue", no log),
-# while most YAML parsers keep the last value silently. A job with two env: blocks shipped that way.
-foreach ($job in [regex]::Matches($ci, '(?ms)^  ([A-Za-z0-9_-]+):[ \t]*\r?\n(.*?)(?=^  [A-Za-z0-9_-]+:[ \t]*\r?\n|\z)')) {
-    foreach ($key in 'env','permissions','outputs','steps','runs-on','environment','if','needs','strategy','timeout-minutes') {
-        $count = [regex]::Matches($job.Groups[2].Value, "(?m)^    $([regex]::Escape($key)):").Count
-        Assert-True ($count -le 1) "Job $($job.Groups[1].Value) declares '$key' $count times; GitHub rejects the whole workflow."
-    }
-}
-Assert-True ($ci -match "authenticode = 'signed_by_certum'" -and
-             $ci -match 'publisher_identity_available = \$true' -and
-             $ci -match 'Get-HorizunReleaseSignatureProblems') `
-    'The release workflow must disclose and enforce that every binary and Setup are signed.'
+    'Permanent unsigned release CI must contain no public-signing route or credential.'
+Assert-True ($ci -match "authenticode = 'unsigned_by_policy'" -and
+             $ci -match 'publisher_identity_available = \$false' -and
+             $ci -match "Status -ne 'NotSigned'") `
+    'The release workflow must disclose and enforce the exact unsigned state.'
 foreach ($handoff in
     'artifact-ids: ${{ needs.build-stage.outputs.payload-artifact-id }}',
     'artifact-ids: ${{ needs.compile-installer.outputs.package-input-artifact-id }}',
@@ -177,28 +167,5 @@ Assert-True ($ciGates.Count -ge 10) `
     "the ci.yml deployment-gate array parsed as $($ciGates.Count) scripts, which cannot be right - this check would be vacuous."
 Assert-True ($pushOnly.Count -eq 0) `
     "ci.yml runs these deployment gates and pr.yml does not: $($pushOnly -join ', '). A pull request would be green on exactly the checks that fail after the merge."
-
-# THE STABLE RELEASE IS SIGNED BEFORE IT IS PUBLISHED. A published GitHub release is
-# immutable, so publish-stable-release may only leave a DRAFT; the Certum-signing job
-# (self-hosted signing runner, protected environment, manual approval) is the only
-# route that publishes it, and the registry waits for that job.
-$stable = Get-JobBlock 'publish-stable-release'
-Assert-True ($stable -match 'gh release create[^\r\n]*--draft' -and $stable -notmatch '--draft=false') `
-    'publish-stable-release must create the stable release as a draft and never publish it.'
-Assert-True ($stable -match 'gh release edit[^\r\n]*--draft=true') `
-    'publish-stable-release must keep an existing release a draft when it completes it.'
-$signJob = Get-JobBlock 'firmar-y-publicar'
-Assert-True ($signJob -match 'needs:\s*publish-stable-release' -and
-             $signJob -match 'runs-on:\s*\[self-hosted, windows, horizun-sign\]' -and
-             $signJob -match 'environment:\s*firma-certum' -and
-             $signJob -match 'contents:\s*write' -and
-             $signJob -match 'scripts/firmar-release\.ps1 -Repo [^\r\n]*-Tag ') `
-    'firmar-y-publicar must wait for the draft, run on the signing runner under the firma-certum environment and call scripts/firmar-release.ps1.'
-Assert-True ((Get-JobBlock 'publish-mcp-registry') -match 'needs:\s*\[firmar-y-publicar,\s*package\]') `
-    'The MCP Registry may only be published after the release is signed and public.'
-Assert-True ([regex]::Matches($ci, '--draft=false').Count -eq 2) `
-    'Only the preview and validation-only channels may publish a release directly (stable is published by the signing job).'
-Assert-True (Test-Path -LiteralPath (Join-Path $repo 'scripts/firmar-release.ps1')) `
-    'scripts/firmar-release.ps1 is missing.'
 
 Write-Host "workflow security: PASS ($($workflowFiles.Count) workflows, immutable actions, PR isolated from self-hosted/signing)"

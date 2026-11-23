@@ -51,7 +51,11 @@ namespace Horizun.Core.Tests
         private static Dictionary<string, string> CommandSources()
         {
             string dir = Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Commands");
-            return Directory.GetFiles(dir, "*.cs").ToDictionary(Path.GetFileName, File.ReadAllText);
+            var sources = Directory.GetFiles(dir, "*.cs").ToDictionary(Path.GetFileName, File.ReadAllText);
+            sources["ManageViewsCommand.cs"] += sources["ManageViewsCommand.Execution.cs"];
+            sources["AnnotateCommand.cs"] += sources["AnnotateCommand.Execution.cs"] + sources["AnnotateCommand.Apply.cs"];
+            sources["CreateElementsCommand.cs"] += sources["CreateElementsCommand.Execution.cs"];
+            return sources;
         }
 
         private static string PlanSource() => CommandSources()["ExecutePlanCommand.cs"];
@@ -106,6 +110,12 @@ namespace Horizun.Core.Tests
                 Assert.False(owner.Key == null, "no command source declares " + tool);
 
                 string body = owner.Key == "RecipeTools.cs" ? sources["RecipeCommand.cs"] : owner.Value;
+                // Runner-backed tools declare their outcome in the shared runner,
+                // just as recipe-backed tools declare it in RecipeCommand.
+                if (body.Contains("ModelEditRunner.Run(")) body = sources["ModelEditRunner.cs"];
+                // Creation declares its applied outcome in the partial that owns ApplyPlans.
+                if (owner.Key == "CreateElementsCommand.Execution.cs" && body.Contains("var applied = ApplyPlans("))
+                    body = sources["CreateElementsGeometry.cs"];
                 if (!body.Contains("ApplicationOutcome.Stamp"))
                     missing.Add(tool + " (" + owner.Key + ")");
             }
@@ -129,6 +139,7 @@ namespace Horizun.Core.Tests
                 var owner = sources.FirstOrDefault(kv => kv.Value.Contains("Name => \"" + tool + "\""));
                 Assert.False(owner.Key == null, "no command source declares " + tool);
                 string file = owner.Key == "RecipeTools.cs" ? "RecipeCommand.cs" : owner.Key;
+                if (sources[file].Contains("ModelEditRunner.Run(")) file = "ModelEditRunner.cs";
                 owners[file] = sources[file];
             }
             return owners;
@@ -203,22 +214,11 @@ namespace Horizun.Core.Tests
             // A status that is not Committed short-circuits BEFORE the post-commit read:
             // the element may not exist, and an ElementId can be reused.
             Assert.Contains("if (commitStatus != TransactionStatus.Committed)", src);
-            Assert.Contains("CommandResult.FailWithDetail", src);
+            Assert.Contains("ScheduleFieldPlan.WriteFailure", src);
             // And the declaration is derived from that variable plus the measured
             // post-condition, never from the constant.
             Assert.Contains("WriteTally.OneObject(commitStatus.ToString(), postconditionVerified)", src);
             Assert.DoesNotContain("ApplicationOutcome.Committed", src);
-        }
-
-        [Fact]
-        public void Create_family_does_not_discard_the_reference_subtransaction_status()
-        {
-            string src = CommandSources()["CreateFamilyCommand.cs"];
-            string guard = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Core", "Guard.cs"));
-
-            Assert.Contains("Guard.Commit(referenceTx, \"create family reference planes\")", src);
-            Assert.DoesNotContain("referenceTx.Commit();", src);
-            Assert.Contains("public static TransactionStatus Commit(SubTransaction t, string what)", guard);
         }
 
         [Fact]
@@ -299,7 +299,7 @@ namespace Horizun.Core.Tests
         {
             // 2026-09-30: set_crop said verified=true and the viewport still looked uncropped.
             string src = CommandSources()["ManageViewsCommand.cs"];
-            int verify = src.IndexOf("private static bool Verify(Document doc, Applied a, Element e)", StringComparison.Ordinal);
+            int verify = src.IndexOf("private static bool VerifyOther(Document doc, Applied a, Element e, string op)", StringComparison.Ordinal);
             int crop = src.IndexOf("case \"set_crop\":", verify, StringComparison.Ordinal);
             int next = src.IndexOf("case \"set_annotation_crop\":", crop, StringComparison.Ordinal);
             Assert.True(verify > 0 && crop > verify && next > crop);
@@ -442,6 +442,17 @@ namespace Horizun.Core.Tests
                     string local = m.Groups[1].Value;
                     if (Regex.IsMatch(file.Value, @"ApplicationOutcome\.Stamp\w*\(\s*" + local + @"\b")) continue;
 
+                    // ScheduleFieldPlan stamps this rehearsal together with the two transaction statuses.
+                    // The rehearsal's declaration is checked through CommandResult.Ok in the schedule tests.
+                    if (file.Key == "CreateScheduleCommand.cs" && local == "rehearsal" &&
+                        file.Value.Contains("fieldPlan.StampRehearsal(rehearsal);")) continue;
+
+                    // The successful inner construction result is evidence nested in the
+                    // declared public rehearsal. Failures take a separate path.
+                    if (file.Key == "CreateElementsCommand.cs" && local == "rehearsed" &&
+                        file.Value.Contains("[\"api_rehearsal\"] = rehearsalData") &&
+                        file.Value.Contains("ApplicationOutcome.Stamp(result,")) continue;
+
                     // Or the local came out of a helper in this file that stamps for it.
                     Match assigned = Regex.Match(file.Value,
                         @"\b" + local + @"\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(");
@@ -472,7 +483,7 @@ namespace Horizun.Core.Tests
             Assert.True(branch > 0, "the purge-unsupported branch could not be found");
 
             // Look only at that branch, up to its return.
-            int end = src.IndexOf("return CommandResult.Ok(unexamined);", branch, StringComparison.Ordinal);
+            int end = src.IndexOf("return PurgeResponse.Unavailable(unexamined, lookError, false);", branch, StringComparison.Ordinal);
             Assert.True(end > branch, "the purge-unsupported branch no longer returns a named, declared payload");
 
             string region = src.Substring(branch, end - branch);
@@ -510,7 +521,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("bool rehearsedCleanly = ledger.RehearsedCleanly;", src);
             // Both the token and the recorded plan are gated on it - a token without a plan,
             // or a plan without a token, would each be half a refusal.
-            Assert.Contains("DocumentGate.RecordResolvedPlan(rehearsedCleanly ? GraphPlan(app, gate, rows, actions) : null);", src);
+            Assert.Contains("DocumentGate.RecordResolvedPlan(rehearsedCleanly ? ResolveGraph(app, gate, rows) : null);", src);
             Assert.Contains("planHash, rehearsedCleanly,", src);
         }
 
@@ -546,14 +557,17 @@ namespace Horizun.Core.Tests
             Assert.Contains("ExpectedCascadeCount = cascades?.Count ?? 0", delete);
             Assert.Contains("ValidateDeletePlan", delete);
             Assert.Contains("__expected_plan_fingerprint", delete);
-            Assert.Contains("child[\"__expected_plan_fingerprint\"] = expectedChildPlan", plan);
+            Assert.Contains("ChildArguments(child, gate, false, expectedChildPlan)", plan);
+            string ledger = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Core", "PlanLedger.cs"));
+            Assert.Contains("ExpectedChildPlanField = \"__expected_plan_fingerprint\"", ledger);
+            Assert.Contains("child[ExpectedChildPlanField] = expectedChildPlan", ledger);
         }
 
         [Fact]
         public void Create_elements_stamps_before_building_the_command_result()
         {
-            string src = CommandSources()["CreateElementsCommand.cs"];
-            int stamp = src.IndexOf("ApplicationOutcome.StampRehearsal(result", StringComparison.Ordinal);
+            string src = CommandSources()["CreateElementsCommand.Execution.cs"];
+            int stamp = src.IndexOf("ApplicationOutcome.Stamp(result", StringComparison.Ordinal);
             int resultFactory = src.IndexOf("CommandResult rehearsal", StringComparison.Ordinal);
 
             Assert.True(stamp > 0 && resultFactory > stamp,

@@ -60,7 +60,7 @@ namespace Horizun.Revit.Core
 
         public const string RollbackMeans =
             "PER ACTION, and exactly this: (1) every action is rehearsed BEFORE any of them is applied, and a " +
-            "plan with an action that did not rehearse cleanly is refused whole, with nothing written. " +
+            "plan with an action that did not rehearse cleanly is refused whole before applying any correction. " +
             "(2) Each action's steps run inside their typed tool's own transaction; a step that fails is rolled " +
             "back BY THAT TOOL, and this command opens no transaction of its own. (3) An action that fails does " +
             "NOT undo an action that already applied, and does not stop the actions after it - each one is " +
@@ -68,6 +68,20 @@ namespace Horizun.Revit.Core
             "`uncertain`, not `failed`: the write may have happened, and its elements come back not_verifiable " +
             "from the re-audit rather than corrected or failed. (5) This is NOT one atomic group and does not " +
             "claim to be; compose horizun_execute_plan for that.";
+
+        /// <summary>Only a clean rehearsal may spend the outer token and dispatch the typed writers.</summary>
+        public static CommandResult ConfirmAndApply(string command, IReadOnlyList<CorrectionAction> actions,
+                                                     Func<CommandResult> confirm, Func<IDisposable> enterConfirmedScope,
+                                                     Func<CorrectionStep, StepExecution> execute)
+        {
+            if (!CorrectionSelection.RehearsedCleanly(actions))
+                return CorrectionReply.RehearsalRefusal(command, actions);
+            CommandResult refusal = confirm();
+            if (refusal != null) return refusal;
+            using (enterConfirmedScope())
+                Apply(actions, execute);
+            return null;
+        }
 
         /// <summary>
         /// Apply every action in order. `execute` runs one step and says what came

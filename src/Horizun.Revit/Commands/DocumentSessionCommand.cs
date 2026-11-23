@@ -65,6 +65,9 @@ namespace Horizun.Revit.Commands
 {
     public partial class DocumentSessionCommand : ICommand
     {
+        private readonly Func<string, ICommand> _resolve;
+        static DocumentSessionCommand() { }
+        public DocumentSessionCommand(Func<string, ICommand> resolve = null) { _resolve = resolve; }
         public string Name => "horizun_document_session";
 
         public string Description =>
@@ -131,9 +134,12 @@ namespace Horizun.Revit.Commands
                 case "close": return Close(app, request);
                 case "sync_with_central": return SyncWithCentral(app, request);
                 case "new_project": return NewProject(app, request);
+                case "activate": return Activate(app, request);
+                case "batch": return Batch(app, request);
+                case "exit_application": return ExitApplication(app, request);
                 default:
                     return CommandResult.Fail(
-                        "operation is required and must be one of: inspect, open, save, save_as, close, sync_with_central, new_project.");
+                        "operation is required and must be one of: inspect, open, save, save_as, close, sync_with_central, new_project, activate, batch, exit_application.");
             }
         }
 
@@ -302,14 +308,14 @@ namespace Horizun.Revit.Commands
             }
 
             UIDocument uidoc;
+            JObject recoveryEvidence = null;
             try
             {
                 // ONE overload, always, with options built by the shared guard. This used
                 // to take the bare-path overload whenever neither audit nor detach was
                 // set, which silently meant open_all_worksets could never be honoured
                 // here at all - the flag was accepted and dropped.
-                using (Interference.WithDialogAnswer(openRequest.OnOpenDialog))
-                    uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
+                uidoc = OpenRecoveryRuntime.Open(app, plan, openRequest, out recoveryEvidence);
             }
             catch (Exception ex)
             {
@@ -410,6 +416,7 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(new JObject
             {
                 ["operation"] = "open",
+                ["recovery"] = recoveryEvidence,
                 ["status"] = "opened",
                 ["opened_now"] = true,
                 ["active_document_verified"] = true,
@@ -515,10 +522,10 @@ namespace Horizun.Revit.Commands
                      " - if no result line follows this one, opening this model took Revit down.");
 
             UIDocument uidoc;
+            JObject recoveryEvidence = null;
             try
             {
-                using (Interference.WithDialogAnswer(r.OnOpenDialog))
-                    uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
+                uidoc = OpenRecoveryRuntime.Open(app, plan, r, out recoveryEvidence);
             }
             catch (Exception ex)
             {
@@ -569,6 +576,7 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(new JObject
             {
                 ["operation"] = "open",
+                ["recovery"] = recoveryEvidence,
                 ["status"] = "opened",
                 ["opened_now"] = true,
                 ["active_document_verified"] = true,
@@ -676,6 +684,9 @@ namespace Horizun.Revit.Commands
             }
 
             bool overwrite = request.Value<bool?>("overwrite") ?? false;
+            string recoveryRefusal = OpenRecoveryDocuments.SaveRefusal(doc, saveAs,
+                request.Value<bool?>("confirm_recovered_save_as") == true, targetPath, overwrite);
+            if (recoveryRefusal != null) return CommandResult.Fail(recoveryRefusal);
             if (saveAs && File.Exists(targetPath) && !overwrite)
                 return CommandResult.Fail("Destination already exists and overwrite=false: " + targetPath +
                                           ". Refusing to replace a file nobody asked to replace.");
@@ -700,6 +711,10 @@ namespace Horizun.Revit.Commands
             var beforeProbe = ProbeFile(targetPath);
             var versionBefore = VersionOf(beforeProbe);
 
+            // R2X (step 18). The key this document is known under, taken BEFORE the Save As: the ledgers of what this session created, of the history of
+            // writes and of the sync notice follow the document to its new path HERE, by the call that knows both names, and not only through the
+            // DocumentSavingAs / DocumentSavedAs pair (which is the same rule, run a second time harmlessly: renaming a key that is gone moves nothing).
+            string keyBeforeSaveAs = saveAs ? ChangeWatch.Key(doc) : null;
             try
             {
                 if (saveAs)
@@ -720,8 +735,13 @@ namespace Horizun.Revit.Commands
             }
             catch (Exception ex)
             {
-                return CommandResult.Fail((saveAs ? "SaveAs" : "Save") + " failed for '" + targetPath + "': " + ex.Message +
+                return CommandResult.Fail((saveAs ? "SaveAs" : "Save") + " failed for '" + targetPath + "' (" + ex.GetType().FullName + "): " + ex.Message +
                     ". Nothing was written that this tool can vouch for — re-stat the path yourself before deleting any original.");
+            }
+
+            if (saveAs)
+            {
+                try { DocumentLifecycleRules.SavedAs(keyBeforeSaveAs, ChangeWatch.Key(doc), ChangeLedger.Rename); } catch { }
             }
 
             // THE LINE. Everything above is intent; only what follows is evidence.
@@ -949,13 +969,15 @@ namespace Horizun.Revit.Commands
         // =====================================================================
         // CLOSE — the document is gone only if Revit no longer lists it.
         // =====================================================================
-        private static CommandResult Close(UIApplication app, JObject request)
+        private static CommandResult Close(UIApplication app, JObject request, Func<Document, CommandResult> exitGuard = null)
         {
             Document doc;
             // Closing discards whatever is unsaved in it. Naming is required for the
             // same reason as save: not for what it writes, but for what it can lose.
             string pick = PickDocument(app, request, out doc, requireExplicitTarget: true);
             if (pick != null) return CommandResult.Fail(pick);
+            CommandResult exitRefusal = CheckExitClose(doc, exitGuard);
+            if (exitRefusal != null) return exitRefusal;
 
             // Revit's Document.Close cannot close the document that owns the active
             // UIDocument. Discovering that only after issuing (and consuming) a discard
@@ -995,6 +1017,7 @@ namespace Horizun.Revit.Commands
             var path = SafePath(doc);
             var title = SafeTitle(doc);
             bool saveOnClose = request.Value<bool?>("save_on_close") ?? false;
+            if (saveOnClose && OpenRecoveryDocuments.IsMarked(doc)) return CommandResult.Fail("Recovered documents cannot be saved on close; use confirmed save_as to a new path.");
             bool discardUnsaved = request.Value<bool?>("discard_unsaved") ?? false;
             bool dryRun = request.Value<bool?>("dry_run") ?? false;
             string suppliedToken = request.Value<string>("confirmation_token");
@@ -1143,7 +1166,7 @@ namespace Horizun.Revit.Commands
                 if (!check.Ok)
                     return CommandResult.Fail(
                         "REFUSING TO CLOSE '" + (title ?? path ?? "this document") + "' and discard its unsaved " +
-                        "changes: " + check.Message + " Nothing was closed.");
+                        "changes: " + check.Message + " " + DocumentTokenGuidance.For("close") + " Nothing was closed.");
             }
             else if (discardUnsaved)
             {
@@ -1183,10 +1206,14 @@ namespace Horizun.Revit.Commands
                         "caller aimed at the wrong model. If a confirmation_token was spent getting here, " +
                         "it is spent - run dry_run again for a fresh one.");
                 activationReport["activated_title"] = SafeTitle(nowActive);
+                activationReport["activated_path"] = SafePath(nowActive);
             }
 
             var before = StatFile(path);
 
+            // Activation can run other add-ins before this destructive call.
+            exitRefusal = CheckExitClose(doc, exitGuard, activationReport);
+            if (exitRefusal != null) return exitRefusal;
             bool closed;
             try { closed = doc.Close(saveOnClose); }
             catch (Exception ex)
@@ -1445,14 +1472,19 @@ namespace Horizun.Revit.Commands
                        ". Nothing was closed; the target is still the active document.";
             }
 
+            if (plan.Action == ActivationAction.OpenAnchor)
+            {
+                try { CloseProbe.Record("anchor", "IsModified=" + app.ActiveUIDocument.Document.IsModified); }
+                catch { CloseProbe.Record("anchor", "IsModified=unknown"); }
+            }
+
             report["activated_path"] = activatePath;
             report["how"] = how;
             report["note"] = plan.Action == ActivationAction.OpenAnchor
                 ? "No other open document qualified, so the bridge opened its own empty anchor project. It is " +
                   "now the ACTIVE document and stays open - Revit cannot reach a zero-document state from the " +
                   "API. It is safe to close the same way, or to leave."
-                : "This already-open document was activated so the target could stop being active. Nothing " +
-                  "about it was modified.";
+                : "This already-open document was activated so the target could stop being active.";
             return null;
         }
 
@@ -1768,10 +1800,10 @@ namespace Horizun.Revit.Commands
         /// Title identity for a detached open, where there is no path to compare and the
         /// title is the only witness. This MUST be an exact match against the closed set
         /// of titles Revit derives from a file. A prefix test ("does the title start with
-        /// the requested base name") accepts a DIFFERENT model: ask for 'Torre.rvt' while
-        /// the other Revit instance has 'Torre_A_detached' active and the prefix passes,
-        /// the response says status=opened / opened_from=Torre.rvt, and every tool that
-        /// runs next targets Torre_A — which is precisely the two-instance confusion this
+        /// the requested base name") accepts a DIFFERENT model: ask for 'Model.rvt' while
+        /// the other Revit instance has 'Model_A_detached' active and the prefix passes,
+        /// the response says status=opened / opened_from=Model.rvt, and every tool that
+        /// runs next targets Model_A — which is precisely the two-instance confusion this
         /// check exists to stop. Unproven identity must be refused, not approximated.
         /// </summary>
         private static bool TitleIdentifies(string title, string requestedPath)
@@ -1938,3 +1970,4 @@ namespace Horizun.Revit.Commands
         }
     }
 }
+

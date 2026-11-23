@@ -83,7 +83,14 @@ namespace Horizun.Revit.Commands
             "tracebacks name the real file and line instead of <string>. " +
             "INJECTED NAMES: doc (Document), uidoc (UIDocument), uiapp AND __revit__ (UIApplication - the " +
             "pyRevit name, aliased so it resolves), app (Application), checkpoint(label, done, total), " +
-            "revit_raised(since=0) and dialog_answer(answer). " +
+            "revit_raised(since=0), dialog_answer(answer), safe_point() and should_stop(). timeout_s and a " +
+            "job cancel stop the script at its next checkpoint()/safe_point() by raising HorizunInterrupted. " +
+            "VERSION COMPATIBILITY: `import hz_compat` is available. Use hz_compat.eid_int(id) and " +
+            "hz_compat.element_id(number) across the ElementId change, its Python 3 aliases `unicode`, " +
+            "`basestring`, `long`, and the unit/parameter/group helpers. For example, " +
+            "`mm = hz_compat.unit_type_id('Millimeters', 'DUT_MILLIMETERS')`; use " +
+            "horizun_api_help(operation=\"describe\", type_name=\"Autodesk.Revit.DB.ElementId\") to inspect " +
+            "the API loaded by this Revit before choosing a version-specific member. " +
             "WHAT REVIT RAISED comes back as 'dialogs' and 'failures' beside __output__, each with the " +
             "script's last checkpoint as 'while'. Read them when an open fails: the bridge CANCELS modal " +
             "dialogs (nobody is at the keyboard), and all Revit tells the script is 'Opening was canceled'. " +
@@ -100,7 +107,7 @@ namespace Horizun.Revit.Commands
             "arbitrary code - only typed commands carry that guarantee, and no field on this path may be read " +
             "as one. A verified claim with no evidence is downgraded to completed_unverified. " +
             "print() remains as compatibility output. A dict or " +
-            "list is serialized to JSON and output_kind reports scalar|structure|text_only, where text_only " +
+            "list is serialized to JSON and output_kind reports scalar|structure|paged|text_only; paged = page 1 as text, see output_paging; text_only " +
             "means the structure could NOT be serialized and only its text rendering survived. The standard " +
             "library is available (json, re, csv, datetime, math). " +
             "TRANSACTIONS: NO rollback is attempted, and none is possible. This text used to say one was " +
@@ -184,12 +191,17 @@ namespace Horizun.Revit.Commands
 #endif
                     ScriptEngine eng = Python.CreateEngine();
 
-                    foreach (var asm in new[]
+                    // RevitAPI, RevitAPIUI, then the base-class libraries a script imports
+                    // without clr.AddReference (Regex, Linq, SHA256, Xml...). On .NET 8+
+                    // System.Uri's assembly alone left those as ImportError; see
+                    // Core/PythonBclAssemblies.cs. Best effort, one by one.
+                    var preload = new List<System.Reflection.Assembly>
                     {
-                        typeof(Document).Assembly,       // RevitAPI
-                        typeof(UIApplication).Assembly,  // RevitAPIUI
-                        typeof(System.Uri).Assembly      // System
-                    })
+                        typeof(Document).Assembly,
+                        typeof(UIApplication).Assembly
+                    };
+                    preload.AddRange(PythonBclAssemblies.Assemblies());
+                    foreach (var asm in preload)
                     {
                         try { eng.Runtime.LoadAssembly(asm); } catch { }
                     }
@@ -199,7 +211,7 @@ namespace Horizun.Revit.Commands
                     {
                         string here = Path.GetDirectoryName(typeof(ExecutePythonCommand).Assembly.Location);
                         var paths = new List<string>(eng.GetSearchPaths());
-                        foreach (string candidate in new[] { Path.Combine(here, "Lib"), here })
+                        foreach (string candidate in new[] { Path.Combine(here, "Lib"), here, Path.Combine(here, "Recipes") })
                             if (Directory.Exists(candidate) && !paths.Contains(candidate)) paths.Add(candidate);
                         eng.SetSearchPaths(paths);
                     }
@@ -249,24 +261,39 @@ namespace Horizun.Revit.Commands
             (new Regex(@"(?<!\w)doc\s*\.\s*Delete\s*\(", RegexOptions.Compiled),
              "horizun_delete_verified",
              "deletes elements and confirms they are actually gone afterwards."),
-            (new Regex(@"\b(RoutingPreferenceManager|ConduitSizeSettings|CableTraySizes|DuctSizeSettings)\b|\.(AddSize|RemoveSize)\s*\(", RegexOptions.Compiled),
-             "horizun_mep_routing",
-             "reads and edits routing rules and size catalogs, and resizes runs to catalog sizes, re-reading each after commit."),
             (new Regex(@"\b(LinearArray|RadialArray)\s*\.\s*(Create|ArrayElements?WithoutAssociation)\s*\(", RegexOptions.Compiled),
              "horizun_transform_elements",
              "operation=\"array_linear\" / \"array_radial\" arrays elements and re-reads every copy at its formula position."),
             (new Regex(@"\bRailing\s*\.\s*Create\s*\(", RegexOptions.Compiled),
              "horizun_create_railing",
              "creates a railing on a stair/ramp or along a path and re-reads its type, host and path."),
+            (new Regex(@"\bWallSweep\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_wall_sweep",
+             "creates a wall sweep/reveal type from a profile and places sweeps on walls at a height, re-reading host, distance and side."),
+            (new Regex(@"\b(NewSlabEdge|NewFascia|NewGutter)\s*\(", RegexOptions.Compiled),
+             "horizun_wall_sweep",
+             "operation=\"read\" with host_id lists a floor's or roof's edges as stable references and operation=\"place_edge\" makes the slab edge, fascia or gutter on the edges named, re-reading class, type and host."),
+            (new Regex(@"\.CropBox\s*=|\bCropBox(Active|Visible)\s*=|AnnotationCropOffset\s*=", RegexOptions.Compiled),
+             "horizun_view_crop",
+             "sets a view's crop from a model rectangle, elements or a room (rotated views included), annotation crop offsets and the crop switches, re-reading the crop after commit."),
+            (new Regex(@"\bJoinGeometryUtils\s*\.\s*(JoinGeometry|UnjoinGeometry|SwitchJoinOrder)\s*\(", RegexOptions.Compiled),
+             "horizun_join_geometry",
+             "joins, unjoins or switches who cuts between walls, floors, framing, columns and foundations (first_cuts, priority or keep_revit), re-reading the join, the cutting element and the shared volume (0 after a join)."),
+            (new Regex(@"\b(JoinGeometryUtils\s*\.\s*(GetJoinedElements|IsCuttingElementInJoin)|InstanceVoidCutUtils\s*\.\s*(GetCuttingVoidInstances|GetElementsBeingCut)|SolidSolidCutUtils\s*\.\s*Get\w+|get_ElementsAtJoin)\s*\(", RegexOptions.Compiled),
+             "horizun_query_relations",
+             "read-only: what an element is joined to, cut by, cutting, hosted by, hosting and near (neighbors within radius_mm), with category and relation type; unreadable relations are named."),
+            (new Regex(@"\.\s*Volume\b|\bPlanarFace\b|\.\s*FaceNormal\b|\.\s*get_BoundingBox\s*\(", RegexOptions.Compiled),
+             "horizun_measure_geometry",
+             "read-only: solid_volume, section_profile (e.g. a 300x500 beam), bounding_box, end_points and face_normals of ids or a selector; what cannot be read is unreadable, never 0."),
+            (new Regex(@"\bSetBoxCenter\s*\(", RegexOptions.Compiled),
+             "horizun_sheet_layout",
+             "moves a viewport by its crop (or box) centre or corner in paper mm and lays out a sheet's viewports in rows, re-reading positions, overlaps and the usable area after commit."),
             (new Regex(@"\b(AddGridLine|AddMullions|ChangePanelType)\s*\(", RegexOptions.Compiled),
              "horizun_manage_curtain",
              "edits curtain grid lines, mullions and panel types and re-reads the committed grid."),
             (new Regex(@"\b(DrawPoint|AddPoint|DrawSplitLine|AddSplitLine|ModifySubElement|ResetSlabShape)\s*\(", RegexOptions.Compiled),
              "horizun_slab_shape",
              "edits a floor or roof shape and re-reads every touched vertex elevation."),
-            (new Regex(@"\bIFCExportOptions\s*\(", RegexOptions.Compiled),
-             "horizun_deliver_ifc",
-             "exports the IFC with explicit options and re-reads the file: header, IDS on the file, mapped property sets, optional BCF."),
             (new Regex(@"\b(CreatedPhaseId|DemolishedPhaseId)\s*=(?!=)|\bPhaseFilter\s*\.\s*Create\s*\(", RegexOptions.Compiled),
              "horizun_manage_phases",
              "operation=\"set_element_phases\" / \"create_phase_filter\" set phases and phase filters and re-read them."),
@@ -291,9 +318,6 @@ namespace Horizun.Revit.Commands
             (new Regex(@"\.\s*SetUnits\s*\(|\bSetProjectPosition\s*\(", RegexOptions.Compiled),
              "horizun_manage_units",
              "operation=set / base_points writes units or shared coordinates and re-reads them after commit."),
-            (new Regex(@"\bElectricalSystem\s*\.\s*Create\s*\(|\bSelectPanel\s*\(", RegexOptions.Compiled),
-             "horizun_electrical",
-             "creates circuits and assigns panels, re-reading members and panel after commit."),
         };
 
         /// <summary>
@@ -316,6 +340,8 @@ namespace Horizun.Revit.Commands
             // be the reason a run does not happen.
             string scanned = PythonTokenMask.Mask(GetEngine(), code)
                              ?? PythonSourceMask.StripCommentsAndStrings(code);
+            foreach (string tool in PythonSourceMask.S22Alternatives(scanned))
+                advisories.Add("For the corresponding read consider " + tool + ": audit_model operation=warnings, measure_geometry measures=[summary], or query_planimetry modes=placements/views. These reads do not perform script writes; check coverage before substituting.");
             foreach (var overlap in TypedOverlaps)
             {
                 if (overlap.Pattern.IsMatch(scanned))
@@ -330,7 +356,34 @@ namespace Horizun.Revit.Commands
             return advisories;
         }
 
+        // True once this call has crossed the point of no return: the script is about to run,
+        // or has been handed to the async queue. A refusal BEFORE that point is stamped
+        // RejectedBeforeRun so the dispatcher gives the idempotency key back (CT-P1-5b).
+        // Per thread and restored on exit, because Execute can be re-entered by the async path.
+        [ThreadStatic] private static bool s_runBegan;
+
         public CommandResult Execute(UIApplication app, string paramsJson)
+        {
+            bool outerRunBegan = s_runBegan;
+            s_runBegan = false;
+            try
+            {
+                CommandResult result = ExecuteCore(app, paramsJson);
+                if (result != null && !result.Success && !s_runBegan) result.AsRejectedBeforeRun();
+                return result;
+            }
+            catch (Exception ex)
+            {
+                var detail = ErrorCodes.Detail(ErrorCodes.ErrorInterno, ex.GetType().Name);
+                detail["internal_trace"] = PythonInternalTrace.FromException(ex);
+                var result = CommandResult.FailWithDetail("Internal Python bridge error: " + ex.GetType().Name, detail);
+                if (!s_runBegan) result.AsRejectedBeforeRun();
+                return result;
+            }
+            finally { s_runBegan = outerRunBegan; }
+        }
+
+        private CommandResult ExecuteCore(UIApplication app, string paramsJson)
         {
             // Checked HERE as well as in the server. The two halves ship separately, so a
             // stale server that still advertises this tool must not be able to run code on
@@ -347,13 +400,19 @@ namespace Horizun.Revit.Commands
             if (!Horizun.Revit.Core.Settings.ExecutePythonEnabled)
             {
                 Log.Warn("execute_python REFUSED: disabled in settings");
-                return CommandResult.Fail(Horizun.Revit.Core.Settings.ExecutePythonRefusal());
+                return CommandResult.FailWithDetail(Horizun.Revit.Core.Settings.ExecutePythonRefusal(),
+                    ErrorCodes.Detail(ErrorCodes.PermisoPythonRequerido, extra: new JObject
+                    {
+                        ["write_started"] = false, ["changes_applied"] = false, ["transaction_status"] = "not_started"
+                    }));
             }
 
             JObject request;
             bool runAsync;
             bool preflight;
             bool readOnly;
+            bool rehearsal;
+            bool documentationOnly;
             string idempotencyKey;
             try
             {
@@ -364,6 +423,14 @@ namespace Horizun.Revit.Commands
                 // rolled back, and prove afterwards that the model did not move. See
                 // Core/ReadOnlyPythonGuard.cs for what this can and cannot promise.
                 readOnly = request.Value<bool?>("read_only") ?? false;
+                // rehearsal=true IS read_only (the same always-rolled-back group, the same
+                // refusal of Save/Close/Open) plus the host's account of what the script
+                // changed while it ran. See Core/RehearsalRules.cs.
+                rehearsal = request.Value<bool?>("rehearsal") ?? false;
+                if (rehearsal) readOnly = true;
+                // documentation_only=true (4.2-a): the script may change views, sheets, annotation
+                // and elements a view owns, and nothing else. Enforced on the DIFF of the run.
+                documentationOnly = request.Value<bool?>("documentation_only") ?? false;
                 idempotencyKey = request.Value<string>("idempotency_key");
             }
             catch (Exception ex)
@@ -382,8 +449,19 @@ namespace Horizun.Revit.Commands
             if (source.Error != null) return CommandResult.Fail(source.Error);
             string responseMode = request.Value<string>("response_mode") ?? "compact";
             if (responseMode != "compact" && responseMode != "full") return CommandResult.Fail("response_mode must be compact or full. Nothing ran.");
-            int outputLimit = request.Value<int?>("max_output_chars") ?? MaxScriptChars;
-            if (outputLimit < 1024 || outputLimit > MaxScriptChars) return CommandResult.Fail("max_output_chars must be between 1024 and " + MaxScriptChars + ". Nothing ran.");
+            string responseShape = request.Value<string>("response") ?? "normal";
+            if (responseShape != "normal" && responseShape != "output_only") return CommandResult.Fail("response must be normal or output_only. Nothing ran.");
+            double? timeoutLimit;
+            string timeoutError;
+            if (!PythonRunControl.TryParseLimit(request["timeout_s"], out timeoutLimit, out timeoutError))
+                return CommandResult.Fail(timeoutError);
+            double? deadlineLimit;
+            if (!PythonRunControl.TryParseDeadline(request["deadline_s"], timeoutLimit, out deadlineLimit, out timeoutError))
+                return CommandResult.FailCoded(ErrorCodes.EntradaInvalida, timeoutError);
+            // Page size AND threshold of __output__: max_output_chars when sent (an explicit null counts as omitted), else 20,000.
+            // Above it the output is saved whole and only page 1 comes back (Core/OutputPages.cs, ScriptOutput.cs).
+            int? askedOutput = request["max_output_chars"] == null || request["max_output_chars"].Type == JTokenType.Null ? (int?)null : request.Value<int?>("max_output_chars");
+            int outputPageChars = askedOutput.HasValue ? Math.Max(1024, Math.Min(Horizun.Contracts.Contract.MaxScriptTextChars, askedOutput.Value)) : OutputPages.PageChars;
             string code = source.Code;
 
             if (code.Length > MaxScriptChars)
@@ -399,12 +477,18 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail(
                     "preflight=true cannot be combined with run_async=true: a preflight executes nothing, so " +
                     "there is nothing to queue. Preflight synchronously, then submit the real run. Nothing ran.");
-            if (readOnly && runAsync)
+            if (documentationOnly && (readOnly || runAsync))
                 return CommandResult.Fail(
-                    "read_only=true cannot be combined with run_async=true: the read-only TransactionGroup is " +
-                    "opened and rolled back around a SINGLE synchronous run of this handler, and there is no " +
-                    "place in the async dispatcher today that would open and roll it back for a queued job. " +
-                    "Run it synchronously, or drop read_only if the queued script is meant to write. Nothing ran.");
+                    "documentation_only=true cannot be combined with " + (readOnly ? "read_only/rehearsal" : "run_async") + ": " +
+                    (readOnly
+                        ? "read_only always rolls back everything, documentation_only keeps what is documentation. Choose one."
+                        : "the documentation-only TransactionGroup is judged and closed around a SINGLE synchronous run of this handler.") +
+                    " Nothing ran.");
+            if (readOnly && runAsync)
+            {
+                JObject advice = PythonSourceSnapshot.AsyncReadOnlyRefusal(request);
+                return CommandResult.FailCoded(ErrorCodes.EntradaInvalida, (string)advice["reason"], extra: advice);
+            }
 
             // Computed before the gate and before anything is queued, and carried on the
             // response either way: a script that duplicates a typed command's own API
@@ -427,7 +511,7 @@ namespace Horizun.Revit.Commands
             List<string> maskedSources = null;
             Func<List<string>> masked = () => maskedSources ?? (maskedSources = rawSources
                 .Select(s => PythonTokenMask.Mask(GetEngine(), s) ?? PythonSourceMask.StripCommentsAndStrings(s)).ToList());
-            List<string> readOnlyViolations = readOnly
+            List<string> readOnlyViolations = (readOnly || documentationOnly)
                 ? masked().SelectMany(ReadOnlyPythonGuard.Violations).Distinct().ToList()
                 : new List<string>();
 
@@ -444,7 +528,7 @@ namespace Horizun.Revit.Commands
             // no longer run through this tool, because there is no way to name a target
             // that does not exist without also creating a hole. That is the cost, and
             // it is smaller than an arbitrary write landing in the wrong building.
-            GateResult gate = DocumentGate.ForMutation(app, request, Name);
+            GateResult gate = readOnly ? DocumentGate.ForReadOnlyScript(app, request, Name) : DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
 
             // The owner's Synchronize-with-central switch covers scripts as well as
@@ -467,6 +551,34 @@ namespace Horizun.Revit.Commands
                     });
             }
 
+            // ---- compatibility with THIS Revit and Python 3, before anything runs ----
+            // (Core/PythonCompat.cs). What is certainly wrong and certainly fixable is
+            // rewritten on the same line and reported; what cannot be adapted is refused
+            // here with the exact correction - preflight or not, nothing has run.
+            // `code` stays the submitted source (hashes, idempotency, the async queue);
+            // `runCode` is what compiles and executes.
+            int revitYear = RevitYearOf(app);
+            PythonCompat.Result compat = PythonCompat.Apply(code, revitYear, BuiltInCategoryNames());
+            string runCode = compat.Code;
+            List<string> autoTransactionMarkers = PythonCompat.AutoTransactionMarkers(code);
+            if (compat.Errors.Count > 0)
+            {
+                var fixes = compat.Errors.OfType<JObject>()
+                    .Select(e => "line " + (int?)e["line"] + ": " + (string)e["fix"]).ToList();
+                Log.Warn("execute_python REFUSED before running: " + compat.Errors.Count + " compatibility error(s)");
+                return CommandResult.FailWithDetail(
+                    "The script cannot run on Revit " + revitYear + " as written, so nothing ran and the model was " +
+                    "not touched. " + string.Join(" ", fixes),
+                    new JObject
+                    {
+                        ["code"] = "python_compat_refused", ["tool"] = Name,
+                        ["executed"] = false, ["write_started"] = false, ["changes_applied"] = false,
+                        ["transaction_status"] = "not_started",
+                        ["compat_errors"] = compat.Errors,
+                        ["compat_rewrites"] = compat.Rewrites
+                    });
+            }
+
             // ---- preflight: validate everything checkable, execute NOTHING. ----
             //
             // Runs AFTER the same gate as the real run, so a preflight that passes has
@@ -477,17 +589,18 @@ namespace Horizun.Revit.Commands
             if (preflight)
             {
                 var warnings = new JArray();
-                foreach (JToken advisory in typedAlternatives) warnings.Add(advisory);
+                warnings.Add(PythonSourceSnapshot.PreflightTimeoutAdvice(readOnly));
+                foreach (var advisory in PythonInternalTrace.Advisories(typedAlternatives).Children()) warnings.Add(advisory);
                 if (PythonCollectorHazard.HasViewLinkOverload(code))
                     warnings.Add("FilteredElementCollector(doc, viewId, linkId) can terminate Revit in affected builds. " +
-                        "Use horizun_manage_links operation=visible_elements to inspect the link without that overload; " +
+                        "Use horizun_manage_links (Pro edition) operation=visible_elements to inspect the link without that overload; " +
                         "preflight has not executed this script.");
 
-                if (readOnly && readOnlyViolations.Count > 0)
+                if ((readOnly || documentationOnly) && readOnlyViolations.Count > 0)
                     warnings.Add(
-                        "read_only=true would be REFUSED for this script: it mentions " +
+                        (documentationOnly ? "documentation_only=true" : "read_only=true") + " would be REFUSED for this script: it mentions " +
                         string.Join(", ", readOnlyViolations) + ", which write outside any transaction and " +
-                        "escape a TransactionGroup rollback. Remove the call, or drop read_only.");
+                        "escape a TransactionGroup rollback. Remove the call, or drop " + (documentationOnly ? "documentation_only" : "read_only") + ".");
 
                 if (code.IndexOf("Transaction", StringComparison.Ordinal) >= 0 &&
                     code.IndexOf("finally", StringComparison.Ordinal) < 0)
@@ -502,19 +615,9 @@ namespace Horizun.Revit.Commands
                         "completed_unverified - it can succeed but cannot prove it. Assign the structured " +
                         "evidence shape and re-read what you wrote: " + ScriptEvidence.ContractShape);
 
-                string syntaxError = null;
-                try
-                {
-                    ScriptSource compileOnly = SourceFor(GetEngine(), code, source.Path);
-                    foreach (var include in source.Includes)
-                        SourceFor(GetEngine(), (string)include["code"], (string)include["path"]).Compile();
-                    compileOnly.Compile(); // parse and compile; nothing executes
-                }
-                catch (Exception ex)
-                {
-                    try { syntaxError = GetEngine().GetService<ExceptionOperations>().FormatException(ex); }
-                    catch { syntaxError = ex.Message; }
-                }
+                ScriptPrecompile.Failure preflightCompile = ScriptPrecompile.Check(GetEngine(), runCode, source.Path,
+                    source.Includes.Select(i => new KeyValuePair<string, string>((string)i["code"], (string)i["path"])));
+                string syntaxError = preflightCompile?.Formatted;
 
                 string scriptSha;
                 using (var sha = SHA256.Create())
@@ -528,25 +631,32 @@ namespace Horizun.Revit.Commands
                 {
                     ["mode"] = "preflight",
                     ["executed"] = false,
-                    ["would_run"] = syntaxError == null && !(readOnly && readOnlyViolations.Count > 0),
+                    ["would_run"] = syntaxError == null && !((readOnly || documentationOnly) && readOnlyViolations.Count > 0),
+                    ["documentation_only"] = documentationOnly,
                     ["source"] = source.Describe(),
                     ["read_only"] = readOnly,
                     ["checks"] = new JObject
                     {
                         ["permission"] = "ok",
-                        ["target_document"] = "ok - matches the active document",
+                        ["target_document"] = string.IsNullOrWhiteSpace(ReadDocumentRules.Target(request)) ? "not required (read_only/rehearsal) - the active document is read" : "ok - matches the active document",
                         ["size"] = code.Length + " of " + MaxScriptChars + " chars",
                         ["source"] = source.Path == null
                             ? "ok - inline"
                             : "ok - read from " + source.Path + " as " + source.Encoding,
                         ["syntax"] = syntaxError == null ? "ok" : "failed",
-                        ["read_only_scan"] = !readOnly
+                        ["read_only_scan"] = !(readOnly || documentationOnly)
                             ? "not requested"
                             : (readOnlyViolations.Count == 0
                                 ? "ok - no Save/SaveAs/Close/open-document call found in the source"
                                 : "WOULD BE REFUSED: " + string.Join(", ", readOnlyViolations))
                     },
                     ["syntax_error"] = syntaxError,
+                    ["advice"] = PythonErrorAdvice.Find(syntaxError, revitYear),
+                    ["syntax_error_summary"] = syntaxError == null ? null : ScriptErrorSummary.Build(syntaxError, preflightCompile.SourceCode, preflightCompile.SourcePath),
+                    // What the bridge will change before running (same line numbers), and
+                    // whether it will run the script inside a transaction of its own.
+                    ["compat_rewrites"] = compat.Rewrites,
+                    ["auto_transaction"] = AutoTransactionReport(autoTransactionMarkers, readOnly),
                     // Named for what it actually is. It is the hash of the SOURCE that was
                     // submitted, and nothing more - not a fingerprint of everything that runs.
                     ["submitted_source_sha256"] = scriptSha,
@@ -581,9 +691,9 @@ namespace Horizun.Revit.Commands
             // anything executes or queues: a Save() this scan caught is a real file on
             // disk that no TransactionGroup rollback could undo, so this has to happen
             // BEFORE the script runs, not as a violation reported afterwards.
-            if (readOnly && readOnlyViolations.Count > 0)
+            if ((readOnly || documentationOnly) && readOnlyViolations.Count > 0)
                 return CommandResult.Fail(
-                    "read_only=true REFUSES to run this script: it mentions " + string.Join(", ", readOnlyViolations) +
+                    (documentationOnly ? "documentation_only=true" : "read_only=true") + " REFUSES to run this script: it mentions " + string.Join(", ", readOnlyViolations) +
                     ". These write OUTSIDE any transaction - a TransactionGroup rollback undoes MODEL writes, not " +
                     "a file Save() already put on disk or a document Close()/open that already changed the " +
                     "session. read_only can only guarantee the MODEL is unchanged, never the filesystem or the " +
@@ -654,12 +764,16 @@ namespace Horizun.Revit.Commands
                     // whatever this object omits, the deferred script never sees.
                     ["arguments"] = request["arguments"]?.DeepClone(),
                     ["response_mode"] = request["response_mode"],
-                    ["max_output_chars"] = outputLimit,
+                    ["response"] = responseShape,
+                    ["timeout_s"] = request["timeout_s"]?.DeepClone(),
+                    ["deadline_s"] = request["deadline_s"]?.DeepClone(),
+                    ["max_output_chars"] = askedOutput.HasValue ? (JToken)outputPageChars : JValue.CreateNull(),
                     // The dispatcher runs the script itself; a second async hop would
                     // queue it forever.
                     ["helpers_version"] = 1
                 };
 
+                s_runBegan = true; // queued: from here on a failure is a record of an attempt, not a refusal
                 Job asyncJob = null;
                 IdempotencyDecision decision;
                 try
@@ -811,8 +925,42 @@ namespace Horizun.Revit.Commands
                      code.Length + " chars");
 
             JObject warningsBefore = PythonHostObservations.Warnings(doc);
+            // Group members a moving script may silently fail to move (Core/PythonGroupMoveWatch.cs).
+            PythonGroupMoveWatch groupMoves = PythonGroupMoveWatch.Start(doc, runCode);
             ScriptEngine engine = GetEngine();
+
+            // COMPILE BEFORE ANYTHING CAN TOUCH THE MODEL. Execute() compiles lazily, so a
+            // script with a typo used to get as far as the read-only TransactionGroup, the
+            // prelude and the job record before the parser said no - and the caller saw an
+            // exception with no cause. Compile() parses and compiles and runs nothing, so a
+            // syntax error is answered here, as python_error_sintaxis, with no transaction
+            // opened and the document untouched.
+            ScriptPrecompile.Failure compile = ScriptPrecompile.Check(engine, runCode, source.Path,
+                source.Includes.Select(i => new KeyValuePair<string, string>((string)i["code"], (string)i["path"])));
+            if (compile != null)
+            {
+                Log.Warn("execute_python REFUSED before running: the script does not compile");
+                JObject compileSummary = ScriptErrorSummary.Build(compile.Formatted, compile.SourceCode, compile.SourcePath);
+                JObject compileDetail = ErrorCodes.ScriptFailureDetail(new JObject
+                    {
+                        ["code"] = "python_syntax_error", ["tool"] = Name,
+                        ["executed"] = false, ["write_started"] = false, ["changes_applied"] = false,
+                        ["transaction_status"] = "not_started"
+                    }, true, null, compile.ErrorType, false);
+                compileDetail["script_error"] = compileSummary;
+                if (compileSummary != null) compileDetail["error_help"] = PythonErrorHelpData.Build(compileSummary, compile.SourceCode);
+                JObject compileAdvice = PythonErrorAdvice.Find(compile.Formatted, revitYear, (int?)compileSummary?["line"]);
+                if (compileAdvice != null) compileDetail["advice"] = compileAdvice;
+                compileDetail["compat_rewrites"] = compat.Rewrites;
+                return CommandResult.FailWithDetail(
+                    (ScriptErrorSummary.Render(compileSummary) ?? "") +
+                    "The script does not compile, so nothing ran and the model was not touched: " + compile.Formatted,
+                    compileDetail);
+            }
+
+            s_runBegan = true; // compiled: the script is about to run
             ScriptScope scope = engine.CreateScope();
+            scope.SetVariable("__hz_import_revit", true);
             scope.SetVariable("uiapp", app);
             scope.SetVariable("app", app.Application);
             // pyRevit and RevitPythonShell both call the UIApplication `__revit__`, so it
@@ -863,17 +1011,29 @@ namespace Horizun.Revit.Commands
             // which channel carries the answer: a synchronous run replies over the pipe,
             // so an unopenable record costs a progress log and nothing else, and failing
             // the command over it would be the worse trade.
-            Job job = Job.Ambient ?? Job.StartBestEffort(Name);
+            // Synchronously the record is the CALL's (Core/CallProgress.cs): obtained under the
+            // lock a timeout takes, so the job_id a timed-out caller is handed is the record
+            // this script's checkpoint() calls write to, and the dispatcher closes it.
+            CallProgress call = Job.Ambient == null ? CallProgress.Current : null;
+            Job job = Job.Ambient ?? (call != null ? call.OpenForCommand(() => Job.StartBestEffort(Name)) : null) ?? Job.StartBestEffort(Name);
             // Whoever OPENED the record closes it. On the async path the dispatcher owns
             // it and writes the result before the finish line; finishing here as well
             // would put two finish events in one record and land the result after the
             // close, which is the ordering job_status is allowed to rely on.
-            bool ownsJob = Job.Ambient == null;
+            bool ownsJob = Job.Ambient == null && !(call != null && ReferenceEquals(call.Record, job));
             // On the synchronous path the work starts the instant the record opens, so
             // the two happen together. On the async path the dispatcher marked it
             // running when it took the entry, and MarkRunning is idempotent - the first
             // transition is the true one.
             job.MarkRunning();
+            RequestGate.AttachProgress(() => new JObject
+            {
+                ["job_id"] = job.Id, ["checkpoint_count"] = job.Checkpoints,
+                ["last_checkpoint"] = job.LastCheckpoint, ["record_complete"] = job.RecordIsComplete,
+                ["last_done"] = job.LastDone, ["last_total"] = job.LastTotal,
+                ["host_verified"] = false,
+                ["means"] = "Script checkpoints report progress, not committed or verified model changes."
+            });
             scope.SetVariable("__hz_job", job);
 
             // THE WATCHER OF THIS COMMAND, borrowed from the dispatcher (5.25). Two things
@@ -916,7 +1076,12 @@ namespace Horizun.Revit.Commands
             string printedCaptureError = null;
             object output = null;
             string error = null;
+            Exception scriptException = null;
+            string failurePhase = "bridge_prologue";
             bool leftModifiable = false;
+            Transaction autoTransaction = null;
+            string autoTransactionOutcome = null;
+            JArray transactionsClosed = new JArray();
             PythonStreamRestorer streamRestorer = PythonStreamRestorer.Capture(engine);
 
             // read_only=true: wrap the whole run in a TransactionGroup this handler
@@ -934,8 +1099,53 @@ namespace Horizun.Revit.Commands
             {
                 try { readOnlyModifiedBefore = doc.IsModified; } catch { }
                 CheapCensus(doc, out readOnlyInstancesBefore, out readOnlyTypesBefore);
-                readOnlyGroup = new TransactionGroup(doc, "Horizun: read-only python (always rolled back)");
+                readOnlyGroup = new TransactionGroup(doc, rehearsal
+                    ? "Horizun: python rehearsal (always rolled back)"
+                    : "Horizun: read-only python (always rolled back)");
                 readOnlyGroup.Start();
+            }
+            RehearsalTracker rehearsalTracker = RehearsalTracker.Start(app.Application, doc);
+
+            // THE STOP SWITCH of this run. The time limit counts from HERE - when the script
+            // starts running on the UI thread, not while it waited in the queue - and a
+            // cancellation from another thread (the control message for this job id) reaches
+            // the script through the same object, at its next checkpoint()/safe_point().
+            var runControl = new PythonRunControl(deadlineLimit ?? timeoutLimit);
+            // INT-7 m-4: the owner's sync grants as they are BEFORE the script; after it, a difference is REPORTED (settings_changed), never undone.
+            Horizun.Revit.Core.Settings.SyncGrantPhoto grantsBefore = Horizun.Revit.Core.Settings.PhotoSyncGrants();
+            JArray settingsChanged = null;
+            PythonRunRegistry.Register(job.Id, runControl);
+            // A synchronous call is cancelled by its request id, not by a job id its caller never saw (review M2).
+            string wireKey = PythonRunRegistry.WireKey(RequestGate.CurrentWireId);
+            if (wireKey != null) PythonRunRegistry.Register(wireKey, runControl);
+            scope.SetVariable("__hz_control", runControl);
+
+            // documentation_only=true: the same kind of group, but KEPT (assimilated) when the
+            // diff of the run is documentation and rolled back, verified, when it is not.
+            TransactionGroup docGroup = null;
+            DocumentationOnlyTracker docTracker = null;
+            if (documentationOnly)
+            {
+                docGroup = new TransactionGroup(doc, "Horizun: documentation-only python");
+                if (docGroup.Start() != TransactionStatus.Started)
+                    throw new InvalidOperationException("Documentation-only transaction group did not start; script did not run.");
+                docTracker = DocumentationOnlyTracker.Start(app.Application, doc);
+            }
+            // A script that saves, closes, opens, synchronizes or (un)loads a link cannot run
+            // inside a TransactionGroup: Revit refuses those calls while any transaction phase
+            // started by an API client is open ("Operation is not permitted when there is any
+            // open transaction phase"). Such a script runs WITHOUT the group, and the reply says
+            // so: a stop at a checkpoint then has no group to roll back.
+            List<string> groupEscapingCalls = (!readOnly && !documentationOnly)
+                ? masked().SelectMany(ReadOnlyPythonGuard.Violations).Distinct().ToList()
+                : new List<string>();
+            // documentation_only has its own group, opened above: only a normal write that
+            // calls nothing Revit refuses inside a group opens this one.
+            if (!readOnly && !documentationOnly && groupEscapingCalls.Count == 0)
+            {
+                docGroup = new TransactionGroup(doc, "Horizun: python");
+                if (docGroup.Start() != TransactionStatus.Started)
+                    throw new InvalidOperationException("Python transaction group did not start; script did not run.");
             }
 
             try
@@ -944,22 +1154,71 @@ namespace Horizun.Revit.Commands
                 // capture. It is Python, so it lives in ScriptPrelude.cs where a real
                 // engine parses it in the test suite - a syntax error here breaks every
                 // execute_python call on the machine and no C# compiler would see it.
+                // The module is shipped beside the trusted recipes; importing it here
+                // makes the same version guards available as a global in caller scripts.
+                engine.Execute("import hz_compat", scope);
                 engine.Execute(ScriptPrelude.Prologue, scope);
 
+                failurePhase = "include";
                 foreach (var include in source.Includes)
                     SourceFor(engine, (string)include["code"], (string)include["path"]).Execute(scope);
 
-                ScriptSource script = SourceFor(engine, code, source.Path);
+                ScriptSource script = SourceFor(engine, runCode, source.Path);
+                // A script that WRITES without opening any transaction would die on its
+                // first write ("Attempt to modify the model outside of transaction").
+                // The bridge runs it inside one transaction it owns: committed when the
+                // script ends cleanly, rolled back when it throws (Core/PythonCompat.cs
+                // AutoTransactionMarkers says which scripts qualify).
+                if (autoTransactionMarkers.Count > 0 && !doc.IsModifiable)
+                {
+                    failurePhase = "automatic_transaction_start";
+                    autoTransaction = new Transaction(doc, "Horizun: script (automatic transaction)");
+                    if (autoTransaction.Start() != TransactionStatus.Started)
+                    {
+                        autoTransaction.Dispose();
+                        autoTransaction = null;
+                        autoTransactionOutcome = "not_started";
+                    }
+                }
+                failurePhase = "script";
                 script.Execute(scope);
                 scope.TryGetVariable("__output__", out output);
+                if (autoTransaction != null)
+                {
+                    failurePhase = "automatic_transaction_commit";
+                    TransactionStatus committed = autoTransaction.Commit();
+                    autoTransactionOutcome = committed == TransactionStatus.Committed ? "committed" : "not_committed:" + committed;
+                    if (committed != TransactionStatus.Committed)
+                        throw new InvalidOperationException(
+                            "The bridge's automatic transaction did not report Committed (status " + committed + "). " +
+                            "Inspect the transaction outcome; the final state is not asserted by this exception.");
+                }
             }
             catch (Exception ex)
             {
+                if (autoTransaction != null)
+                {
+                    try
+                    {
+                        if (autoTransaction.GetStatus() == TransactionStatus.Started)
+                        {
+                            Guard.RollbackResult rolled = Guard.RollBack(autoTransaction);
+                            autoTransactionOutcome = rolled.Confirmed ? "rolled_back" : "rollback_unconfirmed:" + rolled.StatusName;
+                        }
+                    }
+                    catch { autoTransactionOutcome = "rollback_unconfirmed"; }
+                }
+                scriptException = ex;
                 try { error = engine.GetService<ExceptionOperations>().FormatException(ex); }
                 catch { error = ex.Message; }
             }
             finally
             {
+                try { settingsChanged = Horizun.Revit.Core.Settings.SyncGrantsChangedSince(grantsBefore); } catch { }
+                // A script of an async plan ends without ending the plan's job (its stop key stays); any other script's key is released (INT-7 m-e).
+                PythonRunRegistry.ChildEnded(job.Id);
+                // Not Unregister: the request closes later (RequestGate.Complete), and a cancel in between is "finished" (m-6).
+                if (wireKey != null) PythonRunRegistry.Finish(wireKey);
                 try
                 {
                     engine.Execute(ScriptPrelude.Epilogue, scope);
@@ -998,9 +1257,27 @@ namespace Horizun.Revit.Commands
                 //
                 // So: detect it, say so, and make the command FAIL. A caller told the truth
                 // can close Revit or undo by hand; a caller told "executed: true" cannot.
+                //
+                // Since the compatibility pass every Transaction the script constructs is
+                // tracked (_hz_new_tx), so the ones it left Started are rolled back here,
+                // innermost first, and named. The document is clean again; the script's
+                // work in them is still lost, which is why it still fails (below).
+                try { autoTransaction?.Dispose(); } catch { }
                 try
                 {
-                    if (doc != null && doc.IsModifiable)
+                    engine.Execute("__hz_rollback_open()", scope);
+                    object closedJson;
+                    engine.Execute("import json as __hz_j2\n__hz_tx_closed_json = __hz_j2.dumps(__hz_tx_closed)", scope);
+                    if (scope.TryGetVariable("__hz_tx_closed_json", out closedJson) && closedJson != null)
+                        transactionsClosed = JArray.Parse(closedJson.ToString());
+                }
+                catch (Exception ex) { Log.Error("execute_python: could not roll back the script's open transactions", ex); }
+                try
+                {
+                    // A script that CLOSED the document it was aimed at (it activated another one
+                    // first) leaves a dead handle: IsModifiable would throw and read as "left a
+                    // transaction open". A closed document has no open transaction.
+                    if (doc != null && doc.IsValidObject && doc.IsModifiable)
                     {
                         leftModifiable = true;
                         Log.Error("execute_python left the document MODIFIABLE - an open transaction it owns", null);
@@ -1036,10 +1313,27 @@ namespace Horizun.Revit.Commands
                         "transaction opened by other code. Do not rely on Revit's cleanup - it is a host behaviour " +
                         "this command observes, not a guarantee it offers. Commit or RollBack in a finally.";
 
+            // Transactions the script left open and the bridge rolled back at the end: the
+            // document is clean, the work in them is lost - a failure, named precisely.
+            var leftOpen = transactionsClosed.OfType<JObject>()
+                .Where(t => ((string)t["why"] ?? "").StartsWith("end of script", StringComparison.Ordinal)).ToList();
+            if (leftOpen.Count > 0 && error == null)
+                error = "The script finished with " + leftOpen.Count + " transaction(s) still open (" +
+                        string.Join(", ", leftOpen.Select(t => (string)t["kind"] + " '" + (string)t["name"] + "'")) +
+                        "). The bridge rolled them back, so the document is usable, but WHAT THEY WROTE WAS NOT KEPT. " +
+                        "Commit them in the script - `with horizun.transaction('what it does'):` commits on success " +
+                        "and rolls back on error.";
+
             // read_only's own finish line. Runs AFTER the leftModifiable check above, on
             // purpose: rolling back a TransactionGroup while a Transaction it contains is
             // still open is not something this add-in will attempt, so leftModifiable and
             // rolled_back are mutually exclusive by construction, never raced.
+            if (runControl.LimitSeconds.HasValue && runControl.Kind == null) runControl.Poll();
+            bool interrupted = error != null && runControl.Kind != null &&
+                               (error.IndexOf("HorizunInterrupted", StringComparison.Ordinal) >= 0 ||
+                                error.IndexOf("HorizunCancelled", StringComparison.Ordinal) >= 0);
+            groupMoves?.Capture(doc);
+            rehearsalTracker?.StopBeforeRollback();
             JObject readOnlyCheck = readOnly
                 ? FinishReadOnly(doc, readOnlyGroup, leftModifiable, readOnlyModifiedBefore, readOnlyInstancesBefore, readOnlyTypesBefore)
                 : null;
@@ -1050,7 +1344,38 @@ namespace Horizun.Revit.Commands
                 error = error == null ? readOnlyNote : error + " " + readOnlyNote;
             }
 
-            if (ownsJob) job.Finish(error == null ? "ok" : "failed", error);
+            // An interruption is its own outcome, not a plain failure: the run was stopped on
+            // purpose at a safe point, and its open transactions were rolled back.
+            bool normalGroupRolledBack = false;
+            if (!readOnly && !documentationOnly && docGroup != null)
+            {
+                try
+                {
+                    if (interrupted || leftModifiable)
+                        normalGroupRolledBack = Guard.RollBack(docGroup).Confirmed;
+                    else if (docGroup.Assimilate() != TransactionStatus.Committed)
+                        error = (error ?? "") + " Python transaction group did not assimilate.";
+                }
+                catch (Exception ex) { error = (error ?? "") + " Python transaction group could not close: " + ex.Message; }
+            }
+
+            // documentation_only's own finish line: judge the diff of the run while the group is
+            // still open, then keep it (assimilate) or roll it back and prove the rollback.
+            JObject documentationOnlyCheck = null;
+            bool documentationViolation = false;
+            if (documentationOnly)
+            {
+                documentationOnlyCheck = FinishDocumentationOnly(docGroup, docTracker, leftModifiable, interrupted, error != null, out string docOnlyFailure);
+                if (docOnlyFailure != null)
+                {
+                    documentationViolation = true;
+                    error = error == null ? docOnlyFailure : error + " " + docOnlyFailure;
+                }
+            }
+
+            if (ownsJob)
+                job.Finish(!interrupted ? (error == null ? "ok" : "failed")
+                                        : runControl.Kind == PythonRunControl.TimedOut ? "timed_out" : "cancelled_running", error);
             Log.Warn("execute_python " + (error == null ? "ok" : "FAILED") + " in " +
                      auditClock.ElapsedMilliseconds + " ms on '" + SafeTitle(doc) + "'" +
                      (leftModifiable ? " - LEFT THE DOCUMENT MODIFIABLE" : ""));
@@ -1068,13 +1393,31 @@ namespace Horizun.Revit.Commands
             // reason: the dialog record existed and never reached the program that needed
             // it. Here it is a field, on success and on failure both.
             JObject raised = RaisedBlock(watch);
+            JObject nonPreemptibleFailure = runControl.NotPreemptible(job.Checkpoints, timeoutLimit);
+            if (error != null && nonPreemptibleFailure != null) raised["not_preemptible"] = nonPreemptibleFailure;
             raised["stdout_capture_error"] = printedCaptureError == null
                 ? (JToken)null
                 : printedCaptureError;
 
             raised["warning_delta"] = PythonHostObservations.Delta(warningsBefore, PythonHostObservations.Warnings(doc));
+            if (settingsChanged != null) raised[Horizun.Revit.Core.Settings.SettingsChangedField] = settingsChanged;
             raised["read_only"] = readOnly;
             raised["read_only_check"] = readOnlyCheck;
+            raised["documentation_only"] = documentationOnly;
+            if (groupEscapingCalls.Count > 0)
+                raised["transaction_group"] = new JObject
+                {
+                    ["opened"] = false,
+                    ["reason"] = "the script calls an API that Revit refuses inside a transaction group",
+                    ["calls"] = new JArray(groupEscapingCalls),
+                    ["checkpoint_rollback"] = "unavailable: what the script committed stays committed"
+                };
+            if (documentationOnlyCheck != null) raised["documentation_only_check"] = documentationOnlyCheck;
+            bool groupRolled = readOnly ? readOnlyCheck?.Value<bool?>("rolled_back") == true
+                : documentationOnly ? (string)documentationOnlyCheck?["outcome"] == "rolled_back_interrupted" : normalGroupRolledBack;
+            JObject observedRollback = rehearsalTracker.Report(groupRolled);
+            JObject rehearsalReport = rehearsal ? observedRollback : null;
+            if (rehearsalReport != null) raised["rehearsal"] = rehearsalReport;
             if (error != null)
             {
                 raised["code"] = "python_execution_failed";
@@ -1082,7 +1425,80 @@ namespace Horizun.Revit.Commands
                 raised["write_started"] = null;
                 raised["changes_applied"] = null;
                 raised["transaction_status"] = leftModifiable ? "left_open" : "not_modifiable";
+                raised["compat_rewrites"] = compat.Rewrites;
+                raised["auto_transaction"] = AutoTransactionReport(autoTransactionMarkers, readOnly, autoTransactionOutcome);
+                raised["transactions_closed_by_bridge"] = transactionsClosed;
+                raised["failure_phase"] = failurePhase;
+                bool bridgeFailure = failurePhase == "bridge_prologue" || failurePhase.StartsWith("automatic_transaction_");
+                JObject scriptError = scriptException != null && !bridgeFailure ? ScriptErrorSummary.Build(error, runCode, source.Path) : null;
+                if ((string)scriptError?["type"] == "AttributeError" || (string)scriptError?["type"] == "NameError" ||
+                    ((string)scriptError?["type"] == "TypeError" &&
+                     ((string)scriptError?["message"] ?? "").StartsWith("expected ", StringComparison.Ordinal)) ||
+                    scriptError?["signature_check"] != null)
+                {
+                    // Diagnostics must never replace the original failure. Restrict
+                    // reflection to the Revit API assemblies already in this process.
+                    try
+                    {
+                        var assemblies = AppDomain.CurrentDomain.GetAssemblies().Where(a =>
+                        {
+                            string n = a.GetName().Name;
+                            return n == "RevitAPI" || n == "RevitAPIUI" || n == "RevitAPIIFC";
+                        });
+                        var apiTypes = ApiHelpRules.PublicTypes(assemblies);
+                        ScriptErrorSummary.AttachAttributeApiHelp(scriptError, apiTypes, app.Application.VersionNumber);
+                        ScriptErrorSummary.AttachEnumApiHelp(scriptError, runCode, apiTypes, app.Application.VersionNumber);
+                        ScriptErrorSummary.AttachNameApiHelp(scriptError, apiTypes, app.Application.VersionNumber);
+                        ScriptErrorSummary.AttachSignatureApiHelp(scriptError, apiTypes, app.Application.VersionNumber);
+                        ScriptErrorSummary.AttachExpectedTypeApiHelp(scriptError, apiTypes, app.Application.VersionNumber);
+                    }
+                    catch (Exception ex) { Log.Error("execute_python: API suggestion unavailable", ex); }
+                }
+                raised["script_error"] = scriptError;
+                if (scriptError != null) raised["error_help"] = PythonErrorHelpData.Build(scriptError, runCode);
+                if (scriptException != null && !bridgeFailure) PythonErrorAdvice.Attach(raised, error, revitYear);
+                // THE CAUSE AS DATA: the script's own error, the Revit API's, or a transaction
+                // Revit threw away. Never the message, only the code and the type NAME.
+                string revitApiType = RevitApiTypeOf(scriptException);
+                string scriptType = ErrorCodes.PythonTypeFromTraceback(error) ?? ErrorCodes.TypeNameOf(scriptException);
+                raised = ErrorCodes.ScriptFailureDetail(raised, scriptException is Microsoft.Scripting.SyntaxErrorException,
+                                                        revitApiType, scriptType, leftModifiable, bridgeFailure);
+                string interruptionText = "";
+                if (interrupted)
+                {
+                    var lineMatch = System.Text.RegularExpressions.Regex.Match(error ?? "", @"line\s+(\d+)");
+                    int lineNumber;
+                    raised["cancelled_at_checkpoint"] = RehearsalRules.CancellationReport(observedRollback,
+                        lineMatch.Success && int.TryParse(lineMatch.Groups[1].Value, out lineNumber) ? (int?)lineNumber : null,
+                        runControl.ElapsedWallSeconds);
+                    int autoRolled = autoTransactionOutcome == "rolled_back" ? 1 : 0;
+                    bool? groupRolledBack = (bool)raised["cancelled_at_checkpoint"]["rolled_back_verified"];
+                    raised["interrupted"] = runControl.Describe(
+                        job.LastCheckpoint,
+                        leftModifiable ? "left_open" : (autoRolled + transactionsClosed.Count > 0 ? "rolled_back" : "none_open_at_stop"),
+                        autoRolled + transactionsClosed.Count,
+                        readOnly ? "read_only" : documentationOnly ? "documentation_only" : "normal", groupRolledBack);
+                    raised["changes_applied"] = (bool)raised["cancelled_at_checkpoint"]["rolled_back_verified"] ? (JToken)false : null;
+                    if (runControl.Kind == PythonRunControl.TimedOut) raised[ErrorCodes.CodeField] = ErrorCodes.TiempoAgotado;
+                    interruptionText = "SCRIPT INTERRUPTED (" + runControl.Kind + ": " + runControl.Reason + ") at '" +
+                                       (job.LastCheckpoint ?? "start") + "'. Transactions still open were rolled back; " +
+                                       "See cancelled_at_checkpoint for the rollback evidence and its limits." +
+                                       "\n";
+                }
+                PythonRunControl.StampChangesAppliedScope(raised);
+                if (documentationViolation)
+                {
+                    // The cause the caller must act on is the refusal, not the script's own outcome.
+                    raised[ErrorCodes.CodeField] = ErrorCodes.DocumentacionViolada;
+                    raised["offending_ids"] = documentationOnlyCheck?["offending_ids"];
+                    bool kept = documentationOnlyCheck?.Value<bool?>("rollback_verified") == true;
+                    raised["changes_applied"] = kept ? (JToken)false : null;
+                    raised["transaction_status"] = kept ? "rolled_back" : "rollback_unconfirmed";
+                    PythonRunControl.StampChangesAppliedScope(raised);
+                }
+                if (responseMode == "compact") PythonReplyCompaction.Compact(raised);
                 return CommandResult.FailWithDetail(
+                    interruptionText + (ScriptErrorSummary.Render(scriptError) ?? "") +
                     error + (string.IsNullOrEmpty(printed) ? "" : "\n--- stdout before the error ---\n" + printed),
                     raised);
             }
@@ -1091,20 +1507,48 @@ namespace Horizun.Revit.Commands
             // "IronPython.Runtime.PythonDictionary": ToString() on a value that does not
             // override it, published as if it were the data. Now it is serialized, and
             // when it cannot be, the reply SAYS the structure was lost.
-            ScriptOutputRendering rendered = ScriptOutput.Render(output, outputLimit, json =>
+            // The full output is saved under the job (<jobs>\outputs\<job_id>.<page_chars>.json) so that
+            // horizun_job_status output_page=N can read it in pages without Revit, and so that it
+            // expires with its job record. No job record on disk: a temp file as before. Written to a
+            // temp name and renamed, so a reader never meets half a file.
+            bool savedByJob = !string.IsNullOrEmpty(job.Path) && OutputPages.ValidJobId(job.Id);
+            Func<string, string, string> writeOutput = (json, jobFileName) =>
             {
                 string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Horizun", "python-output");
+                string file = Guid.NewGuid().ToString("N") + ".json";
+                if (savedByJob)
+                {
+                    directory = OutputPages.Folder(System.IO.Path.GetDirectoryName(job.Path));
+                    file = jobFileName;
+                }
                 Directory.CreateDirectory(directory);
-                string path = System.IO.Path.Combine(directory, Guid.NewGuid().ToString("N") + ".json");
-                File.WriteAllText(path, json, new System.Text.UTF8Encoding(false));
-                if (File.ReadAllText(path, System.Text.Encoding.UTF8) != json) throw new IOException("Output file verification failed.");
+                string path = System.IO.Path.Combine(directory, file);
+                string temp = System.IO.Path.Combine(directory, System.IO.Path.GetFileNameWithoutExtension(file) + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp");
+                try
+                {
+                    File.WriteAllText(temp, json, new System.Text.UTF8Encoding(false));
+                    if (File.ReadAllText(temp, System.Text.Encoding.UTF8) != json) throw new IOException("Output file verification failed.");
+                    if (File.Exists(path)) File.Delete(path);
+                    File.Move(temp, path);
+                }
+                finally { try { if (File.Exists(temp)) File.Delete(temp); } catch { } }
                 return path;
-            });
+            };
+            ScriptOutputRendering rendered = ScriptOutput.Render(output, Horizun.Contracts.Contract.MaxScriptTextChars,
+                json => writeOutput(json, OutputPages.FileName(job.Id ?? "", outputPageChars)),
+                outputPageChars,
+                // Above what output_page reads (4 MB) the output is still saved whole: <job_id>.full.json (counted and
+                // deleted with its job by the retention, never read by pages).
+                json => writeOutput(json, OutputPages.FullFileName(job.Id ?? "")));
+            if (rendered.Kind == "paged" && savedByJob)
+                rendered.Note += " Next pages: horizun_job_status job_id=" + job.Id + " output_page=2 (and so on), or read that file.";
 
             // What the script CLAIMS, classified without crediting it. The ceiling for
             // arbitrary code is self_reported_verified. Limited ID observations below
             // do not verify script intent or geometry and cannot raise that ceiling.
-            EvidenceReport evidence = ScriptEvidence.Classify(rendered.Value);
+            // A paged output is classified from the COMPLETE value, never from its first page.
+            JToken outputWhole = rendered.FullValue ?? rendered.Value;
+            EvidenceReport evidence = ScriptEvidence.Classify(outputWhole);
 
             var response = JObject.FromObject(new
             {
@@ -1164,19 +1608,54 @@ namespace Horizun.Revit.Commands
                 checkpoints = job.Checkpoints
             });
             response["warning_delta"] = raised["warning_delta"];
+            response["compat_rewrites"] = compat.Rewrites;
+            response["auto_transaction"] = AutoTransactionReport(autoTransactionMarkers, readOnly, autoTransactionOutcome);
+            response["transactions_closed_by_bridge"] = transactionsClosed;
             response["read_only"] = readOnly;
             response["read_only_check"] = readOnlyCheck;
-            response["host_observations"] = PythonHostObservations.CreatedIds(doc, rendered.Value);
+            response["documentation_only"] = documentationOnly;
+            if (documentationOnlyCheck != null) response["documentation_only_check"] = documentationOnlyCheck;
+            if (rehearsalReport != null) response["rehearsal"] = rehearsalReport;
+            response["host_observations"] = PythonHostObservations.CreatedIds(doc, outputWhole);
+            if (groupMoves != null) response["group_member_moves"] = groupMoves.Report(runCode, outputWhole);
             response["execution_sha256"] = request["execution_sha256"];
             response["runtime"] = new JObject { ["python"] = typeof(IronPython.Hosting.Python).Assembly.GetName().Version.ToString(), ["clr"] = Environment.Version.ToString(), ["helpers_version"] = 1 };
             response["output_truncated"] = rendered.Kind == "too_large";
             response["output_original_chars"] = rendered.OriginalChars;
             response["output_full_path"] = rendered.FullOutputPath;
-            if (responseMode == "compact")
+            if (rendered.PersistenceError != null) response["persistence_error"] = rendered.PersistenceError;
+            if (rendered.Kind == "paged")
+                response["output_paging"] = new JObject
+                {
+                    ["page"] = 1, ["pages"] = rendered.Pages, ["page_chars"] = rendered.PageChars, ["total_chars"] = rendered.OriginalChars,
+                    ["last_page"] = false, ["full_path"] = rendered.FullOutputPath,
+                    ["next_page_with"] = savedByJob ? "horizun_job_status job_id=" + job.Id + " output_page=2" : null
+                };
+            // Compact (the default) carries counts and the warnings this script added or
+            // resolved, bounded, and refers to the contract text instead of repeating it
+            // (field report: ~127,000 characters for a few lines of __output__). Full is
+            // unchanged. See Core/PythonReplyCompaction.cs.
+            if (responseMode == "compact") PythonReplyCompaction.Compact(response);
+            if (runControl.LimitSeconds.HasValue || runControl.Kind != null)
             {
-                foreach (string field in new[] { "evidence_contract", "host_verification_note", "transaction_policy" }) response.Remove(field);
-                response["contract_ref"] = "horizun://contract/tools";
+                JObject notPreemptible = runControl.NotPreemptible(job.Checkpoints, timeoutLimit);
+                if (notPreemptible != null) response["not_preemptible"] = notPreemptible;
+                // The limit and what became of it, so "no safe point was ever reached" is a
+                // finding rather than silence: the script ran past its limit and nothing could stop it.
+                response["run_control"] = new JObject
+                {
+                    ["timeout_s"] = runControl.LimitSeconds.HasValue ? (JToken)runControl.LimitSeconds.Value : JValue.CreateNull(),
+                    ["elapsed_s"] = Math.Round(runControl.ElapsedSeconds, 3),
+                    ["exceeded"] = runControl.Kind == PythonRunControl.TimedOut,
+                    ["tripped"] = runControl.Kind,
+                    ["stopped_the_script"] = false,
+                    ["note"] = runControl.Kind == null
+                        ? "Finished inside its limit."
+                        : "The limit or a cancellation tripped, but the script finished anyway: it never reached a " +
+                          "checkpoint()/safe_point() after that, or it swallowed HorizunInterrupted. Its work was kept."
+                };
             }
+            if (responseShape == "output_only" && runControl.Kind == null) response = PythonReplyCompaction.OutputOnly(response);
             return CommandResult.Ok(response);
 
         }
@@ -1249,11 +1728,49 @@ namespace Horizun.Revit.Commands
         /// traceback names the real file and line, which is the whole difference between
         /// a stack trace you can act on and one you cannot.
         /// </summary>
+        /// <summary>The bare name of the first Autodesk.Revit.* exception in the chain, or null.</summary>
+        private static string RevitApiTypeOf(Exception ex)
+        {
+            for (int depth = 0; ex != null && depth < 6; depth++, ex = ex.InnerException)
+                if (ErrorCodes.IsRevitApiType(ex.GetType().FullName)) return ErrorCodes.TypeNameOf(ex);
+            return null;
+        }
+
         private static ScriptSource SourceFor(ScriptEngine engine, string code, string path)
         {
             var kind = Microsoft.Scripting.SourceCodeKind.Statements;
             if (string.IsNullOrEmpty(path)) return engine.CreateScriptSourceFromString(code, kind);
             return engine.CreateScriptSourceFromString(code, path, kind);
+        }
+
+        private static int RevitYearOf(UIApplication app)
+        {
+            try { return int.Parse(app.Application.VersionNumber, System.Globalization.CultureInfo.InvariantCulture); }
+            catch { return 0; }
+        }
+
+        private static HashSet<string> _builtInCategoryNames;
+
+        /// <summary>This Revit's own BuiltInCategory names, read once from the enumeration.</summary>
+        private static HashSet<string> BuiltInCategoryNames()
+        {
+            if (_builtInCategoryNames != null) return _builtInCategoryNames;
+            try { _builtInCategoryNames = new HashSet<string>(Enum.GetNames(typeof(BuiltInCategory)), StringComparer.Ordinal); }
+            catch { return null; }
+            return _builtInCategoryNames;
+        }
+
+        private static JObject AutoTransactionReport(List<string> markers, bool readOnly, string outcome = null)
+        {
+            if (markers == null || markers.Count == 0) return null;
+            return new JObject
+            {
+                ["used"] = outcome != null && outcome != "not_started",
+                ["why"] = "The script writes (" + string.Join(", ", markers) + ") but opens no transaction, so the bridge " +
+                          "runs it inside one of its own: committed when the script ends cleanly, rolled back when it throws." +
+                          (readOnly ? " read_only still rolls everything back afterwards." : ""),
+                ["outcome"] = outcome
+            };
         }
 
         private static string SafeUser(UIApplication app)
@@ -1277,6 +1794,69 @@ namespace Horizun.Revit.Commands
             instances = null; types = null;
             try { instances = new FilteredElementCollector(doc).WhereElementIsNotElementType().GetElementCount(); } catch { }
             try { types = new FilteredElementCollector(doc).WhereElementIsElementType().GetElementCount(); } catch { }
+        }
+
+        /// <summary>
+        /// Close out documentation_only: judge the diff the tracker saw, then assimilate the group
+        /// (the script's work stays, as one undo step) or roll it back and re-read the proof.
+        /// failure is null when the result stands, else the sentence that fails the call.
+        /// </summary>
+        private static JObject FinishDocumentationOnly(TransactionGroup group, DocumentationOnlyTracker tracker,
+                                                       bool leftModifiable, bool interrupted, bool scriptFailed, out string failure)
+        {
+            failure = null;
+            DocumentationOnlyVerdict verdict = tracker.Judge();
+            if (scriptFailed && !interrupted)
+            {
+                verdict.Ok = false;
+                verdict.Uncertainties.Add("the script failed before its work could be accepted");
+                verdict.Reason = "the script failed before its work could be accepted";
+            }
+            switch (DocumentationOnlyRules.Decide(leftModifiable, interrupted, verdict.Ok))
+            {
+                case DocumentationOnlyRules.GroupFate.RollBackAfterOpenTransaction:
+                {
+                    // Review m8: the group is never left open. Rolling a group back around an open transaction may be
+                    // refused by Revit; whichever it answers is what the reply says.
+                    bool closed = false;
+                    try { closed = group.GetStatus() == TransactionStatus.Started && Guard.RollBack(group).Confirmed; } catch { closed = false; }
+                    failure = DocumentationOnlyRules.OpenTransactionNote(closed);
+                    return DocumentationOnlyRules.Report(verdict, closed ? DocumentationOnlyRules.OutcomeRolledBackOpenTransaction : DocumentationOnlyRules.OutcomeGroupLeftOpen,
+                                                         null, tracker.SnapshotComplete, tracker.SnapshotSize);
+                }
+                case DocumentationOnlyRules.GroupFate.RollBackInterrupted:
+                {
+                    // Review M6: a stopped script's partial work is not judged and not kept: the whole group goes, and the
+                    // rollback is re-read like every other one. The call already fails because of the interruption.
+                    bool rolled = false;
+                    try { rolled = Guard.RollBack(group).Confirmed; } catch { rolled = false; }
+                    bool? proven = tracker.RollbackProven(rolled);
+                    return DocumentationOnlyRules.Report(verdict, rolled ? DocumentationOnlyRules.OutcomeRolledBackInterrupted : "rollback_unconfirmed",
+                                                         proven == true, tracker.SnapshotComplete, tracker.SnapshotSize);
+                }
+                case DocumentationOnlyRules.GroupFate.Assimilate:
+                {
+                    try
+                    {
+                        TransactionStatus st = group.Assimilate();
+                        if (st == TransactionStatus.Committed)
+                            return DocumentationOnlyRules.Report(verdict, "kept", null, tracker.SnapshotComplete, tracker.SnapshotSize);
+                        failure = "documentation_only=true: the verified-documentation group did not assimilate (status " + st + ").";
+                        try { if (group.GetStatus() == TransactionStatus.Started) Guard.RollBack(group); } catch { }
+                    }
+                    catch (Exception ex) { failure = "documentation_only=true: assimilating the group threw: " + ex.Message; }
+                    return DocumentationOnlyRules.Report(verdict, "not_assimilated", null, tracker.SnapshotComplete, tracker.SnapshotSize);
+                }
+                default:
+                {
+                    bool rolled = false;
+                    try { rolled = Guard.RollBack(group).Confirmed; } catch { rolled = false; }
+                    bool? proven = tracker.RollbackProven(rolled);
+                    failure = DocumentationOnlyRules.FailureMessage(verdict, proven == true);
+                    return DocumentationOnlyRules.Report(verdict, rolled ? "rolled_back" : "rollback_unconfirmed", proven == true,
+                                                         tracker.SnapshotComplete, tracker.SnapshotSize);
+                }
+            }
         }
 
         /// <summary>

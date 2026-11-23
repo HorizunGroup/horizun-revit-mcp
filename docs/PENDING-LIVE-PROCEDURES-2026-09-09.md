@@ -45,11 +45,9 @@ abrir Revit):
   archivo: no abre en 2023, 2024 ni 2025.
 
 Y hay un segundo obstáculo, de contrato: **ninguna herramienta tipada carga una
-`.rfa` existente en un proyecto abierto**. `horizun_family_apply` homologa la
-familia ACTIVA y declara explícitamente que nunca abre archivos;
-`horizun_create_family` crea desde una plantilla y puede cargar *lo que ella
-misma creó*, pero la API de Revit no permite crear una etiqueta (label) dentro de
-una familia de anotación, así que no puede fabricar una etiqueta con texto.
+`.rfa` existente en un proyecto abierto** en la edición Community. Las herramientas de familias están en la edición Pro (`horizun_family_apply`, `horizun_create_family`),
+y aun así la API de Revit no permite crear una etiqueta (label) dentro de una
+familia de anotación, así que no se puede fabricar una etiqueta con texto.
 `horizun_execute_python` sí podría hacer ambas cosas y está **deshabilitado por
 el dueño de la máquina** (`enable_execute_python: false`), que es una decisión
 que se respeta.

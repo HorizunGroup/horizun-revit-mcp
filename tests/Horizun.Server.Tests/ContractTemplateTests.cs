@@ -3,6 +3,8 @@
 // are where the exact schema lives; every fact below compares against Contract.* so
 // a template can never quietly serve something weaker than what a call is checked by.
 using System.Linq;
+using System.IO;
+using System.Runtime.CompilerServices;
 using Horizun.Contracts;
 using Horizun.Server;
 using Newtonsoft.Json.Linq;
@@ -14,6 +16,25 @@ namespace Horizun.Server.Tests
     {
         private static JObject ReadJson(string uri)
             => JObject.Parse((string)McpResources.Read(new JObject { ["uri"] = uri })["contents"][0]["text"]);
+
+        [Fact]
+        public void Python_resource_guides_project_creation_and_safe_retries()
+        {
+            string text = ReadJson("horizun://contract/tools/horizun_execute_python").ToString();
+            Assert.Contains("horizun_document_session operation=new_project", text);
+            Assert.Contains("a fresh UUID per deliberate write", text);
+            Assert.Contains("retry the identical request", text);
+            string published = (string)Tools.Publish(Tools.Find("horizun_execute_python"), true)["description"];
+            Assert.Contains("horizun_document_session operation=new_project", published);
+            Assert.Contains("a fresh UUID per deliberate write", published);
+            string recipe = File.ReadAllText(Path.Combine(RepoRoot(), "docs", "python-fallback-recipes.md"));
+            Assert.Contains("API by year (2023–2027)", recipe);
+            Assert.Contains("str(uuid.uuid4())", recipe);
+            Assert.Contains("operation=new_project", recipe);
+        }
+
+        private static string RepoRoot([CallerFilePath] string here = "") =>
+            Path.GetFullPath(Path.Combine(Path.GetDirectoryName(here), "..", ".."));
 
         [Fact]
         public void Templates_list_one_tool_and_one_variant()
@@ -52,8 +73,9 @@ namespace Horizun.Server.Tests
                 .Select(s => s.Tool + " " + s.Pointer + " " + s.Discriminator + " " + s.Values.Count).ToArray();
             Assert.Equal(new[]
             {
-                "horizun_create_elements /properties/elements/items kind 33",
-                "horizun_document_session  operation 7"
+                "horizun_create_elements /properties/elements/items kind 37",
+                "horizun_plan_annotations  operation 11",
+                "horizun_document_session  operation 10"
             }, sites);
             foreach (VariantSite s in ContractVariants.All)
                 Assert.All(s.Values, v => Assert.Matches("^[a-z0-9_]+$", v));
@@ -84,6 +106,16 @@ namespace Horizun.Server.Tests
             }
         }
 
+        [Fact]
+        public void Opening_planner_operation_has_a_readable_contract_uri()
+        {
+            JObject body = ReadJson("horizun://contract/tools/horizun_plan_annotations/auto_dimension_openings");
+            Assert.Equal("operation", (string)body["discriminator"]);
+            Assert.Equal("auto_dimension_openings", (string)body["schema"]["properties"]["operation"]["const"]);
+            Assert.Contains("view_id", ((JArray)body["required"]).Select(x => (string)x));
+            Assert.Contains("horizun_plan_annotations", (string)body["shared_arguments_uri"]);
+        }
+
         [Theory]
         [InlineData("horizun://contract/tools/horizun_nope", "Valid tools: ")]
         [InlineData("horizun://contract/tools/horizun_create_elements/no_such_kind", "Valid values: ")]
@@ -106,7 +138,7 @@ namespace Horizun.Server.Tests
                 ["ref"] = new JObject { ["type"] = "ref/resource", ["uri"] = "horizun://contract/tools/{tool}/{variant}" },
                 ["argument"] = new JObject { ["name"] = "tool", ["value"] = "" }
             });
-            Assert.Equal(new[] { "horizun_create_elements", "horizun_document_session" },
+            Assert.Equal(new[] { "horizun_create_elements", "horizun_document_session", "horizun_plan_annotations" },
                 ((JArray)tools["completion"]["values"]).Select(v => (string)v).OrderBy(v => v).ToArray());
 
             JObject ops = McpCompletions.Complete(new JObject

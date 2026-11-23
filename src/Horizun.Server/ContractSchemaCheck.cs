@@ -11,7 +11,9 @@
 // It is ADVISORY. Nothing calls it before dispatch: what a call is validated
 // against is ToolInputRules (Horizun.Contracts), the per-command parsers and the
 // host tools' own refusals, all reading the full contract. Changing this file
-// never changes what is accepted or rejected.
+// never changes what is accepted or rejected. (One rule IS enforced before
+// dispatch, from the same contract: top-level arguments a closed schema does not
+// declare - see UndeclaredArguments.cs.)
 //
 // Unknown keywords are ERRORS, never skipped. `format` is an annotation here, as it
 // is by default in JSON Schema 2020-12; `default` and `description` are annotations.
@@ -44,13 +46,22 @@ namespace Horizun.Server
             return errors;
         }
 
+        // A kit recipe is a call template: a <model value> is present but is not yet
+        // a concrete value to type-check. Dispatch keeps using the strict overload.
+        internal static List<string> ValidateRecipe(JToken value, JToken schema)
+        {
+            var errors = new List<string>();
+            Validate(value, schema, "", errors, true);
+            return errors;
+        }
+
         private static readonly HashSet<string> Known = new HashSet<string>(StringComparer.Ordinal)
         {
             "type", "enum", "const", "properties", "required", "additionalProperties", "items",
             "minItems", "maxItems", "uniqueItems", "minLength", "maxLength", "pattern",
             "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "minProperties", "maxProperties",
             "allOf", "anyOf", "oneOf", "not", "if", "then", "else",
-            "format", "default", "description", "title", "examples", "$comment"
+            "format", "default", "description", "title", "examples", "$comment", "propertyNames"
         };
 
         internal static IEnumerable<string> UnknownKeywords(JToken schema)
@@ -64,7 +75,7 @@ namespace Horizun.Server
                     foreach (JProperty child in props.Properties())
                         foreach (string k in UnknownKeywords(child.Value)) yield return k;
                 }
-                else if (p.Name == "items" || p.Name == "additionalProperties" || p.Name == "not" ||
+                else if (p.Name == "items" || p.Name == "additionalProperties" || p.Name == "propertyNames" || p.Name == "not" ||
                          p.Name == "if" || p.Name == "then" || p.Name == "else")
                 {
                     foreach (string k in UnknownKeywords(p.Value)) yield return k;
@@ -77,7 +88,7 @@ namespace Horizun.Server
             }
         }
 
-        internal static void Validate(JToken value, JToken schemaToken, string pointer, List<string> errors)
+        internal static void Validate(JToken value, JToken schemaToken, string pointer, List<string> errors, bool recipe = false)
         {
             // Bounded: this now runs on production failures (SchemaHelp), where the input is
             // whatever a caller sent. A verdict only needs one error and advice keeps 20.
@@ -88,8 +99,11 @@ namespace Horizun.Server
                 return;
             }
             if (!(schemaToken is JObject schema)) { errors.Add(At(pointer) + "schema is not an object"); return; }
+            if (recipe && value?.Type == JTokenType.String && Regex.IsMatch((string)value, @"<[^<>]+>", RegexOptions.None, PatternTimeout)) return;
             foreach (JProperty p in schema.Properties())
                 if (!Known.Contains(p.Name)) errors.Add(At(pointer) + "the validator does not understand keyword '" + p.Name + "'");
+            if (value is JObject named && schema["propertyNames"] != null)
+                foreach (JProperty property in named.Properties()) Validate(new JValue(property.Name), schema["propertyNames"], pointer + "/" + property.Name, errors, recipe);
 
             if (schema["type"] != null)
             {
@@ -145,7 +159,7 @@ namespace Horizun.Server
                         }
                     }
                     if (schema["items"] != null)
-                        for (int i = 0; i < arr.Count; i++) Validate(arr[i], schema["items"], pointer + "/" + i, errors);
+                        for (int i = 0; i < arr.Count; i++) Validate(arr[i], schema["items"], pointer + "/" + i, errors, recipe);
                     break;
                 case JTokenType.Object:
                     var obj = (JObject)value;
@@ -158,36 +172,36 @@ namespace Horizun.Server
                     foreach (JProperty p in obj.Properties())
                     {
                         string child = pointer + "/" + p.Name;
-                        if (props?[p.Name] != null) Validate(p.Value, props[p.Name], child, errors);
-                        else if (schema["additionalProperties"] != null) Validate(p.Value, schema["additionalProperties"], child, errors);
+                        if (props?[p.Name] != null) Validate(p.Value, props[p.Name], child, errors, recipe);
+                        else if (schema["additionalProperties"] != null) Validate(p.Value, schema["additionalProperties"], child, errors, recipe);
                     }
                     break;
             }
 
             if (schema["allOf"] is JArray all)
-                foreach (JToken branch in all) Validate(value, branch, pointer, errors);
-            if (schema["anyOf"] is JArray any && !any.Any(branch => Passes(value, branch, pointer)))
-                errors.Add(At(pointer) + "matches none of anyOf: " + Diagnose(value, any, pointer));
+                foreach (JToken branch in all) Validate(value, branch, pointer, errors, recipe);
+            if (schema["anyOf"] is JArray any && !any.Any(branch => Passes(value, branch, pointer, recipe)))
+                errors.Add(At(pointer) + "matches none of anyOf: " + Diagnose(value, any, pointer, recipe));
             if (schema["oneOf"] is JArray one)
             {
-                int matched = one.Count(branch => Passes(value, branch, pointer));
+                int matched = one.Count(branch => Passes(value, branch, pointer, recipe));
                 if (matched != 1)
                     errors.Add(At(pointer) + "matches " + matched + " branches of oneOf (exactly one required)" +
-                               (matched == 0 ? ": " + Diagnose(value, one, pointer) : ""));
+                               (matched == 0 ? ": " + Diagnose(value, one, pointer, recipe) : ""));
             }
-            if (schema["not"] != null && Passes(value, schema["not"], pointer))
+            if (schema["not"] != null && Passes(value, schema["not"], pointer, recipe))
                 errors.Add(At(pointer) + "matches a schema it must not match");
             if (schema["if"] != null)
             {
-                if (Passes(value, schema["if"], pointer)) { if (schema["then"] != null) Validate(value, schema["then"], pointer, errors); }
-                else if (schema["else"] != null) Validate(value, schema["else"], pointer, errors);
+                if (Passes(value, schema["if"], pointer, recipe)) { if (schema["then"] != null) Validate(value, schema["then"], pointer, errors, recipe); }
+                else if (schema["else"] != null) Validate(value, schema["else"], pointer, errors, recipe);
             }
         }
 
-        private static bool Passes(JToken value, JToken schema, string pointer)
+        private static bool Passes(JToken value, JToken schema, string pointer, bool recipe = false)
         {
             var errors = new List<string>();
-            Validate(value, schema, pointer, errors);
+            Validate(value, schema, pointer, errors, recipe);
             return errors.Count == 0;
         }
 
@@ -198,14 +212,14 @@ namespace Horizun.Server
         /// when no branch is named does the fewest-errors branch speak. Fewest errors alone
         /// told a wall row missing four fields to become a level, because the level branch
         /// lacked only two (MEASURED 2026-09-26) - advice pointing the wrong way.</summary>
-        private static string Diagnose(JToken value, JArray branches, string pointer)
+        private static string Diagnose(JToken value, JArray branches, string pointer, bool recipe = false)
         {
             List<JToken> named = branches.Where(b => NamedBy(value, b)).ToList();
             List<string> best = null;
             foreach (JToken branch in named.Count > 0 ? (IEnumerable<JToken>)named : branches)
             {
                 var errors = new List<string>();
-                Validate(value, branch, pointer, errors);
+                Validate(value, branch, pointer, errors, recipe);
                 if (best == null || errors.Count < best.Count) best = errors;
             }
             return best == null ? "" : string.Join("; ", best.Take(5));

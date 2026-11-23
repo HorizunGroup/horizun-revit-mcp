@@ -67,8 +67,7 @@ param(
 
     [string]$ArtifactDir,
     # Phases to run. Default: all of them, in this order.
-    [string[]]$Phases = @('regression', 'dimensions', 'planimetry', 'dwg',
-                          'structure', 'walls', 'doctor'),
+    [string[]]$Phases = @('regression', 'dimensions', 'walls', 'doctor'),
     # Refuse to start unless every phase's fixture is present. OFF by default:
     # a partial run with named gaps is more useful than no run at all.
     [switch]$RequireAllFixtures
@@ -274,17 +273,7 @@ Add-HzProbe -Run $run -Id 'dimensions' -Name 'dimensions and 2D detail' `
     -Status $(if ($Phases -contains 'dimensions') { 'available' } else { 'not_applicable' }) `
     -Because 'they have no separate harness; their evidence is the regression phase, and naming them here keeps the matrix honest about where it came from.'
 
-# ---- 3. Planimetry and DWG.
-Invoke-Phase -Id 'planimetry' -Name 'planimetry audit and fix' `
-    -Script 'verify-dwg-planimetry.ps1' -Arguments @{ Document = $Document }
-Invoke-Phase -Id 'dwg' -Name 'the DWG-to-BIM roll-up' `
-    -Script 'verify-dwg-all.ps1' -Arguments @{ Document = $Document }
-
-# ---- 4. Structure and reinforcement.
-Invoke-Phase -Id 'structure' -Name 'structure and reinforcement' `
-    -Script 'verify-structure-all.ps1' -Arguments @{ Document = $Document }
-
-# ---- 5. The 55 wall cases. Its own fixture document, because the matrix builds
+# ---- 3. The 55 wall cases. Its own fixture document, because the matrix builds
 #         and converts walls; running it over the read fixture would change the
 #         model every later phase is measuring.
 Invoke-Phase -Id 'walls' -Name 'the 55-case wall decomposition matrix' `

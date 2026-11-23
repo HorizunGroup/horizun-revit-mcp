@@ -3,11 +3,11 @@
 //
 // THE LIVE SUITE MAY NOT NAME TOOLS THIS VERSION DOES NOT HAVE.
 //
-// Four probes rotted exactly this way: connect_mep, terminate_riser,
-// place_sprinklers and family_mirror_void kept running against a build that no
-// longer published them, answered "not published by this build" every time, and
-// counted as GAPS - so the version's coverage carried a permanent floor of
-// missing guarantees that were not missing, they were retired.
+// Three probes rotted exactly this way: terminate_riser, place_sprinklers and
+// family_mirror_void kept running against a build that no longer published
+// them, answered "not published by this build" every time, and counted as
+// GAPS - so the version's coverage carried a permanent floor of missing
+// guarantees that were not missing, they were retired.
 //
 // Deleting them would have been worse in the other direction: in a diff, a
 // guarantee that used to be checked and now is not looks exactly like one that
@@ -112,9 +112,9 @@ namespace Horizun.Server.Tests
         {
             string text = Script();
             int probe = text.IndexOf(
-                "case 11: queued cancellation prevents the write",
+                "case 3: queued cancellation prevents the write",
                 StringComparison.Ordinal);
-            int next = text.IndexOf("case 12:", probe, StringComparison.Ordinal);
+            int next = text.IndexOf("case 4:", probe, StringComparison.Ordinal);
 
             Assert.True(probe >= 0 && next > probe,
                 "the wire-cancellation probe must remain a bounded W13 case");
@@ -144,16 +144,9 @@ namespace Horizun.Server.Tests
         }
 
         /// <summary>
-        /// The four that were retired must STAY retired, with their history intact. A
+        /// The ones that were retired must STAY retired, with their history intact. A
         /// probe silently revived would start reporting a permanent gap again.
         /// </summary>
-        /// <remarks>
-        /// horizun_connect_mep is NOT on this list any more, and its absence is the
-        /// point: it came back to the surface in this branch, so the registry entry
-        /// that called it gone was removed rather than kept passing. What replaced
-        /// it is an entry in $UncoveredTools - published, not probed - which is a
-        /// gap this harness reports instead of one it hides.
-        /// </remarks>
         [Theory]
         [InlineData("horizun_terminate_riser")]
         [InlineData("horizun_place_sprinklers")]
@@ -178,11 +171,9 @@ namespace Horizun.Server.Tests
         {
             string retired = RetiredBlock();
 
-            // THREE, not four: horizun_connect_mep came back to the surface in this
-            // branch and its entry was removed rather than left claiming the tool was
-            // gone. The floor is a guard against the registry being emptied, so it
-            // follows the real count - and every other check below is untouched,
-            // because what each remaining entry must SAY has not changed.
+            // The floor is a guard against the registry being emptied, so it follows
+            // the real count - and every other check below is untouched, because what
+            // each remaining entry must SAY has not changed.
             int tools = Regex.Matches(retired, @"Tool\s*=").Count;
             Assert.True(tools >= 3, "the retired registry has been emptied below the known retirements: " + tools);
 
@@ -344,13 +335,26 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Handed_off_calls_are_awaited_through_the_job_row_job_status_returns()
+        {
+            string text = Script();
+
+            // horizun_job_status answers jobs[] even for one job_id; the top level never says finished.
+            Assert.Contains("$js.data.jobs | Where-Object { [string]$_.job_id -eq $jobId }", text, StringComparison.Ordinal);
+            Assert.Contains("$row.finished -ne $true", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("$js.data.finished -ne $true", text, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void Delete_preview_tests_unresolved_and_real_target_semantics_separately()
         {
             string text = Script();
 
             Assert.Contains("delete dry run with no resolvable target withholds confirmation", text,
                             StringComparison.Ordinal);
-            Assert.Contains("-not $d.confirmation_token", text, StringComparison.Ordinal);
+            // From 5.0.4 the rehearsal is refused as an error naming that no confirmation exists, and carries no token.
+            Assert.Contains("No executable confirmation is established", text, StringComparison.Ordinal);
+            Assert.Contains("ExpectErrorLacks = 'confirmation_token\": \"hz-'", text, StringComparison.Ordinal);
             Assert.Contains("delete dry run issues a confirmation token for a real target", text,
                             StringComparison.Ordinal);
             Assert.Contains("ids = @($pipeA)", text, StringComparison.Ordinal);

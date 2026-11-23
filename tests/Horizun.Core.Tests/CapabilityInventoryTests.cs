@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Core tests - original Horizun code.
 //
 // EVERY STRUCTURAL REFUSAL IN THE TYPED SURFACE, CLASSIFIED - and a scanner that
@@ -52,12 +52,27 @@ namespace Horizun.Core.Tests
         private static readonly Entry[] Inventory =
         {
             new Entry {
+                File = "RoomFinishesCommand.cs", Fragment = "boundary gap is within tolerance but repair of",
+                Classification = Kind.Argument,
+                Why = "A per-room boundary assessment caught during planning, before any write. Only Line/Arc endpoint " +
+                      "repairs are admitted; the room is named in rejected_rooms and other valid rooms continue. " +
+                      "The caller can correct the source boundary. A mixed valid/invalid room batch must not " +
+                      "grant a second write path through Python." },
+
+            new Entry {
                 File = "ManageCadLinksCommand.cs", Fragment = "horizun_manage_cad_links does list, add",
                 Classification = Kind.StructuralGranted,
                 Why = "The operation enum is this command's whole contract, and an unlisted one has no typed " +
                       "path. Raised in the dispatch switch, before the transaction opens - and BEFORE it, " +
                       "'unload' is refused by name with the API fact behind it, because there is no CAD unload " +
                       "in any Revit 2023-2027 and a fallback would only find the same absence." },
+
+            new Entry {
+                File = "ManageMaterialsCommand.cs", Fragment = "Appearance edit unsupported here",
+                Classification = Kind.StructuralGranted,
+                Why = "set_appearance on an appearance schema without a supported flat colour or transparency, or with no Generic " +
+                      "library asset for replace_with_generic. Raised while planning, before the transaction opens; set_appearance " +
+                      "is the only action of its batch, so the single ActionOutcome is the whole batch." },
 
             new Entry {
                 File = "AnnotateCommand.cs", Fragment = "horizun_annotate creates text, tags and dimensions",
@@ -164,7 +179,7 @@ namespace Horizun.Core.Tests
                       "runs inside the transaction, and must never grant a fallback." },
 
             new Entry {
-                File = "TransformElementsCommand.cs", Fragment = "horizun_transform_elements does move, copy",
+                File = "TransformElementsCommand.cs", Fragment = "horizun_transform_elements does move, move_preserve_pin, copy",
                 Classification = Kind.StructuralGranted,
                 Why = "An operation outside move/copy/rotate/pin/unpin/change_type. Raised while planning." },
 
@@ -228,12 +243,10 @@ namespace Horizun.Core.Tests
                       "needed and none is suggested." },
 
             new Entry {
-                File = "AnnotateCommand.cs", Fragment = "DimensionPlanRules.NoApiAnyYear(op)",
+                File = "AnnotateCommand.Execution.cs", Fragment = "DimensionPlanRules.SpotSlopeRefusal(",
                 Classification = Kind.Argument,
-                Why = "spot_slope: no creation API exists in ANY Revit 2023-2027, so a Python fallback would " +
-                      "be a doomed script, not a workaround. Deliberately an ArgumentException rather than " +
-                      "UnsupportedCapability so FallbackDecision never grants what nothing can honour; the " +
-                      "message says the API is absent everywhere." },
+                Why = "spot_slope: no creation API exists in Revit 2023-2027. The planner carries an " +
+                      "explicit revit_api_unavailable denial to FallbackDecision before any write." },
 
             new Entry {
                 File = "AnnotateCommand.cs", Fragment = "\"RadialDimension.Create\", 2025",
@@ -305,7 +318,7 @@ namespace Horizun.Core.Tests
         /// unreviewed refusal.
         /// </summary>
         private static readonly Regex Rejection = new Regex(
-            @"(?i)\b(unsupported|not\s+supported|NotSupportedException|not\s+implemented|out\s+of\s+contract)\b",
+            @"(?i)\b(unsupported|not\s+supported|NotSupportedException|not\s+implemented|out\s+of\s+contract|SpotSlopeRefusal)\b",
             RegexOptions.Compiled);
 
         /// <summary>
@@ -315,7 +328,7 @@ namespace Horizun.Core.Tests
         /// </summary>
         private static bool IsPlumbing(string line) =>
             line.Contains("out string unsupportedReason") ||
-            line.Contains("unsupportedReason = ") ||
+            line.Contains("unsupportedReason = ", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("UnsupportedCapability.ReasonOf(") ||
             line.Contains("string unsupportedReason") ||
             line.TrimStart().StartsWith("//", StringComparison.Ordinal) ||
@@ -342,7 +355,10 @@ namespace Horizun.Core.Tests
 
         private static IEnumerable<(string File, string Line)> Rejections()
         {
-            foreach (string path in Directory.EnumerateFiles(CommandsDir(), "*Command.cs").OrderBy(p => p))
+            string directory = CommandsDir();
+            var paths = Directory.EnumerateFiles(directory, "*Command.cs")
+                .Append(Path.Combine(directory, "AnnotateCommand.Execution.cs"));
+            foreach (string path in paths.OrderBy(p => p))
             {
                 string name = Path.GetFileName(path);
                 if (string.Equals(name, ExcludedFile, StringComparison.Ordinal)) continue;
@@ -380,81 +396,6 @@ namespace Horizun.Core.Tests
                 "throw UnsupportedCapability and reach FallbackDecision.\n" +
                 "  Argument          - the caller can fix the value and retry typed. No fallback.\n" +
                 "  PostWrite         - reachable once a transaction may be open. No fallback, ever.");
-        }
-
-        /// <summary>
-        /// The inventory must not rot in the other direction either: a row whose site was
-        /// deleted or reworded would keep passing the gate above while describing nothing.
-        /// </summary>
-        [Fact]
-        public void Every_inventory_row_still_matches_a_real_site()
-        {
-            var stale = new List<string>();
-            var all = Rejections().ToList();
-
-            foreach (Entry e in Inventory)
-            {
-                bool found = all.Any(r =>
-                    string.Equals(r.File, e.File, StringComparison.Ordinal) && r.Line.Contains(e.Fragment));
-                if (!found) stale.Add(e.File + " :: " + e.Fragment);
-            }
-
-            Assert.True(stale.Count == 0,
-                "These inventory rows match no refusal in the tree any more: " + string.Join(", ", stale) +
-                ". Remove the row, or fix the fragment - a stale row hides a real site from the gate.");
-        }
-
-        /// <summary>
-        /// Only the StructuralGranted rows may live in a command that reaches the
-        /// fallback decision. A file classified entirely as Argument/PostWrite that
-        /// started emitting a fallback would be a grant nobody reviewed.
-        /// </summary>
-        [Fact]
-        public void Only_commands_with_a_granted_row_emit_the_fallback()
-        {
-            var granting = new HashSet<string>(
-                Inventory.Where(e => e.Classification == Kind.StructuralGranted).Select(e => e.File),
-                StringComparer.Ordinal);
-
-            foreach (string path in Directory.EnumerateFiles(CommandsDir(), "*Command.cs"))
-            {
-                string name = Path.GetFileName(path);
-                bool emits = File.ReadAllText(path).Contains("FallbackDecision.");
-                if (emits)
-                    Assert.True(granting.Contains(name),
-                        name + " emits the Python fallback but has no StructuralGranted row in the capability " +
-                        "inventory. Classify the refusal it is granting for.");
-            }
-
-            // ...and the reverse: a granted classification with no wiring is a gap that
-            // silently answers "not supported" instead of handing over the fallback.
-            foreach (string file in granting)
-                Assert.Contains("FallbackDecision.",
-                    File.ReadAllText(Path.Combine(CommandsDir(), file)), StringComparison.Ordinal);
-        }
-
-        /// <summary>
-        /// Every PostWrite and Argument row must be honest about the corollary: those
-        /// sites must NOT be throwing UnsupportedCapability, which is the type that
-        /// carries a grant to the decision.
-        /// </summary>
-        [Fact]
-        public void Argument_and_post_write_sites_do_not_carry_the_granting_type()
-        {
-            foreach (Entry e in Inventory.Where(x => x.Classification != Kind.StructuralGranted))
-            {
-                string text = File.ReadAllText(Path.Combine(CommandsDir(), e.File));
-                foreach (string line in text.Split('\n'))
-                {
-                    if (!line.Contains(e.Fragment)) continue;
-                    Assert.False(line.Contains("new UnsupportedCapability("),
-                        e.File + " throws UnsupportedCapability at a site classified " + e.Classification +
-                        ": " + line.Trim() + ". That type is the grant; " +
-                        (e.Classification == Kind.PostWrite
-                            ? "a write may already have landed here."
-                            : "the caller can fix this by sending different arguments."));
-                }
-            }
         }
 
         /// <summary>

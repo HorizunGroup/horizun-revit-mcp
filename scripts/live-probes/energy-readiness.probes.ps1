@@ -6,7 +6,7 @@
 # exporting spaces never models a room, MEASURED 2026-09-27 on HZ_WRITE), so whichever the
 # settings name is the own space to find, and the own window is counted against a baseline read
 # taken before staging. Wall and window types come BY NAME from
-# this Revit's own Autodesk template. Everything created is deleted; the document is never saved.
+# the document (a document without them leaves the cases not_covered). Everything created is deleted; the document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'energy-readiness'
     Catalog = @(
@@ -50,25 +50,11 @@ $script:HzProbeModules += [pscustomobject]@{
             @($rows | Where-Object { $want -eq [string]$_.type -or $want -eq ([string]$_.family + ': ' + [string]$_.type) -or
                                      ([string]$_.type -and $want.EndsWith(': ' + [string]$_.type)) }) | Select-Object -First 1
         }
-        # TemplateRoot exists only for the offline tests; a live run always uses Revit's own.
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-        $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte', 'English\Default-Multi-Discipline_Metric.rte') |
-            ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        # A type BY NAME from the template, never "the first type" of the fixture: the refusal for a
-        # name that cannot exist lists what the template holds, and the first listed name matching
-        # $pattern is copied (or reused when the document already has it, then not deleted).
-        function TemplateType($category, $pattern, $key) {
-            if (-not $tpl) { [void]$why.Add("no Autodesk template under $tplRoot for $category"); return $null }
-            $probe = & $Ctx.Call 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = $category; type_names = @('__hz_probe_no_such_type__') }
-            $listed = [regex]::Match([string]$probe.text, 'Types there[^:]*:\s*(.+)$', 'Singleline')
-            $names = if ($listed.Success) { @(($listed.Groups[1].Value -split ' \| ') | ForEach-Object { ($_ -replace '\s*(\.\.\.)?\.?\s*$', '').Trim() } | Where-Object { $_ }) } else { @() }
-            $want = @($names | Where-Object { $_ -match $pattern }) | Select-Object -First 1
-            if (-not $want) { [void]$why.Add("the template lists no $category type matching '$pattern': " + (Short $probe)); return $null }
-            $have = Named (TypeRows $category) $want
-            if ($have) { return $have }
-            $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = $category; type_names = @($want); duplicate_types = 'use_destination' } ($run + '-enr-' + $key)
-            $got = Named (TypeRows $category) $want
-            if ($got) { [void]$created.Add([long]$got.element_id) } else { [void]$why.Add("copying '$want' gave no $category type: stage=" + $cp.stage + ' ' + (Short $cp.answer)) }
+        # A type BY NAME from the document, never "the first type" of the fixture: the first type
+        # whose 'Family: Type' matches $pattern. A document without one cannot stage the enclosure.
+        function DocType($category, $pattern) {
+            $got = @(TypeRows $category | Where-Object { ([string]$_.family + ': ' + [string]$_.type) -match $pattern }) | Select-Object -First 1
+            if (-not $got) { [void]$why.Add("the document holds no $category type matching '$pattern'") }
             return $got
         }
         function Energy { & $Ctx.Call 'horizun_code_check' @{ target_document = $doc; operation = 'energy_readiness'; max_findings = 5000 } }
@@ -82,8 +68,8 @@ $script:HzProbeModules += [pscustomobject]@{
         $levelId = Create @{ kind = 'level'; name = "HZ_ENR_$run"; elevation = $E } 'level'
         # A room takes an XY point (MEASURED 2026-09-26 in egress-travel: the XYZ form was refused).
         $looseRoom = if ($levelId) { Create @{ kind = 'room'; point = @($X, $Y); level_id = $levelId } 'loose-room' } else { $null }
-        $wallType = TemplateType 'OST_Walls' 'Generic - 200' 'walltype'
-        $windowType = TemplateType 'OST_Windows' 'Fixed' 'windowtype'
+        $wallType = DocType 'OST_Walls' 'Generic - 200'
+        $windowType = DocType 'OST_Windows' 'Fixed'
         $walls = @()
         if ($levelId -and $wallType) {
             $corners = @(@($X2, $Y2), @(($X2 + $Wd), $Y2), @(($X2 + $Wd), ($Y2 + $Dp)), @($X2, ($Y2 + $Dp)))

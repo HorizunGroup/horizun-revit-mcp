@@ -182,7 +182,7 @@ namespace Horizun.Revit.Commands
 
             var open = new OpenRequest
             {
-                CommandName = "horizun_audit_model", Path = templatePath, AllowUpgrade = false, Detach = true
+                CommandName = "horizun_audit_model", Path = templatePath, AllowProjectTemplate = true, AllowUpgrade = false, Detach = true
             };
             OpenPlan plan = OpenGuard.Check(app, open);
             if (!plan.Ok) return "the template could not be opened: " + (plan.Refusal?.Error ?? "refused");

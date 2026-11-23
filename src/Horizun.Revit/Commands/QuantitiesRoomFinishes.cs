@@ -184,7 +184,14 @@ namespace Horizun.Revit.Commands
                     notMeasured.Add(NotMeasured(sid, kind, number, name, lvl, "unplaced", "It is not placed in the model, so it has no faces. Not a zero."));
                     continue;
                 }
-                double area = AreaOf(se);
+                double? areaRead = AreaOf(se);
+                if (!areaRead.HasValue)
+                {
+                    // Unreadable is not "not enclosed" (review 2026-11-20, M4).
+                    notMeasured.Add(NotMeasured(sid, kind, number, name, lvl, "unreadable", "Revit did not return its area. Not a zero."));
+                    continue;
+                }
+                double area = areaRead.Value;
                 if (area <= 0)
                 {
                     // Redundant = its point lies inside another placed, enclosed room of the same phase. The
@@ -192,7 +199,7 @@ namespace Horizun.Revit.Commands
                     // containment answer is Revit's either way.
                     XYZ probe = lp.Point + new XYZ(0, 0, RoomProbeLiftFeet);
                     SpatialElement owner = all.FirstOrDefault(o => o.Id != se.Id && PhaseIdOf(o) == phaseId &&
-                        o.GetType() == se.GetType() && AreaOf(o) > 0 && SpatialContains(o, probe));
+                        o.GetType() == se.GetType() && (AreaOf(o) ?? 0) > 0 && SpatialContains(o, probe));
                     notMeasured.Add(owner != null
                         ? NotMeasured(sid, kind, number, name, lvl, "redundant", "It shares its enclosure with " + kind + " " + Rid.Value(owner.Id) + " (its point lies inside that one).")
                         : NotMeasured(sid, kind, number, name, lvl, "not_enclosed", "Its boundaries do not close, so Revit gives it no area. Not a zero."));
@@ -671,7 +678,7 @@ namespace Horizun.Revit.Commands
             return null;
         }
 
-        private static double AreaOf(SpatialElement se) { try { return se.Area; } catch { return 0; } }
+        private static double? AreaOf(SpatialElement se) { try { return se.Area; } catch { return null; } }
 
         private static T Safe<T>(Func<T> f) where T : class { try { return f(); } catch { return null; } }
     }

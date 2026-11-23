@@ -28,14 +28,6 @@ using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
-    public static class ConnectorState
-    {
-        public const string Connected = "connected";
-        public const string Open = "open";
-        public const string Unreadable = "unreadable";
-
-        public static readonly string[] All = { Connected, Open, Unreadable };
-    }
 
     public static class MepSystemState
     {

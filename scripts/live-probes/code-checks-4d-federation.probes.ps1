@@ -1,6 +1,6 @@
 # Live probes: horizun_code_check (the three Colombian example sets),
-# horizun_link_schedule (import -> match -> write -> status_view on the probe's OWN
-# walls) and horizun_federation_check (synthetic rules). Loaded by verify-live.ps1;
+# and horizun_link_schedule (import -> match -> write -> status_view on the probe's OWN
+# walls). Loaded by verify-live.ps1;
 # exercised without Revit by code-checks-4d-federation.tests.ps1.
 #
 # Everything the probe creates (two walls, one plan, the 4D view) is deleted at the
@@ -17,8 +17,6 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'link-schedule: match links exactly the two probe walls by Mark'; Tool = 'horizun_link_schedule' }
         @{ Name = 'link-schedule: write stamps Comments and re-reads every row'; Tool = 'horizun_link_schedule' }
         @{ Name = 'link-schedule: status_view colours a duplicated view and re-reads each override'; Tool = 'horizun_link_schedule' }
-        @{ Name = 'federation-check: synthetic rules classify the host and answer every link'; Tool = 'horizun_federation_check' }
-        @{ Name = 'federation-check: malformed rules are refused'; Tool = 'horizun_federation_check' }
     )
     Run     = {
         param($Ctx)
@@ -48,23 +46,6 @@ $script:HzProbeModules += [pscustomobject]@{
             $summary = ('{0} rules, verdict {1}, totals {2}' -f $rules.Count, $r.data.verdict, ($r.data.totals | ConvertTo-Json -Compress))
             Case $s.N 'horizun_code_check' $(if ($ok) { 'pass' } else { 'fail' }) $summary
         }
-
-        # ---- 3. federation: read-only ------------------------------------------------------
-        $f1 = 'federation-check: synthetic rules classify the host and answer every link'
-        $f2 = 'federation-check: malformed rules are refused'
-        $fr = & $Ctx.Call 'horizun_federation_check' @{ target_document = $doc; rules = @{
-                    models = @(@{ match = '$host'; discipline = 'PROBE'; forbidden_categories = @('OST_ProbeNothing') })
-                    expected_links = @(@{ name_matches = '^HZ_NO_SUCH_LINK_' + $Ctx.RunId }); same_site = $true } }
-        if ($fr.isError -or -not $fr.data) { Case $f1 'horizun_federation_check' 'fail' ('refused or crashed: ' + (Short $fr)) }
-        else {
-            $hostRow = @($fr.data.models) | Where-Object { $_.host -eq $true } | Select-Object -First 1
-            $missing = @($fr.data.expected_links) | Where-Object { $_.state -eq 'missing' }
-            $siteOk = @($fr.data.site).Count -eq @($fr.data.links).Count
-            $ok = $hostRow -and $hostRow.state -eq 'clean' -and @($missing).Count -eq 1 -and $siteOk -and $fr.data.verdict -eq 'fails'
-            Case $f1 'horizun_federation_check' $(if ($ok) { 'pass' } else { 'fail' }) ('verdict {0}, links {1}, summary {2}' -f $fr.data.verdict, @($fr.data.links).Count, ($fr.data.summary | ConvertTo-Json -Compress))
-        }
-        $fb = & $Ctx.Call 'horizun_federation_check' @{ target_document = $doc; rules = @{ modles = @() } }
-        Case $f2 'horizun_federation_check' $(if ($fb.isError -and ([string]$fb.text) -match 'unknown key') { 'pass' } else { 'fail' }) (Short $fb)
 
         # ---- 2. link_schedule: import is file-only; the rest needs the write tier ---------
         $l1 = 'link-schedule: import parses the synthetic CSV'

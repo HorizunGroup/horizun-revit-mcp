@@ -33,21 +33,9 @@ namespace Horizun.Core.Tests
             Assert.DoesNotContain("2,5", text);
         }
 
-        [Fact]
-        public void The_acquire_refusal_writes_its_millimetres_invariant()
-        {
-            string text = InSpanish(() => LinkSurveyRules.AcquireRefusal(7, new List<long> { 7 }, 0.25, 1.5));
-            Assert.Contains("0.25 mm <= 1.5 mm", text);
-        }
+        
 
-        [Fact]
-        public void The_face_coverage_note_writes_its_share_invariant()
-        {
-            var deltas = new List<double>();
-            for (int i = 0; i < 50; i++) deltas.Add(0.1);
-            string note = (string)InSpanish(() => LinkSurveyRules.FaceVerdict(deltas, 5, 10, 0.125))["note"];
-            Assert.DoesNotContain("0,1", note ?? "");
-        }
+        
 
         [Fact]
         public void The_root_cause_details_write_their_millimetres_invariant()

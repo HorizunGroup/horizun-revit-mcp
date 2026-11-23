@@ -93,11 +93,9 @@ namespace Horizun.Revit.Commands
                 retainUntilUtc = parsed.ToUniversalTime();
             }
 
-            // The wrapper's durable idempotency claim is established by Dispatcher before
-            // this method runs. The child does not need a second key; retaining one would
-            // create two unrelated retry identities for one operation.
-            JObject queuedArguments = (JObject)arguments.DeepClone();
-            queuedArguments.Remove("idempotency_key");
+            // The dispatcher owns the durable claim; this derived key satisfies
+            // child and nested-stage validation without a second dispatcher claim.
+            JObject queuedArguments = AsyncChildArguments.Prepare(arguments, request.Value<string>("idempotency_key"));
             // Admission runs on the pipe thread with app=null. Only consume the
             // immutable identity last captured on Revit's UI thread; never call its API.
             string documentKey = _documentSnapshot();

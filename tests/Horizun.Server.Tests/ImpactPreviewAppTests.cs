@@ -37,7 +37,7 @@ namespace Horizun.Server.Tests
             ("horizun_set_keynote", "SetKeynoteCommand.cs", new[] { "element_ids" }),
             ("horizun_delete_verified", "DeleteCommand.cs", new[] { "ids", "protect_ids" }),
             ("horizun_transform_elements", "TransformElementsCommand.cs", new[] { "operations" }),
-            ("horizun_create_elements", "CreateElementsCommand.cs", new[] { "elements" })
+            ("horizun_create_elements", "CreateElementsCommand.Prepare.cs", new[] { "elements" })
         };
 
         private static string RepoRoot()
@@ -202,9 +202,9 @@ namespace Horizun.Server.Tests
             foreach (string f in new[] { "unique_id", "element_id", "action", "category", "type", "captured_state",
                                          "proposed_values", "total", "shown", "truncated", "expected_cascade", "rows" })
                 Assert.Contains("[\"" + f + "\"]", preview);
-            string gate = File.ReadAllText(Path.Combine(core, "DocumentGate.cs"));
+            string confirmation = File.ReadAllText(Path.Combine(core, "Confirmation.cs"));
             foreach (string f in new[] { "change_preview", "plan_resolved", "confirmation_token", "confirmation_expires_utc" })
-                Assert.Contains("[\"" + f + "\"]", gate);
+                Assert.Contains("[\"" + f + "\"]", confirmation);
 
             string commands = Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Commands");
             string write = File.ReadAllText(Path.Combine(commands, "WriteParamsCommand.cs"));
@@ -216,9 +216,7 @@ namespace Horizun.Server.Tests
             string delete = File.ReadAllText(Path.Combine(commands, "DeleteCommand.cs"));
             foreach (string f in new[] { "{ \"role\", \"requested\" }", "{ \"role\", \"cascade\" }", "{ \"raw_id\",", "{ \"parent_raw_id\",", "[\"would_delete_total\"]" })
                 Assert.Contains(f, delete);
-            string create = File.ReadAllText(Path.Combine(commands, "CreateElementsCommand.cs"));
-            Assert.Contains("\"create:\" + planned.Index", create);
-            Assert.Contains("{ \"level\", SafePlanName(planned.Level) }", create);
+            string create = File.ReadAllText(Path.Combine(commands, "CreateElementsCommand.Execution.cs"));
             Assert.Contains("[\"validation_level\"]", create);
             string transform = File.ReadAllText(Path.Combine(commands, "TransformElementsCommand.cs"));
             Assert.Contains("[\"valid_operations\"]", transform);

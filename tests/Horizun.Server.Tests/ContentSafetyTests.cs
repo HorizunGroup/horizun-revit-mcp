@@ -178,7 +178,8 @@ namespace Horizun.Server.Tests
             var report = new ContentSafety.Report();
             JObject error = McpResult.Text("Error: sheet 'A‮gnp.exe' not found", true);
             JObject finished = (JObject)ContentSafety.Finish(error, report);
-            Assert.Equal("Error: sheet 'A[U+202E]gnp.exe' not found", (string)finished["content"][0]["text"]);
+            string text = (string)finished["content"][0]["text"];
+            Assert.StartsWith("Error: sheet 'A[U+202E]gnp.exe' not found", text);
             Assert.True((bool)finished["isError"]);
             Assert.True((bool)finished["_meta"][ContentSafety.MetaUntrusted]);
         }

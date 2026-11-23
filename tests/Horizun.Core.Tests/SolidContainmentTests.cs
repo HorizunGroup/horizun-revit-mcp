@@ -171,34 +171,7 @@ namespace Horizun.Core.Tests
             Assert.True(v.Evaluated);
         }
 
-        // ------------------------------------------------- the rotated host
-
-        [Fact]
-        public void RotatedBeam_TheProjectionCheckPassesABarThatIsHalfAMetreOutInTheAir()
-        {
-            HostMesh rotated = Beam().RotatedAboutZ(Math.PI / 4);
-            MeshDiagnosis d = SolidContainment.Diagnose(rotated);
-            Assert.True(d.Usable);
-
-            // A point 566 mm from the beam's axis, and comfortably inside the
-            // AXIS-ALIGNED box Revit reports for the rotated beam.
-            var bar = Line(new double[] { 2400, 1600, 300 }, new double[] { 2500, 1500, 300 });
-
-            List<double[]> aabbCorners = RebarPlanRules.BoxCorners(d.MinMm, d.MaxMm);
-            foreach (double[] p in bar)
-                for (int k = 0; k < 3; k++)
-                    Assert.InRange(p[k], d.MinMm[k], d.MaxMm[k]);   // inside the box Revit hands you
-
-            // The projection check - distributed vertically - is satisfied.
-            RebarFitVerdict fit = RebarPlanRules.Fit(bar, aabbCorners, new double[] { 0, 0, 1 },
-                                                     new List<double> { 0 }, 1.0);
-            Assert.True(fit.Fits);
-
-            // The solid check is not.
-            ContainmentVerdict v = SolidContainment.Classify(rotated, bar, 8, 40, 1, 25);
-            Assert.Equal(SolidContainment.CompletelyOutside, v.Word);
-            Assert.True(v.Evaluated);
-        }
+        
 
         [Fact]
         public void RotatedBeam_ABarOnTheRotatedAxisIsInside()

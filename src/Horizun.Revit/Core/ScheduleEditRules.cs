@@ -47,6 +47,52 @@ namespace Horizun.Revit.Core
 
     public static class ScheduleEditRules
     {
+        public sealed class ElementIdCandidate
+        {
+            public long Id { get; set; }
+            public string Name { get; set; }
+        }
+
+        // Keep the resolver Revit-free so ambiguous names and lossy numeric inputs
+        // are proved without opening a document. IDs must belong to THIS field's domain.
+        public static string ResolveElementIdFilter(IEnumerable<ElementIdCandidate> source,
+            JToken value, string op, bool ordered, out long resolved)
+        {
+            resolved = -1;
+            var candidates = source.OrderBy(c => c.Id).ToList();
+            string roster = string.Join("; ", candidates.Select(c => "'" + c.Name + "' (" + c.Id + ")"));
+            string error = null;
+            if (op != "equal" && op != "not_equal" &&
+                !(ordered && new[] { "greater_than", "greater_than_or_equal", "less_than", "less_than_or_equal" }.Contains(op)))
+                error = "operator '" + op + "' does not apply to this ElementId field";
+            else if (value == null || value.Type == JTokenType.Null)
+                error = "an ElementId filter requires a name or an integral id";
+            else
+            {
+                long id;
+                string text = value.Type == JTokenType.String ? value.Value<string>() : null;
+                bool numeric = value.Type == JTokenType.Integer || value.Type == JTokenType.Float ||
+                    (text != null && long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out _));
+                List<ElementIdCandidate> matches;
+                if (numeric)
+                {
+                    // Parse as decimal, never double: 64-bit IDs must round-trip exactly.
+                    decimal number;
+                    if (!decimal.TryParse(value.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number) ||
+                        number != decimal.Truncate(number) || number < long.MinValue || number > long.MaxValue)
+                        return "ElementId must be an integral 64-bit id. Candidates: " + roster;
+                    id = (long)number;
+                    matches = candidates.Where(c => c.Id == id).ToList();
+                }
+                else matches = candidates.Where(c => text != null &&
+                    string.Equals(c.Name, text, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (matches.Count == 1) { resolved = matches[0].Id; return null; }
+                error = matches.Count == 0 ? "no candidate matches '" + value + "'"
+                    : "ambiguous ElementId name '" + value + "'; pass a numeric id";
+            }
+            return error + ". Candidates: " + roster;
+        }
+
         // ---- remove_fields: every position resolved before the first removal --------
 
         /// <summary>
@@ -210,7 +256,8 @@ namespace Horizun.Revit.Core
         public static readonly IReadOnlyList<string> KnownOperations = new[]
         {
             OpCreate, OpDuplicate, OpRename, OpAddFields, OpRemoveFields,
-            OpSetField, OpSetFilters, OpSetSorting, OpSetOptions
+            OpSetField, OpSetFilters, OpSetSorting, OpSetOptions,
+            ScheduleAppearanceRules.OpSetAppearance, ScheduleAppearanceRules.OpSplit, ScheduleAppearanceRules.OpUnsplit
         };
 
         // ---- the create kinds -----------------------------------------------------
@@ -263,7 +310,7 @@ namespace Horizun.Revit.Core
         /// takes. Refused HERE, by arithmetic - Revit discovering the mismatch would
         /// do so inside the transaction with its least helpful sentence.
         /// </summary>
-        public static string ValidateFilter(string op, bool hasTextValue, bool hasNumberValue)
+        public static string ValidateFilter(string op, bool hasTextValue, bool hasNumberValue, bool elementId = false)
         {
             ValueShape shape;
             if (op == null || !Operators.TryGetValue(op, out shape))
@@ -283,7 +330,7 @@ namespace Horizun.Revit.Core
                         return "operator '" + op + "' compares text; pass value (a string).";
                     return null;
                 case ValueShape.Number:
-                    if (!hasNumberValue)
+                    if (!hasNumberValue && !(elementId && hasTextValue))
                         return "operator '" + op + "' compares numbers; pass number_value.";
                     return null;
                 default:
@@ -348,7 +395,8 @@ namespace Horizun.Revit.Core
         public static string CanonicalDefinition(IEnumerable<ScheduleFieldFacts> fields,
                                                  IEnumerable<string> filterLines,
                                                  IEnumerable<string> sortLines,
-                                                 bool itemized, bool grandTotal, bool headers)
+                                                 bool itemized, bool grandTotal, bool headers,
+                                                 IEnumerable<string> appearanceLines = null)
         {
             var sb = new StringBuilder();
             sb.Append("fields:\n");
@@ -356,6 +404,7 @@ namespace Horizun.Revit.Core
                 foreach (ScheduleFieldFacts f in fields)
                     sb.Append("  [").Append(f.Index).Append("] ").Append(f.Name ?? "")
                       .Append(" param=").Append(f.ParameterId)
+                      .Append(" type=").Append(f.FieldType ?? "")
                       .Append(" heading=").Append(f.Heading ?? "")
                       .Append(" hidden=").Append(f.Hidden ? "true" : "false")
                       .Append('\n');
@@ -366,6 +415,14 @@ namespace Horizun.Revit.Core
             sb.Append("itemized=").Append(itemized ? "true" : "false").Append('\n');
             sb.Append("grand_total=").Append(grandTotal ? "true" : "false").Append('\n');
             sb.Append("headers=").Append(headers ? "true" : "false").Append('\n');
+            // The look of the table (grid lines, title, split, region styles) is part of what
+            // "the schedule I approved" means: a colleague restyling it between rehearsal and
+            // apply trips the same stale-plan refusal as a changed filter.
+            if (appearanceLines != null)
+            {
+                sb.Append("appearance:\n");
+                foreach (string line in appearanceLines) sb.Append("  ").Append(line).Append('\n');
+            }
             return sb.ToString();
         }
 

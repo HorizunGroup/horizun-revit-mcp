@@ -77,8 +77,7 @@ same element id arriving twice under two different instances is two rows, and a
 linked element that happens to wear a host element's id is never confused with
 it.
 
-To place a link a second time, use `horizun_manage_links` with
-`operation: "add_instance"` and the `link_type_id` from `operation: "list"`.
+Placing a link a second time (`horizun_manage_links`) is in the Pro edition.
 
 The takeoff-only keys are **refused** in the default `volume` mode rather than
 ignored, so a reply never looks like a takeoff that did not happen.

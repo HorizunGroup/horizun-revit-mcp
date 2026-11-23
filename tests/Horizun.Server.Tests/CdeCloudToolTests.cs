@@ -264,6 +264,36 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Duplicate_exact_folder_names_are_ambiguous_and_no_arbitrary_state_is_selected()
+        {
+            var cloud = Project2Legged();
+            cloud.Routes["GET " + Contents("urn:pf", true)].Clear();
+            cloud.Json("GET", Contents("urn:pf", true), Page(new JArray(
+                FolderEntry("urn:wip-a", "01_WIP"), FolderEntry("urn:wip-b", "01_WIP"),
+                FolderEntry("urn:shared", "02_SHARED"), FolderEntry("urn:pub", "03_PUBLISHED"), FolderEntry("urn:arch", "04_ARCHIVED"))));
+            JObject result = CdeCloudTool.Handle(AccArgs("list_states"), CancellationToken.None, Env(cloud, ClientCredentials()));
+            Assert.False((bool)result["coverage_complete"]);
+            Assert.False((bool)result["states"]["wip"]["resolved"]);
+            Assert.Equal(JTokenType.Null, result["states"]["wip"]["folder_id"].Type);
+            Assert.Contains("ambiguous folder path", (string)result["states"]["wip"]["reason"]);
+            Assert.True((bool)result["states"]["shared"]["resolved"]);
+        }
+
+        [Fact]
+        public void Repeated_same_folder_id_from_pagination_is_not_false_ambiguity()
+        {
+            var cloud = Project2Legged();
+            cloud.Routes["GET " + Contents("urn:pf", true)].Clear();
+            cloud.Json("GET", Contents("urn:pf", true), Page(new JArray(
+                FolderEntry("urn:wip", "01_WIP"), FolderEntry("urn:wip", "01_WIP"),
+                FolderEntry("urn:shared", "02_SHARED"), FolderEntry("urn:pub", "03_PUBLISHED"), FolderEntry("urn:arch", "04_ARCHIVED"))));
+            JObject result = CdeCloudTool.Handle(AccArgs("list_states"), CancellationToken.None, Env(cloud, ClientCredentials()));
+            Assert.True((bool)result["coverage_complete"]);
+            Assert.True((bool)result["states"]["wip"]["resolved"]);
+            Assert.Equal("urn:wip", (string)result["states"]["wip"]["folder_id"]);
+        }
+
+        [Fact]
         public void An_unauthorized_answer_is_not_retried_and_leaves_coverage_incomplete()
         {
             var cloud = new FakeCloud();

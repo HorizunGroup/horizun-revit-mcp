@@ -22,7 +22,7 @@ $script:HzProbeModules += [pscustomobject]@{
             'health: include_verification_catalog=true adds the per-tool summary'
         )
 
-        $h = & $Ctx.Call $T @{}
+        $h = & $Ctx.Call $T @{ detail = 'full' }
         if ($h.isError -or -not $h.data) {
             foreach ($n in $names) { Case $n $false ('horizun_health itself failed: ' + ([string]$h.text)) }
             return $out.ToArray()

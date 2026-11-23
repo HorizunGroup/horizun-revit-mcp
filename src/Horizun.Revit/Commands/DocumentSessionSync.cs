@@ -46,7 +46,7 @@ namespace Horizun.Revit.Commands
         /// Ownership keyed so it survives the sync: ids order the sample and are shown to the
         /// caller, UniqueIds are what gets compared after SynchronizeWithCentral.
         /// </summary>
-        private sealed class SyncCensus
+        internal sealed class SyncCensus
         {
             public int? OwnedWorksets;
             public readonly List<long> AllIds = new List<long>();
@@ -55,6 +55,10 @@ namespace Horizun.Revit.Commands
             public readonly List<long> OwnedIds = new List<long>();
             public readonly List<long> BorrowedIds = new List<long>();
             public int Unreadable;
+            // M10 (strict sync-only): the user's owned worksets by id and name, and the elements held by someone else.
+            public readonly List<int> OwnedWorksetIds = new List<int>();
+            public readonly List<string> OwnedWorksetNames = new List<string>();
+            public readonly List<long> OthersIds = new List<long>();
 
             public List<string> Uids(IEnumerable<long> ids) =>
                 ids.Where(UidById.ContainsKey).Select(id => UidById[id]).ToList();
@@ -88,12 +92,32 @@ namespace Horizun.Revit.Commands
             });
         }
 
-        private static CommandResult SyncWithCentral(UIApplication app, JObject request)
+        /// <summary>
+        /// horizun_save_document operation=sync_with_central. The SAME implementation, not a
+        /// copy: the caller (SaveDocumentCommand) has already refused an empty comment and a
+        /// profile below full_write; everything else - owner grant, workshared policy,
+        /// estimate, token, re-read - is decided here exactly as for document_session.
+        /// </summary>
+        internal static CommandResult SyncWithCentralFromSave(UIApplication app, JObject request, bool syncOnly = false, bool? authorised = null, bool? protectedShared = null, SyncOnlyGrantRules.SyncDecision decision = null)
+            => SyncWithCentral(app, request, syncOnly, authorised, protectedShared, decision);
+
+        /// <param name="syncOnly">
+        /// M10: the strict sync-only path (owner's flag on, profile safe_write): SyncOnlyGrantRules. False
+        /// is the behaviour before the option existed, byte for byte.
+        /// </param>
+        /// <param name="authorised">
+        /// INT-6 m-1: the owner's authorisation as the CALLER already decided it (SyncOnlyGrantRules.Decide, from one read of the
+        /// settings). Null = this call decides it (horizun_document_session, which has no sync-only path).
+        /// </param>
+        /// <param name="forceReadOnly">
+        /// INT-7 m-k: force_read_only_on_workshared from the SAME read as <paramref name="authorised"/>. Null = read it here.
+        /// </param>
+        private static CommandResult SyncWithCentral(UIApplication app, JObject request, bool syncOnly = false, bool? authorised = null, bool? forceReadOnly = null, SyncOnlyGrantRules.SyncDecision decision = null)
         {
             // A sync is the least reversible call here, so an omitted dry_run is a preview.
             bool dryRun = request.Value<bool?>("dry_run") ?? true;
             if (!SyncWithCentralRules.TryParseRelinquish(request.Value<string>("relinquish"), out SyncRelinquish choice))
-                return SyncRefuse("invalid_relinquish", "relinquish must be all, keep_borrowed or none. Nothing ran.");
+                return SyncRefuse("invalid_relinquish", "relinquish must be all, keep_borrowed, borrowed_only or none. Nothing ran.");
             string comment = request.Value<string>("comment") ?? "";
             // The options' Comment setter throws above this: refused here, so a preview never
             // issues a token for a request its apply could not run.
@@ -101,9 +125,20 @@ namespace Horizun.Revit.Commands
                 return SyncRefuse("invalid_comment", "comment is " + comment.Length + " characters; Revit accepts at most " +
                     SyncWithCentralRules.MaxCommentChars + " (SynchronizeWithCentralOptions.Comment). Nothing ran.");
             bool compact = request.Value<bool?>("compact") ?? false;
+            // INT-11 D.5: failed checks are accepted only by naming every element id of them (accept_findings_ids, sorted and distinct;
+            // the token binds it). Read before anything is measured: a malformed list refuses with nothing done.
+            if (!SyncLedgerRules.TryReadAcceptIds(request["accept_findings_ids"], out List<long> acceptIds, out string acceptIdsError))
+                return SyncRefuse("invalid_accept_findings_ids", acceptIdsError);
+            if (syncOnly)
+            {
+                SyncRefusal strictRefusal = SyncOnlyGrantRules.RequestRefusal(comment, choice,
+                    request.Value<bool?>("accept_findings") ?? false, acceptFindingsIds: request.Property("accept_findings_ids") != null);
+                if (strictRefusal != null) return SyncRefuse(strictRefusal.Code, strictRefusal.Message);
+            }
 
             string pickError = PickDocument(app, request, out Document doc, requireExplicitTarget: true);
             if (pickError != null) return SyncRefuse("target_not_resolved", pickError);
+            if (OpenRecoveryDocuments.IsMarked(doc)) return SyncRefuse("recovered_document", "Recovered documents cannot be synchronized.");
             string title = SafeTitle(doc) ?? SafePath(doc) ?? "the target document";
 
             bool? detached = null;
@@ -113,8 +148,10 @@ namespace Horizun.Revit.Commands
 
             // Unreadable settings fall CLOSED: protected, and not granted.
             bool protectedShared, ownerGranted;
-            try { protectedShared = BridgeSettings.ForceReadOnlyOnWorkshared; } catch { protectedShared = true; }
-            try { ownerGranted = BridgeSettings.SyncWithCentralOwnerEnabled; } catch { ownerGranted = false; }
+            if (forceReadOnly.HasValue) protectedShared = forceReadOnly.Value;
+            else { try { protectedShared = BridgeSettings.ForceReadOnlyOnWorkshared; } catch { protectedShared = true; } }
+            if (authorised.HasValue) ownerGranted = authorised.Value;
+            else { try { ownerGranted = BridgeSettings.SyncWithCentralOwnerEnabled || syncOnly; } catch { ownerGranted = syncOnly; } }
             string settingsPath;
             try { settingsPath = BridgeSettings.Path(); } catch { settingsPath = null; }
             SyncRefusal auth = SyncWithCentralRules.AuthorisationRefusal(ownerGranted, protectedShared, settingsPath);
@@ -135,6 +172,55 @@ namespace Horizun.Revit.Commands
             try { readOnlyFile = doc.IsReadOnlyFile; } catch { }
             SyncRefusal pre = SyncWithCentralRules.PreconditionRefusal(readOnlyNow, transactionOpen, hasCentral, readOnlyFile);
             if (pre != null) return SyncRefuse(pre.Code, "'" + title + "' " + pre.Message);
+
+            // WORK LOCALLY, SYNCHRONIZE AT THE END: a sync with writes of this session whose
+            // verification failed or could not be measured is refused, dry run included, until
+            // they are fixed and re-checked (horizun_verify_changes) or the person accepts them:
+            // accept_findings=true accepts ONLY unverified scripts (kind unverified_python); a failed
+            // check (kind failed_check) only by accept_findings_ids naming every element id of it
+            // (INT-11 D.5). The strict path accepts nothing. See Core/SyncLedgerRules.cs.
+            string ledgerKey = ChangeWatch.Key(doc);
+            List<SyncLedgerEntry> blockers = SyncLedgerRules.Blockers(ledgerKey);
+            if (blockers.Any(entry => entry.TransactionPending))
+                return SyncRefuse(SyncLedgerRules.UnverifiedCode,
+                    "Revit has not finished processing a transaction in '" + title +
+                    "'. Wait for Revit to resolve it before retrying. Nothing was synchronized.");
+            bool acceptFindings = request.Value<bool?>("accept_findings") ?? false;
+            SyncLedgerRules.FindingsAcceptance acceptance = SyncLedgerRules.Accept(blockers, acceptFindings, acceptIds, syncOnly);
+            if (acceptance.UnusedIds.Count > 0)
+                return SyncRefuse("invalid_accept_findings_ids", "accept_findings_ids contains ids that do not belong to a pending failed check: " +
+                    string.Join(", ", acceptance.UnusedIds) + ". Nothing was synchronized.");
+            if (!acceptance.Proceed)
+            {
+                // INT-9 M-1/M-2: the text AND the structured block come from the decision of horizun_save_document (the tool they
+                // name), whichever tool made this call. Unreadable settings: nothing is offered.
+                SyncOnlyGrantRules.SyncDecision targetDecision = decision;
+                if (targetDecision == null)
+                {
+                    try { targetDecision = SyncOnlyGrantRules.Decide(BridgeSettings.ReadSyncSettings()); } catch { targetDecision = null; }
+                }
+                SyncOnlyGrantRules.BlockedWayOut wayOut = SyncOnlyGrantRules.WayOutOfBlocked(targetDecision, syncOnly);
+                var detail = new JObject
+                {
+                    ["code"] = acceptance.Code, ["operation"] = "sync_with_central",
+                    ["write_started"] = false, ["changes_applied"] = false, ["transaction_status"] = "not_started",
+                    ["session_changes"] = SyncLedgerRules.SessionChanges(ledgerKey),
+                    ["blockers_unverified_python"] = acceptance.PythonRows,
+                    ["blockers_failed_checks"] = acceptance.CheckRows,
+                    ["blocker_kinds"] = new JArray(acceptance.Remaining.Select(e => e.BlockKind).Distinct())
+                };
+                if (acceptance.CheckRows > 0)
+                {
+                    detail["missing_accept_findings_ids"] = new JArray(acceptance.MissingIds.Take(SyncLedgerRules.IdsListed));
+                    detail["missing_accept_findings_ids_count"] = acceptance.MissingIds.Count;
+                }
+                if (wayOut.AcceptFindingsOffered)
+                    detail["accept_findings_with"] = SyncLedgerRules.AcceptFindingsWith(acceptance);
+                string blockedText = acceptance.ChecksRemaining > 0 && (acceptance.AcceptFindings || acceptance.IdsGiven)
+                    ? SyncLedgerRules.FailedChecksMessage(title, acceptance, wayOut)
+                    : SyncLedgerRules.BlockedMessage(title, blockers, wayOut);
+                return CommandResult.FailWithDetail(blockedText, detail);
+            }
 
             var clock = Stopwatch.StartNew();
             SyncCensus before = TakeSyncCensus(doc);
@@ -167,16 +253,27 @@ namespace Horizun.Revit.Commands
                 ["has_all_changes_from_central"] = hasAll,
                 ["sample_status_counts"] = sampleCounts
             };
+            // INT-11 D.5: the token is bound to the ids the person accepted (SyncWithCentralRules.RequestFields).
+            estimate["accept_findings_ids"] = new JArray(acceptIds);
+            if (syncOnly)
+            {
+                // The token also binds WHAT the user holds: a different borrowed list, owned set or
+                // owned-workset set between the preview and the apply is refused as a moved model.
+                estimate["borrowed_digest"] = SyncOnlyGrantRules.Digest(before.Uids(before.BorrowedIds));
+                estimate["owned_digest"] = SyncOnlyGrantRules.Digest(before.Uids(before.OwnedIds));
+                estimate["owned_workset_ids"] = SyncOnlyGrantRules.Digest(before.OwnedWorksetIds.Select(i => i.ToString()));
+            }
+            string[] modelFields = SyncOnlyGrantRules.ModelFields(syncOnly);
             string planHash = ConfirmationStore.PlanHash(estimate, SyncWithCentralRules.RequestFields);
-            string modelFingerprint = ConfirmationStore.PlanHash(estimate, SyncWithCentralRules.ModelFields);
-            Dictionary<string, string> modelView = ModelView(estimate);
+            string modelFingerprint = ConfirmationStore.PlanHash(estimate, modelFields);
+            Dictionary<string, string> modelView = ModelView(estimate, modelFields);
 
             if (dryRun)
             {
                 Confirmation issued = DocumentGate.Confirmations.Issue(
                     SyncWithCentralRules.ConfirmationScope, documentKey, planHash, elementFingerprint: modelFingerprint);
                 RememberEstimate(issued.Token, modelView);
-                return CommandResult.Ok(new JObject
+                var preview = new JObject
                 {
                     ["operation"] = "sync_with_central",
                     ["dry_run"] = true,
@@ -193,6 +290,17 @@ namespace Horizun.Revit.Commands
                     ["owned_elements"] = before.OwnedIds.Count,
                     ["borrowed_elements"] = before.BorrowedIds.Count,
                     ["borrowed_sample_ids"] = new JArray(before.BorrowedIds.OrderByDescending(x => x).Take(20)),
+                    ["session_changes"] = SyncLedgerRules.SessionChanges(ledgerKey),
+                    ["precheck"] = SyncWithCentralRules.Precheck(comment, SyncLedgerRules.Writes(ledgerKey).Count,
+                        blockers.Count, acceptance.Proceed, before.OwnedIds.Count, before.BorrowedIds.Count, choice),
+                    ["accepted_findings"] = acceptance.AcceptedPython + acceptance.AcceptedChecks,
+                    ["accepted_findings_by_kind"] = new JObject
+                    {
+                        ["unverified_python"] = acceptance.AcceptedPython,
+                        ["failed_check"] = acceptance.AcceptedChecks
+                    },
+                    ["accept_findings_ids"] = new JArray(acceptIds),
+                    ["accept_findings_ids_unused"] = new JArray(acceptance.UnusedIds.Take(SyncLedgerRules.IdsListed)),
                     ["elements_scanned"] = before.AllIds.Count,
                     ["update_status_sample"] = new JObject
                     {
@@ -212,17 +320,23 @@ namespace Horizun.Revit.Commands
                     ["confirmation_token"] = issued.Token,
                     ["confirmation_expires_utc"] = issued.ExpiresUtc.ToString("u"),
                     ["confirmation_note"] =
-                        "Bound to THIS request (document, relinquish, comment, compact) and THIS estimate (ownership " +
+                        "Bound to THIS request (document, relinquish, comment, compact, accept_findings_ids) and THIS estimate (ownership " +
                         "counts, IsModified, has_all_changes_from_central, sampled statuses). If the estimate moves " +
                         "before the apply, it is refused naming what moved, and nothing is synchronized.",
                     ["elapsed_ms"] = clock.ElapsedMilliseconds
-                });
+                };
+                // Present only on the strict path: with the flag off the reply is the one that shipped.
+                if (syncOnly)
+                    preview["sync_only"] = SyncOnlyGrantRules.PreviewBlock(choice, before.BorrowedIds,
+                        before.Uids(before.BorrowedIds), before.OwnedIds, before.OwnedWorksetNames, before.OwnedWorksetIds,
+                        before.OthersIds.Count);
+                return CommandResult.Ok(preview);
             }
 
             string token = request.Value<string>("confirmation_token");
             ConfirmationCheck check = DocumentGate.Confirmations.Validate(
                 token, SyncWithCentralRules.ConfirmationScope, documentKey, planHash, modelFingerprint,
-                SyncWithCentralRules.DescribeEstimateDrift(RecallEstimate(token), modelView));
+                SyncWithCentralRules.DescribeEstimateDrift(RecallEstimate(token), modelView, modelFields));
             if (!check.Ok)
                 return SyncRefuse("confirmation_rejected",
                     "REFUSING TO SYNCHRONIZE '" + title + "': " + check.Message + " Run operation=sync_with_central " +
@@ -254,12 +368,15 @@ namespace Horizun.Revit.Commands
             DateTime? centralWriteBefore = CentralWriteTime(centralPath);
             string syncError = null;
             SyncFailureKind failure = SyncFailureKind.Unknown;
+            DateTime syncStarted = DateTime.UtcNow;
+            SyncLedgerRules.BeginCommandSync(ledgerKey);
             try { doc.SynchronizeWithCentral(transact, options); }
             catch (Exception ex)
             {
                 syncError = ex.GetType().Name + ": " + ex.Message;
                 failure = SyncWithCentralRules.ClassifyFailure(ex.GetType().FullName);
             }
+            finally { SyncLedgerRules.EndCommandSync(ledgerKey); }
             // Read FIRST: it asks the central about itself NOW, and every second the census below
             // takes is a second in which another user's sync can make it false.
             bool? hasAllAfter = HasAllChanges(doc, out string hasAllAfterError);
@@ -310,6 +427,20 @@ namespace Horizun.Revit.Commands
             var overallProblems = new List<string>();
             bool? verified = SyncWithCentralRules.OverallVerdict(syncError != null, ownership.Verified, updates.Verified,
                 hasAllAfter, modifiedAfter, centralAdvanced, overallProblems);
+            SyncVerdict strictPost = null;
+            if (syncOnly && syncError == null)
+            {
+                strictPost = SyncOnlyGrantRules.PostCheck(choice, after.OwnedIds.Count, after.BorrowedIds.Count, after.OwnedWorksets,
+                    modifiedAfter, hasAllAfter, before.Uids(before.OwnedIds), after.Uids(after.OwnedIds), before.Uids(before.OthersIds),
+                    after.Uids(after.OthersIds), uid => after.IdByUid.ContainsKey(uid));
+                overallProblems.AddRange(strictPost.Problems);
+                // A leftover or a pending change is a failure; an unmeasured read cannot stay "verified".
+                if (strictPost.Verified == false) verified = false;
+                else if (strictPost.Verified == null && verified == true) verified = null;
+            }
+            // A returned API call alone does not establish that the local work reached central.
+            // Retain the ledger whenever the independent post-check is failed or unmeasured.
+            if (verified == true) SyncLedgerRules.MarkSyncedThrough(ledgerKey, syncStarted, DateTime.UtcNow);
 
             var report = new JObject
             {
@@ -358,6 +489,18 @@ namespace Horizun.Revit.Commands
                 ["elapsed_ms"] = clock.ElapsedMilliseconds
             };
 
+            if (strictPost != null)
+                report["sync_only_postcheck"] = new JObject
+                {
+                    ["verified"] = strictPost.Verified,
+                    ["borrowed_elements_left"] = after.BorrowedIds.Count,
+                    ["owned_elements_left"] = after.OwnedIds.Count,
+                    ["owned_worksets_left"] = after.OwnedWorksets,
+                    ["pending_local_changes"] = modifiedAfter,
+                    ["others_no_longer_hold"] = Display(strictPost.UnexpectedlyReleased, after, before),
+                    ["problems"] = new JArray(strictPost.Problems)
+                };
+
             if (syncError != null)
             {
                 bool locked = failure == SyncFailureKind.CentralLocked;
@@ -389,6 +532,8 @@ namespace Horizun.Revit.Commands
         private static RelinquishOptions BuildRelinquish(SyncRelinquish choice)
         {
             if (choice == SyncRelinquish.All) return new RelinquishOptions(true);
+            // keep_borrowed gives the worksets back and keeps the borrowed elements;
+            // borrowed_only is the mirror: the borrowed elements go back and the worksets stay.
             bool worksets = choice == SyncRelinquish.KeepBorrowed;
             return new RelinquishOptions(false)
             {
@@ -396,7 +541,7 @@ namespace Horizun.Revit.Commands
                 ViewWorksets = worksets,
                 FamilyWorksets = worksets,
                 UserWorksets = worksets,
-                CheckedOutElements = false
+                CheckedOutElements = choice == SyncRelinquish.BorrowedOnly
             };
         }
 
@@ -407,7 +552,7 @@ namespace Horizun.Revit.Commands
         /// workset's owner): those land in owned, never in borrowed. An element whose
         /// UniqueId cannot be read cannot be followed across the sync, so it is unreadable.
         /// </summary>
-        private static SyncCensus TakeSyncCensus(Document doc)
+        internal static SyncCensus TakeSyncCensus(Document doc)
         {
             var c = new SyncCensus();
             string user = null;
@@ -417,7 +562,13 @@ namespace Horizun.Revit.Commands
             {
                 foreach (Workset w in new FilteredWorksetCollector(doc))
                     if (w != null && user != null && string.Equals(w.Owner, user, StringComparison.OrdinalIgnoreCase))
+                    {
                         ownedWorksets.Add(w.Id.IntegerValue);
+                        c.OwnedWorksetIds.Add(w.Id.IntegerValue);
+                        string wsName = null;
+                        try { wsName = w.Name; } catch { }
+                        c.OwnedWorksetNames.Add(wsName ?? "(unnamed)");
+                    }
                 c.OwnedWorksets = user == null ? (int?)null : ownedWorksets.Count;
             }
             catch { c.OwnedWorksets = null; }
@@ -444,7 +595,9 @@ namespace Horizun.Revit.Commands
                     c.AllIds.Add(id);
                     try
                     {
-                        if (WorksharingUtils.GetCheckoutStatus(doc, e.Id) != CheckoutStatus.OwnedByCurrentUser) continue;
+                        CheckoutStatus checkout = WorksharingUtils.GetCheckoutStatus(doc, e.Id);
+                        if (checkout == CheckoutStatus.OwnedByOtherUser) c.OthersIds.Add(id);
+                        if (checkout != CheckoutStatus.OwnedByCurrentUser) continue;
                         c.OwnedIds.Add(id);
                         int ws = -1;
                         try { ws = e.WorksetId.IntegerValue; } catch { }
@@ -511,10 +664,10 @@ namespace Horizun.Revit.Commands
             return list;
         }
 
-        private static Dictionary<string, string> ModelView(JObject estimate)
+        private static Dictionary<string, string> ModelView(JObject estimate, IEnumerable<string> fields = null)
         {
             var view = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (string field in SyncWithCentralRules.ModelFields)
+            foreach (string field in fields ?? SyncWithCentralRules.ModelFields)
                 view[field] = estimate[field]?.ToString(Newtonsoft.Json.Formatting.None);
             return view;
         }
@@ -538,3 +691,4 @@ namespace Horizun.Revit.Commands
         }
     }
 }
+

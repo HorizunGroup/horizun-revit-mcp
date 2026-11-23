@@ -36,7 +36,10 @@ namespace Horizun.Revit.Core
         /// including empties the file really contains; the caller decides what a
         /// blank row means.
         /// </summary>
-        public static List<string[]> ParseCsv(string text)
+        public static List<string[]> ParseCsv(string text) => ParseCsv(text, ',');
+
+        /// <summary>The same, split by <paramref name="delimiter"/> (';' from a Spanish Excel, a tab).</summary>
+        public static List<string[]> ParseCsv(string text, char delimiter)
         {
             var rows = new List<string[]>();
             if (text == null) return rows;
@@ -56,13 +59,15 @@ namespace Horizun.Revit.Core
                     else cell.Append(c);
                     continue;
                 }
+                if (c == delimiter)
+                {
+                    row.Add(cell.ToString()); cell.Clear(); cellStarted = false; rowStarted = true;
+                    continue;
+                }
                 switch (c)
                 {
                     case '"':
                         quoted = true; cellStarted = true; rowStarted = true;
-                        break;
-                    case ',':
-                        row.Add(cell.ToString()); cell.Clear(); cellStarted = false; rowStarted = true;
                         break;
                     case '\r':
                         if (i + 1 < text.Length && text[i + 1] == '\n') i++;
@@ -86,6 +91,57 @@ namespace Horizun.Revit.Core
                 rows.Add(row.ToArray());
             }
             return rows;
+        }
+
+        /// <summary>
+        /// The field separator of a CSV, read from its header line (outside quotes): ';' when it has more
+        /// semicolons than commas (Excel saves "CSV" that way where the decimal separator is a comma, and
+        /// "x;y" then read as ONE column), a tab likewise, otherwise ','.
+        /// </summary>
+        public static char DetectDelimiter(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return ',';
+            int commas = 0, semicolons = 0, tabs = 0;
+            bool quoted = false;
+            foreach (char c in text)
+            {
+                if (c == '"') { quoted = !quoted; continue; }
+                if (quoted) continue;
+                if (c == '\r' || c == '\n') break;
+                if (c == ',') commas++; else if (c == ';') semicolons++; else if (c == '\t') tabs++;
+            }
+            if (semicolons > commas && semicolons >= tabs) return ';';
+            if (tabs > commas && tabs > semicolons) return '\t';
+            return ',';
+        }
+
+        /// <summary>The number of fields in one CSV line.</summary>
+        public static int CountCsvFields(string line, char delimiter)
+        {
+            List<string[]> rows = ParseCsv(line ?? "", delimiter);
+            return rows.Count == 0 ? 0 : rows[0].Length;
+        }
+
+        /// <summary>
+        /// The first data row (1-based file row number) whose cell count differs from the header's, or null.
+        /// With "12,5,3,4" unquoted under a comma separator, x=12 and y=5 would place the element somewhere
+        /// else; a row with another number of cells than the header is refused instead. Blank rows are skipped.
+        /// </summary>
+        public static string RaggedRow(List<string[]> rows, char delimiter)
+        {
+            if (rows == null || rows.Count < 2) return null;
+            int width = rows[0].Length;
+            for (int r = 1; r < rows.Count; r++)
+            {
+                string[] row = rows[r];
+                if (row.Length == 1 && row[0].Trim().Length == 0) continue;
+                if (row.Length != width)
+                    return "row " + (r + 1) + " has " + row.Length + " cell(s) and the header has " + width +
+                           " (separator '" + (delimiter == '\t' ? "tab" : delimiter.ToString()) + "'): cells: " +
+                           string.Join(" | ", row) + ". A decimal comma in an unquoted cell splits it; quote it or save " +
+                           "the file with ';' as the separator. Nothing was written.";
+            }
+            return null;
         }
 
         /// <summary>

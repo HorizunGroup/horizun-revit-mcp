@@ -44,6 +44,24 @@ namespace Horizun.Revit.Core
         public const string XrefsBound = "bound";
 
         /// <summary>
+        /// Where a DWG's native dimensions and annotations end up, by xref mode. MEASURED
+        /// 2026-10-17 on Revit 2026 sheet exports (Scan validation 4): every native
+        /// dimension arrived as an AutoCAD DIMENSION entity, but in the MODEL SPACE OF
+        /// EACH VIEW'S companion file, which the sheet file only references (an xref
+        /// block, flags 36). A top-level selection of the sheet file - AutoLISP
+        /// (ssget "_X" '((0 . "DIMENSION"))) - counts zero and reads as "the exporter
+        /// lost the dimensions". The audit must walk the view files or the xref blocks.
+        /// </summary>
+        public static string DwgAnnotationLocation(string xrefs)
+            => xrefs == XrefsBound
+                ? "Native dimensions and annotations of each view are exported as DIMENSION/MTEXT entities inside the block " +
+                  "definition that represents the view in the sheet file, not at the top level of paper or model space; " +
+                  "count them by walking block definitions."
+                : "Native dimensions and annotations of each view are exported as DIMENSION/MTEXT entities in the model space " +
+                  "of that view's companion file (<stem>-<view>.dwg); the sheet file only references it as an xref, so a " +
+                  "top-level selection of the sheet file counts zero. Count them in the companion files or the xref blocks.";
+
+        /// <summary>
         /// Above this many views the dry run advises running the apply through
         /// horizun_submit_job: each view is its own exporter call on Revit's UI thread,
         /// and a long set outlives a client's tool timeout while still working.

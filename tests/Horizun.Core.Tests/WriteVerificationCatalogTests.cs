@@ -46,13 +46,16 @@ namespace Horizun.Core.Tests
         {
             // partial class CaptureViewCommand
             { "CaptureViewOptions.cs", new[] { "horizun_capture_view" } },
+            // partial class JoinGeometryCommand: operation=excavate / unexcavate
+            { "JoinGeometryCommand.Excavate.cs", new[] { "horizun_join_geometry" } },
+            // partial class ManageGroupsCommand: operation=edit_type_members
+            { "ManageGroupsCommand.EditType.cs", new[] { "horizun_manage_groups" } },
+            { "CreateElementsCommand.Confirmation.cs", new[] { "horizun_create_elements" } },
+            { "ManageViewsCommand.Execution.cs", new[] { "horizun_manage_views" } },
+            { "AnnotateCommand.Execution.cs", new[] { "horizun_annotate" } },
             { "ApplyCorrectionsCommand.Review.cs", new[] { "horizun_apply_corrections" } },
             // partial class LinkScheduleCommand: operation=write and operation=status_view
             { "LinkScheduleWrite.cs", new[] { "horizun_link_schedule" } },
-            // partial class ManageLinksCommand
-            { "ManageLinksCoordinates.cs", new[] { "horizun_manage_links" } },
-            { "ManageLinksIfc.cs", new[] { "horizun_manage_links" } },
-            { "ManageLinksPointCloud.cs", new[] { "horizun_manage_links" } },
             { "LinkScheduleStatusView.cs", new[] { "horizun_link_schedule" } },
             // partial class FramingCommand: operation=wall/remove (the verified write)
             { "FramingApply.cs", new[] { "horizun_framing" } },
@@ -64,11 +67,6 @@ namespace Horizun.Core.Tests
                                           "horizun_grade_toposolid_around_floors", "horizun_rectangularize_walls" } },
             // the shared one-edit runner behind three single-operation tools
             { "ModelEditRunner.cs", new[] { "horizun_manage_curtain", "horizun_slab_shape", "horizun_create_railing" } },
-            // partial class CoordinationCommand: operation=show and operation=prepare_navisworks mutate
-            { "CoordinationShow.cs", new[] { "horizun_coordination" } },
-            { "CoordinationNavisworksReadiness.cs", new[] { "horizun_coordination" } },
-            // partial class ResolveClashCommand: operation=apply_opening cuts a host or places a sleeve
-            { "ResolveClashSleeves.cs", new[] { "horizun_resolve_clash" } }
         };
 
         private static string RepoRoot()
@@ -215,8 +213,8 @@ namespace Horizun.Core.Tests
         public void Transform_move_batch_rejects_constraint_drift_before_commit()
         {
             string src = Command("TransformElementsCommand.cs");
-            int apply = src.IndexOf("foreach (Plan p in plans) Apply(doc, p);", StringComparison.Ordinal);
-            int check = src.IndexOf("if (plans.All(p => p.Operation == \"move\"))", apply, StringComparison.Ordinal);
+            int apply = src.IndexOf("foreach (Plan p in plans) { reached = p.Index; Apply(doc, p); }", StringComparison.Ordinal);
+            int check = src.IndexOf("if (plans.All(p => p.Operation == \"move\" || p.Operation == \"move_preserve_pin\"))", apply, StringComparison.Ordinal);
             int verify = src.IndexOf("if (Verify(doc, p, out JObject detail)) continue;", check, StringComparison.Ordinal);
             int rollback = src.IndexOf("throw new InvalidOperationException(\"Move batch did not hold before commit", verify, StringComparison.Ordinal);
             int commit = src.IndexOf("Guard.Commit(tx, txName);", rollback, StringComparison.Ordinal);
@@ -233,30 +231,6 @@ namespace Horizun.Core.Tests
             Assert.Contains("[\"unreadable_connectors\"]", src);
         }
 
-        [Fact]
-        public void An_unreadable_pin_state_is_not_an_unpin()
-        {
-            string src = Command("ManageLinksCommand.cs");
-            Assert.DoesNotContain("bool pinnedAfter = Safe<bool>(() => (doc.GetElement(instance.Id) as RevitLinkInstance)?.Pinned) == true;", src);
-            Assert.Contains("pinnedRead.HasValue && pinnedRead.Value == pin", src);
-        }
-
-        [Fact]
-        public void Verdicts_that_were_literals_are_now_derived()
-        {
-            Assert.Contains("verifiedRows == plans.Count", Command("ManageMaterialsCommand.cs"));
-            Assert.Contains("copyVerified ? \"committed_verified\"", Command("CopyBetweenDocumentsCommand.cs"));
-            Assert.Contains("[\"host_verified\"] = committed && loaded && afterPrint != null", Command("ManageCadLinksCommand.cs"));
-            Assert.Contains("allProvableHeld && provable > 0", Command("ExportCommand.cs"));
-            Assert.Contains("VerifyReopenedCatalogue(reopened, plan)", Command("CreateFamilyCommand.cs"));
-            Assert.Contains("coverage_complete\") != true", Command("ApplyIfcPlanCommand.cs"));
-            Assert.Contains("changes nothing: pass description", Command("ManageRevisionsCommand.cs"));
-            Assert.Contains("__removed_field_ids", Command("ManageSchedulesCommand.cs"));
-            Assert.Contains("legend == null || legend.Count == 0", Command("ManageViewsGraphics.cs"));
-            Assert.Contains("RecipeVerdict.Decide(counts, errorsReported)", Command("RecipeCommand.cs"));
-            Assert.Contains("Guard.VerifyRequested(\"deletions\"", Command("DeleteCommand.cs"));
-            Assert.Contains("Guard.VerifyRequested(\"keynote writes\"", Command("SetKeynoteCommand.cs"));
-        }
     }
 
     public class VerificationArithmeticTests

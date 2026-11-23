@@ -1,6 +1,7 @@
 #Requires -Version 5.1
 <# Render the complete bilingual catalog and exact suboperations into GitHub's
-   primary discovery surface. Reads documentation only; never starts Revit. #>
+   primary discovery surface, and refresh inventory counters in docs/TOOLS.md.
+   Reads documentation only; never starts Revit. #>
 [CmdletBinding()]
 param([switch]$Check)
 $ErrorActionPreference = 'Stop'
@@ -61,12 +62,17 @@ function New-SuboperationsBlock([string]$Language) {
     return $lines -join "`n"
 }
 
-foreach ($language in @('en', 'es')) {
-    $name = if ($language -eq 'en') { 'README.md' } else { 'README.es.md' }
+foreach ($language in @('en', 'es', 'reference')) {
+    $name = switch ($language) {
+        'en' { 'README.md' }
+        'es' { 'README.es.md' }
+        'reference' { 'docs/TOOLS.md' }
+    }
     $path = Join-Path $repo $name
     $before = [IO.File]::ReadAllText($path).Replace("`r`n", "`n")
     $after = $before
-    foreach ($section in @('TOOL CATALOG', 'SUBOPERATIONS')) {
+    $sections = if ($language -eq 'reference') { @() } else { @('TOOL CATALOG', 'SUBOPERATIONS') }
+    foreach ($section in $sections) {
         $pattern = '(?s)<!-- BEGIN ' + $section + ' -->.*?<!-- END ' + $section + ' -->'
         if ([regex]::Matches($after, $pattern).Count -ne 1) { throw "$name needs exactly one $section block." }
         $replacement = if ($section -eq 'TOOL CATALOG') { New-CatalogBlock $language } else { New-SuboperationsBlock $language }

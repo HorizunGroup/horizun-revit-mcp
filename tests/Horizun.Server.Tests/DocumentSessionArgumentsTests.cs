@@ -32,12 +32,22 @@ namespace Horizun.Server.Tests
             Assert.Contains("does not support", ToolInputRules.ValidateSession(new JObject { ["dry_run"] = true }, "open"));
         }
         [Fact]
-        public void Published_contract_has_seven_disjoint_operation_variants()
+        public void Published_contract_has_ten_disjoint_operation_variants()
         {
             var variants = (JArray)Contract.Find("horizun_document_session").InputSchema["oneOf"];
-            Assert.Equal(7, variants.Count);
+            Assert.Equal(10, variants.Count);
             foreach (var variant in variants)
                 Assert.False((bool)variant["additionalProperties"]);
+        }
+        [Fact]
+        public void Activate_names_target_rehearses_and_accepts_save_as_token()
+        {
+            var schema = Contract.Find("horizun_document_session").InputSchema;
+            var variant = ((JArray)schema["oneOf"]).Single(v => (string)v["properties"]["operation"]["const"] == "activate");
+            Assert.Contains("target_document", variant["required"].Select(t => (string)t));
+            Assert.True((bool)variant["properties"]["dry_run"]["default"]);
+            Assert.Null(ToolInputRules.ValidateSession(new JObject { ["operation"] = "activate", ["target_document"] = "A", ["save_as_path"] = "C:/local/a.rvt", ["confirmation_token"] = "token" }, "activate"));
+            Assert.Contains("overwrite", ToolInputRules.ValidateSession(new JObject { ["operation"] = "activate", ["overwrite"] = true }, "activate"));
         }
         [Fact]
         public void Sync_with_central_names_its_target_and_takes_only_its_own_arguments()
@@ -47,7 +57,7 @@ namespace Horizun.Server.Tests
             Assert.Contains("target_document", sync["required"].Select(t => (string)t));
             // A sync previews when dry_run is omitted; the shared base property says false.
             Assert.True((bool)sync["properties"]["dry_run"]["default"]);
-            Assert.Equal(new[] { "all", "keep_borrowed", "none" },
+            Assert.Equal(new[] { "all", "keep_borrowed", "borrowed_only", "none" },
                 sync["properties"]["relinquish"]["enum"].Select(t => (string)t).ToArray());
             Assert.Null(ToolInputRules.ValidateSession(new JObject
             {

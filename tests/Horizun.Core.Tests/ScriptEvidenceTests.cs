@@ -23,6 +23,16 @@ namespace Horizun.Core.Tests
 {
     public class ScriptEvidenceTests
     {
+        [Fact]
+        public void Array_in_output_fields_does_not_crash_the_bridge()
+        {
+            var output = new JObject { ["status"] = new JArray(1), ["summary"] = new JArray(2) };
+            Assert.Throws<System.InvalidCastException>(() => output.Value<string>("status"));
+            var report = ScriptEvidence.Classify(output);
+            Assert.Equal("completed_unverified", report.Status);
+            Assert.Null(report.Summary);
+        }
+
         private static JObject Structured(string status, bool check = false, params string[] evidence)
         {
             var ev = new JArray();

@@ -17,6 +17,111 @@ namespace Horizun.Revit.Core
 {
     public static class ArchitecturalEditRules
     {
+        public static JObject FlatSlabContour(IEnumerable<IEnumerable<double[]>> loops, double scale)
+        {
+            var boundaries = new JArray();
+            var vertices = new JArray();
+            bool complete = true;
+            foreach (IEnumerable<double[]> loop in loops)
+            {
+                var points = new JArray();
+                foreach (double[] xyz in loop)
+                {
+                    var point = new JArray(xyz.Select(value => Math.Round(value / scale, 4)));
+                    point.Add("Boundary");
+                    points.Add(point);
+                }
+                if (points.Count < 3) { complete = false; continue; }
+                boundaries.Add(points);
+                foreach (JToken point in points) vertices.Add(point.DeepClone());
+            }
+            return new JObject
+            {
+                ["enabled"] = false,
+                ["vertex_source"] = "top_face_boundary",
+                ["z_note"] = "boundary z is the elevation of the top face in model coordinates",
+                ["vertices"] = vertices,
+                ["boundary_loops"] = boundaries,
+                ["creases"] = new JArray(),
+                ["boundary_read_complete"] = complete && boundaries.Count > 0
+            };
+        }
+
+        public enum SlabEndpoint { Outside, Interior, Boundary }
+
+        public static TEditor RefreshSlabEditor<TEditor>(Action regenerate, Func<TEditor> read, Func<TEditor, bool> enabled,
+            Action<TEditor> enable, out bool wasEnabled)
+        {
+            regenerate();
+            TEditor editor = read();
+            wasEnabled = enabled(editor);
+            if (wasEnabled) return editor;
+            enable(editor);
+            regenerate();
+            return read();
+        }
+
+        // Each edit can invalidate wrappers over the slab's native vertices.
+        public static void InsertSlabSplit<TPoint, TEditor, TVertex>(TPoint start, TPoint end,
+            Func<TEditor> refresh, Func<TEditor, TPoint, TVertex> findVertex,
+            Func<TPoint, SlabEndpoint> locate, Action<TEditor, TPoint> addVertex,
+            Action<TEditor, TVertex, TVertex, bool> insert, Action<TEditor> splitAlongBoundaryChord,
+            bool canAddBoundaryVertex = false, Action<TEditor> beforeTrace = null, Action<TEditor> afterTrace = null)
+            where TVertex : class
+        {
+            TEditor editor = refresh();
+            bool missingStart = findVertex(editor, start) == null, missingEnd = findVertex(editor, end) == null;
+            SlabEndpoint startLocation = locate(start), endLocation = locate(end);
+            if ((missingStart && startLocation == SlabEndpoint.Outside) || (missingEnd && endLocation == SlabEndpoint.Outside))
+                throw new ArgumentException("A split endpoint is outside the readable slab top face.");
+            bool needsBoundaryVertex = (missingStart && startLocation == SlabEndpoint.Boundary) ||
+                (missingEnd && endLocation == SlabEndpoint.Boundary);
+            bool edgeToEdge = startLocation == SlabEndpoint.Boundary && endLocation == SlabEndpoint.Boundary;
+            if (needsBoundaryVertex && edgeToEdge && !canAddBoundaryVertex)
+            {
+                beforeTrace?.Invoke(editor);
+                splitAlongBoundaryChord(editor);
+                if (afterTrace != null) afterTrace(refresh());
+                return;
+            }
+            if (needsBoundaryVertex && !canAddBoundaryVertex)
+                throw new ArgumentException("Revit cannot insert a point on the slab boundary with AddPoint. Use an existing edge vertex or a flat floor split from edge to edge.");
+            foreach (TPoint endPoint in new[] { start, end })
+            {
+                if (findVertex(editor, endPoint) != null) continue;
+                addVertex(editor, endPoint);
+                editor = refresh();
+                if (findVertex(editor, endPoint) == null)
+                    throw new ArgumentException("Revit did not create a split endpoint. Use an existing boundary vertex or a point inside the slab.");
+            }
+            TVertex a = findVertex(editor, start), b = findVertex(editor, end);
+            if (a == null || b == null) throw new InvalidOperationException("A split endpoint disappeared after regeneration.");
+            beforeTrace?.Invoke(editor);
+            insert(editor, a, b, needsBoundaryVertex);
+            if (afterTrace != null) afterTrace(refresh());
+        }
+
+        internal static double NewCommittedSplitCoverage(double[][] before, double[][] after,
+            double[][] committed, double start, double end)
+        {
+            var retained = from traced in after
+                           from read in committed
+                           let lo = Math.Max(Math.Min(traced[0], traced[1]), Math.Min(read[0], read[1]))
+                           let hi = Math.Min(Math.Max(traced[0], traced[1]), Math.Max(read[0], read[1]))
+                           where hi > lo
+                           select new[] { lo, hi };
+            return CoveredLength(before.Concat(retained), start, end) - CoveredLength(before, start, end);
+        }
+
+        public static bool FlatSlabAt(IEnumerable<double> faceElevations, double target, double tolerance)
+        {
+            double[] measured = faceElevations.ToArray();
+            return measured.Length > 0 && measured.All(z => Math.Abs(z - target) <= tolerance);
+        }
+
+        public static double? FlatFloorSupportElevation(double[] tops, double[] bottoms, double tolerance) =>
+            tops.Length > 0 && bottoms.Length > 0 && tops[0] - bottoms[0] > tolerance &&
+            FlatSlabAt(tops, tops[0], tolerance) && FlatSlabAt(bottoms, bottoms[0], tolerance) ? bottoms[0] : (double?)null;
         /// <summary>0.5 mm in feet: "the model came back where we put it".</summary>
         public const double PositionToleranceFeet = 0.5 / 304.8;
 
@@ -109,17 +214,43 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>Null when the railing request names exactly one placement route.</summary>
+        /// <summary>
+        /// infill: the railing gets a NEW type, duplicated from type_id and named new_type_name, whose
+        /// baluster pattern is one baluster or panel family (baluster_type_id) every spacing; posts
+        /// optional. The source type is never edited, so its other railings keep their look.
+        /// </summary>
+        public static string ValidateRailingInfill(JToken token)
+        {
+            if (token == null) return null;
+            if (!(token is JObject infill)) return "infill must be an object { new_type_name, baluster_type_id, spacing, post_type_id? }.";
+            var allowed = new HashSet<string>(StringComparer.Ordinal) { "new_type_name", "baluster_type_id", "spacing", "post_type_id" };
+            foreach (JProperty p in infill.Properties())
+                if (!allowed.Contains(p.Name)) return "infill." + p.Name + " is not a field of infill (new_type_name, baluster_type_id, spacing, post_type_id). Nothing ran.";
+            if (string.IsNullOrWhiteSpace(infill.Value<string>("new_type_name")))
+                return "infill.new_type_name is required: the infill goes on a NEW railing type, never on the one other railings use.";
+            if (infill["baluster_type_id"] == null || infill["baluster_type_id"].Type != JTokenType.Integer)
+                return "infill.baluster_type_id (a baluster or baluster-panel family type) is required.";
+            if (infill["spacing"] == null || (infill["spacing"].Type != JTokenType.Integer && infill["spacing"].Type != JTokenType.Float))
+                return "infill.spacing (centre to centre, in units) is required.";
+            if (infill.Value<double>("spacing") <= 0) return "infill.spacing must be greater than zero.";
+            if (infill["post_type_id"] != null && infill["post_type_id"].Type != JTokenType.Integer)
+                return "infill.post_type_id must be an integer type id.";
+            return null;
+        }
+
         public static string ValidateRailing(JObject request)
         {
             if (request == null) return "parameters must be a JSON object.";
             var allowed = new HashSet<string>(StringComparer.Ordinal)
             {
                 "target_document", "units", "dry_run", "confirmation_token", "transaction_name", "idempotency_key",
-                "type_id", "host_id", "placement", "path", "level_id", "base_offset"
+                "type_id", "host_id", "placement", "path", "level_id", "base_offset", "infill"
             };
             foreach (JProperty p in request.Properties())
                 if (!allowed.Contains(p.Name)) return p.Name + " is not applicable to horizun_create_railing. Nothing ran.";
             if (request["type_id"] == null) return "type_id (a railing type) is required.";
+            string infillProblem = ValidateRailingInfill(request["infill"]);
+            if (infillProblem != null) return infillProblem;
             bool host = request["host_id"] != null, path = request["path"] != null;
             if (host == path) return "give host_id (a stair or ramp) OR path (a sketched polyline), not both and not neither.";
             if (host && request["level_id"] != null) return "level_id applies to a sketched path; a hosted railing takes its host's level.";
@@ -255,6 +386,15 @@ namespace Horizun.Revit.Core
         {
             return "absolute";
         }
+
+        /// <summary>
+        /// The height an unmodified slab-shape vertex sits at. A floor's height offset already names
+        /// its TOP face; a roof's base offset names its BASE, and its shape vertices sit on the top
+        /// face, one thickness higher. Read without the thickness, every add_point on a flat roof
+        /// measured +thickness and the verification rolled the edit back.
+        /// </summary>
+        public static double SlabShapeTop(double levelElevation, double offset, bool isRoof, double? roofThickness) =>
+            levelElevation + offset + (isRoof ? (roofThickness ?? 0) : 0);
 
         /// <summary>A vertex's offset under the edit's convention (absolute when none held).</summary>
         public static double SlabOffsetRead(double z, double top, string convention) =>

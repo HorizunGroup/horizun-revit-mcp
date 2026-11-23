@@ -47,6 +47,14 @@ param(
     # Seconds to wait for the reply. A model scan or a long script needs more
     # than a default; a timeout here is the harness giving up, not the bridge.
     [int]$TimeoutSec = 900,
+    # Which Revit process the call goes to. With two instances of the same year open, the
+    # server refuses to pick (documento_objetivo_ambiguo) and a one-shot call has no session
+    # in which to have chosen: the server is started with HORIZUN_REVIT_PID=<n>, pinned from
+    # its first line - no horizun_target call before every write (field cycle T2).
+    [int]$TargetPid = 0,
+    # A session key: horizun_target with pid or year is REMEMBERED under it, and every later
+    # hz-call with the same -Session starts on that Revit without naming it again.
+    [string]$Session,
     [switch]$Quiet
 )
 $ErrorActionPreference = 'Stop'
@@ -105,13 +113,20 @@ $psi.RedirectStandardError = $true
 # than at parse time - so it survives a syntax check and dies on first use.
 # No BOM: a BOM on the first line is not JSON, and the server would reject it.
 $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+if ($TargetPid -gt 0) { $psi.EnvironmentVariables['HORIZUN_REVIT_PID'] = [string]$TargetPid }
+if ($Session) { $psi.EnvironmentVariables['HORIZUN_SESSION_KEY'] = $Session }
 
 $proc = [Diagnostics.Process]::Start($psi)
+# Input in UTF-8 too, written through the base stream so it works on 5.1 as well. Left to the
+# default, StandardInput used the console code page: a path with accents ("01 Área de
+# consultoría técnica") reached the server as U+FFFD and the folder "did not exist"
+# (measured 2026-10-23).
+$stdin = New-Object System.IO.StreamWriter($proc.StandardInput.BaseStream, [System.Text.UTF8Encoding]::new($false))
 
 function Send($obj) {
     $line = $obj | ConvertTo-Json -Depth 40 -Compress
-    $proc.StandardInput.WriteLine($line)
-    $proc.StandardInput.Flush()
+    $stdin.WriteLine($line)
+    $stdin.Flush()
 }
 
 # A reply PowerShell's object model refuses although it is valid JSON - a property named
@@ -204,13 +219,13 @@ if ($Resource) {
     $argsLine = ($Arguments -replace "[`r`n]+", ' ').Trim()
     $line = '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":' +
             (ConvertTo-Json -InputObject ([string]$Tool) -Compress) + ',"arguments":' + $argsLine + '}}'
-    $proc.StandardInput.WriteLine($line)
-    $proc.StandardInput.Flush()
+    $stdin.WriteLine($line)
+    $stdin.Flush()
 }
 $reply = ReadReply $TimeoutSec
 $clock.Stop()
 
-try { $proc.StandardInput.Close() } catch { }
+try { $stdin.Close() } catch { }
 if (-not $proc.WaitForExit(30000)) { try { $proc.Kill() } catch { } }
 
 $text = $null; $isError = $null; $data = $null

@@ -9,6 +9,25 @@ namespace Horizun.Revit.Core
     public static class GeometryInput
     {
         public const double Tolerance = 1e-6; // 0.0003048 mm, absolute positional tolerance.
+
+        /// <summary>NewOpening projects its diagonal onto a vertical host. Compare
+        /// its along-host and Z extents, independently of which diagonal Revit returns
+        /// and of the host face's normal offset. Host identity is verified separately.</summary>
+        public static bool SameWallOpening(double[] axisStart, double[] axisEnd,
+            double[] requestedA, double[] requestedB, double[] actualA, double[] actualB)
+        {
+            var points = new[] { axisStart, axisEnd, requestedA, requestedB, actualA, actualB };
+            if (points.Any(p => p == null || p.Length != 3 || p.Any(v => double.IsNaN(v) || double.IsInfinity(v)))) return false;
+            double dx = axisEnd[0] - axisStart[0], dy = axisEnd[1] - axisStart[1];
+            double length = Math.Sqrt(dx * dx + dy * dy);
+            if (length <= Tolerance || Math.Abs(axisEnd[2] - axisStart[2]) > Tolerance) return false;
+            double Along(double[] p) => ((p[0] - axisStart[0]) * dx + (p[1] - axisStart[1]) * dy) / length;
+            double ra = Along(requestedA), rb = Along(requestedB), aa = Along(actualA), ab = Along(actualB);
+            return Math.Abs(Math.Min(ra, rb) - Math.Min(aa, ab)) <= Tolerance &&
+                Math.Abs(Math.Max(ra, rb) - Math.Max(aa, ab)) <= Tolerance &&
+                Math.Abs(Math.Min(requestedA[2], requestedB[2]) - Math.Min(actualA[2], actualB[2])) <= Tolerance &&
+                Math.Abs(Math.Max(requestedA[2], requestedB[2]) - Math.Max(actualA[2], actualB[2])) <= Tolerance;
+        }
         // Segments are [x0,y0,x1,y1]. Revit may split one sketch edge at a
         // connection. Compare coverage in both directions, not segment counts.
         public static bool SameBoundaryXY(IReadOnlyList<double[]> a, IReadOnlyList<double[]> b)
@@ -95,6 +114,11 @@ namespace Horizun.Revit.Core
                             throw new ArgumentException("profile[" + l + "] self-intersects at edges " + i + " and " + j + ".");
                     }
                 }
+                // Necks and spikes narrower than Revit's own short-curve tolerance pass every check above and
+                // fail at apply ("curve loops cannot compose a valid boundary"): refuse them here.
+                var health = LoopHealthRules.Problems(contour, Math.Max(Tolerance, shortCurveTolerance));
+                if (health.Count > 0)
+                    throw new ArgumentException("profile[" + l + "]: " + string.Join("; ", health) + ". Clean the contour (merge the near-touching vertices) and resend; nothing was written.");
                 if (Math.Abs(Area(contour)) <= Tolerance * Tolerance) throw new ArgumentException("profile[" + l + "] has zero area.");
                 foreach (var other in result)
                     for (int i = 0; i < contour.Count; i++)

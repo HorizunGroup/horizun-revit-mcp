@@ -101,7 +101,7 @@ if ($Client -eq 'Both' -and $SkipMissingClients) {
         Write-Host '  If what you use is the Claude DESKTOP app, this is the wrong helper:' -ForegroundColor Cyan
         # Setup creates no Start-menu shortcut for this; name the command that exists.
         Write-Host '  run this instead:' -ForegroundColor Cyan
-        Write-Host ('    powershell -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'install-claude-desktop-extension.ps1') + '"') -ForegroundColor Cyan
+        Write-Host ('    powershell -ExecutionPolicy RemoteSigned -File "' + (Join-Path $PSScriptRoot 'install-claude-desktop-extension.ps1') + '"') -ForegroundColor Cyan
         Write-Host '  If you do use Claude Code or Codex, start it once so it writes its'
         Write-Host '  configuration file, close it, and run this again.'
         Write-Host ''

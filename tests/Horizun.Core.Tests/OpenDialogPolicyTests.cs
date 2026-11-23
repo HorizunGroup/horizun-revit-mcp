@@ -38,6 +38,13 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Resolve_in_memory_is_an_explicit_open_policy()
+        {
+            string error;
+            Assert.Equal(DialogAnswer.ResolveInMemory, OpenDialogPolicy.Parse("resolve_in_memory", out error));
+            Assert.Null(error);
+        }
+        [Fact]
         public void An_unknown_value_is_an_error_not_a_silent_cancel()
         {
             string err;
@@ -53,3 +60,4 @@ namespace Horizun.Core.Tests
         }
     }
 }
+

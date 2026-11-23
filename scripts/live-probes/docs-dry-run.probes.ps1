@@ -67,9 +67,11 @@ $script:HzProbeModules += [pscustomobject]@{
             # 2. a plan of the own level, on an own sheet, then cropped around the walls
             if (-not $levelId) { Case 2 'not_covered' 'the own level could not be staged' }
             else {
+                # No view_scale: the case measures the crop, and a new plan takes its view type's default
+                # template, which may control View Scale - then create_floor_plan refuses a scale up front.
                 $number = 'HZD-' + ([string]$run).Substring(0, [math]::Min(8, ([string]$run).Length))
                 $st = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; units = 'mm'; actions = @(
-                        @{ operation = 'create_floor_plan'; key = 'plan'; name = "HZ_DOCS_PLAN_$run"; level_id = $levelId; view_scale = 100 },
+                        @{ operation = 'create_floor_plan'; key = 'plan'; name = "HZ_DOCS_PLAN_$run"; level_id = $levelId },
                         @{ operation = 'create_sheet'; key = 'sh'; number = $number; name = 'HZ DOCS SHEET' },
                         @{ operation = 'place_view'; sheet_key = 'sh'; view_key = 'plan'; point = @(400, 300); key = 'vp' }) } ($run + '-dd-sheet')
                 $planId = $null

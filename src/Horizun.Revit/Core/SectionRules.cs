@@ -21,6 +21,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -110,6 +111,13 @@ namespace Horizun.Revit.Core
     public sealed class StructuralLap
     {
         public const string TowardInside = "inside", TowardOutside = "outside";
+        /// <summary>
+        /// ACROSS (top or bottom layer of two or more bars): the next piece stays on the layer's own line and
+        /// every bar sits one diameter in from its end of the row - the pair at the corners laps beside itself,
+        /// side by side, as it is tied on site. Into the section (inside) puts the lapped piece one diameter
+        /// lower, where a slab's bottom mat crossing the beam already is.
+        /// </summary>
+        public const string TowardAcross = "across";
         public double? AtMm, AtRatio, LengthMm, LengthDb;
         public string Toward = TowardInside;
         /// <summary>
@@ -165,7 +173,7 @@ namespace Horizun.Revit.Core
         public double[] OriginMm = new double[3];
         public double[] U = new double[3], V = new double[3], W = new double[3];
         public double UMin, UMax, VMin, VMax, WMin, WMax;
-        /// <summary>Null when the solid is the box its extents describe; otherwise why it is not.</summary>
+        /// <summary>Null when a rectangular section can be used; otherwise why it cannot.</summary>
         public string NotRectangular;
         /// <summary>
         /// True when the solid is a circular cylinder about the axis (L2): equal extents across, and
@@ -199,109 +207,6 @@ namespace Horizun.Revit.Core
         };
     }
 
-    /// <summary>
-    /// A host's section frame, measured off its own solid: the axis the caller reads from
-    /// the model (a beam's location line, a column's vertical), "up" in the section, and
-    /// the extents of every vertex of the solid along the three directions. A solid that
-    /// does not fill the box those extents describe is not a rectangular prism - a haunch,
-    /// a chamfer, a cut end, a rotated section - and says so instead of being reinforced as one.
-    /// </summary>
-    public static class SectionFrames
-    {
-        /// <summary>The solid must fill at least this share of its box to be read as a b x h prism.</summary>
-        public const double MinimumFill = 0.98;
-
-        public static SectionHostFrame Measure(long elementId, double[] originMm, double[] along, double[] up, HostMesh mesh)
-        {
-            double[] u = Unit(along);
-            // UP, made perpendicular to the axis: on an inclined beam "up" is the section's
-            // own up, square to the slope, not world Z.
-            double d = Dot(up, u);
-            double[] w = Unit(new[] { up[0] - d * u[0], up[1] - d * u[1], up[2] - d * u[2] });
-            double[] v = Cross(w, u);
-            var f = new SectionHostFrame
-            {
-                ElementId = elementId, OriginMm = new[] { originMm[0], originMm[1], originMm[2] }, U = u, V = v, W = w,
-                UMin = double.MaxValue, UMax = double.MinValue, VMin = double.MaxValue, VMax = double.MinValue,
-                WMin = double.MaxValue, WMax = double.MinValue
-            };
-            if (mesh == null || mesh.Vertices.Count == 0 || mesh.Triangles.Count == 0)
-            {
-                f.NotRectangular = "its solid could not be read";
-                f.UMin = f.UMax = f.VMin = f.VMax = f.WMin = f.WMax = 0;
-                return f;
-            }
-            foreach (double[] p in mesh.Vertices)
-            {
-                double[] r = { p[0] - originMm[0], p[1] - originMm[1], p[2] - originMm[2] };
-                double a = Dot(r, u), b = Dot(r, v), c = Dot(r, w);
-                f.UMin = Math.Min(f.UMin, a); f.UMax = Math.Max(f.UMax, a);
-                f.VMin = Math.Min(f.VMin, b); f.VMax = Math.Max(f.VMax, b);
-                f.WMin = Math.Min(f.WMin, c); f.WMax = Math.Max(f.WMax, c);
-            }
-            double box = f.LengthMm * f.WidthMm * f.DepthMm;
-            double vol = Math.Abs(Volume(mesh));
-            if (mesh.AnyCurvedFace)
-            {
-                f.NotRectangular = "it has a curved face";
-                // A CIRCULAR SECTION (L2): the solid's vertices are tessellated ON its surface, so
-                // every one that is not on an end face sits at the radius from the axis.
-                double r = f.WidthMm / 2, vc = (f.VMin + f.VMax) / 2, wc = (f.WMin + f.WMax) / 2;
-                double slack = Math.Max(1.0, 2 * mesh.ChordToleranceMm);
-                bool round = Math.Abs(f.WidthMm - f.DepthMm) <= slack && r > 0;
-                double rMin = double.MaxValue, rMax = 0;
-                foreach (double[] p in mesh.Vertices)
-                {
-                    double[] q = { p[0] - originMm[0], p[1] - originMm[1], p[2] - originMm[2] };
-                    double dv = Dot(q, v) - vc, dw = Dot(q, w) - wc;
-                    double rr = Math.Sqrt(dv * dv + dw * dw);
-                    // ON THE AXIS: an end cap's centre, there to a hair rather than to a micron (measured,
-                    // Revit 2024 and 2026) - within the slack it is the axis, not a radius.
-                    if (rr <= slack) continue;
-                    rMin = Math.Min(rMin, rr); rMax = Math.Max(rMax, rr);
-                    if (Math.Abs(rr - r) > slack) round = false;
-                }
-                if (round) { f.Circular = true; f.RadiusMm = r; f.NotRectangular = "it is circular"; }
-                else
-                    // WHAT WAS MEASURED, so the reader can tell a section that is not round from a
-                    // tolerance that is too tight (live 2024, acero L7).
-                    f.NotRectangular = "it has a curved face; across its axis it is " + Mm(f.WidthMm) + " x " + Mm(f.DepthMm) +
-                                       " mm across, with vertex radii from " + Mm(rMin == double.MaxValue ? 0 : rMin) + " to " + Mm(rMax) +
-                                       " mm about the middle of those extents (a circle needs both equal to half the width within the slack " +
-                                       Mm(slack) + " mm)";
-            }
-            else if (box <= 0 || vol / box < MinimumFill)
-                f.NotRectangular = "its solid fills " + Math.Round(box <= 0 ? 0 : vol / box, 3).ToString(CultureInfo.InvariantCulture) +
-                                   " of the box " + Math.Round(f.LengthMm, 1).ToString(CultureInfo.InvariantCulture) + " x " +
-                                   Math.Round(f.WidthMm, 1).ToString(CultureInfo.InvariantCulture) + " x " +
-                                   Math.Round(f.DepthMm, 1).ToString(CultureInfo.InvariantCulture) + " mm along its own axes";
-            return f;
-        }
-
-        private static string Mm(double x) => Math.Round(x, 1).ToString(CultureInfo.InvariantCulture);
-
-        /// <summary>The enclosed volume of a closed triangle mesh, by the divergence theorem (signed).</summary>
-        public static double Volume(HostMesh m)
-        {
-            double sum = 0;
-            foreach (int[] t in m.Triangles)
-            {
-                double[] a = m.Vertices[t[0]], b = m.Vertices[t[1]], c = m.Vertices[t[2]];
-                sum += Dot(a, Cross(b, c)) / 6.0;
-            }
-            return sum;
-        }
-
-        private static double Dot(double[] a, double[] b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        private static double[] Cross(double[] a, double[] b) =>
-            new[] { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
-        private static double[] Unit(double[] a)
-        {
-            double l = Math.Sqrt(Dot(a, a));
-            return l < 1e-12 ? new[] { 0.0, 0.0, 0.0 } : new[] { a[0] / l, a[1] / l, a[2] / l };
-        }
-    }
-
     public sealed class SectionResult
     {
         public bool Ok => Code == null;
@@ -316,6 +221,44 @@ namespace Horizun.Revit.Core
 
     public static class SectionRules
     {
+        /// <summary>A diagnostic for a section rule that resolved on a buildable host.</summary>
+        public static JObject BeamRuleOnColumnWarning(StructuralSectionRule rule, string hostCategory, long hostId)
+        {
+            if (hostCategory != "OST_StructuralColumns") return null;
+
+            // The declared category is independent of host matching. Splitting a set
+            // adds ids, so the diagnostic must read provenance with or without them.
+            StructuralHostSelector host = rule.Host;
+            string category = host.Category;
+            JToken sourceCategory = host.SourceSelector?["category"];
+            if (category == null && sourceCategory?.Type == JTokenType.String)
+                category = (string)sourceCategory;
+            bool inferredFromLayers = false;
+            if (category == null && sourceCategory == null)
+            {
+                // Use the original selector so splitting a mark-based rule does not
+                // turn it into an explicitly selected host for this diagnostic.
+                bool selectedById = host.SourceSelector == null ? host.ElementIds.Count > 0
+                    : host.SourceSelector["element_ids"] is JArray ids && ids.Count > 0;
+                inferredFromLayers = selectedById && rule.Axis != "vertical" &&
+                    rule.Layers.Any(layer => layer.Face == StructuralSectionLayer.FaceTop) &&
+                    rule.Layers.Any(layer => layer.Face == StructuralSectionLayer.FaceBottom) &&
+                    rule.Layers.All(layer => layer.Face == StructuralSectionLayer.FaceTop ||
+                                             layer.Face == StructuralSectionLayer.FaceBottom);
+            }
+            if (category != "OST_StructuralFraming" && !inferredFromLayers) return null;
+
+            return new JObject
+            {
+                ["code"] = "beam_rule_on_column",
+                ["host_id"] = hostId,
+                ["rule"] = rule.Id,
+                ["message"] = "A beam section rule" + (inferredFromLayers ? " (inferred from top and bottom bar layers)" : "") +
+                              " was applied to an eligible structural column during resolution. " +
+                              "If this was not intended, use a column section rule."
+            };
+        }
+
         /// <summary>
         /// May a host placed at a POINT be framed as a column (axis up world Z, its facing as
         /// the section's up)? Only a structural column. Anything else - an isolated footing
@@ -426,6 +369,16 @@ namespace Horizun.Revit.Core
         public const string CageStirrup = "stirrup";
         public const string CageTie = "tie";
 
+        /// <summary>
+        /// ONE MARK, ONE BAR. A mark declared on the whole section rule used to be copied onto every part of the cage -
+        /// the top bars, the bottom bars and the stirrups - which are different bars, and the audit then reported
+        /// bar_mark_conflict on every beam. The rule's mark is now a prefix: each part takes rule mark + "-" + its name
+        /// (V-top, V-bottom, V-stirrups, V-tie-x; a lapped layer's pieces V-top-p1, V-top-p2). A mark declared on a layer,
+        /// a tie or a stirrup zone is used as written. Null when the rule declares no mark.
+        /// </summary>
+        public static string ComponentMark(string ruleMark, string component) =>
+            string.IsNullOrWhiteSpace(ruleMark) ? null : ruleMark + "-" + component;
+
         public static string LayerId(string ruleId, long hostId, string layer) =>
             ruleId + "#h" + hostId.ToString(CultureInfo.InvariantCulture) + "#" + layer;
 
@@ -518,6 +471,7 @@ namespace Horizun.Revit.Core
             // THE COVER THIS SECTION DECLARES FOR ITS HOST, carried on every bar it lays: a bar declared into
             // other elements is held to the smallest cover any of them declares, and the host's is this one.
             double sectionCover = Math.Min(Math.Min(top, bottom), Math.Min(Math.Min(left, right), end));
+            double runStart = f.UMin, runEnd = f.UMax;
 
             double sd = 0;
             if (rule.Stirrups != null)
@@ -531,7 +485,8 @@ namespace Horizun.Revit.Core
             double wIn0 = f.WMin + bottom + sd, wIn1 = f.WMax - top - sd;
             if (vIn1 <= vIn0 || wIn1 <= wIn0)
                 return Refuse(CodeNoRoom, "element " + f.ElementId + " is " + Mm(f.WidthMm) + " x " + Mm(f.DepthMm) +
-                              " mm and the covers and stirrup leave no room inside it.");
+                              " mm. The covers and stirrup use " + Mm(left + right + 2 * sd) + " mm across and " +
+                              Mm(bottom + top + 2 * sd) + " mm vertically, leaving no room inside it.");
 
             var layers = new List<StructuralSectionLayer>();
             foreach (StructuralSectionLayer l in rule.Layers)
@@ -606,8 +561,11 @@ namespace Horizun.Revit.Core
                         return Refuse(CodeExtentOutside, "layer '" + (l.Name ?? l.Face) + "' runs " + Mm(run) + " mm from the " +
                                       l.FromEnd + " and element " + f.ElementId + " is " + Mm(f.LengthMm) + " mm long less its end covers.");
                 }
-                else { u0 = f.UMin + end; u1 = f.UMax - end; }
-                if (u1 <= u0) return Refuse(CodeNoRoom, "element " + f.ElementId + " is too short for its end covers.");
+                else { u0 = runStart + end; u1 = runEnd - end; }
+                if (u1 <= u0)
+                    return Refuse(CodeNoRoom, "layer '" + (l.Name ?? l.Face) + "' on element " + f.ElementId +
+                                  " has " + Mm(runEnd - runStart) + " mm of uncut length and needs " + Mm(end) +
+                                  " mm of cover at each end, leaving no length for the bar.");
                 // TWO LAYERS ON ONE FACE OVER THE SAME STRETCH are spread across the same width, so
                 // their bars would stand in each other - a continuous pair and bastones on one face,
                 // say. Where a schedule means bastones BETWEEN the continuous bars, that placement is
@@ -627,7 +585,12 @@ namespace Horizun.Revit.Core
                 double hookPass = rule.Stirrups != null && stirrupBendOf != null ? sd / 2 : 0;
                 double vA = vIn0 + db / 2 + k, vB = vIn1 - db / 2 - k;
                 double wA = wIn0 + db / 2 + k, wB = wIn1 - db / 2 - k - hookPass;
-                if (vB < vA || wB < wA) return Refuse(CodeNoRoom, "layer '" + (l.Name ?? l.Face) + "' does not fit inside the stirrup.");
+                if (vB < vA || wB < wA)
+                    return Refuse(CodeNoRoom, "layer '" + (l.Name ?? l.Face) + "' on element " + f.ElementId +
+                                  " has a " + Mm(f.WidthMm) + " x " + Mm(f.DepthMm) + " mm section. The covers (" +
+                                  Mm(left) + "/" + Mm(right) + " mm across, " + Mm(bottom) + "/" + Mm(top) +
+                                  " mm vertically), the " + Mm(sd) + " mm stirrup and corner clearance leave " +
+                                  Mm(vB - vA) + " x " + Mm(wB - wA) + " mm between the allowed centres of " + Mm(db) + " mm bars.");
 
                 double[] start, startEnd, normal; double spread; int n = l.Count;
                 double vLine, wLine, dvIn = 0, dwIn = 0;   // the layer's first bar, and the way into the section
@@ -733,9 +696,19 @@ namespace Horizun.Revit.Core
                 // default. It must stay inside the cage the bars are laid in (the stirrup's, or the
                 // cover's): the whole layer moves, so its first AND last bar are checked.
                 double side = l.Laps.Count > 0 && l.Laps[0].Toward == StructuralLap.TowardOutside ? -1 : 1;
+                bool across = l.Laps.Count > 0 && l.Laps[0].Toward == StructuralLap.TowardAcross;
+                if (across && coupler == null)
+                {
+                    if ((l.Face != StructuralSectionLayer.FaceTop && l.Face != StructuralSectionLayer.FaceBottom) || n < 2)
+                        return Refuse(CodeLapOffsetNoRoom, "layer '" + (l.Name ?? l.Face) + "' laps across, which is a top or bottom row of two or " +
+                                      "more bars: its end bars step one diameter in. This one is a " + l.Face + " layer of " + n + ".");
+                    if ((spread - 2 * db) / (n - 1) < db - 1e-6)
+                        return Refuse(CodeLapOffsetNoRoom, "layer '" + (l.Name ?? l.Face) + "': its " + n + " bars stepped one diameter in from " +
+                                      "each end of a " + Mm(spread) + " mm row stand closer than one diameter (" + Mm(db) + " mm) to each other.");
+                }
                 // A COUPLED LAYER does not move across: its pieces meet end to end on the layer's line.
-                double dv = coupler != null ? 0 : dvIn * side * db, dw = coupler != null ? 0 : dwIn * side * db;
-                if (cuts.Count > 0 && coupler == null)
+                double dv = coupler != null || across ? 0 : dvIn * side * db, dw = coupler != null || across ? 0 : dwIn * side * db;
+                if (cuts.Count > 0 && coupler == null && !across)
                 {
                     double vLast = dvIn != 0 ? vLine : vLine + spread, wLast = dwIn != 0 ? wLine : wLine + spread;
                     double lo = -1e-6;
@@ -750,7 +723,9 @@ namespace Horizun.Revit.Core
                     double a = piece == 0 ? u0 : cuts[piece - 1][0] - cuts[piece - 1][1];
                     double b = piece == cuts.Count ? u1 : cuts[piece][0] + cuts[piece][1];
                     double off = piece % 2 == 1 ? 1 : 0;
-                    double[] pa = f.At(a, vLine + dv * off, wLine + dw * off), pb = f.At(b, vLine + dv * off, wLine + dw * off);
+                    // ACROSS: the row's first bar steps one diameter along it, and the row shortens by two.
+                    double av = across && coupler == null ? db * off : 0, pieceSpread = spread - 2 * av;
+                    double[] pa = f.At(a, vLine + dv * off + av, wLine + dw * off), pb = f.At(b, vLine + dv * off + av, wLine + dw * off);
                     // THE PIECE BEFORE A COUPLER RUNS FROM THE STATION BACK, so the coupler is at its end 0 -
                     // where Revit puts it, reversing the bar otherwise (measured, Revit 2024 and 2026).
                     bool fromStation = coupler != null && piece == 0;
@@ -763,7 +738,7 @@ namespace Horizun.Revit.Core
                     string id = cuts.Count == 0 ? layerId : layerId + "#p" + (piece + 1).ToString(CultureInfo.InvariantCulture);
                     var layout = n == 1
                         ? new RebarLayoutRequest { Layout = RebarLayout.Single }
-                        : new RebarLayoutRequest { Layout = RebarLayout.FixedNumber, Number = n, ArrayLengthMm = spread };
+                        : new RebarLayoutRequest { Layout = RebarLayout.FixedNumber, Number = n, ArrayLengthMm = pieceSpread };
                     bars.Add(new StructuralRebarRule
                     {
                         Id = id,
@@ -779,7 +754,8 @@ namespace Horizun.Revit.Core
                         Layout = layout,
                         Start = fromStation || hookLast ? new StructuralTermination() : piece == 0 ? l.Start : new StructuralTermination(),
                         End = fromStation || hookLast ? Reversed(l.Start) : piece == cuts.Count ? l.End : new StructuralTermination(),
-                        Mark = l.Mark ?? rule.Mark,
+                        Mark = l.Mark ?? ComponentMark(rule.Mark, (l.Name ?? l.Face) +
+                                                       (cuts.Count == 0 ? "" : "-p" + (piece + 1).ToString(CultureInfo.InvariantCulture))),
                         Required = rule.Required,
                         LapNextMm = piece < cuts.Count && coupler == null ? cuts[piece][2] : (double?)null,
                         LapNextRuleId = piece < cuts.Count && coupler == null ? layerId + "#p" + (piece + 2).ToString(CultureInfo.InvariantCulture) : null,
@@ -813,6 +789,10 @@ namespace Horizun.Revit.Core
             }
             if (rule.Stirrups != null && stirrupsHere)
             {
+                // Named axes are explicit stations. Only the automatically sized
+                // array follows the uncut run, keeping the declared offsets and clamp.
+                double zoneStart = rule.StirrupsAxis == null ? runStart : f.UMin;
+                double zoneSpan = rule.StirrupsAxis == null ? runEnd - runStart : f.LengthMm;
                 // The stirrup's CENTRELINE: half a stirrup diameter inside the cover, on every face.
                 double v0 = f.VMin + left + sd / 2, v1 = f.VMax - right - sd / 2;
                 double w0 = f.WMin + bottom + sd / 2, w1 = f.WMax - top - sd / 2;
@@ -823,11 +803,11 @@ namespace Horizun.Revit.Core
                     // first corner, and hooks go in the compression zone at the top.
                     // On a frame that says so, the same cycle from its top corner on the VMax side.
                     f.HookCornerAtVMax
-                        ? new List<double[]> { f.At(f.UMin, v1, w1), f.At(f.UMin, v0, w1), f.At(f.UMin, v0, w0), f.At(f.UMin, v1, w0) }
-                        : new List<double[]> { f.At(f.UMin, v0, w1), f.At(f.UMin, v0, w0), f.At(f.UMin, v1, w0), f.At(f.UMin, v1, w1) },
+                        ? new List<double[]> { f.At(zoneStart, v1, w1), f.At(zoneStart, v0, w1), f.At(zoneStart, v0, w0), f.At(zoneStart, v1, w0) }
+                        : new List<double[]> { f.At(zoneStart, v0, w1), f.At(zoneStart, v0, w0), f.At(zoneStart, v1, w0), f.At(zoneStart, v1, w1) },
                     new[] { f.U[0], f.U[1], f.U[2] },
-                    f.LengthMm);
-                z.Mark = z.Mark ?? rule.Mark;
+                    zoneSpan);
+                z.Mark = z.Mark ?? ComponentMark(rule.Mark, "stirrups");
                 z.Required = rule.Required;
                 z.OriginRuleId = rule.Id; z.CageId = CageIdOf(rule.Id, f.ElementId); z.CageRole = CageStirrup;
                 if (rule.StirrupsAxis != null)
@@ -862,7 +842,7 @@ namespace Horizun.Revit.Core
                         return Refuse(CodeTieNoBars, "tie '" + t.Name + "' crosses layer '" + t.LayerName + "', which laid no bars here.");
                     double dt = diameterOf(t.BarTypeId);
                     if (dt <= 0) return Refuse(CodeNoDiameter, "tie '" + t.Name + "': its bar type's diameter could not be read.");
-                    double uT = f.UMin + sd / 2 + dt / 2;
+                    double uT = zoneStart + sd / 2 + dt / 2;
                     bool acrossWidth = st.Item1 == StructuralSectionLayer.FaceLeft || st.Item1 == StructuralSectionLayer.FaceRight;
                     // left/right layers: every bar is intermediate. top/bottom: the corners are not.
                     int first = acrossWidth ? 0 : 1, last = acrossWidth ? st.Item5 - 1 : st.Item5 - 2;
@@ -877,9 +857,9 @@ namespace Horizun.Revit.Core
                         StructuralStirrupZoneRule tz = rule.Stirrups.CloneFor(
                             LayerId(rule.Id, f.ElementId, "tie-" + t.Name + "-" + (k + 1).ToString(CultureInfo.InvariantCulture)),
                             new StructuralHostSelector { ElementIds = new List<long> { f.ElementId }, SourceSelector = rule.Host?.SourceSelector },
-                            line, new[] { f.U[0], f.U[1], f.U[2] }, f.LengthMm, false);
+                            line, new[] { f.U[0], f.U[1], f.U[2] }, zoneSpan, false);
                         tz.BarTypeId = t.BarTypeId; tz.ShapeName = t.ShapeName; tz.AllowNewShape = t.AllowNewShape;
-                        tz.Start = t.Start; tz.End = t.End; tz.Mark = t.Mark ?? rule.Mark; tz.Required = rule.Required;
+                        tz.Start = t.Start; tz.End = t.End; tz.Mark = t.Mark ?? ComponentMark(rule.Mark, "tie-" + t.Name); tz.Required = rule.Required;
                         tz.OriginRuleId = rule.Id; tz.CageId = CageIdOf(rule.Id, f.ElementId); tz.CageRole = CageTie;
                         zoneRules.Add(tz);
                     }
@@ -957,7 +937,7 @@ namespace Horizun.Revit.Core
                         BarTypeId = l.BarTypeId, ShapeName = l.ShapeName, AllowNewShape = l.AllowNewShape, Style = StructuralStyle.Standard,
                         CurvesMm = new List<double[]> { f.At(u0, v, w), f.At(u1, v, w) }, Closed = false,
                         NormalMm = radial, BarsOnNormalSide = true, Layout = new RebarLayoutRequest { Layout = RebarLayout.Single },
-                        Start = l.Start, End = l.End, Mark = l.Mark ?? rule.Mark, Required = rule.Required,
+                        Start = l.Start, End = l.End, Mark = l.Mark ?? ComponentMark(rule.Mark, l.Name ?? l.Face), Required = rule.Required,
                         OriginRuleId = rule.Id, CageId = CageIdOf(rule.Id, f.ElementId), CageRole = CageLongitudinal,
                         Into = new List<long>(l.Into), SectionCoverMm = sectionCover,
                         Anchorage = new List<StructuralAnchorage>(l.Anchorage), Raw = rule.Raw
@@ -988,7 +968,7 @@ namespace Horizun.Revit.Core
                         CentrelineRadiusMm = rh,
                         PitchMm = sp.PitchMm, BaseFinishingTurns = sp.BaseFinishingTurns, TopFinishingTurns = sp.TopFinishingTurns
                     };
-                z.Mark = z.Mark ?? rule.Mark;
+                z.Mark = z.Mark ?? ComponentMark(rule.Mark, "stirrups");
                 z.Required = rule.Required;
                 z.OriginRuleId = rule.Id; z.CageId = CageIdOf(rule.Id, f.ElementId); z.CageRole = CageStirrup;
                 zoneRules.Add(z);

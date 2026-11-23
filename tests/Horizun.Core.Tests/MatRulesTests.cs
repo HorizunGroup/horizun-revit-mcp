@@ -424,67 +424,115 @@ namespace Horizun.Core.Tests
             ]
           }]";
 
-        private static StructuralRequirementSet Parse(string body)
+        
+
+        
+
+        
+
+        
+
+        
+
+        [Fact]
+        public void A_mat_with_no_covers_or_depth_is_laid_at_the_host_cover_and_says_it_assumed_them()
         {
-            return StructuralRequirementSet.Load(JObject.Parse(Head + body + "}"));
+            var c = Comp("top_x", X, 0, 150, 0, 0);
+            c.OffsetDeclared = false; c.EndCoverDeclared = false; c.SideCoverDeclared = false;
+            MatResult r = MatRules.Expand(Rule(c), Slab(), Dia, 20, out List<StructuralRebarRule> rules);
+            Assert.True(r.Ok, r.Why);
+            Assert.Equal(new[] { "mat_offset_assumed", "mat_end_cover_assumed", "mat_side_cover_assumed" }, r.Assumptions.Select(a => (string)a["code"]).ToArray());
+            Assert.Equal(26.0, (double)r.Assumptions[0]["value_mm"], 3);   // cover 20 + radius 6
+            Assert.Equal(20.0, (double)r.Assumptions[1]["value_mm"], 3);
+            Assert.Equal(26.0, (double)r.Assumptions[2]["value_mm"], 3);
+            Assert.NotEmpty(rules);
         }
 
         [Fact]
-        public void AWellFormedMatRuleParses()
+        public void A_second_layer_with_no_depth_sits_under_the_first_by_its_diameter()
         {
-            StructuralRequirementSet s = Parse(OneMat);
-            Assert.True(s.Ok, s.Error);
-            Assert.Single(s.MatRules);
-            Assert.Equal(2, s.MatRules[0].Components.Count);
-            Assert.Equal(31, s.MatRules[0].Components[0].OffsetFromFaceMm);
-            Assert.Equal(0, s.MatRules[0].Components[1].EndCoverMm);   // absent means zero, not invented
+            var a = Comp("top_x", X, 0, 150, 0, 0); var b = Comp("top_y", Y, 0, 150, 0, 0);
+            foreach (var c in new[] { a, b }) { c.OffsetDeclared = false; c.EndCoverDeclared = false; c.SideCoverDeclared = false; }
+            MatResult r = MatRules.Expand(Rule(a, b), Slab(), Dia, 20, out List<StructuralRebarRule> rules);
+            Assert.True(r.Ok, r.Why);
+            Assert.Equal(26.0, r.Components[0].OffsetFromFaceMm, 3);
+            Assert.Equal(38.0, r.Components[1].OffsetFromFaceMm, 3);   // under the first layer's 12 mm bar
         }
 
         [Fact]
-        public void AMatRuleWithoutAFaceNormalIsRefusedBecauseASlabHasTwoFaces()
+        public void A_layer_with_no_depth_under_a_declared_one_starts_from_the_declared_depth()
         {
-            StructuralRequirementSet s = Parse(OneMat.Replace(@"""face_normal"": [0,0,1],", ""));
-            Assert.False(s.Ok);
-            Assert.Contains("two faces", s.Error);
+            // 60 mm declared, then an undeclared layer: 60 + 6 + 6 = 72, never the 26 a bare cover would give
+            // (which would put it ABOVE the declared layer).
+            var a = Comp("top_x", X, 60, 150, 20, 26);
+            var b = Comp("top_y", Y, 0, 150, 0, 0);
+            b.OffsetDeclared = false; b.EndCoverDeclared = false; b.SideCoverDeclared = false;
+            MatResult r = MatRules.Expand(Rule(a, b), Slab(), Dia, 20, out List<StructuralRebarRule> rules);
+            Assert.True(r.Ok, r.Why);
+            Assert.Equal(60.0, r.Components[0].OffsetFromFaceMm, 3);
+            Assert.Equal(72.0, r.Components[1].OffsetFromFaceMm, 3);
+            JObject depth = Assert.Single(r.Assumptions, x => (string)x["code"] == "mat_offset_assumed");
+            Assert.Equal("top_y", (string)depth["component"]);
+            Assert.Equal(72.0, (double)depth["value_mm"], 3);
         }
 
         [Fact]
-        public void AComponentWithoutAnOffsetIsRefusedRatherThanDerivedFromACover()
+        public void Mixed_layers_assumed_declared_assumed_each_sit_under_every_layer_before_them()
         {
-            StructuralRequirementSet s = Parse(OneMat.Replace(@"""offset_from_face_mm"": 31,", ""));
-            Assert.False(s.Ok);
-            Assert.Contains("is a decision", s.Error);
+            var a = Comp("l1", X, 0, 150, 0, 0);
+            var b = Comp("l2", Y, 50, 150, 20, 26);   // declared below l1: kept as declared
+            var c = Comp("l3", X, 0, 150, 0, 0);
+            foreach (var x in new[] { a, c }) { x.OffsetDeclared = false; x.EndCoverDeclared = false; x.SideCoverDeclared = false; }
+            MatResult r = MatRules.Expand(Rule(a, b, c), Slab(), Dia, 20, out List<StructuralRebarRule> rules);
+            Assert.True(r.Ok, r.Why);
+            Assert.Equal(26.0, r.Components[0].OffsetFromFaceMm, 3);
+            Assert.Equal(50.0, r.Components[1].OffsetFromFaceMm, 3);
+            Assert.Equal(62.0, r.Components[2].OffsetFromFaceMm, 3);   // under l2 (50 + 6 + 6), not only l1 (26 + 12 = 38)
+            Assert.Equal(2, r.Assumptions.Count(x => (string)x["code"] == "mat_offset_assumed"));
+            Assert.Equal(26.0, MatRules.AssumedLayerDepthMm(20, 6, null), 6);
         }
 
         [Fact]
-        public void AComponentWithoutADirectionIsRefused()
+        public void A_foundation_with_no_cover_is_assumed_at_75_mm_against_the_ground_and_marked()
         {
-            StructuralRequirementSet s = Parse(OneMat.Replace(@"""direction"": [1,0,0],", ""));
-            Assert.False(s.Ok);
+            var c = Comp("bottom_x", X, 0, 150, 0, 0);
+            c.OffsetDeclared = false; c.EndCoverDeclared = false; c.SideCoverDeclared = false;
+            var footing = new List<MatHostPart> { new MatHostPart { Mesh = Slab(), AgainstGround = true } };
+            MatResult r = MatRules.Expand(Rule(c), footing, Dia, out List<StructuralRebarRule> rules);
+            Assert.True(r.Ok, r.Why);
+            Assert.Equal(81.0, r.Components[0].OffsetFromFaceMm, 3);   // 75 + radius 6
+            JObject cover = Assert.Single(r.Assumptions, x => (string)x["code"] == "mat_cover_assumed");
+            Assert.Equal(75.0, (double)cover["value_mm"], 3);
+            Assert.Contains("against the ground", (string)cover["why"]);
+            Assert.Equal(75.0, (double)r.Assumptions.Single(x => (string)x["code"] == "mat_end_cover_assumed")["value_mm"], 3);
+            Assert.Equal(81.0, (double)r.Assumptions.Single(x => (string)x["code"] == "mat_side_cover_assumed")["value_mm"], 3);
+            foreach (JObject row in r.Assumptions)
+            {
+                Assert.Equal("SUPUESTO", (string)row["flag"]);
+                Assert.False(string.IsNullOrEmpty((string)row["what"]));
+                Assert.False(string.IsNullOrEmpty((string)row["override"]));
+                Assert.DoesNotContain("mm mm", (string)row["what"] + (string)row["why"] + (string)row["override"]);
+            }
         }
 
         [Fact]
-        public void AMatRuleSharesTheRuleIdNamespace()
+        public void Any_other_host_with_no_cover_is_assumed_at_25_mm_and_marked()
         {
-            StructuralRequirementSet s = Parse(OneMat + @",
-              ""stirrup_zone_rules"": [{
-                ""id"": ""S1"", ""host"": {""element_ids"":[1]}, ""bar_type"": ""t12"",
-                ""profile_mm"": [[0,0,0],[100,0,0]], ""along"": [1,0,0], ""span_mm"": 1000,
-                ""zones"": [{ ""name"": ""all"", ""layout"": {""rule"":""maximum_spacing"",""spacing_mm"":100} }]
-              }]");
-            Assert.False(s.Ok);
-            Assert.Contains("more than one rule", s.Error);
+            var c = Comp("top_x", X, 0, 150, 0, 0);
+            c.OffsetDeclared = false; c.EndCoverDeclared = false; c.SideCoverDeclared = false;
+            MatResult r = MatRules.Expand(Rule(c), Slab(), Dia, out List<StructuralRebarRule> rules);
+            Assert.True(r.Ok, r.Why);
+            Assert.Equal(31.0, r.Components[0].OffsetFromFaceMm, 3);
+            JObject cover = Assert.Single(r.Assumptions, x => (string)x["code"] == "mat_cover_assumed");
+            Assert.Equal(25.0, (double)cover["value_mm"], 3);
+            Assert.Contains("75 mm is taken for a foundation", (string)cover["why"]);
         }
 
-        [Fact]
-        public void AnUnknownBarTypeInAComponentIsRefusedByName()
-        {
-            StructuralRequirementSet s = Parse(OneMat.Replace(@"""bar_type"": ""t12"",
-                ""offset_from_face_mm"": 31,", @"""bar_type"": ""t99"",
-                ""offset_from_face_mm"": 31,"));
-            Assert.False(s.Ok);
-            Assert.Contains("t99", s.Error);
-        }
+        
+
+        
+
+        
 
         [Fact]
         public void Two_crossing_layers_in_one_plane_clash_only_where_their_patches_meet()

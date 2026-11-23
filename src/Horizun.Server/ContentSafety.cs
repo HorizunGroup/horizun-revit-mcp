@@ -378,6 +378,11 @@ namespace Horizun.Server
         {
             if (token == null || report == null) return;
             string rootPath = token.Path;
+            // JToken.Path searches each ancestor array for the child's index.
+            // Computing it for every clean value makes a large reply quadratic;
+            // only suspected values and actual findings need that path lookup.
+            bool hasBridgeAuthoredPaths = isData && report.Tool != null &&
+                                          BridgeAuthoredPaths.ContainsKey(report.Tool);
             var stack = new Stack<JToken>();
             stack.Push(token);
             while (stack.Count > 0)
@@ -420,9 +425,13 @@ namespace Horizun.Server
                             v.Value = clean;
                             report.Neutralized(replaced, v.Path);
                         }
-                        if (isData && report.IsBridgeAuthored(RelativeTo(rootPath, v.Path))) break;
                         string pattern = SuspectedInstruction(clean);
-                        if (pattern != null) report.Flag(pattern, v.Path);
+                        if (pattern != null)
+                        {
+                            string valuePath = v.Path;
+                            if (!hasBridgeAuthoredPaths || !report.IsBridgeAuthored(RelativeTo(rootPath, valuePath)))
+                                report.Flag(pattern, valuePath);
+                        }
                         break;
                 }
             }

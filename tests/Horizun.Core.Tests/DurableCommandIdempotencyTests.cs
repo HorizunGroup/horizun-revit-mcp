@@ -17,6 +17,43 @@ namespace Horizun.Core.Tests
         private DurableCommandLedger Ledger(int pid = 10) =>
             new DurableCommandLedger(() => _dir, () => new DateTime(2026, 8, 1, 12, 0, 0, DateTimeKind.Utc), () => pid);
 
+        [Theory]
+        [InlineData("horizun_execute_python", true)]
+        [InlineData("horizun_save_document", true)]
+        [InlineData("horizun_document_session", true)]
+        [InlineData("horizun_open_document", true)]
+        [InlineData("horizun_delete_verified", false)]
+        [InlineData("horizun_create_elements", false)]
+        public void Session_tools_get_a_generated_key_model_writes_do_not(string tool, bool generated)
+            => Assert.Equal(generated, PythonIdempotencyRules.GeneratesKey(tool));
+
+        [Fact]
+        public void Async_python_never_gets_a_generated_key()
+        {
+            Assert.True(PythonIdempotencyRules.IsAsyncPython("horizun_execute_python", new JObject { ["run_async"] = true }));
+            Assert.False(PythonIdempotencyRules.IsAsyncPython("horizun_execute_python", new JObject { ["run_async"] = false }));
+            Assert.False(PythonIdempotencyRules.IsAsyncPython("horizun_execute_python", new JObject()));
+            Assert.False(PythonIdempotencyRules.IsAsyncPython("horizun_save_document", new JObject { ["run_async"] = true }));
+        }
+
+        [Fact]
+        public void Missing_python_key_is_generated_replayed_and_conflicting_call_gets_a_fresh_suggestion()
+        {
+            var call = new JObject { ["code"] = "pass", ["target_document"] = "Example" };
+            string key = PythonIdempotencyRules.EnsureKey(call);
+            Assert.True(Guid.TryParse(key, out _));
+            Assert.Null(PythonIdempotencyRules.EnsureKey(call));
+            var original = Ledger().Claim(key, "horizun_execute_python", "first");
+            Ledger().Complete(original, CommandResult.Ok(new JObject { ["ok"] = true }));
+            Assert.Equal(DurableCommandOutcome.Replay, Ledger().Claim(key, "horizun_execute_python", "first").Outcome);
+            var conflict = Ledger().Claim(key, "horizun_execute_python", "other");
+            Assert.Contains("DIFFERENT operation", conflict.Message);
+            var suggestion = PythonIdempotencyRules.SuggestedCall(call);
+            Assert.Equal("pass", (string)suggestion["arguments"]["code"]);
+            Assert.NotEqual(key, (string)suggestion["arguments"]["idempotency_key"]);
+            Assert.True(Guid.TryParse((string)suggestion["arguments"]["idempotency_key"], out _));
+        }
+
         /// <summary>
         /// The retry contract a CANCELLED or TIMED-OUT caller is now told
         /// (Horizun.Server/CancellationAdvice.cs): the client stopped waiting, Revit

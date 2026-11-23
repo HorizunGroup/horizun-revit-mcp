@@ -51,6 +51,7 @@ namespace Horizun.Revit.Core
         public bool IsGrid { get; set; }
         public bool IsLevel { get; set; }
         public bool IsReferencePlane { get; set; }
+        public bool IsFamilyInstance { get; set; }
 
         /// <summary>A wall or other HostObject - the only class with side faces.</summary>
         public bool IsHostObject { get; set; }
@@ -164,6 +165,16 @@ namespace Horizun.Revit.Core
         public bool Truncated { get; set; }
     }
 
+    public sealed class SectionFaceFact
+    {
+        public double CutDistance { get; set; }
+        public double Elevation { get; set; }
+        public string Stable { get; set; }
+
+        /// <summary>Z of the face's unit normal; null where the caller did not read it.</summary>
+        public double? NormalZ { get; set; }
+    }
+
     public static class DimensionReferenceRules
     {
         // ---- the selector vocabulary, closed --------------------------------------
@@ -178,6 +189,20 @@ namespace Horizun.Revit.Core
         public const string SelectorFarthestFace = "farthest_face";
         public const string SelectorEdge = "edge";
         public const string SelectorEndpoint = "endpoint";
+        public const string SelectorOpeningLeft = "opening_left";
+        public const string SelectorOpeningRight = "opening_right";
+        public const string SelectorOpeningCenter = "opening_center";
+        public const string SelectorOpeningHead = "opening_head";
+        public const string SelectorOpeningSill = "opening_sill";
+        public const string SelectorOpeningFrontBackCenter = "opening_front_back_center";
+        public const string SelectorFamilyNamedReference = "family_named_reference";
+        public const string SelectorTopFace = "top_face";
+        public const string SelectorBottomFace = "bottom_face";
+        /// <summary>Wall faces at the CORE boundaries of the compound structure (item 2.3).</summary>
+        public const string SelectorCoreExteriorFace = "core_exterior_face";
+        public const string SelectorCoreInteriorFace = "core_interior_face";
+        /// <summary>Every exposed wall face at ANY layer boundary (finishes included), one row each.</summary>
+        public const string SelectorLayerFace = "layer_face";
 
         /// <summary>
         /// Every selector this command understands, in the canonical order the default
@@ -190,8 +215,56 @@ namespace Horizun.Revit.Core
             SelectorCenterline, SelectorExteriorFace, SelectorInteriorFace,
             SelectorEdge, SelectorEndpoint,
             SelectorNearestFace, SelectorFarthestFace,
-            SelectorGrid, SelectorLevel, SelectorReferencePlane
+            SelectorGrid, SelectorLevel, SelectorReferencePlane,
+            SelectorOpeningLeft, SelectorOpeningRight, SelectorOpeningCenter,
+            SelectorOpeningHead, SelectorOpeningSill, SelectorOpeningFrontBackCenter,
+            SelectorFamilyNamedReference, SelectorTopFace, SelectorBottomFace,
+            SelectorCoreExteriorFace, SelectorCoreInteriorFace, SelectorLayerFace
         };
+
+        public static bool IsLayerSelector(string selector)
+            => selector == SelectorCoreExteriorFace || selector == SelectorCoreInteriorFace || selector == SelectorLayerFace;
+
+        /// <summary>
+        /// A height face is usable against a level only when it is parallel to it. A
+        /// sloped top (a profiled wall, a pitched roof) can be the face nearest the cut
+        /// and still never form a linear dimension with a level - measured live in the
+        /// Scan planimetry, October 2026 - so level-parallel faces rank first.
+        /// </summary>
+        public static bool IsLevelParallel(SectionFaceFact f)
+            => f != null && (!f.NormalZ.HasValue || Math.Abs(f.NormalZ.Value) >= 0.99996192);   // cos 0.5 deg
+
+        public static SectionFaceFact ChooseSectionFace(IEnumerable<SectionFaceFact> faces, bool top)
+            => (faces ?? Enumerable.Empty<SectionFaceFact>())
+                .OrderBy(f => IsLevelParallel(f) ? 0 : 1)
+                .ThenBy(f => f.CutDistance)
+                .ThenBy(f => top ? -f.Elevation : f.Elevation)
+                .ThenBy(f => f.Stable, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+        public static bool IsFamilyReferenceSelector(string selector)
+            => FamilyReferenceType(selector) != null;
+
+        /// <summary>API enum member, or "named" for GetReferenceByName.</summary>
+        public static string FamilyReferenceType(string selector)
+        {
+            switch (selector)
+            {
+                case SelectorOpeningLeft: return "Left";
+                case SelectorOpeningRight: return "Right";
+                case SelectorOpeningCenter: return "CenterLeftRight";
+                case SelectorOpeningHead: return "Top";
+                case SelectorOpeningSill: return "Bottom";
+                case SelectorOpeningFrontBackCenter: return "CenterFrontBack";
+                case SelectorFamilyNamedReference: return "named";
+                default: return null;
+            }
+        }
+
+        public static string ValidateFamilyReferenceName(string selector, string name)
+            => selector == SelectorFamilyNamedReference && string.IsNullOrWhiteSpace(name)
+                ? "family_named_reference requires a nonempty reference_name; no reference was selected."
+                : null;
 
         // ---- the structured codes -------------------------------------------------
         // incompatibility_reason.code values (the row exists, a dimension cannot use it):
@@ -355,7 +428,10 @@ namespace Horizun.Revit.Core
             var result = new List<string>();
             foreach (string s in KnownSelectors)
             {
-                if (s == SelectorNearestFace || s == SelectorFarthestFace) continue;
+                // Layer selectors read view geometry with hidden objects and are asked for
+                // by name, so the default set (and every existing caller) is unchanged.
+                if (s == SelectorNearestFace || s == SelectorFarthestFace ||
+                    s == SelectorFamilyNamedReference || IsLayerSelector(s)) continue;
                 if (SelectorApplies(s, traits)) result.Add(s);
             }
             return result;
@@ -373,10 +449,22 @@ namespace Horizun.Revit.Core
                 case SelectorCenterline: return !traits.IsDatum && traits.HasLocationCurve;
                 case SelectorExteriorFace:
                 case SelectorInteriorFace: return traits.IsHostObject;
+                case SelectorTopFace:
+                case SelectorBottomFace: return traits.IsHostObject;
+                case SelectorCoreExteriorFace:
+                case SelectorCoreInteriorFace:
+                case SelectorLayerFace: return traits.IsHostObject;
                 case SelectorEdge:
                 case SelectorNearestFace:
                 case SelectorFarthestFace: return !traits.IsDatum && traits.HasSolidGeometry;
                 case SelectorEndpoint: return !traits.IsDatum && (traits.HasCurveGeometry || traits.HasSolidGeometry);
+                case SelectorOpeningLeft:
+                case SelectorOpeningRight:
+                case SelectorOpeningCenter:
+                case SelectorOpeningHead:
+                case SelectorOpeningSill:
+                case SelectorOpeningFrontBackCenter:
+                case SelectorFamilyNamedReference: return traits.IsFamilyInstance;
                 default: return false;
             }
         }
@@ -395,10 +483,22 @@ namespace Horizun.Revit.Core
                 case SelectorInteriorFace:
                     requirement = "applies only to host elements (walls and other HostObject classes, whose side " +
                                   "faces Revit itself can name)"; break;
+                case SelectorTopFace:
+                case SelectorBottomFace: requirement = "applies only to host elements with a reference-carrying face"; break;
+                case SelectorCoreExteriorFace:
+                case SelectorCoreInteriorFace:
+                case SelectorLayerFace: requirement = "applies only to host elements with a compound structure"; break;
                 case SelectorEdge:
                 case SelectorNearestFace:
                 case SelectorFarthestFace: requirement = "requires solid geometry"; break;
                 case SelectorEndpoint: requirement = "requires curve or solid geometry with references"; break;
+                case SelectorOpeningLeft:
+                case SelectorOpeningRight:
+                case SelectorOpeningCenter:
+                case SelectorOpeningHead:
+                case SelectorOpeningSill:
+                case SelectorOpeningFrontBackCenter:
+                case SelectorFamilyNamedReference: requirement = "requires a FamilyInstance with that reference plane"; break;
                 default: requirement = "is not a known selector"; break;
             }
             return "selector '" + selector + "' " + requirement + "; element " + elementId + " is not one. " +
@@ -511,7 +611,8 @@ namespace Horizun.Revit.Core
         public static bool ExpectsSingleAnswer(string selector)
             => selector == SelectorCenterline || selector == SelectorExteriorFace ||
                selector == SelectorInteriorFace || selector == SelectorNearestFace ||
-               selector == SelectorFarthestFace;
+               selector == SelectorFarthestFace || selector == SelectorCoreExteriorFace ||
+               selector == SelectorCoreInteriorFace;
 
         /// <summary>
         /// Mark a selector's candidate set. More than one answer to a single-answer

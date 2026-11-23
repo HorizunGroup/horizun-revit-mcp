@@ -23,9 +23,11 @@
 // command these describe.
 // -----------------------------------------------------------------------------
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -64,6 +66,56 @@ namespace Horizun.Server.Tests
             var jobs = (JArray)reply["jobs"];
             Assert.Single(jobs);
             return (JObject)jobs[0];
+        }
+
+        [Fact]
+        public void Wait_returns_the_first_new_durable_state()
+        {
+            Job job = Job.Start("horizun_execute_python");
+            bool appended = false;
+            PipeClient.LivenessProbe = _ =>
+            {
+                // The first snapshot has already read the queued record.
+                if (!appended) { appended = true; job.MarkRunning(); }
+                return true;
+            };
+            JObject reply = JobStatus.Handle(new JObject { ["job_id"] = job.Id, ["wait_s"] = 5 });
+            Assert.Equal("running", (string)reply["jobs"][0]["state"]);
+        }
+
+        [Fact]
+        public void Zero_wait_requires_a_job_and_allows_only_status()
+        {
+            Assert.Throws<ArgumentException>(() => JobStatus.Handle(new JObject { ["wait_s"] = 0 }));
+
+            Job job = Job.Start("horizun_execute_python");
+            var args = new JObject { ["job_id"] = job.Id, ["wait_s"] = 0, ["cancel"] = true };
+            Assert.Throws<ArgumentException>(() => JobStatus.Handle(args));
+            args.Remove("cancel");
+            args["output_page"] = 1;
+            Assert.Throws<ArgumentException>(() => JobStatus.Handle(args));
+            args.Remove("output_page");
+            Assert.Equal("queued", (string)JobStatus.Handle(args)["jobs"][0]["state"]);
+        }
+
+        [Fact]
+        public void Wait_honors_cancellation_after_reading_the_initial_state()
+        {
+            Job job = Job.Start("horizun_execute_python");
+            using var cancellation = new CancellationTokenSource();
+            PipeClient.LivenessProbe = _ => { cancellation.Cancel(); return true; };
+            Assert.Throws<OperationCanceledException>(() => JobStatus.Handle(
+                new JObject { ["job_id"] = job.Id, ["wait_s"] = 5 }, cancellation.Token));
+        }
+
+        [Fact]
+        public void Wait_returns_the_current_state_when_its_budget_expires()
+        {
+            Job job = Job.Start("horizun_execute_python");
+            var elapsed = Stopwatch.StartNew();
+            JObject reply = JobStatus.Handle(new JObject { ["job_id"] = job.Id, ["wait_s"] = 1 });
+            Assert.Equal("queued", (string)reply["jobs"][0]["state"]);
+            Assert.True(elapsed.ElapsedMilliseconds >= 900);
         }
 
         [Fact]

@@ -20,10 +20,6 @@ function New-Fake([string]$mode) {
                 return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 7; is_element_type = $true; family = 'Basic Wall'; type = 'Generic' }) })
             }
             'horizun_list_elements' { return & $reply ([pscustomobject]@{ total = $s.Views }) }
-            'horizun_copy_between_documents' {
-                if ($s.Mode -eq 'no-types') { return & $reply $null $true 'no type named x. Types there: .' }
-                return & $reply $null $true 'no type named x. Types there: Basic Wall: Generic | Other: Type.'
-            }
             'horizun_verify_changes' {
                 if ($s.Mode -eq 'leaks-view') { $s.Views++ }
                 $f = [pscustomobject]@{ severity = 'error'; reason = 'door is blocked by structural column'; a = [pscustomobject]@{ id = $s.Door }; b = [pscustomobject]@{ id = 999 } }
@@ -35,7 +31,6 @@ function New-Fake([string]$mode) {
     }.GetNewClosure()
     $apply = {
         param($tool, $a, $key)
-        if ($tool -eq 'horizun_copy_between_documents') { return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ state = 'committed_verified' })) } }
         if ($tool -eq 'horizun_delete_verified') { $s.Deleted = @($a.ids); return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ ok = $true })) } }
         $id = $s.Next; $s.Next++
         $el = $a.elements[0]
@@ -62,7 +57,7 @@ function Outcomes($h) { @(& $module.Run $h.Ctx) }
 $h = New-Fake 'ok'; $r = Outcomes $h
 Check ($r.Count -eq 6) 'six cases, one per catalog entry'
 Check (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0) ('a column in a doorway, the look afterwards and the clear column all pass: ' + (($r | ForEach-Object { $_.Outcome }) -join ','))
-Check ($h.State.Deleted.Count -eq 7) 'the level, wall, door, the three columns and the copied column type are deleted'
+Check ($h.State.Deleted.Count -eq 6) 'the level, wall, door and the three columns are deleted'
 
 $h = New-Fake 'no-attention'; $r = Outcomes $h
 Check ($r[0].Outcome -eq 'fail') 'a finding without the attention headline fails the first case'
@@ -71,7 +66,7 @@ $h = New-Fake 'leaks-view'; $r = Outcomes $h
 Check ($r[2].Outcome -eq 'fail') 'a view left behind by verify_changes fails the rollback case'
 
 $h = New-Fake 'no-types'; $r = Outcomes $h
-Check (@($r[0..4] | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq 5) 'a fixture without a structural column type is not_covered, never a pass'
+Check (@($r[0..4] | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq 5) 'a fixture without a column type is not_covered, never a pass'
 Check ($h.State.Deleted.Count -eq 1) 'the staged level is still deleted'
 
 $h = New-Fake 'ok'; $h.Ctx.WriteGate = $true; $r = Outcomes $h

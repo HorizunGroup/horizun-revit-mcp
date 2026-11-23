@@ -46,29 +46,9 @@ $script:HzProbeModules += [pscustomobject]@{
         # A curtain or stacked wall would take the door as a panel, not as a hosted opening.
         $wallType = @(Types 'OST_Walls' | Where-Object { -not ($_.family -match 'Curtain|cortina|Stacked|apilad' -or $_.type -match 'Curtain|cortina') }) | Select-Object -First 1
         $doorType = Types 'OST_Doors' | Select-Object -First 1
-        $doorWhy = ''
-        if (-not $doorType) {
-            # MEASURED (spatial-coherence.probes.ps1): the write fixture carries no door family.
-            # Bring ONE door type from this Revit's own Autodesk template, learning its exact
-            # name from the refusal that lists what the template holds.
-            # TemplateRoot exists only for the offline tests; a live run always uses Revit's own.
-            $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-            $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte', 'English-Imperial\Default-Multi-Discipline.rte', 'English\Default-Multi-Discipline_Metric.rte') |
-                ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-            if (-not $tpl) { $doorWhy = ' no door type and no Autodesk template under ' + $tplRoot }
-            else {
-                $probe = & $Ctx.Call 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @('__hz_probe_no_such_type__') }
-                $listed = [regex]::Match([string]$probe.text, 'Types there[^:]*:\s*(.+)$', 'Singleline')
-                $name = if ($listed.Success) { (($listed.Groups[1].Value -split ' \| ')[0] -replace '\s*(\.\.\.)?\.?\s*$', '').Trim() } else { $null }
-                if (-not $name) { $doorWhy = ' the template listed no door type: ' + (Short $probe) }
-                else {
-                    $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @($name); duplicate_types = 'use_destination' } ($run + '-egr-doortype')
-                    $doorType = Types 'OST_Doors' | Select-Object -First 1
-                    if ($doorType) { [void]$created.Add([long]$doorType.element_id) }
-                    else { $doorWhy = " copying '$name' gave no door type: stage=" + $cp.stage + ' ' + (Short $cp.answer) }
-                }
-            }
-        }
+        # MEASURED (spatial-coherence.probes.ps1): a write fixture may carry no door family;
+        # then the probe cannot stage its exit and says so.
+        $doorWhy = if ($doorType) { '' } else { ' the document holds no door type' }
         $planId = $null
         if ($levelId) {
             $mv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; units = 'mm'

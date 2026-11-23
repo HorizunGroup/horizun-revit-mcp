@@ -79,6 +79,27 @@ namespace Horizun.Revit.Commands
             {
                 UniqueId = e.UniqueId, Id = Rid.Value(e.Id), BuiltInCategory = bic, Category = cat.Name
             };
+            try
+            {
+                if (!doc.IsWorkshared) d.WorksharingReason = "document is not workshared";
+                else
+                {
+                    var reasons = new List<string>();
+                    try
+                    {
+                        var info = WorksharingUtils.GetWorksharingTooltipInfo(doc, e.Id);
+                        d.LastChangedBy = info.LastChangedBy;
+                        d.Owner = info.Owner;
+                        if (string.IsNullOrEmpty(d.LastChangedBy)) { d.LastChangedBy = null; reasons.Add("last_changed_by unavailable"); }
+                        if (string.IsNullOrEmpty(d.Owner)) { d.Owner = null; reasons.Add("owner unavailable"); }
+                    }
+                    catch (Exception ex) { reasons.Add("tooltip unavailable: " + ex.Message); }
+                    try { d.Checkout = WorksharingUtils.GetCheckoutStatus(doc, e.Id).ToString(); }
+                    catch (Exception ex) { reasons.Add("checkout unavailable: " + ex.Message); }
+                    d.WorksharingReason = reasons.Count == 0 ? null : string.Join("; ", reasons);
+                }
+            }
+            catch (Exception ex) { d.WorksharingReason = "worksharing status unavailable: " + ex.Message; }
             ElementId typeId = ElementId.InvalidElementId;
             try { typeId = e.GetTypeId(); } catch { }
             if (typeId != null && typeId != ElementId.InvalidElementId)
@@ -88,7 +109,7 @@ namespace Horizun.Revit.Commands
                 if (!types.TryGetValue(key, out t))
                 {
                     var et = doc.GetElement(typeId) as ElementType;
-                    t = new DiffType { UniqueId = et?.UniqueId, Category = cat.Name, Family = Safe(() => et?.FamilyName), Name = Safe(() => et?.Name) };
+                    t = new DiffType { UniqueId = et?.UniqueId, BuiltInCategory = bic, Category = cat.Name, Family = Safe(() => et?.FamilyName), Name = Safe(() => et?.Name) };
                     if (et != null && scope.Parameters) ReadParameters(et, t.Parameters, scope.MaxParameters);
                     types[key] = t;
                 }
@@ -123,6 +144,8 @@ namespace Horizun.Revit.Commands
 
             d.GeometryHash = ModelDiffRules.GeometryHash(
                 Number(e, BuiltInParameter.HOST_VOLUME_COMPUTED), Number(e, BuiltInParameter.HOST_AREA_COMPUTED), d.BoundingBox);
+            double? volume = Number(e, BuiltInParameter.HOST_VOLUME_COMPUTED);
+            if (volume.HasValue && volume.Value > 0) d.Volume = R(volume.Value);
             if (scope.Parameters) ReadParameters(e, d.Parameters, scope.MaxParameters);
             return d;
         }

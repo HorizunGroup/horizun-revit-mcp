@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Horizun Revit MCP - original Horizun code.
 #
-# The rules of owned-session.ps1 (and therefore of scripts/dwg-bim/session.ps1),
+# The rules of owned-session.ps1,
 # exercised WITHOUT a Revit and without anybody's session: canned bridge answers,
 # a temp state root, and a harmless helper process (a minimised pwsh sleeping)
 # standing in for "the Revit this run started". The only process this script ever
@@ -183,14 +183,12 @@ try {
     Check 'a second start on a recorded session is refused' ($threw -and ($f.state.startCalls -eq 1))
     Stop-Helpers
 
-    # 10. The wrappers carry no forced termination and no name-based ownership.
-    $session = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'dwg-bim\session.ps1') -Raw
+    # 10. The module carries no forced termination.
     $module = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'owned-session.ps1') -Raw
-    Check 'session.ps1 never kills and never closes a window itself' (($session -notmatch 'Stop-Process|\.Kill\(|CloseMainWindow') -and ($module -notmatch 'Stop-Process|\.Kill\(|CloseMainWindow\(\)'))
-    Check 'session.ps1 grants nothing by a document name prefix' ($session -notmatch 'ExpectPrefix|\^HZ_')
+    Check 'the module never kills and never closes a window itself' ($module -notmatch 'Stop-Process|\.Kill\(|CloseMainWindow\(\)')
     Check 'the stop path goes through the module that checks documents before any close' ($module -match 'Close-HzRehearsalSession' -and $module -match 'Restore-HzYearSession')
 
-    # 11. The recorded-Revit API (live-cycle, structure matrix, deploy-and-verify).
+    # 11. The recorded-Revit API (live-cycle, deploy-and-verify).
     Reset-State
     $f = New-Fake
     $rec = Start-HzRecordedRevit -Probes $f.probes -Name 'unit' -Year '2099' -Dir $root -RevitExe $pwshExe
@@ -308,7 +306,6 @@ try {
     # 12. The migrated scripts: no name-based kill, no MCP server termination, no discard of what is not registered.
     $scripts = [ordered]@{
         'live-cycle.ps1'               = Join-Path (Split-Path -Parent $PSScriptRoot) 'live-cycle.ps1'
-        'verify-structure-matrix.ps1'  = Join-Path $PSScriptRoot 'verify-structure-matrix.ps1'
         'deploy-and-verify.ps1'        = Join-Path $PSScriptRoot 'deploy-and-verify.ps1'
     }
     foreach ($k in $scripts.Keys) {

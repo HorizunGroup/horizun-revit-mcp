@@ -70,7 +70,7 @@ namespace Horizun.Revit.Commands
             var ids = new List<long>();
             foreach (JToken t in request["element_ids"] as JArray ?? new JArray())
             {
-                long v = t.Value<long?>() ?? -1;
+                long v = (t.Type == JTokenType.Integer ? t.Value<long?>() : null) ?? -1; // an object here was an InvalidCastException
                 if (!Rid.CanRepresent(v)) return CommandResult.Fail("element_ids carries a value that is not an ElementId: " + t);
                 ids.Add(v);
             }
@@ -142,7 +142,7 @@ namespace Horizun.Revit.Commands
                 ["id"] = Rid.Value(e.Id),
                 ["unique_id"] = Str(() => e.UniqueId),
                 ["name"] = Str(() => e.Name),
-                ["category"] = e.Category == null ? null : e.Category.Name
+                ["category"] = e.Category == null ? null : e.Category.Name, ["built_in_category"] = CategoryKey.Of(e)
             };
             var fi = e as FamilyInstance;
             ElementType type = doc.GetElement(e.GetTypeId()) as ElementType;
@@ -206,6 +206,11 @@ namespace Horizun.Revit.Commands
                 "degrees has an unchanged location line and this number changed.";
 
             o["level"] = LevelBlock(doc, e);
+            if (e.Category != null && Rid.Value(e.Category.Id) == (long)BuiltInCategory.OST_StructuralColumns)
+            {
+                o["top_level"] = TopLevelBlock(doc, e);
+                o["base_offset_mm"] = Round(ParamNumber(e, BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM) * FtToMm);
+            }
             o["start_level_offset_mm"] = Round(ParamNumber(e, BuiltInParameter.STRUCTURAL_BEAM_END0_ELEVATION) * FtToMm);
             o["end_level_offset_mm"] = Round(ParamNumber(e, BuiltInParameter.STRUCTURAL_BEAM_END1_ELEVATION) * FtToMm);
             o["justification"] = Str(() => ParamString(e, BuiltInParameter.YZ_JUSTIFICATION));
@@ -291,7 +296,7 @@ namespace Horizun.Revit.Commands
             {
                 ["id"] = Rid.Value(e.Id),
                 ["name"] = Str(() => e.Name),
-                ["category"] = e.Category == null ? null : e.Category.Name
+                ["category"] = e.Category == null ? null : e.Category.Name, ["built_in_category"] = CategoryKey.Of(e)
             };
             bool valid = false;
             try { valid = RebarHostData.IsValidHost(e); } catch { }
@@ -693,37 +698,60 @@ namespace Horizun.Revit.Commands
             long hostFilter = request.Value<long?>("host_id") ?? -1;
             bool constraints = request.Value<bool?>("include_constraints") ?? false;
 
-            List<Rebar> all;
-            if (ids.Count > 0)
+            // THE SCOPE IS EVERY KIND OF BAR, NOT ONLY Rebar. The bars an area or path reinforcement
+            // lays are RebarInSystem, and fabric sheets are neither: collecting Rebar alone dropped a
+            // named RebarInSystem (matched 1 of 2) while the reply still said complete and whole truth.
+            // RebarScope classifies every id once; an id that is no reinforcement, or not in the
+            // document, is a REASON, so the coverage is partial instead of silently short.
+            IEnumerable<long> wanted = ids;
+            if (ids.Count == 0)
             {
-                all = new List<Rebar>();
-                foreach (long id in ids)
-                {
-                    var b = doc.GetElement(Rid.Make(id)) as Rebar;
-                    if (b != null) all.Add(b);
-                }
+                var every = new List<long>();
+                foreach (Type t in new[] { typeof(Rebar), typeof(RebarInSystem), typeof(FabricArea), typeof(FabricSheet) })
+                    every.AddRange(new FilteredElementCollector(doc).OfClass(t).ToElementIds().Select(Rid.Value));
+                wanted = every;
             }
-            else
-            {
-                all = new FilteredElementCollector(doc)
-                    .OfClass(typeof(Rebar)).Cast<Rebar>().ToList();
-            }
+            RebarScope scope = RebarScope.FromIds(wanted, id => KindForTakeoff(doc, id), id => MembersOf(doc, id));
             if (Rid.CanRepresent(hostFilter) && hostFilter >= 0)
-            {
-                ElementId want = Rid.Make(hostFilter);
-                all = all.Where(b =>
-                {
-                    try { return b.GetHostId() == want; } catch { return false; }
-                }).ToList();
-            }
-            all = all.OrderBy(b => Rid.Value(b.Id)).ToList();
+                scope.FilterByHost(hostFilter, id => HostOf(doc, id));
+            List<long> all = scope.AllInOrder();
 
             var reasons = new JArray();
-            var rows = new JArray();
-            foreach (Rebar b in all.Skip(offset).Take(maxRows))
+            foreach (JToken t in scope.Reasons) reasons.Add(t);
+            // Which classes were walked, with counts. Whole truth needs all six.
+            var walks = new List<ReinforcementClassWalk>();
+            foreach (var cls in new[] {
+                Tuple.Create("Rebar", typeof(Rebar)), Tuple.Create("RebarInSystem", typeof(RebarInSystem)),
+                Tuple.Create("AreaReinforcement", typeof(AreaReinforcement)), Tuple.Create("PathReinforcement", typeof(PathReinforcement)),
+                Tuple.Create("FabricSheet", typeof(FabricSheet)), Tuple.Create("FabricArea", typeof(FabricArea)) })
             {
-                JObject row = RebarFacts.Describe(doc, b, positions);
-                if (constraints) row["constraints"] = RebarConstraintRead.Read(doc, b);
+                try
+                {
+                    walks.Add(new ReinforcementClassWalk { Class = cls.Item1, Walked = true,
+                        Count = new FilteredElementCollector(doc).OfClass(cls.Item2).GetElementCount() });
+                }
+                catch (Exception ex) { walks.Add(new ReinforcementClassWalk { Class = cls.Item1, Walked = false, Why = ex.Message }); }
+            }
+            JArray classReasons;
+            JObject classReport = ReinforcementClasses.Report(walks, out classReasons);
+            foreach (JToken t in classReasons) reasons.Add(t);
+            var rows = new JArray();
+            foreach (long id in all.Skip(offset).Take(maxRows))
+            {
+                Element e = doc.GetElement(Rid.Make(id));
+                var b = e as Rebar;
+                var sb = e as RebarInSystem;
+                var fs = e as FabricSheet;
+                JObject row;
+                if (b != null)
+                {
+                    row = RebarFacts.Describe(doc, b, positions);
+                    if (constraints) row["constraints"] = RebarConstraintRead.Read(doc, b);
+                    row["system"] = JValue.CreateNull();
+                }
+                else if (sb != null) row = RebarFacts.DescribeInSystem(doc, sb);
+                else if (fs != null) row = RebarFacts.DescribeFabric(doc, fs);
+                else continue;
                 JArray rr = row["coverage"]?["reasons"] as JArray;
                 if (rr != null) foreach (JToken t in rr) reasons.Add(t);
                 rows.Add(row);
@@ -749,7 +777,8 @@ namespace Horizun.Revit.Commands
                 ["page_totals_mean"] =
                     "summed over the ROWS RETURNED, not over the model. Page through to the end, or use " +
                     "mode=rebar with a host_id, before treating either number as a takeoff.",
-                ["host_id_filter"] = hostFilter >= 0 ? (JToken)hostFilter : JValue.CreateNull()
+                ["host_id_filter"] = hostFilter >= 0 ? (JToken)hostFilter : JValue.CreateNull(),
+                ["classes_walked"] = classReport
             };
             return Ok("rebar", all.Count, offset, rows, reasons, extra);
         }
@@ -775,7 +804,7 @@ namespace Horizun.Revit.Commands
                     ["id"] = Rid.Value(e.Id),
                     ["name"] = Str(() => e.Name),
                     ["kind"] = e.GetType().Name,
-                    ["category"] = e.Category == null ? null : e.Category.Name
+                    ["category"] = e.Category == null ? null : e.Category.Name, ["built_in_category"] = CategoryKey.Of(e)
                 };
                 var ar = e as AreaReinforcement;
                 var pr = e as PathReinforcement;
@@ -956,6 +985,11 @@ namespace Horizun.Revit.Commands
         {
             ElementId id = null;
             try { id = e.LevelId; } catch { }
+            // Framing keeps its level in the reference-level parameter, and Element.LevelId answers invalid for it:
+            // a beam would read "no level" while its offsets are measured from one.
+            if (id == null || id == ElementId.InvalidElementId)
+                id = LevelFromParameter(e, BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM)
+                     ?? LevelFromParameter(e, BuiltInParameter.FAMILY_BASE_LEVEL_PARAM);
             var level = (id != null && id != ElementId.InvalidElementId) ? doc.GetElement(id) as Level : null;
             if (level == null) return null;
             return new JObject
@@ -963,6 +997,32 @@ namespace Horizun.Revit.Commands
                 ["id"] = Rid.Value(level.Id),
                 ["name"] = Str(() => level.Name),
                 ["elevation_mm"] = Round(Num(() => level.Elevation) * FtToMm)
+            };
+        }
+
+        private static ElementId LevelFromParameter(Element e, BuiltInParameter bip)
+        {
+            try
+            {
+                Parameter p = e.get_Parameter(bip);
+                if (p != null && p.HasValue && p.StorageType == StorageType.ElementId) return p.AsElementId();
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>Top level of a column: the storey it reaches, with its offset. Null for members that have none.</summary>
+        private static JObject TopLevelBlock(Document doc, Element e)
+        {
+            ElementId id = LevelFromParameter(e, BuiltInParameter.FAMILY_TOP_LEVEL_PARAM);
+            var level = (id != null && id != ElementId.InvalidElementId) ? doc.GetElement(id) as Level : null;
+            if (level == null) return null;
+            return new JObject
+            {
+                ["id"] = Rid.Value(level.Id),
+                ["name"] = Str(() => level.Name),
+                ["elevation_mm"] = Round(Num(() => level.Elevation) * FtToMm),
+                ["offset_mm"] = Round(ParamNumber(e, BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM) * FtToMm)
             };
         }
 

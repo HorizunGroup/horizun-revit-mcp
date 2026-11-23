@@ -124,7 +124,7 @@ namespace Horizun.Revit.Commands
             {
                 Element p = doc.GetElement(id); if (p == null) continue;
                 var row = new JObject { ["id"] = Rid.Value(id), ["type_id"] = Rid.Value(p.GetTypeId()), ["type"] = TypeName(doc, p),
-                    ["category"] = p.Category?.Name, ["is_door"] = IsCategory(p, BuiltInCategory.OST_Doors), ["pinned"] = SafeBool(() => p.Pinned) };
+                    ["category"] = p.Category?.Name, ["built_in_category"] = Horizun.Revit.Core.CategoryKey.Of(p), ["is_door"] = IsCategory(p, BuiltInCategory.OST_Doors), ["pinned"] = SafeBool(() => p.Pinned) };
                 BoundingBoxXYZ b = SafeBox(p);
                 if (b != null) row["center"] = ModelEditRunner.Arr((b.Min + b.Max) / 2, scale);
                 pRows.Add(row);
@@ -269,7 +269,8 @@ namespace Horizun.Revit.Commands
             try
             {
                 string familyName = (e as FamilyInstance)?.Symbol?.Family?.Name;
-                return familyName != null && familyName.IndexOf("door", StringComparison.OrdinalIgnoreCase) >= 0;
+                return familyName != null && (familyName.IndexOf("door", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                              familyName.IndexOf("puerta", StringComparison.OrdinalIgnoreCase) >= 0);
             }
             catch { return false; }
         }
@@ -425,7 +426,7 @@ namespace Horizun.Revit.Commands
                     bool inPlace = inGrid.Contains(cur) || hostPanel == cur;
                     if (inPlace) present++;
                     rows.Add(new JObject { ["requested_id"] = id, ["element_id"] = cur, ["type_id"] = e == null ? null : (JToken)Rid.Value(e.GetTypeId()),
-                        ["category"] = e?.Category?.Name, ["replaced"] = cur != id,
+                        ["category"] = e?.Category?.Name, ["built_in_category"] = Horizun.Revit.Core.CategoryKey.Of(e), ["replaced"] = cur != id,
                         ["listed_by_grid"] = inGrid.Contains(cur), ["original_listed"] = inGrid.Contains(id), ["host_panel_of_original"] = hostPanel });
                 }
                 edit.Evidence["panels"] = rows;

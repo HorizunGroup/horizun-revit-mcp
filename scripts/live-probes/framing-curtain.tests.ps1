@@ -10,9 +10,8 @@
 # VerifyCurtainCeilings (pieces[].grid.grid1.layout / layout_text / spacing_mm / spacing_problems,
 # evidence.hanger_recheck.stations_checked / not_at_support), ManageCurtainCommand.Read (counts,
 # host_kind, grid1_angle_deg; where ModelEditRunner places that read result is exactly what the
-# first live run must confirm - the probe looks in data, data.read and data.result),
-# ManageSystemTypesCommand (rows[].index / new_type_id / type_verified / parameters_verified) and
-# horizun_write_params_verified (verification.verified, the way coordination-bcf-readiness reads it).
+# first live run must confirm - the probe looks in data, data.read and data.result) and
+# horizun_write_params_verified (verification.verified).
 $ErrorActionPreference = 'Stop'
 $script:HzProbeModules = @()
 . (Join-Path $PSScriptRoot 'framing-curtain.probes.ps1')
@@ -20,14 +19,13 @@ $module = $script:HzProbeModules | Where-Object { $_.Name -eq 'framing-curtain' 
 $fails = 0
 function Check($name, $ok) { if ($ok) { "  PASS  $name" } else { "  FAIL  $name"; $script:fails++ } }
 function Reply($data, $isError, $text) { @{ isError = $isError; data = $data; text = $text } }
-# No template on disk: every type comes from the fake query, and a missing one stays missing.
-$noTemplates = Join-Path ([IO.Path]::GetTempPath()) ('hz-frc-tests-' + [guid]::NewGuid().ToString('N'))
+# Every type comes from the fake query, and a missing one stays missing.
 
 function New-State {
     $script:nextId = 7000; $script:wallApplies = 0; $script:sent = @{}; $script:deleted = $null; $script:removeTargets = @(); $script:reusedKeys = @()
     $script:noGlazing = $false; $script:w1Restore = @{ restored = $true; inserts_changed = 0; why = $null }; $script:notAtSupport = @()
-    $script:nextTypeId = 600; $script:typesRefused = $false; $script:layoutText = 'Fixed Distance'
-    $script:noOverlap = $false; $script:w3Restored = $true; $script:localizedMullion = $false; $script:mullionCopied = $false; $script:twinMullion = $false; $script:pagedMullion = $false
+    $script:layoutText = 'Fixed Distance'; $script:glazingRefused = $false
+    $script:noOverlap = $false; $script:w3Restored = $true; $script:pagedWalls = $false
     $script:overlapNote = 'the curtain walls OVERLAP the kept carrier: a wall with several openings (multi_opening=keep_carrier) stays full length with the placeholder type so its inserts keep their ids, tags and data'
 }
 
@@ -42,19 +40,11 @@ $fakeCall = {
             'OST_Roofs' { if ($script:noGlazing) { @() } else { @(@{ element_id = 505; is_element_type = $true; family = 'Sloped Glazing'; type = 'Sloped Glazing' }) } }
             'OST_Floors' { @(@{ element_id = 506; is_element_type = $true; family = 'Floor'; type = 'Generic 300mm' }) }
             'OST_Ceilings' { @(@{ element_id = 507; is_element_type = $true; family = 'Compound Ceiling'; type = '600 x 600mm Grid' }) }
-            'OST_CurtainWallMullions' {
-                # A German-template model names the system family in its own language (MEASURED 2026-09-27, Revit 2023).
-                if (-not $script:localizedMullion) { @(@{ element_id = 508; is_element_type = $true; family = 'Rectangular Mullion'; type = '50 x 150mm' }) }
-                elseif ($script:mullionCopied) {
-                    $r = @(@{ element_id = 509; is_element_type = $true; family = 'Rechteckiger Pfosten'; type = '50 x 150mm' })
-                    if ($script:twinMullion) { $r += @{ element_id = 510; is_element_type = $true; family = 'Kreisfoermiger Pfosten'; type = '50 x 150mm' } }
-                    $r }
-                else { @() } }
             default { @() }
         }
         # QueryModelCommand pages with truncated / next_cursor; types and instances share the rows.
-        if ($script:pagedMullion -and $arguments.categories[0] -eq 'OST_CurtainWallMullions' -and -not $arguments.cursor) {
-            $inst = @(1..3 | ForEach-Object { [pscustomobject]@{ element_id = 8000 + $_; is_element_type = $false; family = 'Rectangular Mullion'; type = '50 x 150mm' } })
+        if ($script:pagedWalls -and $arguments.categories[0] -eq 'OST_Walls' -and -not $arguments.cursor) {
+            $inst = @(1..3 | ForEach-Object { [pscustomobject]@{ element_id = 8000 + $_; is_element_type = $false; family = 'Basic Wall'; type = 'Generic - 200mm' } })
             return Reply ([pscustomobject]@{ rows = $inst; truncated = $true; next_cursor = 'page-2' }) $false ''
         }
         return Reply ([pscustomobject]@{ rows = @($rows | ForEach-Object { [pscustomobject]$_ }); truncated = $false }) $false ''
@@ -83,6 +73,7 @@ $fakeCall = {
         return Reply ([pscustomobject]@{ dry_run = $true; operation = 'wall'; plan = [pscustomobject]@{ method = 'curtain'; sources = @($src); member_count = @($src.pieces).Count } }) $false ''
     }
     if ($tool -eq 'horizun_framing' -and $arguments.operation -eq 'ceiling') {
+        if ($script:glazingRefused) { return Reply $null $true "layers[0].type_id 505: the Sloped Glazing type's grid 1 layout is None; the hangers follow grid 1. Nothing was planned." }
         $hangers = @(0..2 | ForEach-Object { [pscustomobject]@{ i = 2 + $_; type_id = 501; from = @(1190000, (600 + 1200 * $_)); to = @(1194800, (600 + 1200 * $_)); base_mm = 100480.0; top_mm = 100700.0 } })
         return Reply ([pscustomobject]@{ dry_run = $true; operation = 'ceiling'; plan = [pscustomobject]@{ method = 'curtain'; member_count = 5; sources = @([pscustomobject]@{
             source_id = 7006; status = 'planned'; method = 'curtain'; top_face_mm = 100450.0; sketch_loops = 1; openings_not_cut = @()
@@ -106,17 +97,6 @@ $fakeApply = {
         'horizun_create_elements' {
             $script:nextId++
             return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $script:nextId }) }) $false '') }
-        }
-        'horizun_manage_system_types' {
-            if ($script:typesRefused) { return @{ stage = 'rehearsal'; answer = (Reply $null $true "parameter 'RECT_MULLION_THICK' is read-only on the source type") } }
-            $rows = @(); $i = 0
-            foreach ($act in @($arguments.actions)) {
-                $script:nextTypeId++
-                $rows += [pscustomobject]@{ index = $i; source_type_id = $act.source_type_id; new_type_id = $script:nextTypeId; name = $act.new_name
-                                            type_verified = $true; source_unchanged = $true; parameters_verified = $true; compound_structure_verified = $null }
-                $i++
-            }
-            return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ transaction_status = 'Committed'; created_verified = $true; rows = $rows }) $false '') }
         }
         'horizun_write_params_verified' {
             return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ transaction_status = 'Committed'; verification = [pscustomobject]@{ verified = $true } }) $false '') }
@@ -187,20 +167,11 @@ $fakeApply = {
                     carrier = [pscustomobject]@{ id = $sid; action = 'delete'; deleted = $true; deleted_with_it = @(); deleted_with_it_measured = @(); inserts_checked = 0; inserts_changed = 0 } }) } }) $false '') }
         }
         'horizun_delete_verified' { $script:deleted = $arguments.ids; return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{}) $false '') } }
-        'horizun_copy_between_documents' {
-            # CopyBetweenDocumentsCommand's reply: types_that_arrived[].type_id / name / category.
-            $arrived = @()
-            if ($arguments.category -eq 'OST_CurtainWallMullions' -and $script:localizedMullion) {
-                $script:mullionCopied = $true
-                $arrived = @([pscustomobject]@{ type_id = 509; name = '50 x 150mm'; category = 'Curtain Wall Mullions' })
-            }
-            return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ state = 'committed_verified'; types_that_arrived = $arrived }) $false '') }
-        }
         default { return @{ stage = 'apply'; answer = (Reply $null $true "unexpected apply $tool") } }
     }
 }
 
-function Ctx($runId) { [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; TemplateRoot = $noTemplates; ScratchRoot = (Join-Path $noTemplates 'scratch'); RunId = $runId; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply } }
+function Ctx($runId) { [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; RunId = $runId; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply } }
 function RunBy($context) { $by = @{}; foreach ($c in @(& $module.Run $context)) { $by[$c.Name] = $c }; $by }
 $names = @($module.Catalog | ForEach-Object { $_.Name })
 
@@ -211,46 +182,36 @@ try {
     Check 'every catalogued case is reported exactly once' (($cases.Count -eq $module.Catalog.Count) -and (@($names | Where-Object { -not $by.ContainsKey($_) }).Count -eq 0))
     Check 'no idempotency key is used twice (the bridge refuses a reused key for a different call)' (@($script:reusedKeys).Count -eq 0)
     foreach ($name in $names) { Check ('the happy path passes: ' + $name) ($by[$name].Outcome -eq 'pass') }
-    $mSent = $script:sent['t1-frc-mullions']; $oSent = $script:sent['t1-frc-owntypes']; $sSent = $script:sent['t1-frc-spacing']
-    Check 'the stud and track are duplicated from the named rectangular mullion at 41.3 x 92.1 mm, sent in feet' ((@($mSent.actions).Count -eq 2) -and
-        (@($mSent.actions | Where-Object { $_.source_type_id -ne 508 }).Count -eq 0) -and ([math]::Abs($mSent.actions[0].values.RECT_MULLION_WIDTH1 * 2 * 304.8 - 41.3) -lt 1e-9) -and
-        ([math]::Abs($mSent.actions[0].values.RECT_MULLION_THICK * 304.8 - 92.1) -lt 1e-9))
-    Check 'the core is layout 1 with studs as vertical mullions and tracks as horizontal borders; the layer is one-way' (($oSent.actions[0].source_type_id -eq 501) -and
-        ($oSent.actions[0].values.SPACING_LAYOUT_VERT -eq 1) -and ($oSent.actions[0].values.AUTO_MULLION_INTERIOR_VERT -eq 601) -and ($oSent.actions[0].values.AUTO_MULLION_BORDER2_VERT -eq 601) -and
-        ($oSent.actions[0].values.AUTO_MULLION_BORDER1_HORIZ -eq 602) -and ($oSent.actions[1].source_type_id -eq 505) -and ($oSent.actions[1].values.SPACING_LAYOUT_1 -eq 1) -and ($oSent.actions[1].values.SPACING_LAYOUT_2 -eq 0))
-    Check 'the spacings are a second call on the NEW types, 406.4 mm sent in feet (the cross layer on grid 2)' ((@($sSent.writes).Count -eq 3) -and ($sSent.writes[0].target_id -eq 603) -and ($sSent.writes[0].parameter -eq 'SPACING_LENGTH_VERT') -and
-        ([math]::Abs($sSent.writes[0].value * 304.8 - 406.4) -lt 1e-9) -and ($sSent.writes[1].target_id -eq 604) -and ($sSent.writes[1].parameter -eq 'SPACING_LENGTH_1') -and
-        ($sSent.writes[2].target_id -eq 605) -and ($sSent.writes[2].parameter -eq 'SPACING_LENGTH_2'))
     $applySent = $script:sent['t1-frc-apply']
-    Check 'the wall apply names the one-door wall, method curtain, the OWN core and the placeholder type' (($applySent.operation -eq 'wall') -and ($applySent.element_ids[0] -eq 7002) -and
-        ($applySent.spec.wall.method -eq 'curtain') -and ($applySent.spec.wall.curtain_type_id -eq 603) -and ($applySent.spec.wall.placeholder_type_id -eq 503))
+    Check 'the wall apply names the one-door wall, method curtain, the document''s curtain type and the placeholder type' (($applySent.operation -eq 'wall') -and ($applySent.element_ids[0] -eq 7002) -and
+        ($applySent.spec.wall.method -eq 'curtain') -and ($applySent.spec.wall.curtain_type_id -eq 501) -and ($applySent.spec.wall.placeholder_type_id -eq 503))
     Check 'the door is hosted on the staged wall' (($script:sent['t1-frc-door'].elements[0].host_id -eq 7002))
     Check 'the remove names both carriers' ((@($script:removeTargets) -contains 7002) -and (@($script:removeTargets) -contains 7003))
     $ceilSent = $script:sent['t1-frc-ceiling-apply']
-    Check 'the ceiling apply sends the OWN grid-1 layer at 0 deg and the OWN grid-2 layer 30 mm above it with no angle, the OWN core as hanger' (($ceilSent.element_ids[0] -eq 7006) -and (@($ceilSent.spec.ceiling.layers).Count -eq 2) -and
-        ($ceilSent.spec.ceiling.layers[0].type_id -eq 604) -and ($ceilSent.spec.ceiling.layers[0].angle_deg -eq 0) -and ($ceilSent.spec.ceiling.layers[1].type_id -eq 605) -and
-        (-not $ceilSent.spec.ceiling.layers[1].ContainsKey('angle_deg')) -and ($ceilSent.spec.ceiling.layers[1].offset_mm - $ceilSent.spec.ceiling.layers[0].offset_mm -eq 30) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 603))
-    Check 'cleanup deletes the own types and the recreated carrier, never the deleted one' ((@($script:deleted) -contains 9999) -and -not (@($script:deleted) -contains 7003) -and
-        (@(601..605 | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0) -and (@($script:deleted).Count -eq 14))
+    Check 'the ceiling apply sends the sloped glazing layer at 0 deg and again 30 mm above it with no angle, the curtain type as hanger' (($ceilSent.element_ids[0] -eq 7006) -and (@($ceilSent.spec.ceiling.layers).Count -eq 2) -and
+        ($ceilSent.spec.ceiling.layers[0].type_id -eq 505) -and ($ceilSent.spec.ceiling.layers[0].angle_deg -eq 0) -and ($ceilSent.spec.ceiling.layers[1].type_id -eq 505) -and
+        (-not $ceilSent.spec.ceiling.layers[1].ContainsKey('angle_deg')) -and ($ceilSent.spec.ceiling.layers[1].offset_mm - $ceilSent.spec.ceiling.layers[0].offset_mm -eq 30) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 501))
+    Check 'cleanup deletes the recreated carrier, never the deleted one, and no document type' ((@($script:deleted) -contains 9999) -and -not (@($script:deleted) -contains 7003) -and
+        (@(501..507 | Where-Object { @($script:deleted) -contains $_ }).Count -eq 0) -and (@($script:deleted).Count -eq 9))
     Check 'the manage_curtain case reports the grid angles' ($by[$names[7]].Detail -match 'grid 1 at 0 deg, grid 2 at 90 deg')
     $a3Sent = $script:sent['t1-frc-apply3']
     Check 'the one-door and the two-door walls run on the DEFAULT multi_opening (none sent)' ((-not $applySent.spec.wall.ContainsKey('multi_opening')) -and ($null -ne $a3Sent) -and
         (-not $a3Sent.spec.wall.ContainsKey('multi_opening')) -and ($a3Sent.element_ids[0] -eq 7007))
     Check 'both doors are hosted on the third wall and its kept carrier is removed on its own' (($script:sent['t1-frc-door3a'].elements[0].host_id -eq 7007) -and
         ($script:sent['t1-frc-door3b'].elements[0].host_id -eq 7007) -and ((@($script:sent['t1-frc-remove3'].element_ids) -join ',') -eq '7007'))
-    Check 'the two-door case reports the overlapping piece ids' ($by[$names[10]].Detail -match 'overlapped_by 9301,9302,9303,9304,9305')
+    Check 'the two-door case reports the overlapping piece ids' ($by[$names[9]].Detail -match 'overlapped_by 9301,9302,9303,9304,9305')
 
     # ---- a kept carrier whose result does not name the overlap fails, and is still removed ----
     New-State; $script:noOverlap = $true
     $ovBy = RunBy (Ctx 't9')
-    Check 'a kept carrier whose result does not name the overlap fails the two-door case' (($ovBy[$names[10]].Outcome -eq 'fail') -and ($ovBy[$names[10]].Detail -match 'does not name the overlap'))
+    Check 'a kept carrier whose result does not name the overlap fails the two-door case' (($ovBy[$names[9]].Outcome -eq 'fail') -and ($ovBy[$names[9]].Detail -match 'does not name the overlap'))
     Check 'that committed apply is still removed, and the cleanup passes' ((@($script:removeTargets) -contains 7007) -and ($ovBy[$names[8]].Outcome -eq 'pass'))
 
     # ---- the kept carrier not restored: the two-door case and the cleanup fail ----
     New-State; $script:w3Restored = $false
     $w3By = RunBy (Ctx 't10')
-    Check 'a kept carrier not restored fails the two-door case with its reason, and the cleanup' (($w3By[$names[10]].Outcome -eq 'fail') -and
-        ($w3By[$names[10]].Detail -match 'type changed after the apply') -and ($w3By[$names[8]].Outcome -eq 'fail'))
+    Check 'a kept carrier not restored fails the two-door case with its reason, and the cleanup' (($w3By[$names[9]].Outcome -eq 'fail') -and
+        ($w3By[$names[9]].Detail -match 'type changed after the apply') -and ($w3By[$names[8]].Outcome -eq 'fail'))
 
     # ---- a carrier whose restore is refused fails the remove case, and the cleanup ----
     New-State; $script:w1Restore = @{ restored = $false; inserts_changed = 0; why = 'its type changed after the apply' }
@@ -273,46 +234,18 @@ try {
     $bareBy = RunBy (Ctx 't5')
     Check 'without a sloped glazing type the ceiling cases are not_covered with the reason' (($bareBy[$names[5]].Outcome -eq 'not_covered') -and ($bareBy[$names[5]].Detail -match "sloped glazing type ''") -and ($bareBy[$names[6]].Outcome -eq 'not_covered'))
     Check 'without a layer the manage_curtain read is not_covered and the cleanup still passes' (($bareBy[$names[7]].Outcome -eq 'not_covered') -and ($bareBy[$names[8]].Outcome -eq 'pass'))
-    Check 'without a sloped glazing source the types case is not_covered naming it, and the wall still runs on the own core' (($bareBy[$names[9]].Outcome -eq 'not_covered') -and
-        ($bareBy[$names[9]].Detail -match 'Sloped Glazing') -and ($script:sent['t5-frc-apply'].spec.wall.curtain_type_id -eq 603) -and ($bareBy[$names[1]].Outcome -eq 'pass'))
 
-    # ---- the type duplicate refused: the types case fails, the framing runs on the template types ----
-    New-State; $script:typesRefused = $true
-    $tplBy = RunBy (Ctx 't7')
-    Check 'a refused type duplicate fails the types case with its reason' (($tplBy[$names[9]].Outcome -eq 'fail') -and ($tplBy[$names[9]].Detail -match 'read-only on the source type'))
-    Check 'without own types the wall runs on the template types, the spacing never written' (($script:sent['t7-frc-apply'].spec.wall.curtain_type_id -eq 501) -and
-        ($tplBy[$names[1]].Outcome -eq 'pass') -and -not $script:sent.ContainsKey('t7-frc-spacing'))
-    # A template Sloped Glazing type may carry no grid 1 (MEASURED 2026-09-27 in Revit 2023), and the
-    # hangers follow it: without the own layer types the ceiling is not covered, never sent.
-    Check 'without own layer types the ceiling cases are not_covered naming why, and no ceiling apply is sent' (($tplBy[$names[5]].Outcome -eq 'not_covered') -and
-        ($tplBy[$names[5]].Detail -match 'own layer types were not staged') -and ($tplBy[$names[6]].Outcome -eq 'not_covered') -and -not $script:sent.ContainsKey('t7-frc-ceiling-apply'))
+    # ---- the document's Sloped Glazing type has no grid 1: the ceiling is not_covered, named ----
+    New-State; $script:glazingRefused = $true
+    $gBy = RunBy (Ctx 't7')
+    Check 'a Sloped Glazing type without grid 1 leaves the ceiling cases not_covered naming it, no ceiling apply sent' (($gBy[$names[5]].Outcome -eq 'not_covered') -and
+        ($gBy[$names[5]].Detail -match 'no grid 1') -and ($gBy[$names[6]].Outcome -eq 'not_covered') -and -not $script:sent.ContainsKey('t7-frc-ceiling-apply'))
 
-    # ---- layout 1 re-read as something else: the wall apply fails, and its pieces are still removed ----
-    New-State; $script:layoutText = 'Fixed Number'
-    $numBy = RunBy (Ctx 't8')
-    Check 'layout 1 re-read as anything but Fixed Distance fails the wall apply, naming the text' (($numBy[$names[1]].Outcome -eq 'fail') -and ($numBy[$names[1]].Detail -match "='Fixed Number'"))
-    Check 'a committed apply that failed a check is still removed; the idempotent case is not_covered' ((@($script:removeTargets) -contains 7002) -and ($numBy[$names[2]].Outcome -eq 'not_covered'))
-
-    # ---- a template type that reads back under a localized family: found by the id the copy verified ----
-    New-State; $script:localizedMullion = $true
-    $locCtx = Ctx 't11'; $locCtx.TemplateRoot = Join-Path $noTemplates 'tpl'
-    New-Item -ItemType Directory -Force (Join-Path $locCtx.TemplateRoot 'English') | Out-Null
-    Set-Content -LiteralPath (Join-Path $locCtx.TemplateRoot 'English\DefaultMetric.rte') -Value 'fake'
-    $locBy = RunBy $locCtx
-    Check 'a mullion copied from the template under a localized family is found by its name, and the types case runs' (($locBy[$names[9]].Outcome -eq 'pass') -and
-        ($locBy[$names[9]].Detail -match "mullion = template '50 x 150mm'") -and $script:mullionCopied)
-    New-State; $script:localizedMullion = $true; $script:mullionCopied = $true
-    $hadBy = RunBy (Ctx 't12')
-    Check 'a mullion the document already has under a localized family is taken from the document, nothing copied' (($hadBy[$names[9]].Outcome -eq 'pass') -and
-        ($hadBy[$names[9]].Detail -match "mullion = document '50 x 150mm'"))
-    New-State; $script:pagedMullion = $true
+    # ---- a type past the first page of a truncated query is found on the next page ----
+    New-State; $script:pagedWalls = $true
     $pageBy = RunBy (Ctx 't14')
-    Check 'a type past the first page of a truncated query is found on the next page' (($pageBy[$names[9]].Outcome -eq 'pass') -and
-        ($pageBy[$names[9]].Detail -match "mullion = document '50 x 150mm'"))
-    New-State; $script:localizedMullion = $true; $script:mullionCopied = $true; $script:twinMullion = $true
-    $twinBy = RunBy (Ctx 't13')
-    Check 'a type name two families share is never guessed: no mullion, the types case is not_covered' (($twinBy[$names[9]].Outcome -eq 'not_covered') -and
-        ($twinBy[$names[9]].Detail -match 'no source for a Rectangular Mullion type'))
+    Check 'a type past the first page of a truncated query is found on the next page' (($pageBy[$names[1]].Outcome -eq 'pass') -and
+        ($script:sent['t14-frc-apply'].spec.wall.curtain_type_id -eq 501))
 
     # ---- a closed write tier ----
     New-State
@@ -321,11 +254,8 @@ try {
     Check 'a closed write tier reports every case not_covered' ((@($shut | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq $module.Catalog.Count))
     Check 'a closed write tier names each case''s own tool' ((@($shut | Where-Object { $_.Name -like 'framing curtain probes:*' -and $_.Tool -eq 'horizun_delete_verified' }).Count -eq 1) -and
         (@($shut | Where-Object { $_.Name -like 'manage_curtain*' -and $_.Tool -eq 'horizun_manage_curtain' }).Count -eq 1) -and
-        (@($shut | Where-Object { $_.Name -like 'framing curtain types:*' -and $_.Tool -eq 'horizun_manage_system_types' }).Count -eq 1) -and
         (@($shut | Where-Object { $_.Name -like 'framing curtain wall*' -and $_.Tool -ne 'horizun_framing' }).Count -eq 0))
 }
-finally {
-    Remove-Item -LiteralPath $noTemplates -Recurse -Force -ErrorAction SilentlyContinue
-}
+finally { }
 
 if ($fails) { "framing-curtain tests: $fails FAILED"; exit 1 } else { 'framing-curtain tests: ALL PASS'; exit 0 }

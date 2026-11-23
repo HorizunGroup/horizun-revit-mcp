@@ -101,18 +101,22 @@ jobs:
             echo "::error::Installable releases require an explicit REVIT_RUNNER_GROUP repository variable."
             exit 1
           fi
-          echo "::notice::From 4.0.1 every binary of a Horizun release and its Setup are signed with the Certum certificate of HORIZUN GROUP S.A.S. before packaging (compile-installer, environment firma-certum)."
+          echo "::warning::Horizun releases are unsigned by policy. SHA-256, manifest, SBOM, provenance attestation and the complete live matrix prove the released bytes, but do not provide a Windows publisher identity."
 
       - name: Restore
         run: |
           dotnet restore src/Horizun.Server/Horizun.Server.csproj --locked-mode
           dotnet restore tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj --locked-mode
           dotnet restore tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj --locked-mode
+          dotnet restore tests/Horizun.Sync.Integration.Tests/Horizun.Sync.Integration.Tests.csproj --locked-mode
 
       # Warnings as errors HERE and not in the csproj: a developer mid-change
       # should not be blocked by a warning, and main should not accumulate them.
       - name: Build the MCP server (warnings are errors)
         run: dotnet build src/Horizun.Server/Horizun.Server.csproj -c Release --no-restore -warnaserror
+
+      - name: Check product version sources
+        run: dotnet test tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~ProductVersionConsistencyTests
 
       - name: Test - honesty arithmetic, coverage rules, request ownership
         run: dotnet test tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=core.trx" --results-directory artifacts/tests
@@ -122,6 +126,9 @@ jobs:
       # that are invisible in a single lumped result line.
       - name: Test - contract drift, wire protocol, multi-instance discovery
         run: dotnet test tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=server.trx" --results-directory artifacts/tests
+
+      - name: Test - sync refusal using Revit doubles
+        run: dotnet test tests/Horizun.Sync.Integration.Tests/Horizun.Sync.Integration.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=sync-integration.trx" --results-directory artifacts/tests
 
       - name: Validate release metadata on the registry platform
         shell: pwsh
@@ -190,6 +197,15 @@ jobs:
             10.0.400
             8.0.424
 
+      - name: Test native Win32 modal closing
+        run: dotnet test tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj -c Release --filter FullyQualifiedName~ModalAutoCloseWin32Tests --logger "trx;LogFileName=win32-modal.trx" --results-directory artifacts/tests
+
+      - name: Publish Win32 test result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-win32-modal
+          path: artifacts/tests/win32-modal.trx
       - name: Test deployment, installation and public metadata
         shell: pwsh
         run: |
@@ -201,10 +217,7 @@ jobs:
             'scripts/install-completion.tests.ps1'
             'scripts/install-run-entries.tests.ps1'
             'scripts/install-status.tests.ps1'
-            'scripts/dwg-state.tests.ps1'
-            'scripts/live-paths.tests.ps1'
             'scripts/verify-live-gates.tests.ps1'
-            'scripts/live-system-type.tests.ps1'
             'scripts/release-gate-python-settings.tests.ps1'
             'scripts/verify-install.tests.ps1'
             'scripts/uninstall-cleanup.tests.ps1'
@@ -402,20 +415,13 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # SIGN, THEN WRAP. Smart App Control blocks every unsigned binary it is asked to
-  # load (issues #74, #75), and signing Setup after it is compiled leaves both the
-  # payload inside it and the temporary copy Setup runs from %TEMP% unsigned. So the
-  # payload is signed in the stage and Setup is compiled with Inno's sign tool, on
-  # the signing runner (SimplySign, local signing queue) after a reviewer approves
-  # the firma-certum environment. Every hash downstream describes the signed bytes.
   compile-installer:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.') && github.repository == 'HorizunGroup/horizun-revit-mcp'
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
     needs: build-stage
-    runs-on: [self-hosted, windows, horizun-sign]
-    environment: firma-certum
+    runs-on:
+      group: ${{ vars.REVIT_RUNNER_GROUP }}
+      labels: [self-hosted, windows, revit]
     env:
-      HORIZUN_FIRMA_COLA: ${{ vars.HORIZUN_FIRMA_COLA }}
-      HORIZUN_FIRMA_TRABAJO: ${{ vars.HORIZUN_FIRMA_TRABAJO }}
       NUGET_PACKAGES: ${{ github.workspace }}\.horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-compile-installer
     permissions:
       actions: read
@@ -434,22 +440,21 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Revalidate the stage, sign it and compile its signed installer
+      - name: Revalidate the stage and compile its installer
         shell: pwsh
         run: |
           . ./scripts/horizun-deploy.lib.ps1
           $mismatch = @(Test-HorizunStageMatchesManifest 'dist/stage')
           if ($mismatch.Count) { throw "downloaded stage/manifest mismatch: $($mismatch -join '; ')" }
-          pwsh scripts/pack.ps1 -SignStage -InstallerOnly -Sign
-          if ($LASTEXITCODE -ne 0) { throw "signing or installer compilation failed ($LASTEXITCODE)" }
+          pwsh scripts/pack.ps1 -InstallerOnly
+          if ($LASTEXITCODE -ne 0) { throw "installer compilation failed ($LASTEXITCODE)" }
           pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
           if ($LASTEXITCODE -ne 0) { throw "installer version consistency failed ($LASTEXITCODE)" }
-          pwsh scripts/installer-preflight.tests.ps1 -RequireIscc
-          if ($LASTEXITCODE -ne 0) { throw "installer preflight failed ($LASTEXITCODE)" }
           $setup = @(Get-ChildItem dist -Filter '*setup.exe' -File)
           if ($setup.Count -ne 1) { throw "expected one Setup, found $($setup.Count)" }
-          $problems = @(Get-HorizunReleaseSignatureProblems 'dist/stage' @($setup[0].FullName))
-          if ($problems.Count) { throw "release is not fully signed: $(($problems | Select-Object -First 8) -join '; ')" }
+          if ((Get-AuthenticodeSignature -LiteralPath $setup[0].FullName).Status -ne 'NotSigned') {
+            throw 'public release installer must be unsigned by policy'
+          }
 
       - name: Archive the complete stage with its build timestamps
         shell: pwsh
@@ -466,7 +471,7 @@ jobs:
         id: package-input
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: signed-package-input-${{ github.run_id }}-${{ github.run_attempt }}
+          name: unsigned-package-input-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/*setup.exe
             dist/stage.zip
@@ -508,7 +513,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Reconstruct and verify the signed package
+      - name: Reconstruct and verify the unsigned package
         shell: pwsh
         run: |
           Expand-Archive -LiteralPath dist/stage.zip -DestinationPath dist/stage-expanded
@@ -523,8 +528,12 @@ jobs:
           $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) +
                      @(Get-ChildItem dist -Filter '*setup.exe' -File)
           if ($targets.Count -ne 8) { throw "expected seven payload binaries and one Setup; found $($targets.Count)" }
-          $problems = @(Get-HorizunReleaseSignatureProblems 'dist/stage' @($targets[-1].FullName))
-          if ($problems.Count) { throw "release is not fully signed: $(($problems | Select-Object -First 8) -join '; ')" }
+          foreach ($file in $targets) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($sig.Status -ne 'NotSigned') {
+              throw "release artifact must be unsigned by policy, not $($sig.Status): $($file.FullName)"
+            }
+          }
           pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
           if ($LASTEXITCODE -ne 0) { throw "final version consistency failed ($LASTEXITCODE)" }
 
@@ -562,10 +571,7 @@ jobs:
           [pscustomobject]@{
             schema = 2; commit = $doc.Commit; workflow_sha = '${{ github.sha }}'
             built_utc = (Get-Date).ToUniversalTime().ToString('o')
-            authenticode = 'signed_by_certum'; publisher_identity_available = $true
-            # Every binary of the payload and Setup were signed before packaging
-            # (compile-installer); firmar-y-publicar re-verifies and publishes.
-            release_signing = 'payload_and_setup_signed_by_certum_in_ci'
+            authenticode = 'unsigned_by_policy'; publisher_identity_available = $false
             files = $hashes
           } | ConvertTo-Json -Depth 5 | Out-File dist/package-hashes.json -Encoding utf8
 
@@ -584,7 +590,7 @@ jobs:
           subject-path: dist/*setup.exe
           sbom-path: dist/sbom.json
 
-      - name: Publish the final signed package
+      - name: Publish the final unsigned package
         id: final-package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -619,7 +625,7 @@ jobs:
             10.0.400
             8.0.424
 
-      - name: Download the exact signed package
+      - name: Download the exact unsigned package
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.package.outputs.package-artifact-id }}
@@ -630,24 +636,26 @@ jobs:
         shell: pwsh
         run: |
           $record = Get-Content dist/package-hashes.json -Raw | ConvertFrom-Json
-          if ($record.authenticode -ne 'signed_by_certum' -or $record.publisher_identity_available -ne $true) {
-            throw 'package record does not state that every binary is signed by HORIZUN GROUP S.A.S. (Certum)'
+          if ($record.authenticode -ne 'unsigned_by_policy' -or $record.publisher_identity_available -ne $false) {
+            throw 'package does not disclose the permanent unsigned-release policy'
           }
           Expand-Archive -LiteralPath dist/stage.zip -DestinationPath dist/stage -Force
           . ./scripts/horizun-deploy.lib.ps1
           $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) +
                      @(Get-ChildItem dist -Filter '*setup.exe' -File)
-          if ($targets.Count -ne 8) { throw "expected eight signed release targets, found $($targets.Count)" }
-          $problems = @(Get-HorizunReleaseSignatureProblems 'dist/stage' @($targets[-1].FullName))
-          if ($problems.Count) { throw "release is not fully signed: $(($problems | Select-Object -First 8) -join '; ')" }
+          if ($targets.Count -ne 8) { throw "expected eight unsigned release targets, found $($targets.Count)" }
+          foreach ($file in $targets) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($sig.Status -ne 'NotSigned') { throw "unexpected signature state $($sig.Status): $($file.FullName)" }
+          }
           $extension = @(Get-ChildItem dist -Filter '*.mcpb' -File)
           if ($extension.Count -ne 1) { throw 'missing exported extension' }
           pwsh scripts/generate-mcp-manifest.ps1 -OutFile dist/server.json -PackagePath $extension[0].FullName -RequirePackage -Check
           if ($LASTEXITCODE -ne 0) { throw 'published extension metadata differs from its bytes' }
           $stagedExtension = Join-Path 'dist/stage/server/integrations/claude-desktop' $extension[0].Name
           if ((Get-FileHash $stagedExtension).Hash -ne (Get-FileHash $extension[0].FullName).Hash) { throw 'extension differs from the installed payload' }
-          pwsh scripts/verify-release.ps1 -RequireSigned
-          if ($LASTEXITCODE -ne 0) { throw "signed release-chain verification failed ($LASTEXITCODE)" }
+          pwsh scripts/verify-release.ps1 -AllowUnsigned
+          if ($LASTEXITCODE -ne 0) { throw "unsigned release-chain verification failed ($LASTEXITCODE)" }
 
   # ---------------------------------------------------------------------------
   # Install exactly once. Reinstalling the identical package before every Revit
@@ -791,13 +799,13 @@ jobs:
       # commit, and is it the one in the tree".
       - name: Verify one clean commit from source to what is installed
         shell: pwsh
-        # Every binary is signed by HORIZUN GROUP S.A.S. (Certum); -RequireSigned
-        # refuses any other state, a self-signed or unsigned file included.
+        # Public releases are unsigned by policy. The explicit switch prevents a
+        # missing publisher identity from ever being mistaken for signed trust.
         # The result path is the exact per-run file requested in the install step,
         # never the global result left by an earlier install.
         run: |
-          pwsh scripts/verify-release.ps1 -RequireSigned -Installed -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
-          if ($LASTEXITCODE -ne 0) { throw "installed signed release verification failed ($LASTEXITCODE)" }
+          pwsh scripts/verify-release.ps1 -AllowUnsigned -Installed -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
+          if ($LASTEXITCODE -ne 0) { throw "installed unsigned release verification failed ($LASTEXITCODE)" }
 
       - name: Publish the installed release-chain evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -919,11 +927,7 @@ jobs:
           name: stable-live-matrix-${{ github.ref_name }}
           path: release/live
 
-      # A stable release is created as a DRAFT and is never published here. A
-      # published GitHub release is immutable (assets cannot be replaced), so the
-      # Setup could not be signed afterwards. firmar-y-publicar signs the Setup
-      # with the Certum certificate and only then publishes the draft.
-      - name: Create or complete the stable GitHub release (as a draft)
+      - name: Create or complete the stable GitHub release
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -939,10 +943,6 @@ jobs:
           fi
           expected=$(printf '%s\n' "${files[@]##*/}" | sort)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" != "true" ]; then
-              echo "Release $GITHUB_REF_NAME is already published; published releases are immutable and cannot be signed. Use a new version." >&2
-              exit 1
-            fi
             remote=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
             extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$remote"))
             if [ -n "$extra" ]; then
@@ -950,41 +950,15 @@ jobs:
               exit 1
             fi
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
-            gh release edit "$GITHUB_REF_NAME" --prerelease=false --draft=true --notes-file release/release-notes.md
+            gh release edit "$GITHUB_REF_NAME" --latest --prerelease=false --draft=false --notes-file release/release-notes.md
           else
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --draft --notes-file release/release-notes.md --title "Horizun Revit MCP $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --notes-file release/release-notes.md --latest --title "Horizun Revit MCP $GITHUB_REF_NAME"
           fi
           actual=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
           if [ "$actual" != "$expected" ]; then
-            printf 'Draft stable asset inventory is not exact.\nExpected:\n%s\nActual:\n%s\n' "$expected" "$actual" >&2
+            printf 'Published stable asset inventory is not exact.\nExpected:\n%s\nActual:\n%s\n' "$expected" "$actual" >&2
             exit 1
           fi
-
-  # Signs the Setup with the Certum certificate of HORIZUN GROUP S.A.S. and publishes
-  # the draft. Runs on the signing runner that has SimplySign Desktop, and waits for
-  # the required reviewer of the firma-certum environment. If SimplySign is
-  # disconnected the job fails BEFORE touching the draft; reconnect and re-run it.
-  # The release becomes latest when published (it is the newest stable version).
-  firmar-y-publicar:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.repository == 'HorizunGroup/horizun-revit-mcp'
-    needs: publish-stable-release
-    runs-on: [self-hosted, windows, horizun-sign]
-    environment: firma-certum
-    env:
-      HORIZUN_FIRMA_COLA: ${{ vars.HORIZUN_FIRMA_COLA }}
-      HORIZUN_FIRMA_TRABAJO: ${{ vars.HORIZUN_FIRMA_TRABAJO }}
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Sign the Setup, verify and publish the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./scripts/firmar-release.ps1 -Repo '${{ github.repository }}' -Tag '${{ github.ref_name }}'
 
   publish-preview-release:
     if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-preview.') && github.repository == 'HorizunGroup/horizun-revit-mcp'
@@ -1065,7 +1039,7 @@ jobs:
 
   publish-mcp-registry:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.repository == 'HorizunGroup/horizun-revit-mcp'
-    needs: [firmar-y-publicar, package]
+    needs: [publish-stable-release, package]
     runs-on: ubuntu-latest
     permissions:
       contents: read

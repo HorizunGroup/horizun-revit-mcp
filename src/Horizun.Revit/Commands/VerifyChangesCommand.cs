@@ -43,14 +43,15 @@ namespace Horizun.Revit.Commands
             // pixel diff against it. Both need the mutation gate because both build a
             // temporary view (rolled back, same as the check's own picture).
             string op = (request.Value<string>("operation") ?? "check").Trim();
-            if (op != "check" && op != "snapshot" && op != "compare_to")
-                return CommandResult.Fail("operation must be 'check', 'snapshot' or 'compare_to'.");
+            if (op != "check" && op != "snapshot" && op != "compare_to" && op != "what_if")
+                return CommandResult.Fail("operation must be 'check', 'snapshot', 'compare_to' or 'what_if'.");
             if (op != "check")
             {
                 GateResult opGate = DocumentGate.ForMutation(app, request, Name);
                 if (!opGate.Ok) return opGate.Refusal;
                 Document opDoc = opGate.Document;
                 if (opDoc.IsFamilyDocument) return CommandResult.Fail("horizun_verify_changes checks project models; this is a family document.");
+                if (op == "what_if") return RunWhatIf(opDoc, request);   // VerifyChangesWhatIf.cs: always rolled back
                 return op == "snapshot" ? RunSnapshot(app, opDoc, request) : RunCompareTo(app, opDoc, request);
             }
 

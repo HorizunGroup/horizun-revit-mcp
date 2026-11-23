@@ -89,8 +89,17 @@ in every reply) contains only rules that are true without a company standard:
 - **Sheets / layout**: a non-placeholder sheet with zero title blocks; more than
   one title block; two viewports (or a viewport and a schedule, or two schedules)
   that share area beyond an explicit tolerance — *touching edges are NOT an
-  overlap*; a placement wholly outside the sheet's extent; a viewport or schedule
-  placement whose target no longer exists.
+  overlap*; a placement wholly outside the sheet's extent; a placement (box plus
+  its title) that crosses the edge of the title block or sheet
+  (`sheet.placement-partly-outside-extent`, with the overhang per side); a viewport
+  or schedule placement whose target no longer exists.
+- **Schedules placed on sheets**: a field set to Calculate Totals that is not
+  additive - a diameter or size, an angle or slope, or a length read from the
+  element's type (door width, height). Not itemized, each grouped row shows the
+  sum formatted like a value (`schedule.non-additive-field-summed`, blocking);
+  itemized, only the total rows are wrong (`schedule.non-additive-field-in-totals`,
+  advisory). Revit raises no warning for either. A definition that cannot be read
+  is `unknown`; a title block's revision schedule is not examined.
 - **Views**: a view held by more than one viewport; a broken parent/callout
   relation. A view without a template and a view on no sheet are **advisory** —
   working views legitimately have neither, and a requirement set is where they

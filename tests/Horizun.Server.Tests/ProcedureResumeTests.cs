@@ -235,6 +235,119 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Issue_export_applies_the_rehearsal_token_and_requires_manifest_reread()
+        {
+            var calls = new List<JObject>();
+            var rehearsal = JObject.Parse("{'dry_run':true,'confirmation_token':'token'}");
+            JObject result = ProcedureRun.IssueExportApply(new JObject { ["view_ids"] = new JArray(7) }, rehearsal,
+                a => { calls.Add((JObject)a.DeepClone()); return JObject.Parse("{'delivery':{'package_verified':true},'manifest_path':'manifest.json'}"); },
+                x => new JObject { ["verified"] = true });
+            Assert.Single(calls);
+            Assert.False((bool)calls[0]["dry_run"]);
+            Assert.Equal("token", (string)calls[0]["confirmation_token"]);
+            Assert.True((bool)result["manifest_reread"]["verified"]);
+            Assert.ThrowsAny<Exception>(() => ProcedureRun.IssueExportApply(new JObject(), new JObject(), a => throw new Exception(), x => new JObject()));
+        }
+
+        [Fact]
+        public void Issue_manifest_reread_detects_changed_pdf_and_wrong_sheets()
+        {
+            string pdf = Path.Combine(_root, "sheet.pdf"), manifestPath = Path.Combine(_root, "manifest.json");
+            var builder = new UglyToad.PdfPig.Writer.PdfDocumentBuilder();
+            builder.AddPage(595, 842);
+            File.WriteAllBytes(pdf, builder.Build());
+            string hash;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                hash = BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(pdf))).Replace("-", "").ToLowerInvariant();
+            var manifest = JObject.Parse("{'schema':'horizun.delivery-manifest/1','package_verified':true,'files':[]}");
+            ((JArray)manifest["files"]).Add(new JObject { ["path"] = pdf, ["sha256"] = hash, ["pages"] = 1,
+                ["source_views"] = new JArray(new JObject { ["id"] = 7 }) });
+            File.WriteAllText(manifestPath, manifest.ToString());
+            var applied = new JObject { ["manifest_path"] = manifestPath, ["delivery"] = manifest.DeepClone() };
+            Assert.True((bool)ProcedureRun.RereadIssueManifest(applied, new JArray(7))["verified"]);
+            Assert.ThrowsAny<Exception>(() => ProcedureRun.RereadIssueManifest(applied, new JArray(8)));
+            File.AppendAllText(pdf, "changed");
+            Assert.ThrowsAny<Exception>(() => ProcedureRun.RereadIssueManifest(applied, new JArray(7)));
+        }
+
+        [Theory]
+        [InlineData("audit", "blocking_total")]
+        [InlineData("audit", "unknown_total")]
+        [InlineData("notes", "stale")]
+        [InlineData("notes", "unknown")]
+        [InlineData("diff", "own_changes")]
+        [InlineData("loans", "borrowed")]
+        [InlineData("pdf", "findings")]
+        public void Issue_traffic_light_blocks_findings(string section, string field)
+        {
+            JObject facts = IssueFacts();
+            facts[section][field] = 1;
+            Assert.Equal("red", (string)ProcedureRun.IssueTrafficLight(facts)["verdict"]);
+        }
+
+        [Fact]
+        public void Issue_traffic_light_requires_coverage_and_judged_fonts()
+        {
+            JObject facts = IssueFacts();
+            Assert.Equal("green", (string)ProcedureRun.IssueTrafficLight(facts)["verdict"]);
+            facts["pdf"]["fonts_judged"] = false;
+            Assert.Equal("unknown", (string)ProcedureRun.IssueTrafficLight(facts)["verdict"]);
+            facts = IssueFacts();
+            facts.Remove("loans");
+            Assert.Equal("unknown", (string)ProcedureRun.IssueTrafficLight(facts)["verdict"]);
+        }
+
+        private static JObject IssueFacts() => JObject.Parse(@"{
+            'audit':{'coverage_complete':true,'blocking_total':0,'unknown_total':0},
+            'loans':{'coverage_complete':true,'borrowed':0},
+            'notes':{'clean':true,'stale':0,'unknown':0},
+            'diff':{'coverage_complete':true,'assessed':true,'session_record_complete':true,'own_changes':0},
+            'pdf':{'coverage_complete':true,'fonts_judged':true,'findings':0},
+            'save':{'verified':true},
+            'manifest':{'verified':true}
+        }");
+
+        [Fact]
+        public void Issue_uses_a_complete_ownership_census_not_an_empty_per_id_read()
+        {
+            JObject scan = JObject.Parse(@"{'complete':true,'sections':{'worksharing':{
+              'is_workshared':true,'ownership':{'counts_are_exact':true,'counts_balance':true,
+              'elements_owned_by_me':2,'elements_owned_by_others':0,'elements_unreadable':0}}}}");
+            JObject loans = ProcedureRun.IssueLoansFromScan(scan);
+            Assert.True((bool)loans["coverage_complete"]);
+            Assert.Equal(2, (int)loans["borrowed"]);
+            scan["sections"]["worksharing"]["ownership"]["counts_are_exact"] = false;
+            Assert.False((bool)ProcedureRun.IssueLoansFromScan(scan)["coverage_complete"]);
+        }
+
+        
+
+        [Fact]
+        public void Issue_requires_verified_save_before_export_and_in_final_verdict()
+        {
+            JObject facts = IssueFacts();
+            facts.Remove("save");
+            Assert.Equal("unknown", (string)ProcedureRun.IssueTrafficLight(facts, beforeExport: true, requireSave: true)["verdict"]);
+            facts["save"] = new JObject { ["verified"] = true };
+            Assert.Equal("green", (string)ProcedureRun.IssueTrafficLight(facts, beforeExport: true, requireSave: true)["verdict"]);
+        }
+
+        [Fact]
+        public void Issue_does_not_dispatch_save_when_prior_coverage_is_unknown()
+        {
+            JObject procedure = McpWorkflowCatalog.Find("sheet-issue");
+            string runId = Call(Obj("operation", "start", "procedure", "sheet-issue",
+                "inputs", InputsFor(procedure))).Value<string>("run_id");
+            for (int n = 1; n <= 6; n++)
+                Call(Obj("operation", "record", "run_id", runId, "step", n,
+                    "outcome", "ok", "result", new JObject { ["verified"] = true }));
+            JObject result = Call(Obj("operation", "advance", "run_id", runId));
+            Assert.Equal("blocked", (string)result["state"]);
+            Assert.Equal("unknown", (string)result["traffic_light"]["verdict"]);
+            Assert.Empty(_calls);
+        }
+
+        [Fact]
         public void A_run_id_nobody_issued_is_refused_rather_than_started()
         {
             // Resuming a run that does not exist must not quietly become a new one:
@@ -271,39 +384,6 @@ namespace Horizun.Server.Tests
 
             try { Call(Obj("operation", "advance", "run_id", runId)); } catch { }
             Assert.Equal(afterAbandon, _calls.Count);
-        }
-
-        [Fact]
-        public void An_optional_input_nobody_supplied_is_omitted_rather_than_sent_as_null()
-        {
-            // ABSENT, NULL AND OMITTED ARE THREE DIFFERENT THINGS. A template could
-            // only say the first, so an argument only some runs supply - the
-            // outfall of a drainage conversion - could not be expressed at all and
-            // the procedure asked for it in prose.
-            JObject procedure = McpWorkflowCatalog.Find("dwg-mep-unit-conversion");
-            Assert.NotNull(procedure);
-
-            string runId = Call(Obj("operation", "start", "procedure", "dwg-mep-unit-conversion",
-                                    "inputs", InputsFor(procedure))).Value<string>("run_id");
-
-            // Advance until the planning step has been dispatched, or the run stops.
-            for (int i = 0; i < 6 && !_calls.Contains("horizun_plan_from_cad"); i++)
-            {
-                try { Call(Obj("operation", "advance", "run_id", runId)); }
-                catch { break; }
-            }
-
-            int at = _calls.IndexOf("horizun_plan_from_cad");
-            Assert.True(at >= 0, "the planning step was never dispatched: " + string.Join(", ", _calls));
-
-            JObject sent = _sent[at];
-            Assert.NotNull(sent["instance_id"]);
-
-            // NOT PRESENT AT ALL - not present-and-null. horizun_plan_from_cad
-            // declares additionalProperties:false and takes the first; a null would
-            // be a value it has to interpret.
-            Assert.Null(sent.Property("outfall"));
-            Assert.Null(sent.Property("outfall_invert_mm"));
         }
 
         /// <summary>

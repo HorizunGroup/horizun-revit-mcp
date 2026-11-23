@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Does each command actually READ what its contract offers?
 
-A STATIC CHECK, and it says so: it reads the sources and proves nothing about
-behaviour. What it catches is the cheap half and the half that bites - a schema
+A PARTIAL STATIC SCREEN: it reads source text and proves nothing about
+behaviour. Comments and output keys can satisfy a search; unmapped tools are not
+checked. Exit 0 is not proof of contract coverage. It can flag a schema
 property nobody implemented, which a client will send, this server will accept,
 and the far end will silently ignore. That failure produces a plausible answer to
 a question nobody asked, and it is invisible from both ends.
@@ -38,12 +39,29 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: A tool absent from this map is not checked, and that is reported too: an
 #: unchecked tool is a gap in this check, not a clean result.
 ANSWERS = {
-    "horizun_connect_mep": ["src/Horizun.Revit/Commands/ConnectMepCommand.cs"],
+    "horizun_planimetry_ops": [
+        "src/Horizun.Revit/Commands/PlanimetryOpsCommand.cs",
+        "src/Horizun.Revit/Commands/PlanimetryOpsCommand.GridBubbles.cs",
+        "src/Horizun.Revit/Commands/PlanimetryOpsCommand.Notes.cs",
+        "src/Horizun.Revit/Commands/PlanimetryOpsCommand.NotesMore.cs",
+        "src/Horizun.Revit/Core/PlanimetryOpsRules.cs",
+        "src/Horizun.Revit/Core/NoteLeaderRules.cs",
+        # The identity fields (unique_id ...) are read by the gate before the command runs.
+        "src/Horizun.Revit/Core/ElementIdentityGuard.cs",
+    ],
+    "horizun_query_planimetry": [
+        "src/Horizun.Revit/Commands/QueryPlanimetryCommand.cs",
+        "src/Horizun.Revit/Commands/QueryPlanimetryCommand.Notes.cs",
+        "src/Horizun.Revit/Core/NoteLeaderRules.cs",
+        # The shared `cooperative` block (ui_budget_ms, max_units) is parsed in one place for every reader.
+        "src/Horizun.Revit/Core/CooperativeReadOptions.cs",
+    ],
+    "horizun_measure_geometry": ["src/Horizun.Revit/Commands/MeasureGeometryCommand.cs", "src/Horizun.Revit/Core/GeometryMeasureRules.cs", "src/Horizun.Revit/Core/ElementSelectorRules.cs"],
+    "horizun_query_relations": ["src/Horizun.Revit/Commands/QueryRelationsCommand.cs", "src/Horizun.Revit/Core/RelationRules.cs"],
     "horizun_structural_connections": ["src/Horizun.Revit/Commands/StructuralConnectionsCommand.cs"],
     "horizun_manage_materials": ["src/Horizun.Revit/Commands/ManageMaterialsCommand.cs"],
     "horizun_manage_styles": ["src/Horizun.Revit/Commands/ManageStylesCommand.cs", "src/Horizun.Revit/Commands/VerifiedModelEdit.cs"],
     "horizun_manage_units": ["src/Horizun.Revit/Commands/ManageUnitsCommand.cs", "src/Horizun.Revit/Commands/VerifiedModelEdit.cs"],
-    "horizun_electrical": ["src/Horizun.Revit/Commands/ElectricalCommand.cs", "src/Horizun.Revit/Commands/VerifiedModelEdit.cs"],
     "horizun_validate_ids": [
         "src/Horizun.Revit/Commands/ValidateIdsCommand.cs",
         "src/Horizun.Revit/Core/IdsDocument.cs",
@@ -58,6 +76,7 @@ ANSWERS = {
     "horizun_list_elements": [
         "src/Horizun.Revit/Commands/ListElementsCommand.cs",
         "src/Horizun.Revit/Core/CooperativeReadOptions.cs",
+        "src/Horizun.Revit/Core/LargeModelDispatch.cs",
     ],
     "horizun_navigate": [
         "src/Horizun.Revit/Commands/NavigateCommand.cs",
@@ -67,17 +86,6 @@ ANSWERS = {
         "src/Horizun.Revit/Commands/AuditAccessCommand.cs",
         "src/Horizun.Revit/Core/AccessRules.cs",
         "src/Horizun.Revit/Core/AccessGeometry.cs",
-    ],
-    "horizun_copy_between_documents": ["src/Horizun.Revit/Commands/CopyBetweenDocumentsCommand.cs"],
-    "horizun_plan_from_ifc": [
-        "src/Horizun.Revit/Commands/PlanFromIfcCommand.cs",
-        "src/Horizun.Revit/Core/IfcSubset.cs",
-        "src/Horizun.Revit/Core/IfcProfile.cs",
-        "src/Horizun.Revit/Core/IfcPlacement.cs",
-    ],
-    "horizun_apply_ifc_plan": [
-        "src/Horizun.Revit/Commands/ApplyIfcPlanCommand.cs",
-        "src/Horizun.Revit/Core/IfcProvenanceStore.cs",
     ],
     "horizun_repair_memory": ["src/Horizun.Server/RepairMemoryTool.cs"],
     "horizun_exchange": [
@@ -99,16 +107,21 @@ ANSWERS = {
     "horizun_selection_exchange": ["src/Horizun.Server/PowerBiSelection.cs"],
     "horizun_manage_views": [
         "src/Horizun.Revit/Commands/ManageViewsCommand.cs",
+        "src/Horizun.Revit/Commands/ManageViewsCommand.Execution.cs",
         "src/Horizun.Revit/Commands/ManageViewsGraphics.cs",
         "src/Horizun.Revit/Commands/ManageViewsLegends.cs",
+        "src/Horizun.Revit/Commands/ManageViewsControl.cs",
+        "src/Horizun.Revit/Commands/ManageViews3DCamera.cs",
+        "src/Horizun.Revit/Commands/ManageViewsPerspective.cs",
+        "src/Horizun.Revit/Commands/ManageViewsRoomIsometric.cs",
+        "src/Horizun.Revit/Commands/ManageViewsDetailViews.cs",
+        "src/Horizun.Revit/Commands/ManageViewsGridExtent.cs",
+        # The identity fields (unique_id ...) are read by the gate before the command runs.
+        "src/Horizun.Revit/Core/ElementIdentityGuard.cs",
     ],
     "horizun_manage_schedules": [
         "src/Horizun.Revit/Commands/ManageSchedulesCommand.cs",
         "src/Horizun.Revit/Core/ScheduleEditRules.cs",
-    ],
-    "horizun_coordination": [
-        "src/Horizun.Revit/Commands/CoordinationCommand.cs",
-        "src/Horizun.Revit/Commands/CoordinationImport.cs",
     ],
 }
 
@@ -157,13 +170,30 @@ def input_schema(contract, tool):
         return None, "declares no InputSchema"
     head = contract.index(opener, start) + len(opener)
     tail = contract.index('")', head)
+    # `" + IdentityFields("...") + @"` is a call spliced into the schema, not the end of it.
+    while contract[tail + 2:tail + 12].lstrip().startswith('+ @"'):
+        tail = contract.index('")', tail + 2)
+    raw = contract[head:tail]
+    # A schema may splice a shared fragment: `" + IdentityFieldsSchema + @"`. Substitute the constant's own text
+    # (still in verbatim-string form) so the schema parses and its properties are checked like any other.
+    for name in set(re.findall(r'"\s*\+\s*([A-Za-z_]\w*)\s*\+\s*@"', raw)):
+        const = re.search(r'const string %s = @"(.*?)";' % re.escape(name), contract, re.S)
+        if const:
+            raw = re.sub(r'"\s*\+\s*%s\s*\+\s*@"' % re.escape(name), lambda _m: const.group(1), raw)
+    # ... or call a fragment builder: `" + IdentityFields("...") + @"`. Only the property NAMES matter here.
+    raw = re.sub(r'"\s*\+\s*IdentityFields\("[^"]*"(?:\s*,\s*\w+)?\)\s*\+\s*@"',
+                 lambda _m: '""unique_id"": { ""type"": ""string"" }, ""unique_ids"": { ""type"": ""array"" }, '
+                            '""expected_category"": { ""type"": ""string"" }, ""expected_type"": { ""type"": ""string"" }, '
+                            '""identity"": { ""type"": ""object"" }, ', raw)
     try:
-        return json.loads(contract[head:tail].replace('""', '"')), None
+        return json.loads(raw.replace('""', '"')), None
     except ValueError as exc:
         return None, "schema does not parse: %s" % exc
 
 
 def main():
+    print("PARTIAL SCREEN: textual matches include comments and output keys; "
+          "unmapped tools are unchecked. Exit 0 does not prove contract coverage.")
     contract_path = os.path.join(ROOT, "src/Horizun.Contracts/Contract.cs")
     contract = io.open(contract_path, encoding="utf-8-sig").read()
 

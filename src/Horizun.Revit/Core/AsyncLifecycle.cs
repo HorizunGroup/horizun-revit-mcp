@@ -40,6 +40,45 @@ using System.Collections.Generic;
 namespace Horizun.Revit.Core
 {
     /// <summary>
+    /// Backoff for re-signalling the SAME synchronous request while Revit has not
+    /// serviced its ExternalEvent. This never enqueues or executes the command a
+    /// second time: RequestGate owns one request and its callback can claim it once.
+    /// A modal is handled by Dispatcher and bypasses this policy.
+    /// </summary>
+    public static class BusyRetryPolicy
+    {
+        public const int DefaultMaxAttempts = 4;
+        public const int DefaultBaseDelayMs = 250;
+        public const int DefaultMaxDelayMs = 2000;
+        public const int DefaultBudgetMs = 5000;
+
+        public static bool CanResignal(bool requestStarted, bool modalObserved)
+            => !requestStarted && !modalObserved;
+
+        public static int DelayForAttempt(int attempt, int baseDelayMs, int maxDelayMs)
+        {
+            if (attempt < 1) throw new ArgumentOutOfRangeException(nameof(attempt));
+            int ceiling = Math.Max(0, maxDelayMs);
+            long delay = Math.Max(0, baseDelayMs);
+            for (int i = 1; i < attempt && delay < ceiling; i++)
+                delay = Math.Min((long)ceiling, delay * 2);
+            return (int)Math.Min(delay, ceiling);
+        }
+
+        public static bool TryGetNextDelay(int attempts, int elapsedMs, int maxAttempts,
+            int baseDelayMs, int maxDelayMs, int budgetMs, out int delayMs)
+        {
+            delayMs = 0;
+            if (attempts < 0 || elapsedMs < 0) return false;
+            if (attempts >= Math.Max(0, maxAttempts) || elapsedMs >= Math.Max(0, budgetMs)) return false;
+            int next = DelayForAttempt(attempts + 1, baseDelayMs, maxDelayMs);
+            if (next <= 0 || next > budgetMs - elapsedMs) return false;
+            delayMs = next;
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Revit's three answers to Raise(), plus the one this code needs for an answer
     /// it does not recognise. Mirrored rather than used directly so the decisions
     /// made from it can be tested without Revit in the room.
@@ -81,7 +120,10 @@ namespace Horizun.Revit.Core
     /// </summary>
     public static class RaiseRetryPolicy
     {
-        public static readonly int[] DefaultDelaysMs = { 5, 10, 25, 50, 100, 200 };
+        // ~9.6 s in all. Measured 2026-10-16: right after a 120-wall create batch committed, Revit kept answering
+        // Denied for longer than the old 390 ms window and a whole batch was withdrawn unexecuted. Still bounded:
+        // a Revit that is really closing keeps refusing and the request is withdrawn, never left hanging.
+        public static readonly int[] DefaultDelaysMs = { 5, 10, 25, 50, 100, 200, 400, 800, 1500, 2500, 4000 };
 
         public static RaiseAttemptResult TrySchedule(
             IWorkRaiser raiser,
@@ -226,7 +268,12 @@ namespace Horizun.Revit.Core
                         // not_started is its own status, distinct from failed. A job that
                         // failed ran and did something; this one did not run at all, and a
                         // caller deciding whether to re-send needs that difference.
-                        w.Record.Finish("not_started", reason);
+                        if (w.HasStarted)
+                            w.FinishBeforeCallback("This job already started, but its continuation could not be scheduled; the document could not be revalidated. " +
+                                (w.PartialResultJson == null ? "Its recorded progress is partial; no result snapshot is available."
+                                    : "The result is a partial snapshot."));
+                        else
+                            w.FinishBeforeCallback(reason);
                         closed++;
                     }
                 }

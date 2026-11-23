@@ -77,8 +77,9 @@ namespace Horizun.Server.Tests
 
             JObject mcp = Hop(rehearsal);
 
-            // Still a success: nothing failed, nothing was written, the rehearsal ran.
-            Assert.False((bool)mcp["isError"]);
+            // The rehearsal found an unsupported row: tool error, with the same explicit
+            // fallback permission. A grant is not a claim that the typed plan is valid.
+            Assert.True((bool)mcp["isError"]);
 
             JObject structured = (JObject)mcp["structuredContent"];
             Assert.NotNull(structured);
@@ -125,12 +126,10 @@ namespace Horizun.Server.Tests
         }
 
         /// <summary>
-        /// A rehearsal whose failures are all fixable must publish NOTHING. Absence is
-        /// the answer, and a block here would send a client to write a script around
-        /// its own typo.
+        /// A rehearsal whose failures are all fixable publishes an explicit denial.
         /// </summary>
         [Fact]
-        public void A_default_rehearsal_with_only_fixable_errors_publishes_no_block()
+        public void A_default_rehearsal_with_only_fixable_errors_denies_fallback()
         {
             FallbackVerdict verdict = FallbackDecision.Decide(new[] { Invalid(0) }, writeStarted: false);
             CommandResult rehearsal = FallbackDecision.Attach(
@@ -138,7 +137,8 @@ namespace Horizun.Server.Tests
 
             JObject structured = (JObject)Hop(rehearsal)["structuredContent"];
 
-            Assert.Null(structured["fallback"]);
+            Assert.False((bool)structured["fallback"]["allowed"]);
+            Assert.Equal("entrada_invalida", (string)structured["fallback"]["reason"]);
             Assert.Null(structured["capability_gaps"]);
             // ...and the rehearsal itself is unchanged.
             Assert.Equal(1, (int)structured["invalid"]);
@@ -171,8 +171,8 @@ namespace Horizun.Server.Tests
             CommandResult attached = FallbackDecision.Attach(
                 CommandResult.Ok(payload), FallbackDecision.Decide(new[] { Gap(2) }, writeStarted: false));
 
-            Assert.True(attached.Success);
-            Assert.Null(attached.Error);
+            Assert.False(attached.Success);
+            Assert.NotNull(attached.Error);
             JObject data = (JObject)Hop(attached)["structuredContent"];
             Assert.Equal(2, (int)data["valid"]);
             Assert.Equal("not_started", (string)data["transaction_status"]);

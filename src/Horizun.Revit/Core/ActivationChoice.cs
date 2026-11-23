@@ -69,6 +69,42 @@ namespace Horizun.Revit.Core
 
     public static class ActivationChoice
     {
+        public static string ForDocument(bool cloud, bool detached, bool pathExists)
+            => detached ? "save_as" : cloud ? "cloud" : !pathExists ? "save_as" : "local";
+
+        public static string DestinationProblem(string path, bool? exists, bool folderExists, bool isFamily = false)
+        {
+            if (isFamily && !string.IsNullOrWhiteSpace(path))
+            {
+                if (!path.EndsWith(".rfa", System.StringComparison.OrdinalIgnoreCase)) return "A family destination must end in .rfa.";
+                string surrogate = path.Substring(0, path.Length - 4) + ".rvt";
+                string familyProblem = NewProjectRules.TargetProblem(surrogate, exists, folderExists);
+                if (familyProblem != null) return familyProblem.Replace(surrogate, path);
+            }
+            else
+            {
+            string problem = NewProjectRules.TargetProblem(path, exists, folderExists);
+            if (problem != null) return problem;
+            }
+            string p = ("/" + path.Replace('\\', '/').Trim('/') + "/").ToLowerInvariant();
+            if (p.Contains("/accdocs/") || p.Contains("/autodesk docs/") || p.Contains("/bim 360/") || p.Contains("/desktop connector/") || p.Contains("/dc/acc/"))
+                return "Desktop Connector / ACC destinations are read-only. Choose a local destination.";
+            return null;
+        }
+
+        public static string RegisteredRootProblem(string path, IEnumerable<string> roots)
+        {
+            string target = path.Replace('/', '\\').TrimEnd('\\');
+            foreach (string root in roots)
+            {
+                if (string.IsNullOrWhiteSpace(root)) continue;
+                string prefix = root.Replace('/', '\\').TrimEnd('\\');
+                if (target.Equals(prefix, System.StringComparison.OrdinalIgnoreCase) ||
+                    target.StartsWith(prefix + "\\", System.StringComparison.OrdinalIgnoreCase))
+                    return "Destination is under a registered Desktop Connector root. Choose a local destination.";
+            }
+            return null;
+        }
         /// <summary>
         /// Decide how the close gets a non-active target. Candidates must already
         /// exclude the target itself and linked documents; order is the caller's

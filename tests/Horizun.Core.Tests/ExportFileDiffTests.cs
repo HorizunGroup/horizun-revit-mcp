@@ -15,6 +15,42 @@ namespace Horizun.Core.Tests
 {
     public class ExportFileDiffTests
     {
+        [Theory]
+        [InlineData("destino1", "destino1", true)]
+        [InlineData("destino1", "destino1-2", true)]
+        [InlineData("destino1", "destino1_a", true)]
+        // MEASURED (Revit 2024, format=image): ExportImage appends " - <view type> - <view name>".
+        [InlineData("destino1", "destino1 - Floor Plan - Campo destino 1", true)]
+        [InlineData("destino1", "destino10", false)]
+        [InlineData("destino1", "otro - destino1", false)]
+        [InlineData("", "x", false)]
+        public void Produced_file_stems_follow_the_requested_stem(string wanted, string actual, bool matches)
+        {
+            Assert.Equal(matches, ExportFileDiff.StemMatches(wanted, actual));
+        }
+
+        [Fact]
+        public void The_one_image_Revit_named_after_the_view_is_the_export()
+        {
+            string want = @"D:\out
+ivel1.png";
+            Assert.Equal(@"D:\out
+ivel1 - Floor Plan - Level 1.png",
+                ExportFileDiff.ImageToRename(new[] { @"D:\out
+ivel1 - Floor Plan - Level 1.png" }, want));
+            // Exactly the requested file, two files, another extension, another folder or stem: no rename.
+            Assert.Null(ExportFileDiff.ImageToRename(new[] { want }, want));
+            Assert.Null(ExportFileDiff.ImageToRename(new[] { @"D:\out
+ivel1 - a.png", @"D:\out
+ivel1 - b.png" }, want));
+            Assert.Null(ExportFileDiff.ImageToRename(new[] { @"D:\out
+ivel1 - Floor Plan - Level 1.jpg" }, want));
+            Assert.Null(ExportFileDiff.ImageToRename(new[] { @"D:\otra
+ivel1 - Floor Plan - Level 1.png" }, want));
+            Assert.Null(ExportFileDiff.ImageToRename(new[] { @"D:\out
+ivel10.png" }, want));
+        }
+
         private static ExportFileStamp Readable(long size, long mtime, string hash)
             => new ExportFileStamp { Existed = true, Readable = true, Size = size, Mtime = mtime, Hash = hash };
 

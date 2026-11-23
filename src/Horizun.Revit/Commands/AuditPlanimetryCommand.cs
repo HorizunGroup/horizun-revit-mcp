@@ -62,6 +62,8 @@ namespace Horizun.Revit.Commands
 
             Document doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
 
             string scopeName = (request.Value<string>("scope") ?? "model").ToLowerInvariant();
             if (!Scopes.Contains(scopeName, StringComparer.Ordinal))

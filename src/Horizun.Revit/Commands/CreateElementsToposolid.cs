@@ -81,7 +81,7 @@ namespace Horizun.Revit.Commands
         {
             var names = new FilteredElementCollector(doc).OfClass(typeof(ToposolidType)).Cast<ToposolidType>()
                 .OrderBy(t => t.Name, StringComparer.Ordinal).Select(t => "'" + t.Name + "' (id " + Rid.Value(t.Id) + ")").ToList();
-            return names.Count == 0 ? "none - copy one in first (horizun_copy_between_documents)." : string.Join(", ", names.Take(20));
+            return names.Count == 0 ? "none - copy one in first (horizun_copy_between_documents (Pro edition))." : string.Join(", ", names.Take(20));
         }
 #endif
 

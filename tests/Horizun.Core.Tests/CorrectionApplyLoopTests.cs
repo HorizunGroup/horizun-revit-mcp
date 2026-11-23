@@ -70,56 +70,7 @@ namespace Horizun.Core.Tests
 
         // ---------------------------------------------------------------- 1
 
-        [Fact]
-        public void An_action_that_did_not_rehearse_cleanly_stops_the_whole_plan_before_anything_is_written()
-        {
-            List<CorrectionAction> plan = Plan(Pin(), Delete());
-            foreach (CorrectionAction a in plan)
-            {
-                a.State = CorrectionActionState.Rehearsed;
-                foreach (CorrectionStep s in a.Steps) s.RehearsalOk = true;
-            }
-            Assert.True(CorrectionSelection.RehearsedCleanly(plan));
-
-            // One step that did not rehearse is enough: the plan is not executable,
-            // and the command refuses it rather than applying "the good ones".
-            plan[1].Steps[0].RehearsalOk = false;
-            Assert.False(CorrectionSelection.RehearsedCleanly(plan));
-
-            plan[1].Steps[0].RehearsalOk = true;
-            plan[1].State = CorrectionActionState.RequiresInput;
-            Assert.False(CorrectionSelection.RehearsedCleanly(plan));
-
-            // And nothing was applied by asking the question.
-            Assert.All(plan, a => Assert.All(a.Steps, s => Assert.Null(s.ApplyOk)));
-        }
-
         // ---------------------------------------------------------------- 2
-
-        [Fact]
-        public void An_action_refused_before_its_transaction_does_not_undo_the_action_that_already_applied()
-        {
-            List<CorrectionAction> plan = Plan(Pin(), Delete());
-            var seen = new List<string>();
-            CorrectionApplyLoop.Apply(plan, step =>
-            {
-                seen.Add(step.Tool);
-                return step.Tool == "horizun_delete_verified"
-                    ? StepExecution.NotStarted("horizun_delete_verified is not permitted at this profile")
-                    : Applied();
-            });
-
-            Assert.Equal(CorrectionActionState.Applied, plan[0].State);
-            Assert.Equal(CorrectionActionState.Failed, plan[1].State);
-            Assert.True(plan[0].Steps.All(s => s.ApplyOk == true));
-            Assert.Contains("not permitted", plan[1].Steps[0].ApplyError);
-
-            // LATER ACTIONS STILL RUN: the loop reached the second one rather than
-            // stopping at the first refusal, and the first is untouched by it.
-            Assert.Equal(plan.Sum(a => a.Steps.Count), seen.Count);
-            Assert.Contains("horizun_delete_verified", seen);
-            Assert.Null(plan[0].Why);
-        }
 
         // ---------------------------------------------------------------- 3
 

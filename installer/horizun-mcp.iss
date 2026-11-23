@@ -68,16 +68,6 @@ WizardStyle=modern
 ; Per-user install: the add-in folders live under %APPDATA% and need no elevation.
 PrivilegesRequired=lowest
 UninstallDisplayName={#AppName} {#AppVersion}
-; RELEASE SIGNING. pack.ps1 -InstallerOnly -Sign defines HorizunSign and the sign
-; tool "horizun" (scripts/firmar-cola.ps1). Inno then signs Setup itself, the
-; uninstaller AND the temporary self-copy Setup runs from %TEMP%. Signing Setup
-; after compilation leaves that self-copy unsigned, and Smart App Control blocks
-; it (error 4551, issue #74). The payload (server and add-ins) is signed in the
-; stage before this compile.
-#ifdef HorizunSign
-SignTool=horizun
-SignedUninstaller=yes
-#endif
 
 [Languages]
 Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
@@ -86,6 +76,8 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [CustomMessages]
 es.IcoFolder=Horizun Revit MCP (carpeta)
 en.IcoFolder=Horizun Revit MCP (folder)
+es.IcoComplete=Horizun - completar instalacion
+en.IcoComplete=Horizun - complete installation
 es.FolderName=Horizun-Revit-MCP
 en.FolderName=Horizun-Revit-MCP
 es.TaskOpenHub=Ver Horizun Hub - las herramientas y flujos construidos sobre este puente
@@ -117,6 +109,12 @@ Source: "..\dist\stage\Horizun.addin"; DestDir: "{tmp}\HorizunPayload"; Flags: i
 [Icons]
 Name: "{group}\{cm:IcoFolder}"; Filename: "{app}"
 Name: "{group}\Horizun Hub"; Filename: "{#AppHubUrl}"
+; The visible way to finish registration later: nothing waits in the background
+; for a client to close (no Run entry, no hidden worker), so this is where the
+; user goes after closing Claude Code or Codex.
+Name: "{group}\{cm:IcoComplete}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy RemoteSigned -File ""{app}\server\client-tools\complete-install.ps1"" -Pause"; \
+  WorkingDir: "{app}"
 
 [Tasks]
 ; OPT-IN, and unchecked by default. An installer that opens a browser nobody
@@ -139,7 +137,7 @@ Filename: "{#AppHubUrl}"; Description: "{cm:RunOpenHub}"; \
 ; A pending first-start verification must not survive removal with a command that
 ; points at files the uninstaller is about to delete.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -CancelPending"; \
+  Parameters: "-NoProfile -ExecutionPolicy RemoteSigned -File ""{app}\server\client-tools\complete-install.ps1"" -CancelPending"; \
   Flags: runhidden waituntilterminated skipifdoesntexist
 
 [Code]
@@ -158,6 +156,18 @@ const
   ConflictNone = 0;
   ConflictDuplicate = 1;
   ConflictUnreadable = 2;
+  ConflictEnumeration = 3;
+type
+  TSystemTime = record
+    wYear: Word;
+    wMonth: Word;
+    wDayOfWeek: Word;
+    wDay: Word;
+    wHour: Word;
+    wMinute: Word;
+    wSecond: Word;
+    wMilliseconds: Word;
+  end;
 var
   Years: array[0..4] of String;
   InstalledYears: String;
@@ -165,11 +175,20 @@ var
   FoundAny: Boolean;
   ServerInstalled: Boolean;
   ServerFailure: String;
+  { The server COPY itself failed (xcopy non-zero, or files missing right after it).
+    That is disk space or an antivirus, not Revit: Revit cannot hold the server. }
+  ServerCopyFailed: Boolean;
+  ServerCopyCode: String;
   UninstallFailures: String;
   YearDeployed: array[0..4] of Boolean;
   YearManifestWritten: array[0..4] of Boolean;
   InstallManifestWritten: Boolean;
-  FreshInstall: Boolean;
+  { 4.0 tool profile page. IsUpgrade: an earlier Horizun install or settings file exists. }
+  ProfilePage: TInputOptionWizardPage;
+  IsUpgrade: Boolean;
+  ExistingProfile: String;
+  ProfileResult: String;
+  ClientCompletion: String;
 
 { ONE LANGUAGE PER INSTALL, INCLUDING THE PARTS WRITTEN HERE.
 
@@ -197,9 +216,10 @@ begin
   Result := FileExists(ExpandConstant('{app}\server\client-tools\install-claude-desktop-extension.ps1'));
 end;
 
-{ Started once the server folder is really in place. Hidden and not waited on:
-  every durable result is written to %LOCALAPPDATA%\Horizun\install-status.json,
-  and neither helper ever writes underneath a live client. }
+{ Started once the server folder is really in place. It runs one pass and Setup
+  waits for it: every durable result is written to
+  %LOCALAPPDATA%\Horizun\install-status.json, and it never writes underneath a
+  live client. Nothing is left running or scheduled after Setup exits. }
 function DesktopFolder(): String;
 begin
   Result := ExpandConstant('{userdocs}') + '\' + ExpandConstant('{cm:FolderName}');
@@ -248,13 +268,36 @@ begin
   if not FileExists(Shell) then Shell := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   if ShouldCompleteInstall() then
   begin
-    Args := '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+    Args := '-NoProfile -ExecutionPolicy RemoteSigned -File "' +
             ExpandConstant('{app}\server\client-tools\complete-install.ps1') + '"' +
             ' -ServerPath "' + ExpandConstant('{app}\server\{#AppExeName}') + '"' +
             ' -Client ' + ExpandConstant('{param:HORIZUNCLIENT|Both}') + ' ' +
             ExpandConstant('{param:HORIZUNNOLIVE|}');
-    Exec(Shell, Args, ExpandConstant('{app}'), SW_HIDE, ewNoWait, Code);
-  end;
+    { Waited on, and asked again while a client is open (exit 3): the old
+      design armed a logon Run entry and a hidden PowerShell that waited up to a
+      day, and an antivirus behaviour engine read that as malware (Norton
+      IDP.HEUR.26, 2026-11-03). Silent installs get one pass; the Start menu
+      entry finishes it later. }
+    repeat
+      if not Exec(Shell, Args, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
+      if (Code <> 3) or WizardSilent then break;
+    until MsgBox(L('Para registrar Horizun en Claude Code y Codex hay que cerrarlos primero (no se edita la configuracion de un cliente abierto).' + #13#10#13#10 +
+                   'Cierra Claude Code y Codex y pulsa Reintentar. Si prefieres hacerlo despues, pulsa Cancelar y usa ' +
+                   '"' + ExpandConstant('{cm:IcoComplete}') + '" en el menu Inicio.',
+                   'To register Horizun with Claude Code and Codex they must be closed first (an open client''s configuration is never edited).' + #13#10#13#10 +
+                   'Close Claude Code and Codex and press Retry. To do it later, press Cancel and use ' +
+                   '"' + ExpandConstant('{cm:IcoComplete}') + '" in the Start menu.'),
+                 mbInformation, MB_RETRYCANCEL) <> IDRETRY;
+    case Code of
+      0: ClientCompletion := 'completed';
+      2: ClientCompletion := 'no_client';
+      3: ClientCompletion := 'pending_client_open';
+    else
+      ClientCompletion := 'failed (exit ' + IntToStr(Code) + ')';
+    end;
+  end
+  else
+    ClientCompletion := 'skipped';
   // Claude Desktop is NOT configured from here any more. Its extension is
   // installed from inside the app, by the person using it, and Setup's job is to
   // put the file and its instructions somewhere they can be found.
@@ -312,6 +355,12 @@ function Win32GetLastError(): LongWord;
 function Win32GetFileAttributes(FileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
 
+procedure Win32GetSystemTime(var SystemTime: TSystemTime);
+  external 'GetSystemTime@kernel32.dll stdcall';
+
+procedure Win32ExitProcess(ExitCode: LongWord);
+  external 'ExitProcess@kernel32.dll stdcall';
+
 function IsHexDigit(Value: Char): Boolean;
 begin
   Result := ((Value >= '0') and (Value <= '9')) or
@@ -359,22 +408,141 @@ begin
   Evidence := Evidence + '  ' + Item;
 end;
 
+function GuidPatternInRawBytes(const Pattern: String; const RawBytes: AnsiString): Boolean;
+var
+  I: Integer;
+  Utf16LE, Utf16BE: AnsiString;
+begin
+  Result := Pos(AnsiString(Pattern), RawBytes) > 0;
+  if Result then exit;
+  Utf16LE := '';
+  Utf16BE := '';
+  for I := 1 to Length(Pattern) do
+  begin
+    Utf16LE := Utf16LE + Pattern[I] + #0;
+    Utf16BE := Utf16BE + #0 + Pattern[I];
+  end;
+  Result := (Pos(Utf16LE, RawBytes) > 0) or (Pos(Utf16BE, RawBytes) > 0);
+end;
+
+function RawBytesContainHorizunGuid(const RawBytes: AnsiString): Boolean;
+var
+  Normalized, Pattern, Digits: String;
+  Style, LetterCase: Integer;
+begin
+  Result := False;
+  if not TryNormalizeGuid('{#HorizunAddInId}', Normalized) then exit;
+  Digits := Normalized;
+  Insert('-', Digits, 21);
+  Insert('-', Digits, 17);
+  Insert('-', Digits, 13);
+  Insert('-', Digits, 9);
+  for Style := 0 to 3 do
+  begin
+    case Style of
+      0: Pattern := Digits;
+      1: Pattern := Normalized;
+      2: Pattern := '{' + Digits + '}';
+      3: Pattern := '(' + Digits + ')';
+    end;
+    for LetterCase := 0 to 1 do
+    begin
+      if LetterCase = 0 then Pattern := Lowercase(Pattern)
+      else Pattern := Uppercase(Pattern);
+      if GuidPatternInRawBytes(Pattern, RawBytes) then
+      begin
+        Result := True;
+        exit;
+      end;
+      { Restore the original pattern before selecting the other letter case. }
+      case Style of
+        0: Pattern := Digits;
+        1: Pattern := Normalized;
+        2: Pattern := '{' + Digits + '}';
+        3: Pattern := '(' + Digits + ')';
+      end;
+    end;
+  end;
+end;
+
+function JsonEscape(const Value: String): String;
+var
+  I: Integer;
+begin
+  Result := '"';
+  for I := 1 to Length(Value) do
+    case Ord(Value[I]) of
+      34: Result := Result + '\"';
+      92: Result := Result + '\\';
+      8: Result := Result + '\b';
+      9: Result := Result + '\t';
+      10: Result := Result + '\n';
+      12: Result := Result + '\f';
+      13: Result := Result + '\r';
+    else
+      if Ord(Value[I]) < 32 then Result := Result + ' ' else Result := Result + Value[I];
+    end;
+  Result := Result + '"';
+end;
+
+function Pad2(Value: Integer): String;
+begin
+  Result := IntToStr(Value);
+  if Length(Result) < 2 then Result := '0' + Result;
+end;
+
+function UtcTimestamp: String;
+var
+  SystemTime: TSystemTime;
+begin
+  Win32GetSystemTime(SystemTime);
+  Result := IntToStr(SystemTime.wYear) + '-' + Pad2(SystemTime.wMonth) + '-' +
+    Pad2(SystemTime.wDay) + 'T' + Pad2(SystemTime.wHour) + ':' +
+    Pad2(SystemTime.wMinute) + ':' + Pad2(SystemTime.wSecond) + 'Z';
+end;
+
+procedure WritePrecheck(const Cause: String; ExitCode: Integer; const Evidence: String);
+var
+  Path, Json: String;
+begin
+  Path := ExpandConstant('{localappdata}') + '\Horizun\install-precheck.json';
+  if not ForceDirectories(ExtractFileDir(Path)) then
+  begin
+    Log('Preflight could not create report directory: ' + ExtractFileDir(Path));
+    exit;
+  end;
+  Json := '{"version":"{#AppVersion}","cause":' + JsonEscape(Cause) +
+    ',"exit_code":' + IntToStr(ExitCode) + ',"evidence":[' + JsonEscape(Evidence) +
+    '],"utc":' + JsonEscape(UtcTimestamp) + '}';
+  if not SaveStringToFile(Path, Utf8Encode(Json), False) then
+    Log('Preflight could not write JSON report: ' + Path)
+  else
+    Log('Preflight JSON report: ' + Path);
+end;
+
+procedure RefusePreflight(const Cause, MessageText, Evidence: String; ExitCode: Integer);
+begin
+  Log('Preflight refused: cause=' + Cause + ' exit_code=' + IntToStr(ExitCode) + ' evidence=' + Evidence);
+  WritePrecheck(Cause, ExitCode, Evidence);
+  SuppressibleMsgBox(MessageText + #13#10#13#10 + L('No se ha cambiado nada.', 'Nothing has been changed.'),
+    mbError, MB_OK, IDOK);
+  Win32ExitProcess(ExitCode);
+end;
+
 function HasHorizunAddInIdConflict(AddinsRoot, Year, AllowedManifest: String;
   var Kind: Integer; var Evidence: String): Boolean;
 var
   FindRec: TFindRec;
-  Candidate, Needle, CandidateId, YearRoot, Unreadable: String;
+  Candidate, Needle, CandidateId, YearRoot, Unreadable, ParseError: String;
+  RawBytes: AnsiString;
   I: Integer;
   EnumerationError, YearRootAttributes: LongWord;
   FoundManifest, EnumerationCompleted: Boolean;
   XmlDocument, AddInIdNodes: Variant;
 begin
-  { Any parse/inspection failure is a conflict: an unreadable manifest cannot be
-    proven harmless before adding a second registration. MSXML 6 resolves XML
-    character references in element text, but DTDs and external entities are
-    disabled before Load so duplicate detection cannot read outside the file.
-    Every refusal names the folder or file it is about, and an unreadable file
-    does not stop the scan: a real duplicate further on is still the finding. }
+  { Parse failures are inspected as raw bytes before they block: a foreign
+    manifest with no Horizun GUID is logged and skipped. If the bytes contain
+    the GUID, or the file cannot be read, the preflight still refuses. }
   Result := True;
   Kind := ConflictUnreadable;
   YearRoot := AddinsRoot + '\' + Year;
@@ -409,11 +577,7 @@ begin
     try
       repeat
         Candidate := AddinsRoot + '\' + Year + '\' + FindRec.Name;
-        { A FOLDER whose name ends in .addin (an Autodesk add-in installs one) is not
-          a manifest: Revit reads files only. Parsing it as XML failed with "Access is
-          denied" and blocked the install (issue #70). Only files are manifests. }
-        if ((FindRec.Attributes and $10) = 0) and
-           ((AllowedManifest = '') or (CompareText(Candidate, AllowedManifest) <> 0)) then
+        if (AllowedManifest = '') or (CompareText(Candidate, AllowedManifest) <> 0) then
         begin
           try
             XmlDocument := CreateOleObject('Msxml2.DOMDocument.6.0');
@@ -436,17 +600,57 @@ begin
                 end;
             end
             else
-              AddEvidence(Unreadable, Candidate + ' - ' + Trim(String(XmlDocument.parseError.reason)) +
-                          ' (' + L('linea ', 'line ') + IntToStr(XmlDocument.parseError.line) + ')');
+            begin
+              ParseError := Trim(String(XmlDocument.parseError.reason)) + ' (' +
+                L('linea ', 'line ') + IntToStr(XmlDocument.parseError.line) + ')';
+              if not LoadStringFromFile(Candidate, RawBytes) then
+              begin
+                AddEvidence(Unreadable, Candidate + ' - ' + ParseError + '; ' +
+                  L('no se pudieron leer los bytes', 'raw bytes could not be read'));
+              end
+              else if RawBytesContainHorizunGuid(RawBytes) then
+              begin
+                Kind := ConflictDuplicate;
+                Evidence := '';
+                AddEvidence(Evidence, Candidate + ' - ' + L('GUID de Horizun encontrado en bytes sin parsear',
+                  'Horizun GUID found in unparsed bytes'));
+                exit;
+              end
+              else
+                Log('Manifest preflight ignored unreadable foreign manifest: ' + Candidate + ' - ' + ParseError);
+            end;
           except
-            AddEvidence(Unreadable, Candidate + ' - ' + GetExceptionMessage);
+            ParseError := GetExceptionMessage;
+            try
+              if LoadStringFromFile(Candidate, RawBytes) then
+              begin
+                if RawBytesContainHorizunGuid(RawBytes) then
+                begin
+                  Kind := ConflictDuplicate;
+                  Evidence := '';
+                  AddEvidence(Evidence, Candidate + ' - ' + L('GUID de Horizun encontrado en bytes sin parsear',
+                    'Horizun GUID found in unparsed bytes'));
+                  exit;
+                end
+                else
+                begin
+                  Log('Manifest preflight ignored unreadable foreign manifest: ' + Candidate + ' - ' + ParseError);
+                end;
+              end
+              else
+                AddEvidence(Unreadable, Candidate + ' - ' + ParseError + '; ' +
+                  L('no se pudieron leer los bytes', 'raw bytes could not be read'));
+            except
+              AddEvidence(Unreadable, Candidate + ' - ' + ParseError + '; ' +
+                L('fallo al leer los bytes', 'raw byte read failed'));
+            end;
           end;
         end;
         FoundManifest := FindNext(FindRec);
         if not FoundManifest then
         begin
           EnumerationError := Win32GetLastError();
-          EnumerationCompleted := EnumerationError = 18;
+          EnumerationCompleted := (EnumerationError = 0) or (EnumerationError = 18);
         end;
       until not FoundManifest;
     finally
@@ -455,10 +659,16 @@ begin
     Evidence := Unreadable;
     if not EnumerationCompleted then
     begin
+      if EnumerationError = 5 then Kind := ConflictUnreadable
+      else Kind := ConflictEnumeration;
       AddEvidence(Evidence, YearRoot + ' (Windows error ' + IntToStr(EnumerationError) + ')');
       exit;
     end;
-    if Unreadable <> '' then exit;
+    if Unreadable <> '' then
+    begin
+      Kind := ConflictUnreadable;
+      exit;
+    end;
   end;
   if not FoundManifest then
   begin
@@ -471,6 +681,8 @@ begin
       no-match results as a clean directory. }
     if (EnumerationError <> 0) and (EnumerationError <> 2) and (EnumerationError <> 18) then
     begin
+      if EnumerationError = 5 then Kind := ConflictUnreadable
+      else Kind := ConflictEnumeration;
       AddEvidence(Evidence, YearRoot + ' (Windows error ' + IntToStr(EnumerationError) + ')');
       exit;
     end;
@@ -480,7 +692,7 @@ begin
 end;
 
 procedure RecordAddInIdConflict(AddinsRoot, Year, AllowedManifest: String;
-  var Duplicates, Unreadables: String);
+  var Duplicates, Unreadables, EnumerationErrors: String);
 var
   Kind: Integer;
   Evidence: String;
@@ -491,6 +703,11 @@ begin
     if Duplicates <> '' then Duplicates := Duplicates + #13#10;
     Duplicates := Duplicates + 'Revit ' + Year + ':' + #13#10 + Evidence;
   end
+  else if Kind = ConflictEnumeration then
+  begin
+    if EnumerationErrors <> '' then EnumerationErrors := EnumerationErrors + #13#10;
+    EnumerationErrors := EnumerationErrors + 'Revit ' + Year + ':' + #13#10 + Evidence;
+  end
   else
   begin
     if Unreadables <> '' then Unreadables := Unreadables + #13#10;
@@ -498,101 +715,35 @@ begin
   end;
 end;
 
-{ ---------------------------------------------------------------------------
-  TOOL PROFILE ON A NEW INSTALL. tools/list carries every tool by default (~105k
-  tokens). A NEW install writes "tool_profile": "esencial" to the user's
-  settings.json, so clients start with the essential tools and the server tools
-  that reach every other one (ToolProfiles.cs). It is visibility only: the
-  permission profile and every other setting are untouched.
-  An UPGRADE, or a machine that already has settings.json, is left exactly as it
-  is: nobody already using the bridge sees a different list. Decided before
-  Setup writes anything, so this install's own files cannot make it look old.
-  --------------------------------------------------------------------------- }
-{ Test build only (scripts/installer-profile.tests.ps1 passes ProfileTestRoot; pack.ps1
-  never does): the home folder, LOCALAPPDATA and the uninstall key are fixture paths under
-  that root, Setup runs the detection and the write, logs them and stops. }
-function UserSettingsFile: String;
-begin
-#ifdef ProfileTestRoot
-  Result := '{#ProfileTestRoot}\home\.horizun\settings.json';
-#else
-  Result := ExpandConstant('{%USERPROFILE}') + '\.horizun\settings.json';
-#endif
-end;
-
-function LocalAppDataRoot: String;
-begin
-#ifdef ProfileTestRoot
-  Result := '{#ProfileTestRoot}\localappdata';
-#else
-  Result := ExpandConstant('{localappdata}');
-#endif
-end;
-
-function UninstallKeyExists: Boolean;
-begin
-#ifdef ProfileTestRoot
-  Result := FileExists('{#ProfileTestRoot}\uninstall-key');
-#else
-  Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1') or
-            RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1');
-#endif
-end;
-
-function DetectFreshInstall: Boolean;
-begin
-  Result := not (FileExists(UserSettingsFile) or UninstallKeyExists or
-    DirExists(LocalAppDataRoot + '\Programs\Horizun\MCP\server') or
-    FileExists(LocalAppDataRoot + '\Horizun\install-status.json'));
-end;
-
-procedure WriteFirstToolProfile;
+function RevitProcessEvidence: String;
 var
   Path: String;
+  Code: Integer;
+  RawOutput: AnsiString;
 begin
-  Path := UserSettingsFile;
-  if (not FreshInstall) or FileExists(Path) then exit;
-  if not ForceDirectories(ExtractFileDir(Path)) then
-  begin
-    Log('tool profile: could not create ' + ExtractFileDir(Path) + '; every tool stays listed.');
-    exit;
-  end;
-  if SaveStringToFile(Path, '{' + #13#10 + '  "tool_profile": "esencial"' + #13#10 + '}' + #13#10, False) then
-    Log('tool profile: new install, wrote tool_profile=esencial to ' + Path)
-  else
-    Log('tool profile: could not write ' + Path + '; every tool stays listed.');
+  Path := ExpandConstant('{tmp}\revit-processes.csv');
+  Result := 'Revit.exe detected; process details unavailable';
+  if Exec(ExpandConstant('{cmd}'), '/C tasklist /FI "IMAGENAME eq Revit.exe" /FO CSV /NH > "' + Path + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    if LoadStringFromFile(Path, RawOutput) and (Trim(String(RawOutput)) <> '') then
+      Result := Trim(String(RawOutput));
+  DeleteFile(Path);
 end;
 
 function InitializeSetup: Boolean;
 var
   I: Integer;
-  ProgramFiles64, Duplicates, Unreadables, Refusal, UserRoot, MachineRoot, ExpectedUserManifest: String;
+  ProgramFiles64, Duplicates, Unreadables, EnumerationErrors, UserRoot, MachineRoot,
+  ExpectedUserManifest, Evidence: String;
 begin
   Result := True;
-  FreshInstall := DetectFreshInstall;
-#ifdef ProfileTestRoot
-  if FreshInstall then Log('tool profile test: fresh install') else Log('tool profile test: existing install');
-  WriteFirstToolProfile;
-  Log('tool profile test: done');
-  Result := False;
-  exit;
-#endif
-#ifndef PreflightTestRoot
   if RevitIsRunning then
   begin
-    MsgBox(L('Revit esta abierto.' + #13#10#13#10 +
-             'Mantiene abiertos los archivos del complemento, asi que no se pueden reemplazar y te quedarias ' +
-             'usando la version anterior sin que nadie te lo dijera.' + #13#10#13#10 +
-             'Cierra todas las ventanas de Revit y vuelve a ejecutar este instalador. No se ha cambiado nada.',
-             'Revit is running.' + #13#10#13#10 +
-             'It holds the add-in files open, so they cannot be replaced and you would end up ' +
-             'still running the old build without being told.' + #13#10#13#10 +
-             'Close every Revit window and run this installer again. Nothing has been changed.'),
-           mbError, MB_OK);
-    Result := False;
+    Evidence := RevitProcessEvidence;
+    RefusePreflight('revit_running',
+      L('Revit está abierto (' + Evidence + '). Cierra todos los procesos Revit.exe y vuelve a ejecutar el instalador.',
+        'Revit is running (' + Evidence + '). Close every Revit.exe process and run Setup again.'), Evidence, 10);
   end;
-  if not Result then exit;
-#endif
 
   { Revit reads both ProgramData and AppData. Installing the same AddInId in both
     scopes is not an update: it is two competing add-ins. Refuse before Setup
@@ -600,65 +751,36 @@ begin
   InitYears;
   ProgramFiles64 := GetEnv('ProgramW6432');
   if ProgramFiles64 = '' then ProgramFiles64 := ExpandConstant('{commonpf}');
-#ifdef PreflightTestRoot
-  { Test build only (scripts/installer-preflight.tests.ps1 passes this define;
-    pack.ps1 never does): the preflight reads fixture folders instead of the real
-    Addins, every year is scanned whether or not Revit is installed, nothing is
-    shown, and Setup always stops after the preflight. }
-  UserRoot := '{#PreflightTestRoot}\user';
-  MachineRoot := '{#PreflightTestRoot}\machine';
-#else
   UserRoot := ExpandConstant('{userappdata}') + '\Autodesk\Revit\Addins';
   MachineRoot := ExpandConstant('{commonappdata}') + '\Autodesk\Revit\Addins';
-#endif
   Duplicates := '';
   Unreadables := '';
+  EnumerationErrors := '';
   for I := 0 to YearsCount - 1 do
-#ifdef PreflightTestRoot
-    begin
-#else
     if FileExists(ProgramFiles64 + '\Autodesk\Revit ' + Years[I] + '\Revit.exe') then
     begin
-#endif
       ExpectedUserManifest := UserRoot + '\' + Years[I] + '\Horizun.addin';
-      RecordAddInIdConflict(MachineRoot, Years[I], '', Duplicates, Unreadables);
-      RecordAddInIdConflict(UserRoot, Years[I], ExpectedUserManifest, Duplicates, Unreadables);
+      RecordAddInIdConflict(MachineRoot, Years[I], '', Duplicates, Unreadables, EnumerationErrors);
+      RecordAddInIdConflict(UserRoot, Years[I], ExpectedUserManifest, Duplicates, Unreadables, EnumerationErrors);
     end;
-  if (Duplicates <> '') or (Unreadables <> '') then
+  if Duplicates <> '' then
   begin
-    Refusal := '';
-    if Duplicates <> '' then
-      Refusal := L('Ya existe otro manifiesto con el AddInId de Horizun ({#HorizunAddInId}):' + #13#10 + Duplicates + #13#10#13#10 +
-                   'Este instalador no crea un segundo manifiesto con el mismo AddInId, aunque el otro archivo se haya renombrado. ' +
-                   'Quita o migra primero esa instalacion.',
-                   'Another manifest with the Horizun AddInId ({#HorizunAddInId}) already exists:' + #13#10 + Duplicates + #13#10#13#10 +
-                   'This installer refuses to create a second manifest with the same AddInId, even if the other file was renamed. ' +
-                   'Remove or migrate that installation first.');
-    if Unreadables <> '' then
-    begin
-      if Refusal <> '' then Refusal := Refusal + #13#10#13#10;
-      Refusal := Refusal +
-        L('No se pudo leer lo siguiente para comprobar que no registra ya el AddInId de Horizun ({#HorizunAddInId}):' + #13#10 +
-          Unreadables + #13#10#13#10 +
-          'Esto no significa que Horizun este instalado: el instalador se detiene porque no puede descartarlo. ' +
-          'Corrige el XML o los permisos de ese archivo o carpeta, o sacalo temporalmente de la carpeta Addins, y vuelve a ejecutar el instalador.',
-          'The following could not be read to confirm it does not already register the Horizun AddInId ({#HorizunAddInId}):' + #13#10 +
-          Unreadables + #13#10#13#10 +
-          'This does not mean Horizun is installed: the installer stops because it cannot rule it out. ' +
-          'Fix that file''s XML or permissions, or move it out of the Addins folder for now, and run the installer again.');
-    end;
-    { Logged before the dialog, so the Setup log names the file even when the
-      dialog is closed by killing Setup or never seen at all. }
-    Log('Manifest preflight refused: ' + Refusal);
-#ifndef PreflightTestRoot
-    MsgBox(Refusal + #13#10#13#10 + L('No se ha cambiado nada.', 'Nothing has been changed.'), mbError, MB_OK);
-#endif
-    Result := False;
+    RefusePreflight('duplicate_addin_id',
+      L('Ya existe otro manifiesto con el AddInId de Horizun. Revisa estas rutas y quita o migra la instalación duplicada antes de continuar:' + #13#10 + Duplicates,
+        'Another manifest with the Horizun AddInId already exists. Review these paths and remove or migrate the duplicate installation before continuing:' + #13#10 + Duplicates), Duplicates, 11);
   end;
-#ifdef PreflightTestRoot
-  if Result then Log('Manifest preflight passed');
-  Result := False;
-#endif
+  if Unreadables <> '' then
+  begin
+    RefusePreflight('unreadable_manifest_or_folder',
+      L('No se pudo leer un manifiesto o carpeta Addins que podría registrar Horizun. Corrige sus permisos o retira temporalmente el archivo indicado y vuelve a ejecutar el instalador:' + #13#10 + Unreadables,
+        'A manifest or Addins folder could not be read and may register Horizun. Fix its permissions or temporarily move the listed file, then run Setup again:' + #13#10 + Unreadables), Unreadables, 12);
+  end;
+  if EnumerationErrors <> '' then
+  begin
+    RefusePreflight('enumeration_error',
+      L('Windows no pudo terminar de enumerar una carpeta Addins. Revisa los permisos y el estado de la carpeta indicada; luego vuelve a ejecutar el instalador:' + #13#10 + EnumerationErrors,
+        'Windows could not finish enumerating an Addins folder. Check the listed folder permissions and state, then run Setup again:' + #13#10 + EnumerationErrors), EnumerationErrors, 13);
+  end;
 end;
 
 function InitializeUninstall: Boolean;
@@ -696,6 +818,25 @@ begin
   Result := ExpandConstant('{userappdata}') + '\Autodesk\Revit\Addins\' + Year;
 end;
 
+function QuarantineServerBackup(Backup: String): Boolean;
+var
+  Candidate: String;
+  I: Integer;
+begin
+  Result := not DirExists(Backup);
+  if Result then exit;
+  for I := 0 to 999 do
+  begin
+    Candidate := AddBackslash(ExtractFileDir(Backup)) + '.legacy-backup-' +
+      GetDateTimeString('yyyymmddhhnnss', '-', ':') + '-' + IntToStr(I);
+    if not DirExists(Candidate) then
+    begin
+      Result := RenameFile(Backup, Candidate);
+      exit;
+    end;
+  end;
+end;
+
 function RecoverInterruptedSwap(Dst, Staging, Backup, RequiredFile: String): Boolean;
 begin
   Result := False;
@@ -713,7 +854,11 @@ begin
     { A live directory must prove it contains its primary binary before an older
       recoverable copy is discarded. }
     if not FileExists(Dst + '\' + RequiredFile) then exit;
-    if not DelTree(Backup, True, True, True) then exit;
+    if RequiredFile = '{#AppExeName}' then
+    begin
+      if not QuarantineServerBackup(Backup) then exit;
+    end
+    else if not DelTree(Backup, True, True, True) then exit;
   end;
   Result := True;
 end;
@@ -731,7 +876,7 @@ begin
   begin
     if not DirExists(Dst) then begin Result := True; exit; end;
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-      '-NoProfile -ExecutionPolicy Bypass -File ' +
+      '-NoProfile -ExecutionPolicy RemoteSigned -File ' +
       AddQuotes(AddBackslash(Staging) + 'client-tools\stop-installed-server.ps1') +
       ' -ServerPath ' + AddQuotes(AddBackslash(Dst) + '{#AppExeName}'),
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
@@ -748,6 +893,8 @@ var
 begin
   Result := False;
   ServerFailure := '';
+  ServerCopyFailed := False;
+  ServerCopyCode := '';
   Src := ExpandConstant('{tmp}') + '\HorizunPayload\server';
   Dst := ExpandConstant('{app}') + '\server';
   Staging := ExpandConstant('{app}') + '\server.installing';
@@ -761,9 +908,17 @@ begin
   Exec(ExpandConstant('{cmd}'), '/C xcopy "' + Src + '" "' + Staging + '" /E /I /Y /Q',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if ResultCode <> 0 then
-  begin DelTree(Staging, True, True, True); ServerFailure := 'server copy failed, code ' + IntToStr(ResultCode); exit; end;
+  begin
+    DelTree(Staging, True, True, True);
+    ServerCopyFailed := True; ServerCopyCode := 'xcopy ' + IntToStr(ResultCode);
+    ServerFailure := 'server copy failed, code ' + IntToStr(ResultCode); exit;
+  end;
   if (not FileExists(Staging + '\{#AppExeName}')) or (not FileExists(Staging + '\horizun-mcp.dll')) then
-  begin DelTree(Staging, True, True, True); ServerFailure := 'the staged server is incomplete'; exit; end;
+  begin
+    DelTree(Staging, True, True, True);
+    ServerCopyFailed := True; ServerCopyCode := 'xcopy 0, files missing after the copy';
+    ServerFailure := 'the staged server is incomplete (xcopy returned 0 but files are missing)'; exit;
+  end;
 
   { Claude/Codex legitimately keeps the currently configured stdio server open.
     Revit is already known to be closed, so no Revit-side command can be in
@@ -772,7 +927,7 @@ begin
   if DirExists(Dst) then
   begin
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-      '-NoProfile -ExecutionPolicy Bypass -File "' + Staging + '\client-tools\stop-installed-server.ps1"' +
+      '-NoProfile -ExecutionPolicy RemoteSigned -File "' + Staging + '\client-tools\stop-installed-server.ps1"' +
       ' -ServerPath "' + Dst + '\{#AppExeName}"',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
     begin
@@ -998,7 +1153,7 @@ begin
     complete server/plugin inventories plus each real .addin before Commit removes
     those images; an existence check is not a transaction postcondition. }
   Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -ExecutionPolicy Bypass -File "' +
+    '-NoProfile -ExecutionPolicy RemoteSigned -File "' +
     ExpandConstant('{app}') + '\server\client-tools\verify-install.ps1"' +
     ' -Client None -ServerPath "' + ExpandConstant('{app}') + '\server\{#AppExeName}" -SkipLive',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
@@ -1016,7 +1171,7 @@ begin
     Windows command line and PowerShell rejects the -File path as illegal. }
   ReportPath := AddBackslash(ExpandConstant('{localappdata}')) + 'Horizun\install-verification.json';
   ForceDirectories(ExtractFileDir(ReportPath));
-  VerifyArgs := '-NoProfile -ExecutionPolicy Bypass -File ' +
+  VerifyArgs := '-NoProfile -ExecutionPolicy RemoteSigned -File ' +
     AddQuotes(AddBackslash(ExpandConstant('{app}')) + 'server\client-tools\verify-install.ps1') +
     ' -Client None -ServerPath ' +
     AddQuotes(AddBackslash(ExpandConstant('{app}')) + 'server\{#AppExeName}') +
@@ -1032,10 +1187,10 @@ end;
 
 procedure CommitDeployment;
 var
-  I: Integer;
+  I, CleanupResult: Integer;
 begin
-  if DirExists(ExpandConstant('{app}') + '\server.previous') then
-    DelTree(ExpandConstant('{app}') + '\server.previous', True, True, True);
+  if not QuarantineServerBackup(ExpandConstant('{app}') + '\server.previous') then
+    Log('Server backup could not be quarantined; it is preserved for a later run');
   if FileExists(ExpandConstant('{app}') + '\manifest.previous.json') then
     DeleteFile(ExpandConstant('{app}') + '\manifest.previous.json');
   for I := 0 to YearsCount - 1 do
@@ -1045,6 +1200,186 @@ begin
     if FileExists(AddinsDir(Years[I]) + '\Horizun.addin.previous') then
       DeleteFile(AddinsDir(Years[I]) + '\Horizun.addin.previous');
   end;
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -ExecutionPolicy RemoteSigned -File ' +
+    AddQuotes(ExpandConstant('{app}\server\client-tools\cleanup-backups.ps1')) +
+    ' -Root ' + AddQuotes(ExpandConstant('{app}')) + ' -PreservePrevious',
+    '', SW_HIDE, ewWaitUntilTerminated, CleanupResult) then
+    Log('Backup retention could not start')
+  else if CleanupResult <> 0 then
+    Log('Backup retention deferred or failed: ' + IntToStr(CleanupResult));
+end;
+
+{ ---------------------------------------------------------------------------
+  TOOL PROFILE (4.0). Which tool groups MCP clients see: core + the profile.
+  It is visibility only - permissions, the Python grant and every other setting
+  are untouched - and any tool stays callable through horizun_call_tool.
+
+  NEW INSTALL: the chosen profile is written to settings.json (tool_profile).
+  The page pre-selects "modelador" (complete modeller) because modelling is
+  where most measured use is; the person can pick any other.
+
+  UPGRADE: the first option, "keep what I have", is pre-selected and writes
+  NOTHING. A machine without tool_profile keeps the 3.x behaviour - every tool
+  listed - unless the person chooses a profile here.
+
+  Silent installs: /PROFILE=<name> chooses; without it a new install writes the
+  pre-selected profile and an upgrade keeps what it has.
+  --------------------------------------------------------------------------- }
+const
+  ProfileCount = 10;
+
+function ProfileId(Index: Integer): String;
+begin
+  case Index of
+    0: Result := 'nucleo';
+    1: Result := 'auditor';
+    2: Result := 'modelador_arquitectura';
+    3: Result := 'modelador_estructura';
+    4: Result := 'modelador_mep';
+    5: Result := 'modelador';
+    6: Result := 'documentador';
+    7: Result := 'coordinador';
+    8: Result := 'analista_datos';
+    9: Result := 'completo';
+  else
+    Result := '';
+  end;
+end;
+
+function ProfileLabel(Index: Integer): String;
+begin
+  case Index of
+    0: Result := L('Solo nucleo (19 herramientas, ~12-15 mil tokens): el resto se activa por grupos cuando haga falta',
+                   'Core only (19 tools, ~12-15k tokens): everything else is switched on by group when needed');
+    1: Result := L('Auditor: lectura, auditoria y documentacion', 'Auditor: reading, audits and documentation');
+    2: Result := L('Modelador de arquitectura', 'Architecture modeller');
+    3: Result := L('Modelador de estructura y refuerzo', 'Structure and reinforcement modeller');
+    4: Result := L('Modelador MEP', 'MEP modeller');
+    5: Result := L('Modelador completo: arquitectura, estructura, MEP, CAD/IFC y familias (recomendado)',
+                   'Complete modeller: architecture, structure, MEP, CAD/IFC and families (recommended)');
+    6: Result := L('Documentador: vistas, planos, anotacion, exportacion y tablas',
+                   'Documenter: views, sheets, annotation, export and schedules');
+    7: Result := L('Coordinador: interferencias, vinculos, CDE, CAD/IFC y documentacion',
+                   'Coordinator: clash, links, CDE, CAD/IFC and documentation');
+    8: Result := L('Analista de datos: cantidades, tablas, Excel, Power BI y familias',
+                   'Data analyst: quantities, schedules, Excel, Power BI and families');
+    9: Result := L('Completo: todas las herramientas, como en 3.x (~120-150 mil tokens)',
+                   'Full: every tool, as in 3.x (~120-150k tokens)');
+  else
+    Result := '';
+  end;
+end;
+
+function SettingsFile(): String;
+var
+  Root: String;
+begin
+  Root := GetEnv('HORIZUN_DATA_ROOT');
+  if Root = '' then Root := ExpandConstant('{%USERPROFILE}') + '\.horizun';
+  Result := Root + '\settings.json';
+end;
+
+{ The current tool_profile value, read crudely: settings.json is the owner's file and
+  the helper parses it properly; this is only for the label of "keep". }
+function ReadExistingProfile(): String;
+var
+  Text: AnsiString;
+  S: String;
+  P, Q: Integer;
+begin
+  Result := '';
+  if not LoadStringFromFile(SettingsFile(), Text) then exit;
+  S := String(Text);
+  P := Pos('"tool_profile"', S);
+  if P = 0 then exit;
+  S := Copy(S, P + 14, 200);
+  P := Pos('"', S);
+  if P = 0 then exit;
+  S := Copy(S, P + 1, 200);
+  Q := Pos('"', S);
+  if Q = 0 then exit;
+  Result := Copy(S, 1, Q - 1);
+end;
+
+procedure InitializeWizard;
+var
+  I: Integer;
+  KeepLabel: String;
+begin
+  { A 3.x install made with install.ps1 has no uninstall entry and may have no
+    settings.json yet: its server folder or install status still marks an upgrade. }
+  IsUpgrade := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1') or
+               FileExists(SettingsFile()) or
+               DirExists(ExpandConstant('{localappdata}') + '\Programs\Horizun\MCP\server') or
+               FileExists(ExpandConstant('{localappdata}') + '\Horizun\install-status.json');
+  ExistingProfile := ReadExistingProfile();
+  ProfilePage := CreateInputOptionPage(wpSelectTasks,
+    L('Perfil de herramientas', 'Tool profile'),
+    L('Que herramientas veran Claude, Codex y los demas clientes al empezar.',
+      'Which tools Claude, Codex and the other clients see when a session starts.'),
+    L('Menos herramientas en la lista = menos tokens por sesion. Es solo visibilidad: los permisos no cambian, ' +
+      'cualquier grupo se activa en la sesion con horizun_toolsets y toda herramienta se puede llamar con ' +
+      'horizun_call_tool. Se puede cambiar despues (settings.json, tool_profile, o HORIZUN_PROFILE en el cliente).',
+      'Fewer tools in the list = fewer tokens per session. It is visibility only: permissions do not change, ' +
+      'any group can be switched on in the session with horizun_toolsets and every tool can be called through ' +
+      'horizun_call_tool. It can be changed later (settings.json tool_profile, or HORIZUN_PROFILE in the client).'),
+    True, False);
+  if IsUpgrade then
+  begin
+    if ExistingProfile <> '' then
+      KeepLabel := L('Mantener lo que tengo (perfil actual: ', 'Keep what I have (current profile: ') + ExistingProfile + ')'
+    else
+      KeepLabel := L('Mantener lo que tengo (actualizacion: todas las herramientas, como en 3.x)',
+                     'Keep what I have (upgrade: every tool, as in 3.x)');
+    ProfilePage.Add(KeepLabel);
+  end;
+  for I := 0 to ProfileCount - 1 do ProfilePage.Add(ProfileLabel(I));
+  if IsUpgrade then ProfilePage.SelectedValueIndex := 0
+  else ProfilePage.SelectedValueIndex := 5;  { modelador }
+end;
+
+{ The profile id the person chose, or 'keep'. /PROFILE= wins in a silent install. }
+function ChosenProfile(): String;
+var
+  Index: Integer;
+begin
+  Result := Lowercase(Trim(ExpandConstant('{param:PROFILE|}')));
+  if Result <> '' then exit;
+  Index := ProfilePage.SelectedValueIndex;
+  if IsUpgrade then
+  begin
+    if Index <= 0 then begin Result := 'keep'; exit; end;
+    Index := Index - 1;
+  end;
+  Result := ProfileId(Index);
+  if Result = '' then
+  begin
+    if IsUpgrade then Result := 'keep' else Result := 'modelador';
+  end;
+end;
+
+{ Runs the installed helper, which validates the name, preserves every other key and
+  reads the file back. A failure is recorded, never fatal: the bridge works either way. }
+procedure ApplyToolProfile;
+var
+  Shell, Args, Mode, OutFile: String;
+  Code: Integer;
+  Lines: AnsiString;
+begin
+  if IsUpgrade then Mode := 'upgrade' else Mode := 'new';
+  Shell := ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe');
+  if not FileExists(Shell) then Shell := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  OutFile := ExpandConstant('{tmp}\tool-profile-result.txt');
+  Args := '-NoProfile -ExecutionPolicy RemoteSigned -File "' +
+          ExpandConstant('{app}\server\client-tools\set-tool-profile.ps1') + '"' +
+          ' -ToolProfile ' + ChosenProfile() + ' -Mode ' + Mode + ' -ResultPath "' + OutFile + '"';
+  if Exec(Shell, Args, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) and
+     LoadStringFromFile(OutFile, Lines) then
+    ProfileResult := Trim(String(Lines))
+  else
+    ProfileResult := 'not applied (exit ' + IntToStr(Code) + ')';
+  Log('Tool profile: ' + ProfileResult);
 end;
 
 { Pascal Script has no BoolToStr and no ternary. }
@@ -1095,8 +1430,10 @@ begin
       verification, they registered a payload that a failed verify then rolled
       back. RollbackDeployment clears ServerInstalled, so a rolled-back install
       starts nothing. }
-    { Before the helpers start a server that reads it. }
-    if ServerInstalled then WriteFirstToolProfile;
+    { The tool profile goes in after the payload is committed, so a rolled-back install
+      writes no setting, and before the client helpers start, so their first session
+      already reads it. }
+    if ServerInstalled then ApplyToolProfile;
     if ServerInstalled then StartClientHelpers;
 
     { Old installers staged plugin payloads permanently under the application
@@ -1146,10 +1483,13 @@ begin
       'installed_local=' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') + #13#10 +
       'server_installed=' + YesNo(ServerInstalled) + #13#10 +
       'server_failure=' + ServerFailure + #13#10 +
+      'server_copy_code=' + ServerCopyCode + #13#10 +
       'any_revit_found=' + YesNo(FoundAny) + #13#10 +
       'succeeded=' + InstalledYears + #13#10 +
       'failed=' + FailedYears + #13#10 +
       'fully_installed=' + YesNo(ServerInstalled and FoundAny and (FailedYears = '')) + #13#10 +
+      'tool_profile=' + ProfileResult + #13#10 +
+      'client_completion=' + ClientCompletion + #13#10 +
       'note=READ THIS FILE AND THE EXIT CODE, NOT EITHER ALONE. Setup returns 0 from any install that ' +
       'COMPLETES, including one where a year failed - so 0 does not mean every year deployed, and ' +
       'fully_installed is what says that. But a NON-ZERO code means Setup did not complete, and then ' +
@@ -1173,12 +1513,22 @@ begin
     HandedOver := HandOverDesktopPackage(HandoverFolder);
     if WizardSilent then exit;
 
-    if not FoundAny then
+    if (not FoundAny) and (not ServerCopyFailed) then
       MsgBox(L('No se encontro ninguna instalacion de Revit compatible (2023-2027), asi que el complemento no se instalo.' + #13#10 +
                'El servidor MCP si quedo instalado; vuelve a ejecutar esto despues de instalar Revit.',
                'No supported Revit installation was found (2023-2027), so the add-in was not deployed.' + #13#10 +
                'The MCP server is installed; run this again after installing Revit.'),
              mbInformation, MB_OK)
+    else if ServerCopyFailed then
+      MsgBox(L('El servidor MCP NO se pudo copiar, asi que no se instalo nada nuevo y quedo lo que habia antes.' + #13#10#13#10 +
+               'Codigo de la copia: ' + ServerCopyCode + #13#10#13#10 +
+               'Revisa que haya espacio libre en el disco y que el antivirus no este bloqueando ni poniendo en cuarentena ' +
+               'los archivos de Horizun, y vuelve a ejecutar este instalador.',
+               'The MCP server could NOT be copied, so nothing new was installed and the previous installation was kept.' + #13#10#13#10 +
+               'Copy code: ' + ServerCopyCode + #13#10#13#10 +
+               'Check that the disk has free space and that no antivirus is blocking or quarantining the Horizun files, ' +
+               'then run this installer again.'),
+             mbError, MB_OK)
     else if FailedYears <> '' then
       MsgBox(L('El complemento NO quedo instalado del todo.' + #13#10#13#10 +
                'Correcto en: ' + InstalledYears + #13#10 +

@@ -21,6 +21,7 @@
 from Autodesk.Revit.DB import (
     ElementId, FilteredElementCollector, BuiltInCategory, BuiltInParameter
 )
+import hz_compat as _compat
 
 
 def bip(*names):
@@ -65,17 +66,12 @@ def eid(element_id):
     """The numeric value of an ElementId. Revit 2024+ has .Value (64-bit); older
     Revit only has .IntegerValue. Try the modern one first so the 2024+ build does
     not go through a deprecated property."""
-    if element_id is None:
-        return None
-    try:
-        return element_id.Value
-    except AttributeError:
-        return element_id.IntegerValue
+    return _compat.eid_int(element_id)
 
 
 def to_eid(value):
     """An ElementId from a number, on any supported Revit."""
-    return ElementId(value)
+    return _compat.element_id(value, ElementId)
 
 
 def arg(args, key, default=None):

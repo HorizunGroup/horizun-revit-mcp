@@ -72,7 +72,6 @@ namespace Horizun.Revit.Commands
                         throw new ArgumentException(
                             "legend view '" + source.Name + "' reports CanViewBeDuplicated false for " + option +
                             ". Nothing was written.");
-                    RequireUnusedViewName(doc, a.Value<string>("name"));
                     break;
                 }
 
@@ -117,6 +116,10 @@ namespace Horizun.Revit.Commands
                 View copy = doc.GetElement(source.Duplicate(LegendDuplicateOption(a))) as View;
                 if (copy == null) throw new InvalidOperationException("the legend duplicate could not be read back");
                 copy.Name = a.Value<string>("name");
+                // INT-9 m-3: the duplicate brings the source legend's own elements (annotations, components): copies, not creations of this write.
+                // The view itself is new and stays ours.
+                SessionCreationLedger.NoteDuplicated(ChangeWatch.Key(doc),
+                    new FilteredElementCollector(doc, copy.Id).WhereElementIsNotElementType().ToElements().Select(e => e.UniqueId));
                 a["__source_legend_id"] = Rid.Value(source.Id);
                 return copy;
             }
@@ -304,17 +307,5 @@ namespace Horizun.Revit.Commands
             }
         }
 
-        private static void RequireUnusedViewName(Document doc, string name)
-        {
-            foreach (View v in new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>())
-            {
-                string existing;
-                try { existing = v.Name; } catch { continue; }
-                if (string.Equals(existing, name, StringComparison.OrdinalIgnoreCase))
-                    throw new ArgumentException(
-                        "a view named '" + name + "' already exists (id " + Rid.Value(v.Id) +
-                        "). Revit view names are unique; the duplicate would be renamed behind your back.");
-            }
-        }
     }
 }

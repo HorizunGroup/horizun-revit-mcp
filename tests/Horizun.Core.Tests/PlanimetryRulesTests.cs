@@ -437,6 +437,108 @@ namespace Horizun.Core.Tests
             Assert.Empty(Failed(grazing, "sheet.placement-outside-extent"));
         }
 
+        // field cycle (video 2026-10-24, P9): a viewport that sticks out of the frame was seen by no rule.
+        [Fact]
+        public void A_placement_crossing_the_frame_edge_is_blocking_with_its_overhang_and_one_inside_is_not()
+        {
+            PlanimetryAuditResult partly = PlanimetryRules.EvaluateUniversal(Snapshot(
+                Sheet(10), View(20), Viewport(30, 10, 20, 800, 100, 900, 200)), Options());
+            PlanimetryFinding f = Assert.Single(Failed(partly, "sheet.placement-partly-outside-extent"));
+            Assert.Equal("blocking", f.Severity);
+            Assert.Equal(59, (double)f.Observed["overhang"]["right"], 1);
+            Assert.Equal(0, (double)f.Observed["overhang"]["left"], 6);
+            Assert.Equal("horizun_sheet_layout", f.RecommendedTool);
+            Assert.Empty(Failed(partly, "sheet.placement-outside-extent"));
+
+            PlanimetryAuditResult inside = PlanimetryRules.EvaluateUniversal(Snapshot(
+                Sheet(10), View(20), Viewport(30, 10, 20, 100, 100, 841, 594)), Options());
+            Assert.Empty(Failed(inside, "sheet.placement-partly-outside-extent"));
+        }
+
+        [Fact]
+        public void A_viewport_title_out_of_the_frame_counts_as_out()
+        {
+            PlacementFact vp = Viewport(30, 10, 20, 100, 100, 300, 300);
+            vp.LabelBox = Box(100, -12, 250, 4);
+            PlanimetryAuditResult r = PlanimetryRules.EvaluateUniversal(Snapshot(Sheet(10), View(20), vp), Options());
+            PlanimetryFinding f = Assert.Single(Failed(r, "sheet.placement-partly-outside-extent"));
+            Assert.True((bool)f.Observed["includes_title"]);
+            Assert.Equal(12, (double)f.Observed["overhang"]["bottom"], 1);
+        }
+
+        // field cycle independent review (R4/R5): bar diameters and door widths summed in grouped schedules.
+        private static PlacementFact ScheduleWithTotals(bool? itemized, params ScheduleTotalField[] fields)
+        {
+            PlacementFact si = Schedule(40, 10, 77, 10, 10, 200, 100);
+            si.ScheduleItemized = itemized;
+            si.ScheduleTotalFields = fields.ToList();
+            return si;
+        }
+
+        [Fact]
+        public void A_grouped_schedule_that_sums_door_widths_or_bar_diameters_is_blocking()
+        {
+            PlacementFact si = ScheduleWithTotals(false,
+                new ScheduleTotalField { Name = "Width", SpecTypeId = "autodesk.spec.aec:length-2.0.0", FieldType = "element_type" },
+                new ScheduleTotalField { Name = "Bar Diameter", SpecTypeId = "autodesk.spec.aec.structural:barDiameter-1.0.0", FieldType = "element_type" },
+                new ScheduleTotalField { Name = "Length", SpecTypeId = "autodesk.spec.aec:length-2.0.0", FieldType = "instance" },
+                new ScheduleTotalField { Name = "Count", SpecTypeId = null, FieldType = "count" });
+            PlanimetryAuditResult r = PlanimetryRules.EvaluateUniversal(Snapshot(Sheet(10), si), Options());
+            PlanimetryFinding f = Assert.Single(Failed(r, "schedule.non-additive-field-summed"));
+            Assert.Equal("blocking", f.Severity);
+            Assert.Equal(new[] { "Width", "Bar Diameter" }, ((JArray)f.Observed["fields"]).Select(x => (string)x["field"]).ToArray());
+            Assert.Equal("horizun_manage_schedules", f.RecommendedTool);
+            Assert.Empty(Failed(r, "schedule.non-additive-field-in-totals"));
+        }
+
+        [Fact]
+        public void An_itemized_schedule_with_a_summed_size_is_advisory_and_instance_lengths_are_clean()
+        {
+            PlacementFact itemized = ScheduleWithTotals(true,
+                new ScheduleTotalField { Name = "Size", SpecTypeId = "autodesk.spec.aec.piping:pipeSize-2.0.0", FieldType = "instance" });
+            PlanimetryAuditResult r = PlanimetryRules.EvaluateUniversal(Snapshot(Sheet(10), itemized), Options());
+            Assert.Equal("advisory", Assert.Single(Failed(r, "schedule.non-additive-field-in-totals")).Severity);
+            Assert.Empty(Failed(r, "schedule.non-additive-field-summed"));
+
+            PlacementFact clean = ScheduleWithTotals(false,
+                new ScheduleTotalField { Name = "Length", SpecTypeId = "autodesk.spec.aec:length-2.0.0", FieldType = "instance" },
+                new ScheduleTotalField { Name = "Area", SpecTypeId = "autodesk.spec.aec:area-2.0.0", FieldType = "instance" });
+            PlanimetryAuditResult ok = PlanimetryRules.EvaluateUniversal(Snapshot(Sheet(10), clean), Options());
+            Assert.Empty(Failed(ok, "schedule.non-additive-field-summed"));
+            Assert.Empty(Failed(ok, "schedule.non-additive-field-in-totals"));
+        }
+
+        [Fact]
+        public void An_unreadable_schedule_definition_is_unknown_and_a_revision_schedule_is_not_examined()
+        {
+            PlacementFact unread = Schedule(40, 10, 77, 10, 10, 200, 100);
+            unread.ScheduleTotalsUnreadable = true;
+            PlanimetryAuditResult r = PlanimetryRules.EvaluateUniversal(Snapshot(Sheet(10), unread), Options());
+            Assert.Single(Unknowns(r, "schedule.non-additive-field-summed"));
+
+            PlacementFact notExamined = Schedule(40, 10, 77, 10, 10, 200, 100);
+            PlanimetryAuditResult n = PlanimetryRules.EvaluateUniversal(Snapshot(Sheet(10), notExamined), Options());
+            Assert.Empty(Unknowns(n, "schedule.non-additive-field-summed"));
+        }
+
+        [Theory]
+        [InlineData("autodesk.spec.aec.hvac:ductSize-2.0.0", "instance", true)]
+        [InlineData("autodesk.spec.aec:angle-2.0.0", "instance", true)]
+        [InlineData("autodesk.spec.aec:slope-2.0.0", "instance", true)]
+        [InlineData("autodesk.spec.aec:length-2.0.0", "element_type", true)]
+        [InlineData("autodesk.spec.aec:length-2.0.0", "instance", false)]
+        [InlineData("autodesk.spec.aec:volume-2.0.0", "instance", false)]
+        [InlineData(null, "count", false)]
+        public void Non_additive_fields_are_named_once(string spec, string fieldType, bool nonAdditive)
+            => Assert.Equal(nonAdditive, ScheduleTotalsRules.NonAdditiveReason(spec, fieldType) != null);
+
+        [Fact]
+        public void A_field_type_name_reads_in_snake_case()
+        {
+            Assert.Equal("element_type", ScheduleTotalsRules.FieldTypeName("ElementType"));
+            Assert.Equal("instance", ScheduleTotalsRules.FieldTypeName("Instance"));
+        }
+
         [Fact]
         public void A_viewport_whose_view_is_gone_is_blocking()
         {
@@ -508,6 +610,19 @@ namespace Horizun.Core.Tests
             PlanimetryAuditResult r = PlanimetryRules.EvaluateUniversal(Snapshot(View(20)), Options());
             PlanimetryFinding f = Assert.Single(Failed(r, "view.not-placed"));
             Assert.Equal("advisory", f.Severity);
+        }
+
+        [Fact]
+        public void Unplaced_inventory_excludes_templates_non_graphical_and_placed_views()
+        {
+            ViewFact free = View(20); free.IsGraphical = true; free.CanBePrinted = true;
+            ViewFact placed = View(21); placed.IsGraphical = true; placed.CanBePrinted = true; placed.ViewportIds.Add(30);
+            ViewFact template = View(22); template.IsTemplate = true; template.IsGraphical = true; template.CanBePrinted = true;
+            ViewFact unknown = View(23); unknown.IsGraphical = null;
+            Assert.True(free.IsUnplacedGraphical());
+            Assert.False(placed.IsUnplacedGraphical());
+            Assert.False(template.IsUnplacedGraphical());
+            Assert.False(unknown.IsUnplacedGraphical());
         }
 
         [Fact]
@@ -1347,6 +1462,28 @@ namespace Horizun.Core.Tests
             Assert.Equal(20, f.ViewId);
             Assert.Equal("P-02", (string)f.Observed["type"]);
             Assert.Equal(3, (int)f.Observed["visible_total"]);
+        }
+
+        [Fact]
+        public void A_requires_tag_rule_matches_rows_by_the_requested_category_not_the_display_name()
+        {
+            // Live 2023-2026: the row carries the element's own name ('Pipes') while the rule
+            // asks for 'OST_PipeCurves'; matching by the display name lost every untagged pipe.
+            var coverage = new TagCoverageFact
+            { Category = "OST_PipeCurves", VisibleTotal = 3, TaggedTotal = 2, UntaggedTotal = 1 };
+            coverage.Untagged.Add(new UntaggedElement
+            { Id = 777, Category = "Pipes", RequestedCategory = "OST_PipeCurves", TypeName = "Default" });
+
+            PlanimetryRequirementSet set = Set(
+                "[{\"id\":\"pipes-tagged\",\"entity\":\"view\",\"severity\":\"blocking\"," +
+                "\"selector\":{\"view_type\":\"FloorPlan\"}," +
+                "\"assertion\":{\"operator\":\"requires_tag\",\"value\":[\"OST_PipeCurves\"]}}]");
+
+            PlanimetryAuditResult r = PlanimetryRules.EvaluateRequirementSet(
+                Snapshot(ViewWithCoverage(20, coverage)), set, Options());
+            PlanimetryFinding f = Assert.Single(r.Findings, x => x.Status == "failed");
+            Assert.Equal(777, f.ElementIds.Single());
+            Assert.Equal("Pipes", (string)f.Observed["category"]);
         }
 
         [Fact]

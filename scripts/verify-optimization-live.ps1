@@ -17,7 +17,6 @@ $ErrorActionPreference='Stop'
 $runId=[guid]::NewGuid().ToString('N')
 $runRoot=Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($Json))) "calls-$Year-$runId"
 $null=New-Item -ItemType Directory -Path $runRoot -Force
-. (Join-Path $PSScriptRoot 'live-family.probes.ps1')
 . (Join-Path $PSScriptRoot 'live-optimization.probes.ps1')
 function Call([string]$tool,$arguments) {
     $path=Join-Path $runRoot ([guid]::NewGuid().ToString('N')+'.json')
@@ -59,13 +58,6 @@ try {
     }
     Record 'health and source provenance' @{outcome='pass';detail="commit $ExpectedCommit; Revit $Year"}
     Record 'query response equivalence and size' (Invoke-HorizunQueryEfficiencyProbe -Category $Category -Call {param($t,$a) Call $t $a})
-
-    $templateRoot=Join-Path $env:ProgramData "Autodesk\RVT $Year\Family Templates"
-    $template=Get-ChildItem -LiteralPath $templateRoot -Recurse -Filter '*.rft' -File |
-        Where-Object {$_.BaseName -match '^(Metric Generic Model|Generic Model|Modelo gen.rico m.trico)$'} |
-        Sort-Object FullName|Select-Object -First 1
-    Record 'native RFA creation, version and type values' (Invoke-HorizunFamilyProbe -Document $Document -Template $template.FullName `
-        -Year $Year -OutputDirectory $runRoot -RunId $runId -Apply {param($t,$a,$k) Apply $t $a $k} -Call {param($t,$a) Call $t $a})
 
     $level=Apply 'horizun_create_elements' @{target_document=$Document;units='mm';elements=@(@{kind='level';name="HZ_OPT_$runId";elevation=45678})} 'level'
     if($level.stage -ne 'apply' -or $level.answer.isError -or $level.answer.data.created_verified -ne 1) {throw 'Disposable test level was not created and verified.'}

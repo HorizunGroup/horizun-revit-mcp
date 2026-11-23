@@ -18,11 +18,9 @@
 // guesses, because the reader can act on the reason - and an entry that is
 // simply absent reads like an oversight rather than a decision.
 //
-// FIVE ENTRIES ACT, through typed commands that already exist and already
+// THESE ENTRIES ACT, through typed commands that already exist and already
 // verify their own work after the commit:
 //
-//   unpinned_links          -> horizun_manage_links   pin, one per link
-//   links (unloaded)        -> horizun_manage_links   reload, one per type
 //   views_without_template  -> horizun_manage_views   apply_template, template
 //                              supplied by the caller as an input
 //   orphan_group_types      -> horizun_delete_verified ids, DESTRUCTIVE
@@ -67,56 +65,6 @@ namespace Horizun.Revit.Core
         private static readonly Dictionary<string, CorrectionRecipe> _default =
             new Dictionary<string, CorrectionRecipe>(StringComparer.Ordinal)
             {
-                // ACTIONABLE. A link that should be pinned is pinned by one typed
-                // call, on one element, and pinning is reversible by unpinning.
-                {
-                    AuditCheckNames.UnpinnedLinks, new CorrectionRecipe
-                    {
-                        FindingType = AuditCheckNames.UnpinnedLinks,
-                        Tool = "horizun_manage_links",
-                        FixedArguments = new JObject { ["operation"] = "pin" },
-                        ElementArgument = "link_instance_id",
-                        Risk = "low",
-                        Reversible = true,
-                        DryRunSupported = true,
-                        ConfirmationRequired = true,
-                        ExpectedOutcome = "the link instance is pinned, so it can no longer be moved by " +
-                                          "accident. Nothing about the linked model changes.",
-                        Verification = "horizun_manage_links re-reads the instance after the commit; the audit " +
-                                       "check reports one fewer unpinned link."
-                    }
-                },
-
-                // ACTIONABLE, FILTERED. The links finding lists every link type with
-                // its status; only an UNLOADED one can be reloaded. A type whose file
-                // is NotFound needs a path, and that is change_path with an input
-                // nobody has supplied - it is excluded by its typed status, not by
-                // reading the summary.
-                {
-                    AuditCheckNames.Links, new CorrectionRecipe
-                    {
-                        FindingType = AuditCheckNames.Links,
-                        Tool = "horizun_manage_links",
-                        FixedArguments = new JObject { ["operation"] = "reload" },
-                        ElementArgument = "link_type_id",
-                        ItemFilterField = "status",
-                        ItemFilterValues = new List<string> { "Unloaded", "LocallyUnloaded" },
-                        // AN INVENTORY: this check lists every link type with its
-                        // status, so a reloaded type is still listed and the
-                        // re-audit has to read its status rather than look for it
-                        // to disappear.
-                        Postcondition = CorrectionPostcondition.ItemLeavesTheFilter,
-                        Risk = "medium",
-                        Reversible = true,
-                        DryRunSupported = true,
-                        ConfirmationRequired = true,
-                        ExpectedOutcome = "the link type is reloaded from the path it already points at and " +
-                                          "answers Loaded. A link type whose status is NotFound or Invalid is " +
-                                          "NOT covered: it needs a new path, which is a decision.",
-                        Verification = "horizun_manage_links re-reads GetLinkedFileStatus after the call; the " +
-                                       "audit's links check reports one fewer unloaded type."
-                    }
-                },
 
                 // REQUIRES INPUT, AND THE INPUT ANSWERS IT. Which template is a
                 // decision about the project's standards, and this bridge compiles
@@ -287,7 +235,7 @@ namespace Horizun.Revit.Core
                         CannotAutomateBecause =
                             "an open connector is a run that stops mid-air, and closing it means deciding " +
                             "where the run continues to - a route, a fitting, a cap, or the end of a system. " +
-                            "horizun_plan_mep is the typed surface for routing; the audit only names the stub."
+                            "horizun_plan_mep (Pro edition) is the typed surface for routing; the audit only names the stub."
                     }
                 },
 
@@ -364,6 +312,90 @@ namespace Horizun.Revit.Core
                             "registry's ElementArgument substitutes per finding item - forcing that mismatch " +
                             "would be exactly the composed-call risk this registry exists to avoid. Call it " +
                             "directly with the ids this finding reports correctable=true."
+                    }
+                },
+                {
+                    AuditCheckNames.LevelSpan, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.LevelSpan,
+                        CannotAutomateBecause =
+                            "horizun_split_by_level handles one approved element per call; an exception requires " +
+                            "the designer's reason in HZ_Excepcion_Nivel. Review the reported ids and invoke the " +
+                            "typed splitter for each eligible wall, column or vertical MEP run."
+                    }
+                },
+
+                // MODEL COHERENCE. Each finding is a design or structural judgement, not a mechanical fix.
+                {
+                    AuditCheckNames.DoorsToVoid, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.DoorsToVoid,
+                        CannotAutomateBecause =
+                            "whether the door is wrong or the floor, terrace or railing it should open onto is missing is a design decision; move or delete the door, or build what it opens onto, with the typed tools named in the finding's fix_hint."
+                    }
+                },
+                {
+                    AuditCheckNames.BalconyWithoutAccess, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.BalconyWithoutAccess,
+                        CannotAutomateBecause =
+                            "a balcony nobody can reach needs a door moved or added, or the balcony removed - a layout decision the registry cannot take for the designer."
+                    }
+                },
+                {
+                    AuditCheckNames.RailingWithoutInfill, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.RailingWithoutInfill,
+                        CannotAutomateBecause =
+                            "the infill (balusters, panels or glass) and its spacing are a design and code choice; change the railing type with horizun_create_railing or a type change once the designer picks it."
+                    }
+                },
+                {
+                    AuditCheckNames.RoomsWithoutDoor, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.RoomsWithoutDoor,
+                        CannotAutomateBecause =
+                            "where a room's door goes, or whether it opens onto a neighbour without one, is a plan decision; place a door with horizun_create_elements after the designer decides."
+                    }
+                },
+                {
+                    AuditCheckNames.RoomsWithoutFloorFinish, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.RoomsWithoutFloorFinish,
+                        CannotAutomateBecause =
+                            "the finish (material, thickness, which rooms) is a specification; horizun_room_finishes builds it per room once that is chosen."
+                    }
+                },
+                {
+                    AuditCheckNames.DefaultMaterialFurniture, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.DefaultMaterialFurniture,
+                        CannotAutomateBecause =
+                            "which material each furniture family should carry is a design choice, set in the family or on its material parameters; the finding lists the types to dress."
+                    }
+                },
+                {
+                    AuditCheckNames.FramingNotReachingSupport, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.FramingNotReachingSupport,
+                        CannotAutomateBecause =
+                            "whether to extend the member, move it, or add the missing column or footing is a structural decision for the engineer; the finding brackets each gap."
+                    }
+                },
+                {
+                    AuditCheckNames.FramingInconsistentSections, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.FramingInconsistentSections,
+                        CannotAutomateBecause =
+                            "a section that changes along an axis may be the engineer's design; only after confirmation is the type unified or the duplicate deleted."
+                    }
+                },
+                {
+                    AuditCheckNames.StructuralOverlapUnjoined, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.StructuralOverlapUnjoined,
+                        CannotAutomateBecause =
+                            "joining keeps both elements, while a true duplicate must be deleted - which one is right is a modelling judgement per pair; horizun_join_geometry joins a confirmed pair."
                     }
                 },
 

@@ -661,14 +661,22 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>One line a person reads first: what is wrong, or that nothing is.</summary>
-        public static string Headline(Outcome o)
+        public static string Headline(Outcome o) => Headline(o, false);
+
+        /// <summary>
+        /// <paramref name="rehearsal"/>: the call was a dry run, so nothing stayed in the model. Measured 2026-10-16: a
+        /// cad_connect rehearsal said "The write is committed" about fittings it had only tried and rolled back.
+        /// </summary>
+        public static string Headline(Outcome o, bool rehearsal)
         {
             if (o.Subjects == 0) return null;
             if (o.Errors == 0 && o.Warnings == 0)
                 return o.IsPartial ? "Spatial check PARTIAL (" + o.IsPartialWhy + "); no conflict among what was checked." : null;
             var first = o.Findings.OrderBy(f => f.Verdict.Severity == "error" ? 0 : 1).First();
             return "Spatial check: " + o.Errors + " error(s), " + o.Warnings + " warning(s) among the elements this call changed - e.g. " +
-                   first.Verdict.Reason + " (" + Rid.Value(first.A.Id) + " / " + Rid.Value(first.B.Id) + "). The write is committed; review spatial_check.findings and fix or undo.";
+                   first.Verdict.Reason + " (" + Rid.Value(first.A.Id) + " / " + Rid.Value(first.B.Id) + ")." +
+                   (rehearsal ? " This was a REHEARSAL: nothing stayed in the model; this is what the apply would leave, so review spatial_check.findings before it."
+                              : " The write is committed; review spatial_check.findings and fix or undo.");
         }
 
         // ---- facts --------------------------------------------------------------------

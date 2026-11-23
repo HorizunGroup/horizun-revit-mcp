@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Numerics;
 using System.Xml;
 using System.Xml.Linq;
 using Newtonsoft.Json.Linq;
@@ -36,7 +37,11 @@ namespace Horizun.Revit.Core
         public DateTime? ActualFinish;
         public int Line;
 
-        public bool HasProgress => PercentComplete != null || ActualStart != null || ActualFinish != null;
+        // A 0 with no actual dates is what MS Project writes for every task that was never
+        // statused, so it is not progress: read as progress it turned every task that should
+        // have started into "late". Such a task takes its PLANNED status.
+        public bool ZeroWithoutActuals => PercentComplete == 0 && ActualStart == null && ActualFinish == null;
+        public bool HasProgress => (PercentComplete ?? 0) > 0 || ActualStart != null || ActualFinish != null;
 
         public JObject ToJson() => new JObject
         {
@@ -51,6 +56,7 @@ namespace Horizun.Revit.Core
     {
         public string Format;
         public List<ScheduleActivity> Activities = new List<ScheduleActivity>();
+        internal readonly List<ScheduleActivity> DuplicateActivities = new List<ScheduleActivity>();
         public List<JObject> Rejected = new List<JObject>();
         public int SummariesSkipped;
 
@@ -96,16 +102,25 @@ namespace Horizun.Revit.Core
         /// <summary>Shared checks: an id is required and unique; finish is not before start.</summary>
         private static void Validate(ScheduleImportResult r)
         {
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var kept = new List<ScheduleActivity>();
+            var valid = new List<ScheduleActivity>();
             foreach (ScheduleActivity a in r.Activities)
             {
                 if (string.IsNullOrWhiteSpace(a.Id)) { r.Reject(a.Line, "no activity id."); continue; }
-                if (!seen.Add(a.Id)) { r.Reject(a.Line, "duplicate activity id '" + a.Id + "'."); continue; }
                 if (a.Start != null && a.Finish != null && a.Finish < a.Start) { r.Reject(a.Line, "finish before start for '" + a.Id + "'."); continue; }
-                kept.Add(a);
+                valid.Add(a);
             }
-            r.Activities = kept;
+            var duplicates = new HashSet<string>(valid.GroupBy(a => a.Id, StringComparer.OrdinalIgnoreCase)
+                .Where(g => g.Count() > 1).Select(g => g.Key), StringComparer.OrdinalIgnoreCase);
+            r.Activities.Clear();
+            foreach (ScheduleActivity a in valid)
+            {
+                if (duplicates.Contains(a.Id))
+                {
+                    r.DuplicateActivities.Add(a);
+                    r.Reject(a.Line, "duplicate activity id '" + a.Id + "'; every row with that id is excluded.");
+                }
+                else r.Activities.Add(a);
+            }
         }
 
         // ---- MS Project XML (MSPDI) --------------------------------------------------
@@ -130,15 +145,29 @@ namespace Horizun.Revit.Core
                 if (task.Name.LocalName != "Task") continue;
                 int line = ((IXmlLineInfo)task).LineNumber;
                 string V(string name) => task.Elements().FirstOrDefault(e => e.Name.LocalName == name)?.Value;
+                string uid = V("UID");
+                string id = uid ?? V("ID");
+                string canonicalId = NormalizeMspdiId(id);
                 // UID 0 is the project summary row; Summary=1 rows are WBS parents, not work.
-                if (V("UID") == "0" || V("Summary") == "1") { r.SummariesSkipped++; continue; }
-                var a = new ScheduleActivity { Id = V("UID") ?? V("ID"), Name = V("Name"), Wbs = V("WBS"), Line = line };
+                if ((uid != null && canonicalId == "0") || V("Summary") == "1") { r.SummariesSkipped++; continue; }
+                if (canonicalId == null)
+                {
+                    r.Reject(line, id == null ? "no activity id." :
+                        (uid == null ? "ID" : "UID") + " '" + id + "' is not an MSPDI integer.");
+                    continue;
+                }
+                var a = new ScheduleActivity { Id = canonicalId, Name = V("Name"), Wbs = V("WBS"), Line = line };
                 if (!Dates(r, line, a, V("Start"), V("Finish"), V("ActualStart"), V("ActualFinish"))) continue;
                 if (double.TryParse(V("PercentComplete"), NumberStyles.Float, CultureInfo.InvariantCulture, out double pc)) a.PercentComplete = pc;
                 r.Activities.Add(a);
             }
             return r;
         }
+
+        // MSPDI's xsd:integer identity ignores whitespace, an explicit plus, and leading zeroes.
+        internal static string NormalizeMspdiId(string id) =>
+            BigInteger.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out BigInteger value)
+                ? value.ToString(CultureInfo.InvariantCulture) : null;
 
         private static bool Dates(ScheduleImportResult r, int line, ScheduleActivity a, string s, string f, string asT, string afT)
         {

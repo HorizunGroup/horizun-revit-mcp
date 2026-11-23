@@ -38,7 +38,7 @@ $call = {
         if ($script:mode -eq 'python_refused') { return (Refused 'document_not_active' 'the target is not the active document') }
         if ([string]$a.code -match 'ALL_MODEL_INSTANCE_COMMENTS') {
             if ($script:mode -eq 'no_borrow') { return (Ok @{ output = [pscustomobject]@{ uid = $null; status = $null } }) }
-            return (Ok @{ output = [pscustomobject]@{ uid = 'uid-borrowed'; status = 'OwnedByCurrentUser' } })
+            return (Ok @{ output = [pscustomobject]@{ uid = 'uid-borrowed'; checkout = 'OwnedByCurrentUser'; status = 'verified' } })
         }
         if ([string]$a.code -match 'CheckoutWorksets') { return (Ok @{ output = [pscustomobject]@{ workset = 'Workset1'; owned = $true } }) }
         if ([string]$a.code -match 'BasicFileInfo\.Extract\(local\)') {

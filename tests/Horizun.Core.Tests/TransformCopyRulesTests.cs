@@ -31,5 +31,17 @@ namespace Horizun.Core.Tests
             Assert.Empty(dependents);
             Assert.Equal(new long[] { 21, 22 }, unexplained);
         }
+        [Theory]
+        [InlineData("Opening", true)]
+        [InlineData("Sketch", true)]
+        [InlineData("SketchPlane", true)]
+        [InlineData("ModelLine", true)]
+        [InlineData("MechanicalSystem", true)]
+        [InlineData("Wall", false)]
+        [InlineData("FamilyInstance", false)]
+        [InlineData("ViewPlan", false)]
+        public void Only_known_owned_dependency_classes_are_eligible(string name, bool expected) =>
+            Assert.Equal(expected, TransformCopyRules.KnownOwnedDependent(name));
+
     }
 }

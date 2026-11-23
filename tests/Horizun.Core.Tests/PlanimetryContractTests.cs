@@ -104,7 +104,8 @@ namespace Horizun.Core.Tests
             Assert.False((bool)schema["additionalProperties"]);
 
             string[] modes = schema["properties"]["mode"]["enum"].Select(t => (string)t).ToArray();
-            Assert.Equal(new[] { "inventory", "sheets", "views", "placements", "annotations", "references" },
+            Assert.Equal(new[] { "inventory", "sheets", "views", "unplaced_views", "placements", "annotations", "references",
+                "annotation_overlaps", "leader_targets", "annotation_staleness", "sheet_conflicts", "free_spot", "view_ray", "section_mark_diagnosis", "iso_inventory", "rasters" },
                          modes);
             Assert.Equal("inventory", (string)schema["properties"]["mode"]["default"]);
 

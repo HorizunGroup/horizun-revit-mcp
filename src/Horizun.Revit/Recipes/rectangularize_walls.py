@@ -65,21 +65,7 @@ MAX_GRID_CELLS = 2500
 
 
 def get_id_value(element_id):
-    # .Value first: Revit 2024+ made ElementId 64-bit and IntegerValue is the
-    # deprecated one there. The original asked for IntegerValue first and got a
-    # deprecation path on every modern Revit.
-    try:
-        return element_id.Value
-    except Exception:
-        pass
-    try:
-        return element_id.IntegerValue
-    except Exception:
-        pass
-    try:
-        return int(str(element_id))
-    except Exception:
-        return None
+    return hz.eid(element_id)
 
 
 def is_valid_id(element_id):

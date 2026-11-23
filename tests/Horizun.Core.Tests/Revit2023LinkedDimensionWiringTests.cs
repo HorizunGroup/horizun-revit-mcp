@@ -44,5 +44,18 @@ namespace Horizun.Core.Tests
             Assert.True(guard >= 0 && create > guard);
             Assert.Contains("revit2023Limit.Code", src);
         }
+
+        [Fact]
+        public void Reference_replacement_is_refused_without_python_fallback_even_for_links()
+        {
+            string src = Command("EditDimensionsCommand.cs");
+            int classification = src.IndexOf("case DimensionEditRules.ActionFieldClass.ReferenceReplacement:", StringComparison.Ordinal);
+            int refusal = src.IndexOf("Dimension.References has no setter", classification, StringComparison.Ordinal);
+            int other = src.IndexOf("case DimensionEditRules.ActionFieldClass", classification + 10, StringComparison.Ordinal);
+            Assert.True(classification >= 0 && refusal > classification);
+            Assert.True(other < 0 || refusal < other);
+            Assert.Contains("Do not fall back to Python", src);
+            Assert.Contains("Nothing was written.", src.Substring(classification, refusal - classification + 450));
+        }
     }
 }

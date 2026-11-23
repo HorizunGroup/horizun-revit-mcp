@@ -3,29 +3,10 @@
 # the module's own level at X = 1,170,000 mm, far from the real model: two own Basic walls (one
 # with ONE door - the trimmed-placeholder case - and one with none - the deleted-carrier case)
 # and an own ceiling under an own floor (the hangers must reach THAT floor). Types are taken BY
-# NAME, never "the first one": the document's own type of that name when it has one, else copied
-# from the year's English\DefaultMetric.rte with horizun_copy_between_documents - the source of
-# each is reported in case 'types' - and the own framing types SET what matters (layouts,
-# Automatically Embed off) instead of inheriting it: a Curtain Wall type, two Basic walls, a door,
-# the Sloped Glazing roof type, a floor and a compound ceiling.
-# From those sources the probe makes its OWN framing types, the way a framing detail is modelled:
-# two rectangular mullions of 41.3 x 92.1 mm (a stud and a track), a curtain wall core with a
-# 406.4 mm Fixed Distance vertical grid, studs as interior/border vertical mullions and tracks as
-# horizontal border mullions, and a sloped glazing layer with a one-way 406.4 mm grid 1 of studs.
-# What the typed tools can and cannot do there (read in the code, not assumed):
-# - horizun_manage_system_types duplicates AND writes `values` in one verified call, by
-#   BuiltInParameter name. An Integer takes the integer only: a display string such as
-#   'Fixed Distance' is refused (ManageSystemTypesCommand.Apply, "needs an invariant integer"),
-#   so the layout goes as 1 and the re-read layout TEXT is what proves 1 is Fixed Distance. A
-#   Double number is RAW internal feet (`units` scales compound widths only). An ElementId
-#   (AUTO_MULLION_*) takes the mullion type id.
-# - A value that is read-only on the SOURCE type is refused before anything is duplicated, and
-#   Revit may grey out SPACING_LENGTH_* while the source's layout is None; so the spacings are
-#   written by a second call, horizun_write_params_verified on the NEW types, once their layout
-#   is Fixed Distance. If any of it fails the case says why and the walls and the ceiling run on
-#   the template types, their grids only counted.
-# MEASURED LIVE BY THESE CASES, not assumed by the code: the numeric Fixed Distance value of
-# SPACING_LAYOUT_VERT / SPACING_LAYOUT_1, the reference CURTAINGRID_ANGLE_1 is measured from on a
+# NAME from the document, never "the first one" (a document without them leaves the cases
+# not_covered): a Curtain Wall type, two Basic walls, a door, the Sloped Glazing roof type, a
+# floor and a compound ceiling. The framing runs on those types as they are, their grids counted.
+# MEASURED LIVE BY THESE CASES, not assumed by the code: the reference CURTAINGRID_ANGLE_1 is measured from on a
 # flat roof (grid_direction), whether the trimmed carrier keeps its door where it was, the
 # carrier's delete cascade, and where ModelEditRunner puts horizun_manage_curtain's read result.
 # Everything created is deleted at the end (framing by operation=remove, which restores the
@@ -42,7 +23,6 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'framing curtain ceiling: apply verified, layer planes, footprints and grids re-read, hangers reach the staged floor'; Tool = 'horizun_framing' }
         @{ Name = 'manage_curtain read: a sloped glazing layer''s grid is read with its angles'; Tool = 'horizun_manage_curtain' }
         @{ Name = 'framing curtain probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
-        @{ Name = 'framing curtain types: own 41.3 x 92.1 mm stud and track, a 406.4 mm fixed-grid core and a one-way ceiling layer are duplicated and set'; Tool = 'horizun_manage_system_types' }
         @{ Name = 'framing curtain wall: two doors under the default keep_carrier, the pieces split around both overlap the kept placeholder, the doors unchanged, remove restores it'; Tool = 'horizun_framing' }
     )
     Run     = {
@@ -59,14 +39,13 @@ $script:HzProbeModules += [pscustomobject]@{
             'framing curtain ceiling: apply verified, layer planes, footprints and grids re-read, hangers reach the staged floor',
             'manage_curtain read: a sloped glazing layer''s grid is read with its angles',
             'framing curtain probes: everything created is deleted',
-            'framing curtain types: own 41.3 x 92.1 mm stud and track, a 406.4 mm fixed-grid core and a one-way ceiling layer are duplicated and set',
             'framing curtain wall: two doors under the default keep_carrier, the pieces split around both overlap the kept placeholder, the doors unchanged, remove restores it')
         # Tool names apart from every case-insensitive variable below ($T is not $t, $McTool is not $mr).
         $T = 'horizun_framing'; $McTool = 'horizun_manage_curtain'; $DeleteTool = 'horizun_delete_verified'
-        $TypesTool = 'horizun_manage_system_types'; $WpTool = 'horizun_write_params_verified'
+        $WpTool = 'horizun_write_params_verified'
         function ToolOf($name) {
             if ($name -like 'manage_curtain*') { $McTool } elseif ($name -like 'framing curtain probes:*') { $DeleteTool }
-            elseif ($name -like 'framing curtain types:*') { $TypesTool } else { $T } }
+            else { $T } }
         if ($Ctx.WriteGate) {
             foreach ($name in $catalog) { Case $name (ToolOf $name) 'not_covered' 'the write tier is closed for this run' }
             return $cases
@@ -97,107 +76,33 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             return $null
         }
-        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
         function FindType($category, $typeName, $familyName) {
             $named = @(Types $category | Where-Object { [string]$_.type -eq $typeName })
             $exact = @($named | Where-Object { [string]$_.family -eq $familyName }) | Select-Object -First 1
             if ($exact) { return $exact }
-            # A system family's name is the DOCUMENT's language: in a German-template model a type
-            # copied from 'Rectangular Mullion' reads back under 'Rechteckiger Pfosten' (MEASURED
+            # A system family's name is the DOCUMENT's language: in a German-template model the
+            # 'Rectangular Mullion' family reads back as 'Rechteckiger Pfosten' (MEASURED
             # 2026-09-27, Revit 2023). The type name alone is taken only when exactly one type has it.
             if ($named.Count -eq 1) { return $named[0] }
             return $null
         }
-        # The first of $typeNames the document has; else each copied from the template in turn.
-        $typeSource = @{}
-        function Bring($category, $typeNames, $familyName, $key) {
-            foreach ($tn in @($typeNames)) { $have = FindType $category $tn $familyName; if ($have) { $typeSource[$key] = "document '$tn'"; return $have } }
-            $tpl = Join-Path $tplRoot 'English\DefaultMetric.rte'
-            if (-not (Test-Path -LiteralPath $tpl)) { return $null }
-            $k = 0
-            foreach ($tn in @($typeNames)) {
-                $k++
-                $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = $category
-                        type_names = @($familyName + ': ' + $tn); duplicate_types = 'use_destination' } ($run + '-frc-' + $key + $k)
-                $have = FindType $category $tn $familyName
-                if ($have) { $typeSource[$key] = "template '$tn'"; return $have }
-            }
+        # The first of $typeNames the document has.
+        function Bring($category, $typeNames, $familyName) {
+            foreach ($tn in @($typeNames)) { $have = FindType $category $tn $familyName; if ($have) { return $have } }
             return $null
         }
 
         # ---- staging: own level, a wall with one door, a wall with none -----------------------
         $E = 98000.0; $X = 1170000.0; $Y = 0.0
-        $curtainType = Bring 'OST_Walls' @('Curtain Wall 1', 'Exterior Glazing', 'Storefront') 'Curtain Wall' 'curtain'
-        $carrierType = Bring 'OST_Walls' @('Generic - 200mm') 'Basic Wall' 'carrier'
-        $placeholderType = Bring 'OST_Walls' @('Generic - 150mm', 'Generic - 90mm Brick') 'Basic Wall' 'placeholder'
-        $doorType = Bring 'OST_Doors' @('0915 x 2134mm') 'M_Single-Flush' 'door'
-        $glazingType = Bring 'OST_Roofs' @('Sloped Glazing') 'Sloped Glazing' 'glazing'
-        $mullionType = Bring 'OST_CurtainWallMullions' @('50 x 150mm', '30mm Square', '25 x 150mm') 'Rectangular Mullion' 'mullion'
+        $curtainType = Bring 'OST_Walls' @('Curtain Wall 1', 'Exterior Glazing', 'Storefront') 'Curtain Wall'
+        $carrierType = Bring 'OST_Walls' @('Generic - 200mm') 'Basic Wall'
+        $placeholderType = Bring 'OST_Walls' @('Generic - 150mm', 'Generic - 90mm Brick') 'Basic Wall'
+        $doorType = Bring 'OST_Doors' @('0915 x 2134mm') 'M_Single-Flush'
+        $glazingType = Bring 'OST_Roofs' @('Sloped Glazing') 'Sloped Glazing'
 
-        # ---- the probe's OWN framing types (the header says what the typed tools can do) ----
-        function ToFeet($mm) { [double]$mm / 304.8 }
-        # Duplicates with values in one verified call; every new id joins the cleanup. Returns @{ ids; why }.
-        function NewTypes($actions, $key) {
-            $r = & $Ctx.Apply $TypesTool @{ target_document = $doc; actions = @($actions) } ($run + '-frc-' + $key)
-            $rows = @()
-            if ($r.answer.data) { foreach ($cand in @($r.answer.data, $r.answer.data.result)) { if ($cand -and $cand.rows) { $rows = @($cand.rows); break } } }
-            foreach ($row in $rows) { if ($row.new_type_id) { [void]$created.Add([long]$row.new_type_id) } }
-            $bad = @($rows | Where-Object { $_.type_verified -ne $true -or $_.parameters_verified -ne $true })
-            if ($r.stage -ne 'apply' -or $r.answer.isError -or $rows.Count -ne @($actions).Count -or $bad.Count -gt 0) { return @{ ids = $null; why = "${key}: " + (Short $r.answer) } }
-            return @{ ids = @($rows | Sort-Object { [int]$_.index } | ForEach-Object { [long]$_.new_type_id }); why = $null }
-        }
         $coreTypeId = $null; $layerTypeId = $null; $crossTypeId = $null; $ownCore = $false; $ownLayer = $false
         if ($curtainType) { $coreTypeId = [long]$curtainType.element_id }
         if ($glazingType) { $layerTypeId = [long]$glazingType.element_id }
-        $typesNote = @(); $typesFail = $null; $missing = @()
-        $typesNote += 'sources: ' + (($typeSource.Keys | Sort-Object | ForEach-Object { "$_ = $($typeSource[$_])" }) -join ', ')
-        if (-not $mullionType) { $missing += 'a Rectangular Mullion type' }
-        if (-not $curtainType) { $missing += 'a Curtain Wall type' }
-        if (-not $glazingType) { $missing += 'the Sloped Glazing type' }
-        if ($mullionType -and ($curtainType -or $glazingType)) {
-            # A stud 41.3 mm across the face (20.65 each side of its grid line) and 92.1 mm deep.
-            $section = @{ RECT_MULLION_WIDTH1 = (ToFeet 20.65); RECT_MULLION_WIDTH2 = (ToFeet 20.65); RECT_MULLION_THICK = (ToFeet 92.1) }
-            $m = NewTypes @(@{ source_type_id = [long]$mullionType.element_id; new_name = "HZ_FRC stud 41.3x92.1 $run"; values = $section },
-                            @{ source_type_id = [long]$mullionType.element_id; new_name = "HZ_FRC track 41.3x92.1 $run"; values = $section }) 'mullions'
-            if (-not $m.ids) { $typesFail = $m.why }
-            else {
-                $stud = $m.ids[0]; $track = $m.ids[1]; $acts = @(); $roles = @()
-                if ($curtainType) {
-                    $acts += @{ source_type_id = [long]$curtainType.element_id; new_name = "HZ_FRC core 406.4 $run"; values = @{ SPACING_LAYOUT_VERT = 1; SPACING_LAYOUT_HORIZ = 0; ALLOW_AUTO_EMBED = 0
-                        AUTO_MULLION_INTERIOR_VERT = $stud; AUTO_MULLION_BORDER1_VERT = $stud; AUTO_MULLION_BORDER2_VERT = $stud; AUTO_MULLION_BORDER1_HORIZ = $track; AUTO_MULLION_BORDER2_HORIZ = $track } }
-                    $roles += 'core'
-                }
-                if ($glazingType) {
-                    # One-way layers: the first carries its members on grid 1, the second on grid 2, which
-                    # runs ACROSS grid 1 at the same angle. Not a 90 degree angle: Revit takes -89..89 only
-                    # (MEASURED 2026-09-27: 90 was accepted by Set and refused at the commit).
-                    $acts += @{ source_type_id = [long]$glazingType.element_id; new_name = "HZ_FRC layer 406.4 $run"; values = @{ SPACING_LAYOUT_1 = 1; SPACING_LAYOUT_2 = 0; AUTO_MULLION_INTERIOR_GRID1 = $stud } }
-                    $roles += 'layer'
-                    $acts += @{ source_type_id = [long]$glazingType.element_id; new_name = "HZ_FRC cross 406.4 $run"; values = @{ SPACING_LAYOUT_1 = 0; SPACING_LAYOUT_2 = 1; AUTO_MULLION_INTERIOR_GRID2 = $stud } }
-                    $roles += 'cross'
-                }
-                $o = NewTypes $acts 'owntypes'
-                if (-not $o.ids) { $typesFail = $o.why }
-                else {
-                    $own = @{}; for ($k = 0; $k -lt $roles.Count; $k++) { $own[$roles[$k]] = $o.ids[$k] }
-                    $writes = @()
-                    if ($own.core) { $writes += @{ target_id = $own.core; parameter = 'SPACING_LENGTH_VERT'; value = (ToFeet 406.4) } }
-                    if ($own.layer) { $writes += @{ target_id = $own.layer; parameter = 'SPACING_LENGTH_1'; value = (ToFeet 406.4) } }
-                    if ($own.cross) { $writes += @{ target_id = $own.cross; parameter = 'SPACING_LENGTH_2'; value = (ToFeet 406.4) } }
-                    $wp = & $Ctx.Apply $WpTool @{ target_document = $doc; writes = $writes } ($run + '-frc-spacing')
-                    if ($wp.stage -ne 'apply' -or $wp.answer.isError -or $wp.answer.data.verification.verified -ne $true) { $typesFail = 'spacing: ' + (Short $wp.answer) }
-                    else {
-                        if ($own.core) { $coreTypeId = $own.core; $ownCore = $true }
-                        if ($own.layer) { $layerTypeId = $own.layer; $ownLayer = $true }
-                        if ($own.cross) { $crossTypeId = $own.cross }
-                        $typesNote += "stud $stud and track $track at 41.3 x 92.1 mm; " + (($roles | ForEach-Object { "$_ type $($own[$_]) at layout 1 and 406.4 mm" }) -join ', ')
-                    }
-                }
-            }
-        }
-        if ($typesFail) { Case $catalog[9] $TypesTool 'fail' ($typesFail + '; the framing below runs on the template types, their grids only counted') }
-        elseif ($missing.Count -gt 0) { Case $catalog[9] $TypesTool 'not_covered' ('no source for ' + ($missing -join ', ') + '; staged: ' + $(if ($typesNote.Count) { $typesNote -join '; ' } else { 'nothing' })) }
-        else { Case $catalog[9] $TypesTool 'pass' (($typesNote -join '; ') + '; that 1 reads as Fixed Distance is re-read by the framing verification below') }
         $level = Create @(@{ kind = 'level'; name = "HZ_FRC_$run"; elevation = $E }) 'level'
         $wall1 = $null; $wall2 = $null; $door = $null
         if ($level -and $carrierType) {
@@ -347,19 +252,16 @@ $script:HzProbeModules += [pscustomobject]@{
         $cWhy = "staging incomplete: floor $floor, ceiling $ceiling, sloped glazing type '$layerTypeId', hanger curtain type '$coreTypeId'"
         $cCommitted = $false; $layerId = $null
         if (-not ($floor -and $ceiling -and $layerTypeId -and $coreTypeId)) { Case $catalog[5] $T 'not_covered' $cWhy; Case $catalog[6] $T 'not_covered' $cWhy }
-        elseif (-not $ownLayer) {
-            # The hangers follow layer 0's grid 1 lines, and a template Sloped Glazing type may carry no
-            # grid 1 (MEASURED 2026-09-27 in Revit 2023: layout None, refused by name). Without the own
-            # layer types - staged only when the own stud mullion could be - the ceiling is not covered.
-            $noOwn = "the own layer types were not staged (" + $(if ($missing.Count -gt 0) { 'no source for ' + ($missing -join ', ') } else { [string]$typesFail }) +
-                     "), and the template's Sloped Glazing type need not carry the grid 1 the hangers follow"
-            Case $catalog[5] $T 'not_covered' $noOwn; Case $catalog[6] $T 'not_covered' $noOwn
-        }
         else {
             $cd = & $Ctx.Call $T ($cArgs + @{ dry_run = $true })
             $cs = $null
             if ($cd.data) { $cs = @($cd.data.plan.sources)[0] }
-            if ($cd.isError -or -not $cs) { Case $catalog[5] $T 'fail' ('rehearsal: ' + (Short $cd)); Case $catalog[6] $T 'not_covered' 'the rehearsal failed' }
+            # The hangers follow layer 0's grid 1 lines, and the document's Sloped Glazing type may
+            # carry no grid 1 (MEASURED 2026-09-27 in Revit 2023: layout None, refused by name):
+            # that refusal is a type the document lacks, not_covered, never a pass or a fail.
+            if (($cd.isError -or -not $cs) -and (Short $cd) -match '(?i)grid ?1|layout') {
+                Case $catalog[5] $T 'not_covered' ("the document's Sloped Glazing type carries no grid 1 for the hangers: " + (Short $cd)); Case $catalog[6] $T 'not_covered' 'the rehearsal was refused for the type' }
+            elseif ($cd.isError -or -not $cs) { Case $catalog[5] $T 'fail' ('rehearsal: ' + (Short $cd)); Case $catalog[6] $T 'not_covered' 'the rehearsal failed' }
             else {
                 $problems = @()
                 if ([string]$cs.method -ne 'curtain') { $problems += "method '$($cs.method)'" }
@@ -408,7 +310,7 @@ $script:HzProbeModules += [pscustomobject]@{
                     }
                     if ($problems.Count -gt 0) { Case $catalog[6] $T 'fail' ($problems -join '; ') }
                     else {
-                        Case $catalog[6] $T 'pass' ("$(@($cev.pieces).Count) pieces re-read on the $(if ($ownLayer) { "own layer type $layerTypeId, grid 1 spacing checked at 406.4 mm" } else { 'template layer type' }); layer planes off " + (($layers | ForEach-Object { $_.plane_deviation_mm }) -join ',') + ' mm, footprints off ' +
+                        Case $catalog[6] $T 'pass' ("$(@($cev.pieces).Count) pieces re-read on the $(if ($ownLayer) { "own layer type $layerTypeId, grid 1 spacing checked at 406.4 mm" } else { "document layer type $layerTypeId" }); layer planes off " + (($layers | ForEach-Object { $_.plane_deviation_mm }) -join ',') + ' mm, footprints off ' +
                             (($layers | ForEach-Object { $_.footprint_deviation_mm }) -join ',') + ' mm, grid 1 at ' + (($layers | ForEach-Object { $_.grid.grid1.direction_deg }) -join ',') +
                             " deg; $($recheck.stations_checked) hanger station(s) at the floor, max gap $($recheck.max_gap_mm) mm")
                     }
@@ -440,7 +342,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $door3a = Create @(@{ kind = 'family_instance'; type_id = $doorType.element_id; host_id = $wall3; point = @(($X + 1500), ($Y + 16000), $E); coordinate_mode = 'absolute'; level_id = $level }) 'door3a'
             $door3b = Create @(@{ kind = 'family_instance'; type_id = $doorType.element_id; host_id = $wall3; point = @(($X + 4500), ($Y + 16000), $E); coordinate_mode = 'absolute'; level_id = $level }) 'door3b'
         }
-        if (-not ($wall3 -and $door3a -and $door3b -and $coreTypeId -and $placeholderType)) { Case $catalog[10] $T 'not_covered' "staging incomplete: wall $wall3, doors $door3a/$door3b, curtain type '$coreTypeId'" }
+        if (-not ($wall3 -and $door3a -and $door3b -and $coreTypeId -and $placeholderType)) { Case $catalog[9] $T 'not_covered' "staging incomplete: wall $wall3, doors $door3a/$door3b, curtain type '$coreTypeId'" }
         else {
             $w3Args = @{ operation = 'wall'; target_document = $doc; element_ids = @($wall3); spec = (WallSpec) }
             $d3 = & $Ctx.Call $T ($w3Args + @{ dry_run = $true })
@@ -475,8 +377,8 @@ $script:HzProbeModules += [pscustomobject]@{
                     $w3Restored = $false
                     $problems += 'remove: ' + $(if ($r3) { "restored $($r3.restored), inserts changed $($r3.inserts_changed) $($r3.not_restored_because)" } else { Short $rm3.answer }) }
             }
-            if ($problems.Count -gt 0) { Case $catalog[10] $T 'fail' ($problems -join '; ') }
-            else { Case $catalog[10] $T 'pass' ("$(@($ev3.pieces).Count) pieces split around both doors overlap the kept carrier $wall3 (overlapped_by " + (@($ev3.carrier.overlapped_by) -join ',') + '); both doors unchanged and still hosted by it; remove gave it its original type back') }
+            if ($problems.Count -gt 0) { Case $catalog[9] $T 'fail' ($problems -join '; ') }
+            else { Case $catalog[9] $T 'pass' ("$(@($ev3.pieces).Count) pieces split around both doors overlap the kept carrier $wall3 (overlapped_by " + (@($ev3.carrier.overlapped_by) -join ',') + '); both doors unchanged and still hosted by it; remove gave it its original type back') }
         }
 
         # ==== 9: cleanup ======================================================================

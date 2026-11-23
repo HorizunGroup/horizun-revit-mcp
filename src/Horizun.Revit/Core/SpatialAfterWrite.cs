@@ -62,9 +62,9 @@ namespace Horizun.Revit.Core
             "horizun_write_params_verified", "horizun_set_keynote", "horizun_bind_shared_param",
             "horizun_manage_parameters", "horizun_manage_materials", "horizun_manage_styles", "horizun_manage_units",
             "horizun_manage_revisions", "horizun_manage_worksets", "horizun_manage_phases", "horizun_relinquish_all",
-            "horizun_save_document", "horizun_manage_system_types", "horizun_regroup_by_param",
+            "horizun_save_document", "horizun_regroup_by_param",
             "horizun_ungroup_and_mark", "horizun_manage_schedules", "horizun_create_schedule", "horizun_manage_views",
-            "horizun_pack_sheets", "horizun_manage_links", "horizun_manage_cad_links", "horizun_family_apply"
+            "horizun_pack_sheets"
         };
 
         public static bool Enabled
@@ -99,9 +99,16 @@ namespace Horizun.Revit.Core
                     foreach (long id in d.Added.Take(SampleSize - sample.Count)) sample.Add(Describe(d.Document, id, "added"));
                     foreach (long id in d.Modified.Take(SampleSize - sample.Count)) sample.Add(Describe(d.Document, id, "modified"));
                 }
-                if (added + modified + deleted == 0) return;
+                var touches = new JArray();
+                foreach (ChangeWatch.DocChanges d in watch.Documents)
+                    foreach (long id in d.InternalTouches.Take(SampleSize - touches.Count)) touches.Add(Describe(d.Document, id, "refreshed"));
+                if (added + modified + deleted == 0 && touches.Count == 0) return;
                 JObject data = result.Data as JObject ?? (result.Data == null ? new JObject() : JObject.FromObject(result.Data));
-                if (data["model_changes"] == null)
+                // Revit's browser panes: said, never counted (RevitInternalTouchRules). A rehearsal that only touched them gets no model_changes.
+                if (touches.Count > 0 && data["revit_internal_touches"] == null)
+                    data["revit_internal_touches"] = new JObject { ["count"] = watch.Documents.Sum(d => d.InternalTouches.Count), ["sample"] = touches,
+                        ["means"] = RevitInternalTouchRules.Means };
+                if (added + modified + deleted > 0 && data["model_changes"] == null)
                     data["model_changes"] = new JObject { ["added"] = added, ["modified"] = modified, ["deleted"] = deleted, ["documents"] = docs,
                         ["sample"] = sample, ["sample_limit"] = SampleSize,
                         ["source"] = "Revit DocumentChanged during this call, reconciled against the model after its own rollbacks" };
@@ -142,6 +149,10 @@ namespace Horizun.Revit.Core
             watch.Settle();
             foreach (ChangeWatch.DocChanges d in watch.Documents) ChangeLedger.Record(tool, d);
             StampChanges(watch, result);
+            // A reply that declares geometry_untouched (manage_worksets enable: every element
+            // changes workset, none moves) is recorded above but not spatially checked: the
+            // findings would be the model's old defects, blamed on this call.
+            if (GeometryUntouched(result)) return;
             if (!Enabled) return;
             if (tool == "horizun_verify_changes") return;
             if (DataOnlyTools.Contains(tool)) { DataOnlyFallback(tool, watch, result); return; }
@@ -173,7 +184,7 @@ namespace Horizun.Revit.Core
                     if (clearanceOrigin != null) check["clearance_rules_source"] = clearanceOrigin;
                     check["see_it"] = "horizun_verify_changes captures an image of these elements with the findings highlighted";
                     data["spatial_check"] = check;
-                    headline = SpatialCoherence.Headline(o);
+                    headline = SpatialCoherence.Headline(o, NoCommitRules.LeftNothing(data));
                 }
                 string annotationHeadline = AnnotationCheck(tool, doc, changed, data);
                 headline = Join(headline, annotationHeadline);
@@ -308,6 +319,12 @@ namespace Horizun.Revit.Core
         private static bool ProvenUnchanged(CommandResult result)
         {
             try { return ((result.Data as JObject)?["model_changes"] as JObject)?.Value<bool?>("proven_unchanged") == true; }
+            catch { return false; }
+        }
+
+        private static bool GeometryUntouched(CommandResult result)
+        {
+            try { return (result.Data as JObject)?.Value<bool?>("geometry_untouched") == true; }
             catch { return false; }
         }
 

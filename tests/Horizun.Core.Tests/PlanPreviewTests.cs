@@ -45,5 +45,20 @@ namespace Horizun.Core.Tests
             Assert.Single(((JObject)row["captured_state"]).Properties());
             Assert.True((bool)row["values_truncated"]);
         }
+        [Fact] public void Rolled_back_geometry_is_visible_without_binding_a_temporary_element_to_confirmation()
+        {
+            var plan = new ResolvedPlan { Command="horizun_create_elements", DocumentKey="doc" };
+            plan.Elements.Add(new PlannedElement { UniqueId="create:0", Action=PlannedAction.Create,
+                BeforeValues=new Dictionary<string,string>{{"host_uid","wall-1"}},
+                PreviewValues=new Dictionary<string,string>{{"measurement","revit_provisional_solid_rolled_back"},{"top_z_mm","1981.2"}} });
+            string fingerprint = plan.Fingerprint();
+            var preview = PlanPreview.Describe(plan);
+            Assert.Equal("wall-1", (string)preview["rows"][0]["captured_state"]["host_uid"]);
+            Assert.Equal("1981.2", (string)preview["rows"][0]["proposed_values"]["top_z_mm"]);
+            plan.Elements[0].PreviewValues["top_z_mm"] = "2000";
+            Assert.Equal(fingerprint, plan.Fingerprint());
+            plan.Elements[0].BeforeValues["host_uid"] = "wall-2";
+            Assert.NotEqual(fingerprint, plan.Fingerprint());
+        }
     }
 }

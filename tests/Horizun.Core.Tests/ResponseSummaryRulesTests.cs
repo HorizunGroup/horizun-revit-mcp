@@ -205,54 +205,10 @@ namespace Horizun.Core.Tests
             return data;
         }
 
-        [Fact]
-        public void A_clash_summary_keeps_totals_by_pair_and_the_largest_ten_with_their_index()
-        {
-            JObject data = ClashReply(recorded: true);
-            int before = Bytes(data);
-            ResponseSummaryRules.Clash(data, new JObject { ["response_mode"] = "summary" });
-            int after = Bytes(data);
-            _out.WriteLine("clash 165 rows: " + before + " -> " + after + " bytes");
+        
 
-            Assert.Equal(165, (int)data["clash_count"]);                 // the measured count is untouched
-            Assert.Equal("partial", (string)data["result"]);
-            var kept = (JArray)data["clashes"];
-            Assert.Equal(10, kept.Count);
-            Assert.Equal(60, (int)kept[0]["clash_index"]);               // the largest first, with its original index
-            Assert.Equal(0.52, (double)kept[0]["intersection_volume_m3"]);
+        
 
-            var summary = (JObject)data["clash_summary"];
-            Assert.Equal(165, (int)summary["clashes_detected"]);
-            var pairs = ((JArray)summary["by_pair"]).ToArray();
-            Assert.Equal(5, pairs.Length);
-            Assert.Equal(127, (int)pairs[0]["count"]);
-            Assert.Equal("Ducts", (string)pairs[0]["category_a"]);
-            Assert.Equal("Structural Framing", (string)pairs[0]["category_b"]);
-            Assert.Equal(165, pairs.Sum(p => (int)p["count"]));
-            Assert.Equal(161, (int)summary["cross_model"]);
-
-            Assert.Equal(155, (int)data["response_omissions"][0]["omitted"]);
-            Assert.Equal("horizun_coordination", (string)data["expand"]["tool"]);
-            Assert.True(after * 4 < before, "the summary must be much smaller: " + before + " -> " + after);
-        }
-
-        [Fact]
-        public void Without_recorded_findings_the_rest_is_a_full_re_run_of_the_same_request()
-        {
-            JObject data = ClashReply(recorded: false);
-            var request = new JObject { ["categories_a"] = new JArray("OST_DuctCurves"), ["response_mode"] = "summary" };
-            ResponseSummaryRules.Clash(data, request);
-            Assert.Equal("horizun_clash", (string)data["expand"]["tool"]);
-            Assert.Equal("full", (string)data["expand"]["arguments"]["response_mode"]);
-            Assert.Equal("OST_DuctCurves", (string)data["expand"]["arguments"]["categories_a"][0]);
-        }
-
-        [Fact]
-        public void Summary_with_penetration_planning_is_refused_before_anything_runs()
-        {
-            var req = new JObject { ["plan_penetrations"] = true, ["response_mode"] = "summary" };
-            Assert.Contains("plan_penetrations", ResponseSummaryRules.ClashRequestProblem(req, "summary"));
-            Assert.Null(ResponseSummaryRules.ClashRequestProblem(req, "full"));
-        }
+        
     }
 }

@@ -174,6 +174,16 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void An_unknown_severity_rule_is_named_before_any_staleness_comparison()
+        {
+            foreach (string rule in PlanimetryRules.Catalog.Where(c => c.Severity == "unknown").Select(c => c.Id))
+                Assert.Contains("could NOT be measured", PlanimetryFixRules.UnmeasuredRuleError(rule, PlanimetryRules.UniversalId), StringComparison.Ordinal);
+            foreach (string rule in PlanimetryRules.Catalog.Where(c => c.Severity != "unknown").Select(c => c.Id))
+                Assert.Null(PlanimetryFixRules.UnmeasuredRuleError(rule, PlanimetryRules.UniversalId));
+            Assert.Null(PlanimetryFixRules.UnmeasuredRuleError("view.template-unreadable", "some-client-set"));
+        }
+
+        [Fact]
         public void A_finding_whose_current_status_is_unknown_is_refused_before_any_write()
         {
             PlanimetryFixRules.CitedFinding cited = Parse(FindingJson());

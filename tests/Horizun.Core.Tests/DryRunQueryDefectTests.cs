@@ -426,6 +426,30 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Model_scan_root_verdict_includes_cooperative_interruption()
+        {
+            string scan = File.ReadAllText(Path.Combine(Root(), "src", "Horizun.Revit", "Commands", "ModelScanCommand.cs"));
+            Assert.Contains("bool scanComplete = failed.Count == 0 && NotMeasuredSections(result).Count == 0 && coverage.CoverageComplete && (coopScope == null || coopScope.Complete)", scan);
+            Assert.Contains("[\"complete\"] = scanComplete", scan);
+            Assert.Contains("coopScope?.PartialWarning()", scan);
+        }
+
+        [Fact]
+        public void Started_timeout_reports_the_execution_may_still_run()
+        {
+            string dispatcher = File.ReadAllText(Path.Combine(Root(), "src", "Horizun.Revit", "Core", "Dispatcher.cs"));
+            Assert.Contains("[\"execution_may_still_run\"] = !removedBeforeStart", dispatcher);
+        }
+
+        [Fact]
+        public void Session_recheck_must_not_clear_uncovered_old_sync_blockers()
+        {
+            string source = File.ReadAllText(Path.Combine(Root(), "src", "Horizun.Revit", "Core", "SyncReminder.cs"));
+            Assert.DoesNotContain("ClearVerified(key, null, true)", source);
+            Assert.Contains("SessionScopeRules.Union", source);
+        }
+
+        [Fact]
         public void The_scan_reads_schedule_placement_from_ScheduleSheetInstance()
         {
             // Measured live 2026-09-30: GetAllPlacedViews() does not return schedules, so the

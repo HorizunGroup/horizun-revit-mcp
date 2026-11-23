@@ -7,6 +7,7 @@
 // placement, and what an expansion that leaves nothing to create answers.
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 
@@ -14,6 +15,28 @@ namespace Horizun.Revit.Core
 {
     public static class EnclosedRules
     {
+        /// <summary>A point uses Revit's Level+UV overload, whose phase is assigned by Revit.
+        /// Only topology placement accepts an explicit phase. Both branches use one diagnostic.</summary>
+        public static string PlacementFieldsProblem(JObject row)
+        {
+            if (row["placement"] != null && row.Value<string>("placement") != "point") return null;
+            if (row["phase_id"] != null)
+                return "point placement takes level_id+point without phase_id; Revit assigns the phase and the reply re-reads phase_id. To choose a phase use placement='all_enclosed' with phase_id.";
+            return row["min_area_m2"] != null ? "min_area_m2 requires placement='all_enclosed'." : null;
+        }
+
+        /// <summary>Close only a caller-declared separator loop; an open run stays open.</summary>
+        public static IList<double[]> SeparatorChain(IList<double[]> points, bool closed)
+        {
+            var result = points.ToList();
+            if (!closed) return result;
+            bool repeatsStart = points.Count > 1 && points[0].SequenceEqual(points[points.Count - 1]);
+            int corners = repeatsStart ? points.Count - 1 : points.Count;
+            if (corners < 3) throw new ArgumentException("closed room_separator needs at least three corners");
+            if (!repeatsStart) result.Add(points[0].ToArray());
+            return result;
+        }
+
         public const string Create = "create";
         public const string SkippedMinArea = "skipped_min_area";
         /// <summary>Revit could not give a valid interior point for the region (PlanCircuit.GetPointInside threw).</summary>

@@ -24,11 +24,10 @@
 //   * the token was issued for this document, this finding set and this exact
 //     action set, and has not been spent.
 //
-// ROLLBACK SCOPE, STATED: EACH ACTION IS ITS OWN TRANSACTION. A pin that fails
-// does not undo the deletion before it, and does not stop the reload after it.
+// ROLLBACK SCOPE, STATED: EACH ACTION IS ITS OWN TRANSACTION. One that fails
+// does not undo the action before it, and does not stop the one after it.
 // This is not an atomic plan and does not claim to be one - horizun_execute_plan
-// exists for callers who need one group, and horizun_manage_links is now on
-// its allowlist for exactly that composition.
+// exists for callers who need one group.
 //
 // horizun_execute_python is not in the registry and cannot be reached from here.
 // -----------------------------------------------------------------------------
@@ -169,20 +168,10 @@ namespace Horizun.Revit.Commands
                     }
                     CommandResult rehearsal = child.Execute(app, ChildArguments(step.Arguments, gate, true)
                                                                     .ToString(Formatting.None));
-                    ApplicationState state = ApplicationOutcome.Read(rehearsal.Data);
-                    step.RehearsalOk = rehearsal.Success && ApplicationOutcome.IsValidRehearsal(state);
-                    step.RehearsalState = ApplicationOutcome.Name(state);
-                    step.RehearsalError = rehearsal.Error;
-                    step.RehearsalData = ToToken(rehearsal.Data);
-                    try { step.ChildPlanFingerprint = (string)(rehearsal.Data as JObject)?["plan_resolved"]?["fingerprint"]; }
-                    catch { step.ChildPlanFingerprint = null; }
-                    if (step.RehearsalOk != true)
+                    if (!CorrectionSelection.RecordRehearsal(action, step, rehearsal))
                     {
-                        action.State = CorrectionActionState.RehearsalFailed;
-                        action.Why = rehearsal.Success
-                            ? "'" + step.Tool + "' rehearsed to '" + step.RehearsalState + "', not a clean dry run; " +
-                              "read the step's rehearsal data."
-                            : "'" + step.Tool + "' refused the rehearsal: " + rehearsal.Error;
+                        if (PlanFailure.ModelMayHaveChanged(step.RehearsalData))
+                            return CorrectionReply.RehearsalRefusal(Name, actions);
                         break;
                     }
                 }
@@ -220,27 +209,11 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Ok(preview);
             }
 
-            if (!rehearsedCleanly)
-                return CommandResult.FailWithDetail(
-                    Name + ": not every action rehearsed cleanly, so nothing was applied. Read the rows: " +
-                    string.Join("; ", actions.Where(a => a.State != CorrectionActionState.Rehearsed)
-                                             .Select(a => "actions[" + a.Index + "] " + a.State + " - " + a.Why)) +
-                    ". Nothing was changed.",
-                    new JObject { ["state"] = "refused", ["actions"] = ActionsJson(actions) });
-
-            // THE TOKEN, checked against the plan recomputed by THIS call.
-            CommandResult confirmation = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, plan, null);
-            if (confirmation != null) return confirmation;
-
-            // APPLY. Inside the confirmed scope the typed tools do not demand their own
-            // tokens - the outer token covers the set - but they keep every other check:
-            // document identity, their own plan fingerprint, their own re-read.
-            using (DocumentGate.EnterConfirmedAtomicPlan())
-            {
-                // The loop is CorrectionApplyLoop's, in Core; what this supplies is
-                // the only executor the shipped command ever builds - the one that
-                // dispatches the typed child. There is no other way in.
-                CorrectionApplyLoop.Apply(actions, step =>
+            // The rehearsal verdict gates the token and dispatch. The confirmed scope
+            // lets typed children use the outer approval while keeping their own checks.
+            CommandResult refusalToApply = CorrectionApplyLoop.ConfirmAndApply(Name, actions,
+                () => DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, plan, null),
+                DocumentGate.EnterConfirmedAtomicPlan, step =>
                 {
                     string refusal;
                     ICommand child = ResolvePermitted(step.Tool, out refusal);
@@ -258,7 +231,7 @@ namespace Horizun.Revit.Commands
                         Data = ToToken(applied.Data ?? applied.Detail)
                     };
                 });
-            }
+            if (refusalToApply != null) return refusalToApply;
 
             // RE-AUDIT. The same checks, run again, judged per element against what
             // the audit lists NOW - not against the count of calls that were made.

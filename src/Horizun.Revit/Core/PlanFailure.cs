@@ -33,11 +33,19 @@ namespace Horizun.Revit.Core
 {
     public static class PlanFailure
     {
+        /// <summary>The status a plan stopped by a cancel reports (INT-7 m-e). Stable, like the error_code that goes with it.</summary>
+        public const string CancelledStatus = "cancelled";
+
         /// <summary>The one status name that proves a rollback landed. Anything else is uncertainty.</summary>
         public const string ConfirmedStatus = "RolledBack";
 
         /// <summary>Marker for "we never called RollBack" - distinct from a RollBack that returned something.</summary>
         public const string NotAttempted = "not_attempted";
+
+        public const string ModelMayHaveChangedKey = "model_may_have_changed";
+
+        public static bool ModelMayHaveChanged(object detail)
+            => detail is JObject payload && Bool(payload, ModelMayHaveChangedKey);
 
         /// <summary>
         /// Is this the status that lets a caller treat the model as clean? Only "RolledBack".
@@ -61,10 +69,11 @@ namespace Horizun.Revit.Core
             string rollbackStatus,
             JArray executionTrace,
             string error,
-            JObject failedAction = null)
+            JObject failedAction = null,
+            bool cancelled = false)
         {
             bool confirmed = IsConfirmedRollback(transactionGroupStatus);
-            return new JObject
+            var diagnostic = new JObject
             {
                 ["transaction_group_started"] = transactionGroupStarted,
                 ["transaction_group_status"] = transactionGroupStatus,
@@ -79,16 +88,30 @@ namespace Horizun.Revit.Core
                 ["failed_action"] = failedAction ?? (JToken)JValue.CreateNull(),
                 ["error"] = error
             };
+            if (cancelled) StampCancelled(diagnostic);
+            return diagnostic;
+        }
+
+        /// <summary>
+        /// A plan stopped by a cancel says so with stable fields (INT-7 m-e): status "cancelled", cancelled true, and the catalogue's
+        /// error_code "cancelado". The rollback fields keep their own honest values beside them.
+        /// </summary>
+        public static void StampCancelled(JObject diagnostic)
+        {
+            diagnostic["status"] = CancelledStatus;
+            diagnostic["cancelled"] = true;
+            diagnostic[ErrorCodes.CodeField] = ErrorCodes.Cancelado;
         }
 
         /// <summary>
         /// A plan that failed while rehearsing or rechecking, before a TransactionGroup
-        /// existed. It is deliberately a separate constructor: "nothing ran" is evidence
-        /// about control flow, not a rollback claim.
+        /// existed. A child rehearsal can have used a temporary transaction whose
+        /// rollback was not confirmed, even though the outer group never started.
         /// </summary>
-        public static JObject BeforeGroup(string phase, JArray trace, JObject failedAction, string error)
+        public static JObject BeforeGroup(string phase, JArray trace, JObject failedAction, string error, bool cancelled = false,
+                                          bool modelMayHaveChanged = false)
         {
-            return new JObject
+            var diagnostic = new JObject
             {
                 ["phase"] = phase,
                 ["transaction_group_started"] = false,
@@ -96,12 +119,37 @@ namespace Horizun.Revit.Core
                 ["rollback_attempted"] = false,
                 ["rollback_status"] = NotAttempted,
                 ["rollback_confirmed"] = false,
-                ["nothing_ran"] = true,
+                ["nothing_ran"] = !modelMayHaveChanged,
                 ["rehearsal_trace"] = trace ?? new JArray(),
                 ["execution_trace"] = new JArray(),
                 ["failed_action"] = failedAction ?? (JToken)JValue.CreateNull(),
                 ["error"] = error
             };
+            if (modelMayHaveChanged)
+            {
+                diagnostic[ModelMayHaveChangedKey] = true;
+                diagnostic["write_started"] = true;
+            }
+            if (cancelled) StampCancelled(diagnostic);
+            return diagnostic;
+        }
+
+        public static CommandResult BeforeGroupResult(string phase, JArray trace, JObject failedAction, string error,
+                                                      CommandResult child, bool cancelled = false)
+        {
+            bool uncertain = ModelMayHaveChanged(child?.Detail);
+            JObject detail = BeforeGroup(phase, trace, failedAction, error, cancelled, uncertain);
+            return CommandResult.FailWithDetail(uncertain ? Message(detail) : error + ". Nothing ran.",
+                                                detail, child?.Fallback, child?.CapabilityGaps);
+        }
+
+        public static string PreApplyRehearsalError(string key, JObject row)
+        {
+            string partialRefusal = row.Value<string>("not_clean_in_plan");
+            if (partialRefusal != null)
+                return "Pre-apply recheck stopped at action '" + key + "': " + partialRefusal;
+            return "Pre-apply rehearsal of action '" + key + "' came back '" + row.Value<string>("application_state") +
+                   "', not a clean dry run. The approved graph resolved this action; rehearse again before applying.";
         }
 
         /// <summary>
@@ -117,16 +165,21 @@ namespace Horizun.Revit.Core
             string status = (string)diagnostic["rollback_status"];
             string groupStatus = (string)diagnostic["transaction_group_status"];
             string error = (string)diagnostic["error"];
+            string cancelledPrefix = Bool(diagnostic, "cancelled") ? "Atomic plan CANCELLED by request. " : "";
+
+            if (!started && ModelMayHaveChanged(diagnostic))
+                return cancelledPrefix + "Atomic plan stopped before opening its TransactionGroup. A child rehearsal may have " +
+                       "changed the model; inspect it before retrying. " + error;
 
             if (!started)
-                return "Atomic plan failed before the TransactionGroup began, so no write was started: " + error +
+                return cancelledPrefix + "Atomic plan failed before the TransactionGroup began, so no write was started: " + error +
                        " Nothing was committed and nothing was rolled back.";
 
             if (confirmed)
-                return "Atomic plan failed and the TransactionGroup rolled back (Revit reported '" + ConfirmedStatus +
+                return cancelledPrefix + "Atomic plan failed and the TransactionGroup rolled back (Revit reported '" + ConfirmedStatus +
                        "'), so nothing was retained: " + error;
 
-            return "Atomic plan failed and the rollback is UNCERTAIN: after the failure the TransactionGroup's status " +
+            return cancelledPrefix + "Atomic plan failed and the rollback is UNCERTAIN: after the failure the TransactionGroup's status " +
                    "was '" + groupStatus + "'" +
                    (attempted ? " and RollBack() returned '" + status + "'" : " and RollBack() was not attempted") +
                    ", not '" + ConfirmedStatus + "'. DO NOT assume the model is clean - re-read its real state before " +

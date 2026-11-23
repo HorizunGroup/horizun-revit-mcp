@@ -84,7 +84,6 @@ namespace Horizun.Core.Tests
         {
             CorrectionProposal p = P(F());
             Assert.Equal(ProposalState.Actionable, p.State);
-            Assert.Equal("horizun_manage_links", p.Tool);
             Assert.True(p.ConfirmationRequired);
             Assert.True(p.DryRunSupported);
             Assert.True(p.Arguments.Value<bool>("dry_run"));

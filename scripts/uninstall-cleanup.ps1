@@ -40,9 +40,12 @@ if ($RemoveClients) {
     $register = Join-Path $PSScriptRoot 'register-client.ps1'
     if (-not (Test-Path $register)) { throw "Missing client helper: $register" }
     if ($PSCmdlet.ShouldProcess('Claude and Codex configuration', "remove only mcp server 'horizun-revit'")) {
-        $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$register,'-Remove','-Client','Both','-SkipMissingClients')
-        if ($Force) { $arguments += '-Force' }
-        & powershell @arguments
+        # In this process: a second powershell.exe with a bypassed policy is what
+        # an antivirus behaviour engine reads as malware.
+        $arguments = @{ Remove = $true; Client = 'Both'; SkipMissingClients = $true }
+        if ($Force) { $arguments.Force = $true }
+        $global:LASTEXITCODE = 0
+        & $register @arguments
         if ($LASTEXITCODE -ne 0) { throw "Client cleanup failed with exit code $LASTEXITCODE." }
     }
 }
@@ -51,9 +54,10 @@ if ($RemoveIntegrations) {
     $desktop = Join-Path $PSScriptRoot 'install-claude-desktop-extension.ps1'
     if ($PSCmdlet.ShouldProcess('Claude Desktop', "remove only the 'horizun-revit' entry and the staged package")) {
         if (Test-Path -LiteralPath $desktop) {
-            $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$desktop,'-Remove')
-            if ($Force) { $arguments += '-Force' }
-            & powershell @arguments
+            $arguments = @{ Remove = $true }
+            if ($Force) { $arguments.Force = $true }
+            $global:LASTEXITCODE = 0
+            & $desktop @arguments
             # Exit 2 is "Claude Desktop is not installed", which is not a failure
             # of a cleanup whose whole job is to leave nothing behind.
             if ($LASTEXITCODE -notin @(0, 2)) { throw "Claude Desktop cleanup failed with exit code $LASTEXITCODE." }

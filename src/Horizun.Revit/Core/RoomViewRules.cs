@@ -74,6 +74,34 @@ namespace Horizun.Revit.Core
         public const string CodeNoBoundary = "room_boundary_unreadable";
         public const string CodeNoBoundingBox = "room_bounding_box_unreadable";
         public const string CodeNameCollision = "view_name_collision";
+        public const string CodeMarkerCollision = "elevation_marker_no_clear_space";
+
+        public static List<double[]> PlaceMarkers(PlanBox room, IEnumerable<PlanBox> occupied,
+            int count, double halfSize)
+        {
+            var result = new List<double[]>();
+            if (!room.Valid || count < 0 || count > 16 || halfSize <= 0) return result;
+            var obstacles = (occupied ?? Enumerable.Empty<PlanBox>()).Where(b => b.Valid).ToList();
+            var candidates = new List<double[]>();
+            for (int ix = 0; ix <= 10; ix++)
+                for (int iy = 0; iy <= 10; iy++)
+                    candidates.Add(new[] { room.MinX + room.Width * ix / 10.0,
+                                           room.MinY + room.Height * iy / 10.0 });
+            foreach (double[] p in candidates.OrderBy(p =>
+                Math.Pow(p[0] - room.CenterX, 2) + Math.Pow(p[1] - room.CenterY, 2))
+                .ThenBy(p => p[0]).ThenBy(p => p[1]))
+            {
+                PlanBox box = PlanBox.FromCorners(p[0] - halfSize, p[1] - halfSize,
+                                                  p[0] + halfSize, p[1] + halfSize);
+                if (box.MinX < room.MinX || box.MinY < room.MinY ||
+                    box.MaxX > room.MaxX || box.MaxY > room.MaxY) continue;
+                if (obstacles.Any(o => PlanimetryGeometry.Overlaps(box, o, 0))) continue;
+                result.Add(p);
+                obstacles.Add(box);
+                if (result.Count == count) break;
+            }
+            return result;
+        }
 
         // ---- eligibility ----------------------------------------------------------
 
@@ -147,7 +175,7 @@ namespace Horizun.Revit.Core
         /// <summary>The tokens a name pattern may use. Anything else refuses by name.</summary>
         public static readonly IReadOnlyList<string> KnownTokens = new[]
         {
-            "room_name", "room_number", "level", "kind", "index"
+            "room_name", "room_number", "level", "kind", "short_kind", "index"
         };
 
         /// <summary>
@@ -183,6 +211,16 @@ namespace Horizun.Revit.Core
                     case "room_number": sb.Append(room?.Number ?? ""); break;
                     case "level": sb.Append(room?.LevelName ?? ""); break;
                     case "kind": sb.Append(kind ?? ""); break;
+                    case "short_kind":
+                        if (kind == "ELEV") sb.Append("Alzado ").Append(index.ToString(CultureInfo.InvariantCulture));
+                        else if (kind == "SEC")
+                        {
+                            char letter = (char)('A' + Math.Max(0, index - 1));
+                            sb.Append("Corte ").Append(letter).Append('-').Append(letter);
+                        }
+                        else if (kind == "PLAN") sb.Append("Planta");
+                        else sb.Append(kind ?? "");
+                        break;
                     case "index": sb.Append(index.ToString(CultureInfo.InvariantCulture)); break;
                     default:
                         error = "name_pattern token '{" + token + "}' is not one this planner understands. " +

@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // horizun_model_scan — one native pass that replaces two IronPython audit engines
@@ -49,22 +49,39 @@ namespace Horizun.Revit.Commands
 {
     public class ModelScanCommand : ICommand
     {
+        private static readonly ScanResumeRules.ProgressTracker ResumeProgress = new ScanResumeRules.ProgressTracker();
         public string Name => "horizun_model_scan";
 
         /// <summary>The cooperative block, with the sentence that keeps it from claiming too much.</summary>
         private static JObject Cooperative(CooperativeOptions options, CooperativeRead.Scope scope,
-                                           string fingerprint)
+                                           string fingerprint, JObject result)
         {
             JObject report = options.Report(scope, 0, fingerprint,
                                             scope != null && !scope.Complete,
                                             ownCursorField: "cursor");
-            if (report != null)
-                report["interruption_reach"] =
-                    "The two element-census loops ask whether to carry on; the other section emitters " +
-                    "run to completion regardless. A scan that stops is therefore bounded to within " +
-                    "ONE emitter, not to the millisecond. The sections already have their own budgets " +
-                    "and cursors, and those are unchanged.";
+            if (report == null) return null;
+            report["interruption_reach"] =
+                "Two things ask whether to carry on: the element-census loops (between elements) and the gate " +
+                "BEFORE each section starts. A section that has begun runs to its end - it is one native pass - " +
+                "so a scan that stops is bounded to within ONE section, not to the millisecond. Sections the " +
+                "budget stopped before they began are listed in sections_not_measured with status " +
+                "'not_measured'. The sections' own budgets and cursors are unchanged.";
+            JArray notMeasured = NotMeasuredSections(result);
+            var measured = new JArray();
+            foreach (JProperty p in result.Properties())
+                if (p.Value is JObject so && (string)so["status"] == "ok") measured.Add(p.Name);
+            report["measured_account"] = CooperativePartial.Account("sections", measured.Count, null,
+                measured, notMeasured,
+                "between sections, and between elements inside the two census loops");
             return report;
+        }
+
+        private static JArray NotMeasuredSections(JObject result)
+        {
+            var names = new JArray();
+            foreach (JProperty p in result.Properties())
+                if (p.Value is JObject so && (string)so["status"] == "not_measured") names.Add(p.Name);
+            return names;
         }
 
         public string Description =>
@@ -101,14 +118,17 @@ namespace Horizun.Revit.Commands
             JObject request;
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : Horizun.Revit.Core.JsonText.ParseObject(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
 
-            // OPT-IN cooperative reading. Absent means today's behaviour exactly: no scope is
-            // installed and AmbientContinue() answers true everywhere.
+            // A missing cooperative block receives the model_scan default budget.
             string coopFingerprint = CooperativeOptions.FingerprintOf(request, Name, doc);
-            CooperativeOptions cooperative = CooperativeOptions.Read(request, coopFingerprint);
+            CooperativeOptions cooperative = CooperativeOptions.ReadWithDefault(request, coopFingerprint, 120000);
             if (cooperative.Refusal != null)
                 return CommandResult.Fail("cooperative: " + cooperative.Refusal);
-            CooperativeRead.Scope coopScope = cooperative.Begin("model_scan", 0);
+            if (!cooperative.Requested)
+                return CommandResult.Fail("cooperative must be an object.");
+            CooperativeRead.Scope coopScope = cooperative.Begin("model_scan", 0, zeroIsUnlimited: true);
             using (coopScope == null ? null : CooperativeRead.Install(coopScope))
             {
                 return Scan(app, doc, request, cooperative, coopScope, coopFingerprint);
@@ -252,6 +272,9 @@ namespace Horizun.Revit.Commands
                 RawCursor = request.Value<string>("cursor"),
             };
 
+            int elementCount = new FilteredElementCollector(doc).WhereElementIsNotElementType().GetElementCount();
+            JObject costEstimate = ScanResumeRules.CostEstimate(elementCount, sections.Count, (int)coopScope.Report()["ui_budget_ms"]);
+
             var result = new JObject();
             var failed = new JArray();
             var skipped = new JArray();
@@ -309,6 +332,11 @@ namespace Horizun.Revit.Commands
                     () => DeliveryReadinessSection(doc, paging, fourDProfile, fiveDProfile,
                                                    classificationCatalogue));
 
+            var measuredOk = new HashSet<string>(result.Properties()
+                .Where(p => (string)p.Value["status"] == "ok").Select(p => p.Name),
+                StringComparer.OrdinalIgnoreCase);
+            var missingWeightSources = ScanResumeRules.WeightMissingSources(measuredOk, WeightAttributionFromScan.SourceSections);
+
             // ---- weight, LAST, over what the other sections already measured -------
             //
             // It collects nothing of its own. Every number it ranks was taken by a
@@ -316,6 +344,8 @@ namespace Horizun.Revit.Commands
             // cannot disagree with the first about the same population.
             Section(result, failed, skipped, sections, "weight", () =>
             {
+                if (missingWeightSources.Count != 0)
+                    return new JObject();
                 List<Contributor> built = WeightAttributionFromScan.Build(result, sections);
                 WeightProfile wp = WeightAttributionRules.ReadProfile(
                     request["weight_profile"], WeightAttributionFromScan.Kinds);
@@ -323,7 +353,13 @@ namespace Horizun.Revit.Commands
                 return WeightAttributionFromScan.ToJson(ranked, built);
             });
 
-            return CommandResult.Ok(ProgressiveResponse.Scan(new JObject
+            // Section wraps its result with status: ok, so assign not_measured afterwards.
+            if (sections.Contains("weight") && missingWeightSources.Count != 0)
+                result["weight"] = new JObject { ["status"] = "not_measured", ["reason"] = "needs_sources_in_same_call",
+                    ["missing_sources"] = new JArray(missingWeightSources) };
+
+            bool scanComplete = failed.Count == 0 && NotMeasuredSections(result).Count == 0 && coverage.CoverageComplete && (coopScope == null || coopScope.Complete);
+            var scanBody = new JObject
             {
                 ["document_title"] = actual,
                 ["document_verified"] = true,
@@ -332,12 +368,13 @@ namespace Horizun.Revit.Commands
                 // budget accepted at the door and ignored by the emitters is the
                 // defect this reporting exists to make visible.
                 ["budget"] = budget.ToJson(),
-                // Present only when the caller asked for it, and scoped honestly: the two
+                ["cost_estimate"] = costEstimate,
+                // Scoped honestly: the two
                 // census loops ask whether to carry on, and every other emitter runs to
                 // completion regardless. So a scan that stops is bounded to within one
                 // emitter, not to the millisecond - and claiming otherwise would be the
                 // overstatement this reporting exists to prevent.
-                ["cooperative"] = coopScope == null ? null : Cooperative(cooperative, coopScope, coopFingerprint),
+                ["cooperative"] = coopScope == null ? null : Cooperative(cooperative, coopScope, coopFingerprint, result),
                 ["paged"] = paging.Paged,
                 ["cursor_problems"] = paging.CursorProblems,
                 ["cursor_used"] = paging.CursorUsed,
@@ -345,7 +382,7 @@ namespace Horizun.Revit.Commands
                 // subtracting one from the other mixes two disjoint sets: asking for 3
                 // sections gave 3 - 9 = -6. Failures are the only thing that takes a
                 // requested section away from you, so they are the only thing to subtract.
-                ["sections_ok"] = sections.Count - failed.Count,
+                ["sections_ok"] = sections.Count - failed.Count - NotMeasuredSections(result).Count,
                 ["sections_requested"] = sections.Count,
                 ["sections_failed"] = failed,
                 ["sections_not_requested"] = skipped,
@@ -359,8 +396,8 @@ namespace Horizun.Revit.Commands
                 // complete=true, and everything it did not find was reported as not
                 // there. Both ways of failing to see the model end in the same flag,
                 // because they have the same consequence for the reader.
-                ["complete"] = failed.Count == 0 && coverage.CoverageComplete,
-                ["note"] = failed.Count == 0 && coverage.CoverageComplete
+                ["complete"] = scanComplete,
+                ["note"] = scanComplete
                     ? null
                     : string.Join(" ", new[]
                       {
@@ -369,13 +406,21 @@ namespace Horizun.Revit.Commands
                               "returned NO buckets on purpose: an empty list would be indistinguishable from a " +
                               "clean result. Do not read a missing finding as a pass.",
                           coverage.CoverageComplete ? null : coverage.Note(),
+                          coopScope?.PartialWarning(),
                           "This scan is INCOMPLETE."
                       }.Where(s => s != null)),
                 // One shape, on every read-only command, so a caller learns to look for
                 // it once rather than per tool.
                 ["visibility_coverage"] = coverage.ToJson(),
                 ["sections"] = result
-            }, request));
+            };
+            // The sections the budget stopped before they began.
+            var notMeasured = NotMeasuredSections(result);
+            if (coopScope != null || notMeasured.Count != 0) scanBody["sections_not_measured"] = notMeasured;
+            var resume = ResumeProgress.Resume(CursorFingerprint(doc), sections, notMeasured.Select(t => (string)t),
+                WeightAttributionFromScan.SourceSections, AllSections);
+            if (resume.Count != 0) scanBody["resume"] = new JObject { ["sections"] = new JArray(resume) };
+            return CommandResult.Ok(ProgressiveResponse.Scan(scanBody, request));
         }
 
         // ---- Section plumbing: failure is structural, not a flag in a footnote. ----
@@ -388,6 +433,25 @@ namespace Horizun.Revit.Commands
                 // for must not be mistakable for one that came back clean.
                 skipped.Add(name);
                 into[name] = new JObject { ["status"] = "not_requested" };
+                return;
+            }
+
+            // BETWEEN SECTIONS, a budgeted scan asks whether another section may START. A
+            // section is one native pass that cannot be interrupted from inside, so once the
+            // budget is spent the honest move is to not begin the next one and say so:
+            // `not_measured` is neither "ok" nor "failed" and carries no buckets, so it can
+            // never read as clean. No ambient scope (the caller did not opt in) = no gate.
+            CooperativeRead.Scope gate = CooperativeRead.Ambient;
+            if (gate != null && !gate.Poll())
+            {
+                into[name] = new JObject
+                {
+                    ["status"] = "not_measured",
+                    ["reason"] = gate.StoppedBecause,
+                    ["consequence"] = "'" + name + "' was NOT started: the cooperative scan had already stopped (" +
+                                      gate.StoppedBecause + "). Its findings are unknown, not clean. No count from " +
+                                      "this section exists."
+                };
                 return;
             }
 
@@ -463,15 +527,30 @@ namespace Horizun.Revit.Commands
         private static JObject CategoriesSection(Document doc, ScanPagingContext paging)
         {
             var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+            // Category.Name follows Revit's language; the BuiltInCategory name does not, so every row
+            // carries both and a reader can address the same category on any installation.
+            var builtIn = new Dictionary<string, string>(StringComparer.Ordinal);
+            var kinds = new Dictionary<string, string>(StringComparer.Ordinal);
+            var names = new Dictionary<string, string>(StringComparer.Ordinal);
             int total = 0, unreadable = 0;
             foreach (var e in new FilteredElementCollector(doc).WhereElementIsNotElementType())
             {
                 total++;
+                // Grouped by category id, not by name: two categories that share a localized name stay two
+                // rows, each with its own key and type.
                 string nm;
                 try
                 {
                     var c = e.Category;
-                    nm = c == null ? "(no category)" : c.Name;
+                    nm = c == null ? "(no category)" : "#" + Rid.Value(c.Id);
+                    if (c != null && !builtIn.ContainsKey(nm))
+                    {
+                        builtIn[nm] = CategoryKey.Of(c);
+                        names[nm] = c.Name;
+                        string kind = null;
+                        try { kind = c.CategoryType.ToString().ToLowerInvariant(); } catch { }
+                        kinds[nm] = kind;
+                    }
                 }
                 catch { unreadable++; continue; }
                 int n;
@@ -479,8 +558,13 @@ namespace Horizun.Revit.Commands
                 counts[nm] = n + 1;
             }
 
-            var rows = counts.OrderByDescending(kv => kv.Value)
-                .Select(kv => (JToken)new JObject { ["category"] = kv.Key, ["instances"] = kv.Value })
+            var rows = counts.Select(kv => new KeyValuePair<string, int>(kv.Key, kv.Value))
+                .OrderByDescending(kv => kv.Value).ThenBy(kv => names.TryGetValue(kv.Key, out string sortName) ? sortName : kv.Key, StringComparer.Ordinal)
+                .ThenBy(kv => kv.Key, StringComparer.Ordinal)
+                .Select(kv => (JToken)new JObject { ["category"] = names.TryGetValue(kv.Key, out string shown) ? shown : kv.Key,
+                    ["built_in_category"] = builtIn.TryGetValue(kv.Key, out string bic) && bic != null ? (JToken)bic : JValue.CreateNull(),
+                    ["category_type"] = kinds.TryGetValue(kv.Key, out string kind) && kind != null ? (JToken)kind : JValue.CreateNull(),
+                    ["instances"] = kv.Value })
                 .ToList();
 
             return new JObject
@@ -490,6 +574,13 @@ namespace Horizun.Revit.Commands
                 // Not folded into any category: an element whose Category threw is
                 // not an element "with no category".
                 ["category_unreadable"] = unreadable,
+                // by_category pages in a stable key order (for its cursor), which is not the order of size and
+                // depends on the language of the names; a summary keeps only its first rows. The largest
+                // categories are therefore also given here, by instance count, in any response mode.
+                ["top_by_instances"] = new JArray(rows.Take(10).Select(r => r.DeepClone())),
+                // The same, model categories only (walls, doors, pipes...): elements with no category, sketch
+                // lines and legend components outnumber them in most models and would push them off the list.
+                ["top_model_categories"] = new JArray(rows.Where(r => (string)r["category_type"] == "model").Take(10).Select(r => r.DeepClone())),
                 ["by_category"] = paging.Bucket(rows, "categories", "by_category")
             };
         }
@@ -2037,7 +2128,12 @@ namespace Horizun.Revit.Commands
                             Guid g;
                             if (Guid.TryParse(role.Rule.Guid, out g)) p = e.get_Parameter(g);
                         }
-                        if (p == null && role.Rule.Name != null) p = e.LookupParameter(role.Rule.Name);
+                        if (p == null && role.Rule.Name != null)
+                        {
+                            IList<Parameter> hits = e.GetParameters(role.Rule.Name);
+                            if (hits.Count > 1) throw new InvalidOperationException("Parameter name '" + role.Rule.Name + "' is ambiguous; use its shared GUID.");
+                            p = hits.Count == 1 ? hits[0] : null;
+                        }
 
                         if (p != null)
                         {
@@ -2651,16 +2747,44 @@ namespace Horizun.Revit.Commands
                     try { r.TypeName = SafeName(doc.GetElement(e.GetTypeId())); } catch { r.TypeName = null; }
                     try
                     {
-                        // HOST IS A THREE-STATE READ. Null means the question failed,
-                        // which is never the same as "this bar has no host".
+                        // HOST IS A THREE-STATE READ. Null means the question failed (or
+                        // was never asked), which is never the same as "this bar has no
+                        // host". A RebarInSystem (the bars of an area or path system) is
+                        // in this category but is not a Rebar: its host is its own
+                        // GetHostId(), else the host of its system.
                         ElementId hostId = null;
+                        ElementId systemHostId = null;
+                        RebarHostSource src = RebarHostSource.NotAsked;
                         var rb = e as Autodesk.Revit.DB.Structure.Rebar;
-                        if (rb != null) hostId = rb.GetHostId();
-                        r.HasHost = hostId != null && hostId != ElementId.InvalidElementId;
+                        var rs = e as Autodesk.Revit.DB.Structure.RebarInSystem;
+                        if (rb != null) { src = RebarHostSource.RebarSet; hostId = rb.GetHostId(); }
+                        else if (rs != null)
+                        {
+                            src = RebarHostSource.SystemBar;
+                            hostId = rs.GetHostId();
+                            ElementId sysId = rs.SystemId;
+                            if (sysId != null && sysId != ElementId.InvalidElementId)
+                            {
+                                r.SystemId = Rid.Value(sysId);
+                                try
+                                {
+                                    Element sys = doc.GetElement(sysId);
+                                    var ar = sys as Autodesk.Revit.DB.Structure.AreaReinforcement;
+                                    var pr = sys as Autodesk.Revit.DB.Structure.PathReinforcement;
+                                    if (ar != null) systemHostId = ar.GetHostId();
+                                    else if (pr != null) systemHostId = pr.GetHostId();
+                                }
+                                catch { systemHostId = null; }
+                            }
+                        }
+                        long? hostRaw = hostId == null || hostId == ElementId.InvalidElementId ? (long?)null : Rid.Value(hostId);
+                        long? sysHostRaw = systemHostId == null || systemHostId == ElementId.InvalidElementId ? (long?)null : Rid.Value(systemHostId);
+                        r.HasHost = StructureCensusRules.HostState(src, false, hostRaw, sysHostRaw);
                         if (r.HasHost == true)
                         {
-                            r.HostId = Rid.Value(hostId);
-                            Element host = doc.GetElement(hostId);
+                            long resolved = StructureCensusRules.ResolvedHostId(src, hostRaw, sysHostRaw).Value;
+                            r.HostId = resolved;
+                            Element host = doc.GetElement(Rid.Make(resolved));
                             r.HostCategory = host == null || host.Category == null ? null : host.Category.Name;
                         }
                     }
@@ -3306,12 +3430,19 @@ namespace Horizun.Revit.Commands
                     Guid g;
                     if (Guid.TryParse(rule.Guid, out g)) p = e.get_Parameter(g);
                 }
-                if (p == null && rule.Name != null) p = e.LookupParameter(rule.Name);
+                if (p == null && rule.Name != null)
+                {
+                    IList<Parameter> hits = e.GetParameters(rule.Name);
+                    if (hits.Count > 1) throw new InvalidOperationException("parameter name '" + rule.Name +
+                        "' is ambiguous (" + hits.Count + " matches); use the shared GUID");
+                    p = hits.Count == 1 ? hits[0] : null;
+                }
             }
-            catch
+            catch (Exception ex)
             {
                 o.Present = true;
                 o.Readable = false;
+                o.ReadError = ex.Message;
                 return o;
             }
 
@@ -4602,7 +4733,18 @@ namespace Horizun.Revit.Commands
         {
             var o = new JObject();
             Parameter p;
-            try { p = e.LookupParameter(paramName); }
+            try
+            {
+                IList<Parameter> hits = e.GetParameters(paramName);
+                if (hits.Count > 1)
+                {
+                    o["present"] = true; o["readable"] = false; o["value"] = null;
+                    o["ambiguous"] = true;
+                    o["error"] = hits.Count + " parameters share name '" + paramName + "'; query by shared GUID to choose one.";
+                    return o;
+                }
+                p = hits.Count == 1 ? hits[0] : null;
+            }
             catch (Exception ex)
             {
                 o["present"] = null; o["readable"] = false; o["value"] = null; o["error"] = ex.Message;

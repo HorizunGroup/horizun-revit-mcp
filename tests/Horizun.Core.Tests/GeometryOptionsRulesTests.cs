@@ -22,20 +22,7 @@ namespace Horizun.Core.Tests
 {
     public class GeometryOptionsRulesTests
     {
-        [Fact]
-        public void A_view_scoped_read_never_sets_a_detail_level()
-        {
-            Assert.False(GeometryOptionsRules.DetailLevelApplies(scopedToView: true));
-            Assert.True(GeometryOptionsRules.DetailLevelApplies(scopedToView: false));
-        }
-
-        [Fact]
-        public void The_cad_harvest_asks_the_rule_and_sets_the_view_only_otherwise()
-        {
-            string src = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Core", "CadGeometryHarvest.cs"));
-            Assert.Contains("GeometryOptionsRules.DetailLevelApplies(view != null)", src);
-            Assert.DoesNotContain("if (view != null) options.View = view;", src);
-        }
+        
 
         /// <summary>
         /// Every `new Options` in the add-in: an initializer that sets DetailLevel

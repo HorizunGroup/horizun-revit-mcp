@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - visible handoff from an agent result to the Revit user.
 // -----------------------------------------------------------------------------
 using System;
@@ -26,6 +26,8 @@ namespace Horizun.Revit.Commands
             UIDocument uidoc = app.ActiveUIDocument;
             Document doc = uidoc?.Document;
             if (doc == null) return CommandResult.Fail("No active Revit document.");
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
             string operation = (request.Value<string>("operation") ?? "").ToLowerInvariant();
 
             if (operation == "open_view") return OpenView(uidoc, doc, request);
@@ -119,14 +121,30 @@ namespace Horizun.Revit.Commands
             long raw = request.Value<long?>("view_id") ?? -1;
             if (!Rid.CanRepresent(raw)) return CommandResult.Fail("view_id is required for open_view.");
             View view = doc.GetElement(Rid.Make(raw)) as View;
-            if (view == null) return CommandResult.Fail("view_id does not identify a view in the active document.");
+            if (view == null) return DocumentContext.MissingView(doc, raw.ToString());
             if (view.IsTemplate) return CommandResult.Fail("A view template cannot become the active UI view.");
             try { uidoc.ActiveView = view; }
             catch (Exception ex) { return CommandResult.Fail("Revit refused to activate view '" + view.Name + "': " + ex.Message); }
 
             View after = uidoc.ActiveView;
             bool verified = after != null && Rid.Value(after.Id) == Rid.Value(view.Id);
-            if (!verified) return CommandResult.Fail("Revit accepted the active-view assignment but another view is active on re-read.");
+            if (!verified)
+            {
+                // Field case (a sheet): Revit applies an active-view change made from an external event when
+                // the command returns, so the re-read inside the call can still name the previous view. The
+                // view is opened when its window is among the open UI views; that is what can be proven here.
+                bool opened = false;
+                try { opened = uidoc.GetOpenUIViews().Any(u => Rid.Value(u.ViewId) == Rid.Value(view.Id)); } catch { }
+                if (!opened) return CommandResult.Fail("Revit accepted the active-view assignment but another view is active on re-read, and the view has no open window.");
+                return CommandResult.Ok(new JObject
+                {
+                    ["operation"] = "open_view", ["view_id"] = Rid.Value(view.Id), ["view_name"] = view.Name,
+                    ["active_view_verified"] = false, ["opened_verified"] = true,
+                    ["active_view_on_reread"] = after == null ? null : (JToken)Rid.Value(after.Id),
+                    ["note"] = "The view's window is open; Revit makes it the active view when this command returns. " +
+                               "Confirm with horizun_health (active view) before acting on the active view."
+                });
+            }
             return CommandResult.Ok(new JObject
             {
                 ["operation"] = "open_view", ["view_id"] = Rid.Value(after.Id), ["view_name"] = after.Name,

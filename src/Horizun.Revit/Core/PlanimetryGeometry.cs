@@ -56,7 +56,11 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static PlanBox FromCorners(double x1, double y1, double x2, double y2)
         {
-            if (!IsFinite(x1) || !IsFinite(y1) || !IsFinite(x2) || !IsFinite(y2))
+            // Revit can return its finite +/-1e30 sentinel for a viewport whose
+            // crop is unbounded. Such a box must be unknown, not a collision
+            // with every placement on the sheet.
+            if (!IsUsableCoordinate(x1) || !IsUsableCoordinate(y1) ||
+                !IsUsableCoordinate(x2) || !IsUsableCoordinate(y2))
                 return Unreadable;
             return new PlanBox
             {
@@ -69,6 +73,7 @@ namespace Horizun.Revit.Core
         }
 
         private static bool IsFinite(double v) { return !double.IsNaN(v) && !double.IsInfinity(v); }
+        private static bool IsUsableCoordinate(double v) { return IsFinite(v) && Math.Abs(v) < 1e20; }
     }
 
     public static class PlanimetryGeometry

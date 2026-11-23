@@ -7,6 +7,15 @@
   <Import Project="$(MSBuildThisFileDirectory)../Directory.Build.props"
           Condition="Exists('$(MSBuildThisFileDirectory)../Directory.Build.props')" />
 
+  <!-- This is the Community edition: the Pro-side tools are not in this source tree, and HORIZUN_COMMUNITY says so
+       to the contract (src/Horizun.Contracts/Edition.cs). Carried in HorizunLicenceDefines too because
+       Horizun.Revit.csproj REPLACES DefineConstants (REVIT<year>), so the add-in sees it. -->
+  <PropertyGroup>
+    <HorizunEdition>community</HorizunEdition>
+    <HorizunLicenceDefines>$(HorizunLicenceDefines);HORIZUN_COMMUNITY</HorizunLicenceDefines>
+    <DefineConstants>$(DefineConstants);HORIZUN_COMMUNITY</DefineConstants>
+  </PropertyGroup>
+
   <!-- The Revit project is restored and built once per supported host year.
        Conditional target frameworks cannot safely share obj/: generated
        assembly attributes and project.assets.json from one year otherwise leak

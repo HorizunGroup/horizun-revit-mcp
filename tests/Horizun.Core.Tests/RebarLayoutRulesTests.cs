@@ -364,5 +364,44 @@ namespace Horizun.Core.Tests
             Assert.Equal(0, p.Quantity);
             Assert.Equal(0, p.NumberOfBarPositions);
         }
+
+        // -------------------------------------------- rounding noise is not a bar
+
+        [Theory]
+        [InlineData(3300.0)]
+        [InlineData(3300.0000001)]
+        [InlineData(3300.000004)]     // the noise of a round trip through feet
+        [InlineData(3300.009)]        // still within CountNoiseMm
+        [InlineData(3299.9999999)]
+        public void Four_identical_beams_3300_mm_at_150_maximum_get_the_same_23_stirrups(double array)
+        {
+            // Measured live: four identical beams came out 24, 23, 24, 23 - the array came back from feet a few
+            // millionths of a millimetre over 3300, and the old 1e-9 on the ratio turned that into a gap.
+            RebarLayoutPlan p = R(RebarLayout.MaximumSpacing, spacing: 150, array: array);
+            Assert.True(p.Ok, p.Error);
+            Assert.Equal(23, p.Quantity);   // 3300 / 150 = 22 gaps, 23 bars
+            Assert.Equal(150.0, p.ResultingSpacingMm.Value, 3);
+        }
+
+        [Fact]
+        public void An_array_really_longer_than_the_multiple_still_adds_a_bar_so_no_gap_exceeds_the_maximum()
+        {
+            RebarLayoutPlan p = R(RebarLayout.MaximumSpacing, spacing: 150, array: 3300.02);
+            Assert.True(p.Ok, p.Error);
+            Assert.Equal(24, p.Quantity);
+            Assert.True(p.ResultingSpacingMm.Value <= 150.0);
+        }
+
+        [Theory]
+        [InlineData(3300.0, 23)]
+        [InlineData(3299.995, 23)]    // a hair short of the multiple: noise, the bar stays
+        [InlineData(3299.98, 22)]     // really short: a clear spacing below the minimum is not built
+        public void Minimum_clear_spacing_ignores_the_same_noise(double array, int bars)
+        {
+            // centre to centre 140 + 10 = 150.
+            RebarLayoutPlan p = R(RebarLayout.MinimumClearSpacing, spacing: 140, array: array, diameter: 10);
+            Assert.True(p.Ok, p.Error);
+            Assert.Equal(bars, p.Quantity);
+        }
     }
 }

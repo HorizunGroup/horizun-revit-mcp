@@ -127,11 +127,5 @@ namespace Horizun.Server.Tests
             }
         }
 
-        [Fact]
-        public void Manage_links_is_now_composable_in_an_atomic_plan()
-        {
-            JToken tools = Contract.Find("horizun_execute_plan").InputSchema["properties"]["actions"]["items"]["properties"]["tool"]["enum"];
-            Assert.Contains("horizun_manage_links", tools.Select(t => (string)t));
-        }
     }
 }

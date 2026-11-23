@@ -27,9 +27,32 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
+    public static class DocumentActivationSuggestion
+    {
+        public static JObject Build(DocIdentity target, string tool, JObject request, bool activatablePath)
+        {
+            var detail = new JObject();
+            if (target == null || (string.IsNullOrWhiteSpace(target.Title) && string.IsNullOrWhiteSpace(target.Path)))
+            {
+                detail["activation_note"] = "No safe path-based activation call is available for this document; activate it in Revit, then retry.";
+                return detail;
+            }
+            bool cloud = target.IsDetached == false && (target.IsCloud == true || (target.IsCloud == null && !string.IsNullOrWhiteSpace(target.ModelGuid)));
+            bool local = activatablePath && target.IsDetached == false && !cloud && !string.IsNullOrWhiteSpace(target.Path) && System.IO.Path.IsPathRooted(target.Path);
+            detail["suggested_call"] = new JObject
+            {
+                ["tool"] = local ? "horizun_open_document" : "horizun_document_session",
+                ["arguments"] = local ? new JObject { ["path"] = target.Path, ["idempotency_key"] = Guid.NewGuid().ToString() } : new JObject { ["operation"] = "activate", ["target_document"] = target.Title },
+                ["then"] = new JObject { ["tool"] = tool, ["arguments"] = request?.DeepClone() ?? new JObject() },
+                ["condition"] = local ? "Only call while this same document remains open; verify activation succeeded before retrying." : cloud ? "Rehearse, then apply with dry_run=false; verify activation before retrying. Revit may override local cloud changes when restored, relinquished or out of date." : "Provide a new local save_as_path; rehearse and apply with dry_run=false and its token, then verify activation before retrying."
+            };
+            return detail;
+        }
+    }
     /// <summary>What we know about one document, independent of any Revit object.</summary>
     public sealed class DocIdentity
     {
@@ -39,6 +62,8 @@ namespace Horizun.Revit.Core
         public string Path { get; set; }
 
         public bool IsWorkshared { get; set; }
+        public bool? IsDetached { get; set; } = false;
+        public bool? IsCloud { get; set; }
 
         /// <summary>
         /// Cloud/worksharing identity when available (model GUID). The only field that is
@@ -232,6 +257,31 @@ namespace Horizun.Revit.Core
             if (hits.Count > 0) return Settle(result, hits, "title");
 
             return result;
+        }
+
+        public static DocMatch FindTarget(IList<DocIdentity> candidates, string target)
+        {
+            var result = new DocMatch { Outcome = DocMatchOutcome.None };
+            if (candidates == null || string.IsNullOrWhiteSpace(target)) return result;
+            string normalized = DocIdentity.NormalizePath(target);
+            bool isPath = normalized.IndexOf('/') >= 0;
+            var hits = IndicesWhere(candidates, c =>
+            {
+                if (isPath) return DocIdentity.SamePath(c.Path, target);
+                string filename = c.PathNormalized;
+                if (filename != null) filename = filename.Substring(filename.LastIndexOf('/') + 1);
+                return SameName(c.Title, target) || SameName(filename, target);
+            });
+            return hits.Count == 0 ? result : Settle(result, hits, isPath ? "path" : "title or filename");
+        }
+
+        private static bool SameName(string a, string b)
+        {
+            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
+            a = a.Trim(); b = b.Trim();
+            if (a.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase)) a = a.Substring(0, a.Length - 4);
+            if (b.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase)) b = b.Substring(0, b.Length - 4);
+            return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
         }
 
         private static DocMatch Settle(DocMatch result, List<int> hits, string basis)

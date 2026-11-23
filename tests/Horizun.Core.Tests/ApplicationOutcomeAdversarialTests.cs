@@ -207,6 +207,39 @@ namespace Horizun.Core.Tests
             Assert.Equal(ApplicationState.Uncertain, ApplicationOutcome.Read(payload));
         }
 
+        [Theory]
+        [InlineData("api_rehearsal", null)]
+        [InlineData("dry_run", false)]
+        [InlineData("transaction_status", "Committed")]
+        [InlineData("api_rehearsal.dry_run", "true")]
+        [InlineData("api_rehearsal.transaction_status", "Pending")]
+        [InlineData("api_rehearsal.changes_applied", true)]
+        [InlineData("api_rehearsal.provisional_elements_absent", false)]
+        [InlineData("application.applied", 1)]
+        [InlineData("application.unresolved", 1)]
+        [InlineData("application.failed", 1)]
+        [InlineData("application.unknown", 1)]
+        public void A_rolled_back_rehearsal_requires_coherent_evidence(string field, object value)
+        {
+            var payload = new JObject
+            {
+                ["dry_run"] = true,
+                ["transaction_status"] = "RolledBack",
+                ["api_rehearsal"] = new JObject
+                {
+                    ["dry_run"] = true,
+                    ["transaction_status"] = "RolledBack",
+                    ["changes_applied"] = false,
+                    ["provisional_elements_absent"] = true
+                },
+                [ApplicationOutcome.Key] = ApplicationOutcome.Declare(ApplicationState.Rehearsed, "RolledBack", 1, 0, 0, 0, 0, 0)
+            };
+            Assert.Equal(ApplicationState.Rehearsed, ApplicationOutcome.Read(payload));
+            payload.SelectToken(field, errorWhenNoMatch: true).Replace(value == null ? JValue.CreateNull() : JToken.FromObject(value));
+
+            Assert.Equal(ApplicationState.Uncertain, ApplicationOutcome.Read(payload));
+        }
+
         [Fact]
         public void A_fully_applied_flag_that_disagrees_with_its_own_state_is_uncertain()
         {

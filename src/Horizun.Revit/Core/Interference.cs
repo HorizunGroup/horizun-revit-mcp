@@ -66,6 +66,34 @@ namespace Horizun.Revit.Core
             return new PolicyScope(prev);
         }
 
+        [ThreadStatic] private static ExportDialogMode _exportDialogMode;
+
+        private readonly List<ExportDialogDecision> _exportDecisions = new List<ExportDialogDecision>();
+
+        /// <summary>Every dialog decision taken under <see cref="WithExportDialogs"/>, in order.</summary>
+        public IList<ExportDialogDecision> ExportDecisions => _exportDecisions;
+
+        /// <summary>
+        /// Answer dialogs raised by an export from ExportDialogPolicy's closed catalog under
+        /// <paramref name="mode"/> until the returned scope is disposed. Wrap ONLY the export call.
+        /// </summary>
+        public static IDisposable WithExportDialogs(ExportDialogMode mode)
+        {
+            ExportDialogMode prevMode = _exportDialogMode;
+            _exportDialogMode = mode;
+            IDisposable inner = WithDialogAnswer(DialogAnswer.ExportKnown);
+            return new ExportScope(inner, prevMode);
+        }
+
+        private sealed class ExportScope : IDisposable
+        {
+            private readonly IDisposable _inner;
+            private readonly ExportDialogMode _prev;
+            private bool _done;
+            public ExportScope(IDisposable inner, ExportDialogMode prev) { _inner = inner; _prev = prev; }
+            public void Dispose() { if (_done) return; _done = true; _inner.Dispose(); _exportDialogMode = _prev; }
+        }
+
         private sealed class PolicyScope : IDisposable
         {
             private readonly DialogAnswer _prev;
@@ -95,9 +123,22 @@ namespace Horizun.Revit.Core
         /// <summary>The watcher for the command on this thread, or null when there is none.</summary>
         public static Interference Current => _current;
 
+        private OpenRecoverySession _recovery;
+        internal IDisposable WithRecovery(OpenRecoverySession recovery)
+        {
+            if (!FailuresObserved) throw new InvalidOperationException("Failure observer is unavailable; recovery cannot safely run.");
+            if (_recovery != null) throw new InvalidOperationException("Nested recovery scope is not allowed.");
+            _recovery = recovery ?? throw new ArgumentNullException(nameof(recovery));
+            return new RecoveryScope(this);
+        }
+        private sealed class RecoveryScope : IDisposable
+        {
+            private Interference _owner;
+            public RecoveryScope(Interference owner) { _owner = owner; }
+            public void Dispose() { if (_owner != null) { _owner._recovery = null; _owner = null; } }
+        }
         private readonly UIApplication _app;
         private readonly List<Interruption> _seen = new List<Interruption>();
-        private readonly List<Interruption> _between;
         private readonly ObservationCoverage _coverage = new ObservationCoverage();
         private bool _off;
 
@@ -132,11 +173,6 @@ namespace Horizun.Revit.Core
             catch { _coverage.SetSubscribed("dialogs", false); }
             try { _app.Application.FailuresProcessing += OnFailures; _coverage.SetSubscribed("failures", true); }
             catch { _coverage.SetSubscribed("failures", false); }
-            // What the idle watcher answered between commands (Revit's save reminder)
-            // is reported by the first command after it, so nobody learns it from a log.
-            // Kept apart from _seen: those are what THIS command raised, and a script's
-            // revit_raised() window and its counts must not move because of them.
-            _between = SaveReminderPolicy.Drain();
             _current = this;
         }
 
@@ -166,10 +202,14 @@ namespace Horizun.Revit.Core
         /// </summary>
         private void OnDialog(object sender, DialogBoxShowingEventArgs e)
         {
+            using var probe = CloseProbe.Enter("DialogBoxShowing");
             string what = null;
+            string dialogId = null, dialogMessage = null;
             try
             {
                 var td = e as TaskDialogShowingEventArgs;
+                dialogId = e.DialogId;
+                dialogMessage = td?.Message;
                 what = td != null ? (td.DialogId + ": " + td.Message) : e.DialogId;
             }
             catch { }
@@ -177,12 +217,38 @@ namespace Horizun.Revit.Core
             string answered;
             try
             {
+                int? noticeResult = ModalAutoClose.EventNoticeResult(dialogId, dialogMessage,
+                    Settings.AutoCloseExternalToolFailure, Settings.AutoCloseSaveReminder);
                 if (_openDialogPolicy == DialogAnswer.Human)
                 {
                     // Exactly one compiled command uses this: the Python permission
                     // request. Do not call OverrideResult at all; the person in Revit is
                     // the security boundary and must make the decision themselves.
                     answered = "left open for the machine owner to answer; the bridge did not choose";
+                }
+                else if (noticeResult == 0)
+                {
+                    // The same owner/session controls apply while the UI thread executes
+                    // a command and while the dispatcher waits. Never bypass report-only
+                    // policy through a Python/open-dialog cancel or dismiss scope.
+                    answered = "left open and reported: automatic closure of this notice is disabled by owner/session policy";
+                }
+                else if (noticeResult.HasValue)
+                {
+                    e.OverrideResult(noticeResult.Value);
+                    answered = noticeResult.Value == 2
+                        ? "save reminder cancelled without saving, by owner/session policy"
+                        : "External Tool Failure closed, by owner/session policy";
+                }
+                else if (_openDialogPolicy == DialogAnswer.ExportKnown)
+                {
+                    // horizun_export: the closed catalog decides, and the decision is kept for
+                    // the reply. Anything not in the catalog (or that offers a reload) cancels.
+                    ExportDialogDecision decision = ExportDialogPolicy.Decide(_exportDialogMode, dialogId, dialogMessage);
+                    _exportDecisions.Add(decision);
+                    e.OverrideResult(decision.Result);
+                    answered = "export dialog_policy=" + ExportDialogPolicy.Name(_exportDialogMode) + ": " + decision.Action +
+                               " (" + decision.Reason + ")";
                 }
                 else if (_openDialogPolicy == DialogAnswer.Dismiss)
                 {
@@ -195,8 +261,6 @@ namespace Horizun.Revit.Core
                     // (its links are not on this machine). Its OK is not "continue": the continue is the SECOND
                     // command link, "Ignore and continue opening the project" (TaskDialogResult.CommandLink2 = 1002).
                     // With 1 the open aborted and Revit returned no document.
-                    string dialogId = null;
-                    try { dialogId = (e as TaskDialogShowingEventArgs)?.DialogId ?? e.DialogId; } catch { }
                     if (dialogId != null && dialogId.IndexOf("Unresolved_References", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         e.OverrideResult(1002);
@@ -245,7 +309,7 @@ namespace Horizun.Revit.Core
                 IList<FailureMessageAccessor> msgs = fa.GetFailureMessages();
                 if (msgs == null || msgs.Count == 0) return;
 
-                bool dismissedAny = false;
+                bool resolvedAny = false;
                 foreach (FailureMessageAccessor m in msgs)
                 {
                     string text;
@@ -264,7 +328,7 @@ namespace Horizun.Revit.Core
                     if (sev == FailureSeverity.Warning)
                     {
                         WarningCount++;
-                        try { fa.DeleteWarning(m); dismissedAny = true; } catch { }
+                        try { fa.DeleteWarning(m); } catch { }
                         _seen.Add(new Interruption
                         {
                             Kind = "warning",
@@ -277,19 +341,32 @@ namespace Horizun.Revit.Core
                     else
                     {
                         ErrorCount++;
+                        bool resolved = false;
+                        string recoveryError = null;
+                        if (_recovery != null)
+                        {
+                            try { resolved = _recovery.TryResolve(fa, m); }
+                            catch (Exception ex)
+                            {
+                                recoveryError = ex.GetType().Name + ": " + ex.Message;
+                                _coverage.MarkProcessingFailure("failures", recoveryError);
+                            }
+                        }
+                        if (resolved) resolvedAny = true;
                         _seen.Add(new Interruption
                         {
                             Kind = "error",
                             Description = text,
-                            Answered = "NOT resolved: resolving an error changes the model, usually by deleting something. " +
-                                       "The transaction fails and you decide.",
+                            Answered = resolved
+                                ? "Default resolution requested; its effect is not yet verified. Inspect recovery evidence and do not save over the original."
+                                : (_recovery == null ? "NOT resolved: resolving an error changes the model, usually by deleting something. The transaction fails and you decide." : "NOT resolved" + (recoveryError == null ? ": Revit decides whether the open can continue." : ": " + recoveryError)),
                             Elements = ids,
                             While = Where()
                         });
                     }
                 }
 
-                if (dismissedAny) e.SetProcessingResult(FailureProcessingResult.ProceedWithCommit);
+                if (resolvedAny) e.SetProcessingResult(FailureProcessingResult.ProceedWithCommit);
             }
             catch (Exception ex)
             {
@@ -313,16 +390,13 @@ namespace Horizun.Revit.Core
             // Preserve the compact null for a genuinely quiet, fully watched command.
             // With partial observation, however, an empty list is not evidence of quiet:
             // publish the coverage facts even when the subscribed channel saw nothing.
-            if (_seen.Count == 0 && _between.Count == 0 && FullyObserved) return null;
+            if (_seen.Count == 0 && FullyObserved) return null;
 
             var items = new List<object>();
             foreach (Interruption i in _seen) items.Add(RaisedRecord.Describe(i));
-            var between = new List<object>();
-            foreach (Interruption i in _between) between.Add(RaisedRecord.Describe(i));
 
             return new
             {
-                between_commands = between,
                 observation_complete = FullyObserved,
                 dialogs_subscribed = DialogsSubscribed,
                 failures_subscribed = FailuresSubscribed,
@@ -370,9 +444,6 @@ namespace Horizun.Revit.Core
             Newtonsoft.Json.Linq.JObject block = RaisedRecord.Block(
                 watch == null ? null : watch.Seen,
                 watch != null && watch.FullyObserved);
-            var between = new Newtonsoft.Json.Linq.JArray();
-            if (watch != null) foreach (Interruption i in watch._between) between.Add(RaisedRecord.Describe(i));
-            block["between_commands"] = between;
             block["dialogs_observed"] = watch != null && watch.DialogsObserved;
             block["failures_observed"] = watch != null && watch.FailuresObserved;
             block["observation_complete"] = watch != null && watch.FullyObserved;

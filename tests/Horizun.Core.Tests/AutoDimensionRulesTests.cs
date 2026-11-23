@@ -24,6 +24,94 @@ namespace Horizun.Core.Tests
 {
     public class AutoDimensionRulesTests
     {
+        [Fact]
+        public void Opening_width_pairs_are_kept_on_their_own_host_wall()
+        {
+            var refs = new[]
+            {
+                new AutoDimensionCandidate { SubjectId = 11, HostId = 1, Source = "opening_left", X = 1, StableRepresentation = "a" },
+                new AutoDimensionCandidate { SubjectId = 11, HostId = 1, Source = "opening_right", X = 2, StableRepresentation = "b" },
+                new AutoDimensionCandidate { SubjectId = 12, HostId = 2, Source = "opening_left", X = 3, StableRepresentation = "c" },
+                new AutoDimensionCandidate { SubjectId = 12, HostId = 2, Source = "opening_right", X = 4, StableRepresentation = "d" }
+            };
+            var groups = AutoDimensionRules.OpeningWidthPairs(refs);
+            Assert.Equal(2, groups.Count);
+            Assert.Equal(new long[] { 1, 2 }, groups.Select(g => g[0].HostId.Value));
+            Assert.All(groups, g => Assert.Equal(new[] { "opening_left", "opening_right" },
+                g.Select(c => c.Source)));
+        }
+
+        [Fact]
+        public void Opening_width_pair_needs_two_distinct_reference_positions()
+        {
+            var refs = new[]
+            {
+                new AutoDimensionCandidate { SubjectId = 11, HostId = 1, Source = "opening_left", X = 1, StableRepresentation = "a" },
+                new AutoDimensionCandidate { SubjectId = 11, HostId = 1, Source = "opening_right", X = 1, StableRepresentation = "b" }
+            };
+            Assert.Empty(AutoDimensionRules.OpeningWidthPairs(refs));
+        }
+
+        [Theory]
+        [InlineData(1, 0, "horizontal")]
+        [InlineData(0, -1, "vertical")]
+        [InlineData(0.70710678, 0.70710678, null)]
+        public void Opening_chain_axis_refuses_diagonal_wall(double x, double y, string axis)
+            => Assert.Equal(axis, AutoDimensionRules.AxisForOpeningDirection(x, y));
+
+        [Theory]
+        [InlineData("top_face", true)]
+        [InlineData("bottom_face", true)]
+        [InlineData("opening_head", true)]
+        [InlineData("opening_sill", true)]
+        [InlineData("opening_left", false)]
+        public void Height_selector_is_explicit(string selector, bool valid)
+            => Assert.Equal(valid, AutoDimensionRules.IsHeightSelector(selector));
+
+        [Fact]
+        public void Four_axis_aligned_room_sides_resolve_to_distinct_opposites()
+        {
+            var sides = new[]
+            {
+                new RoomBoundarySide { WallId = 1, X0 = 0, Y0 = 0, X1 = 4, Y1 = 0 },
+                new RoomBoundarySide { WallId = 2, X0 = 4, Y0 = 0, X1 = 4, Y1 = 3 },
+                new RoomBoundarySide { WallId = 3, X0 = 4, Y0 = 3, X1 = 0, Y1 = 3 },
+                new RoomBoundarySide { WallId = 4, X0 = 0, Y0 = 3, X1 = 0, Y1 = 0 }
+            };
+            Assert.True(AutoDimensionRules.TryRectangularRoom(sides, out var rectangle, out _));
+            Assert.Equal(4, rectangle.Left.WallId);
+            Assert.Equal(2, rectangle.Right.WallId);
+            Assert.Equal(1, rectangle.Bottom.WallId);
+            Assert.Equal(3, rectangle.Top.WallId);
+            Assert.Equal("negative", AutoDimensionRules.RoomOutsideSide(rectangle, rectangle.Bottom));
+            Assert.Equal("positive", AutoDimensionRules.RoomOutsideSide(rectangle, rectangle.Top));
+            Assert.Equal("negative", AutoDimensionRules.RoomOutsideSide(rectangle, rectangle.Left));
+            Assert.Equal("positive", AutoDimensionRules.RoomOutsideSide(rectangle, rectangle.Right));
+        }
+
+        [Fact]
+        public void An_open_or_nonrectangular_room_refuses_a_complete_dimension_plan()
+        {
+            var sides = new[]
+            {
+                new RoomBoundarySide { WallId = 1, X0 = 0, Y0 = 0, X1 = 4, Y1 = 0 },
+                new RoomBoundarySide { WallId = 2, X0 = 4, Y0 = 0, X1 = 4, Y1 = 3 },
+                new RoomBoundarySide { WallId = 3, X0 = 4, Y0 = 3, X1 = 0, Y1 = 3 }
+            };
+            Assert.False(AutoDimensionRules.TryRectangularRoom(sides, out _, out var error));
+            Assert.Contains("four", error, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Dimension_line_moves_outward_past_an_annotation_box()
+        {
+            var line = PlanBox.FromCorners(0, 5, 10, 5.2);
+            var text = PlanBox.FromCorners(4, 4.8, 6, 5.4);
+            var bounds = PlanBox.FromCorners(-2, -2, 12, 12);
+            Assert.True(AutoDimensionRules.TryShiftDimensionLine(line, new[] { text },
+                bounds, "horizontal", 1, 1, 6, out double shift));
+            Assert.Equal(1, shift);
+        }
         private const double FeetPerMm = 1.0 / 304.8;
 
         private static AutoDimensionCandidate C(double x, double y, double? dx = null, double? dy = null,

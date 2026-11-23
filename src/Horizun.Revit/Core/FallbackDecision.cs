@@ -48,6 +48,7 @@ namespace Horizun.Revit.Core
         /// capability covers it; null when it failed for anything a caller could fix.
         /// </summary>
         public string UnsupportedReason { get; set; }
+        public string FallbackDenialReason { get; set; }
 
         public bool Failed => Error != null;
         public bool IsCapabilityGap => Failed && UnsupportedReason != null;
@@ -79,6 +80,7 @@ namespace Horizun.Revit.Core
             var verdict = new FallbackVerdict();
 
             int failed = 0, gaps = 0;
+            string denialReason = null;
             var gapRows = new JArray();
 
             if (outcomes != null)
@@ -87,6 +89,7 @@ namespace Horizun.Revit.Core
                 {
                     if (o == null || !o.Failed) continue;
                     failed++;
+                    if (denialReason == null) denialReason = o.FallbackDenialReason;
                     if (!o.IsCapabilityGap) continue;
 
                     gaps++;
@@ -111,9 +114,12 @@ namespace Horizun.Revit.Core
                 return verdict;
             }
 
-            // (2) No capability gap at all: ordinary failure, no signal, and the absence
-            // is the answer a client reads.
-            if (gaps == 0) return verdict;
+            // Report rejected rows on the first call, including rehearsals.
+            if (gaps == 0)
+            {
+                if (failed > 0) verdict.Signal = FallbackSignal.NotAllowed(denialReason ?? ErrorCodes.EntradaInvalida, false);
+                return verdict;
+            }
 
             // (3) THE MIXED BATCH. Some entries are gaps and some are fixable. The caller
             // is told exactly which are which and gets NO permission, because the request

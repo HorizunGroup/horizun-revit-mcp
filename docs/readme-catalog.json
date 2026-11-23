@@ -76,9 +76,9 @@
           "Ensayar y aplicar correcciones de auditoría soportadas, verificando sus resultados."
         ],
         [
-          "horizun_apply_ifc_plan",
-          "Carry out an IFC plan through typed commands that rehearse and re-read their own work.",
-          "Ejecutar un plan de IFC mediante comandos tipados que ensayan y releen su propio trabajo."
+          "horizun_selection_context",
+          "Read the context of the selection or of given ids, snapshot and diff it, and revalidate ids after a synchronize.",
+          "Leer el contexto de la selección o de ids dados, fotografiarlo y compararlo, y revalidar ids tras sincronizar."
         ],
         [
           "horizun_audit_access",
@@ -121,11 +121,6 @@
           "Seleccionar elementos, limpiar la selección, encuadrar y abrir vistas."
         ],
         [
-          "horizun_plan_from_ifc",
-          "Plan Revit elements from an IFC file under a declared mapping, without importing it.",
-          "Planificar elementos de Revit desde un IFC bajo un mapeo declarado, sin importarlo."
-        ],
-        [
           "horizun_query_model",
           "Filter by category, type, level, parameters and spatial bounds; project fields and return grouped or compact summaries.",
           "Filtrar por categoría, tipo, nivel, parámetros y límites espaciales; seleccionar campos y obtener resúmenes agrupados o compactos."
@@ -154,6 +149,21 @@
           "horizun_undo",
           "List and undo the last verified Horizun batch, refusing when the model or file changed since.",
           "Listar y deshacer el último lote verificado de Horizun, negándose si el modelo o el archivo cambiaron desde entonces."
+        ],
+        [
+          "horizun_measure_geometry",
+          "Measure solid volume, section profile, bounding box, end points and face normals of ids or a selector; unreadable elements are named, never zero.",
+          "Medir volumen sólido, perfil de sección, caja envolvente, puntos extremos y normales de caras de ids o de un selector; lo ilegible se nombra, nunca es cero."
+        ],
+        [
+          "horizun_query_relations",
+          "Read what elements are joined to, cut by, cutting, hosted by, hosting and near, with category and relation type.",
+          "Leer a qué están unidos los elementos, qué los corta, qué cortan, quién los aloja, qué alojan y qué hay cerca, con categoría y tipo de relación."
+        ],
+        [
+          "horizun_audit_support",
+          "Find floating elements, beam ends on nothing, rooms without a floor under them and a model shifted against its link (read-only).",
+          "Encontrar elementos en el aire, vigas sin apoyo en sus extremos, recintos sin piso debajo y un modelo corrido frente a su vínculo (solo lectura)."
         ]
       ]
     },
@@ -167,24 +177,14 @@
           "Vincular parámetros compartidos a categorías y comprobar su comportamiento entre grupos."
         ],
         [
-          "horizun_copy_between_documents",
-          "Copy elements between open documents, keeping identity and reporting what was substituted.",
-          "Copiar elementos entre documentos abiertos, conservando identidad y reportando lo sustituido."
-        ],
-        [
           "horizun_create_elements",
           "Create levels, grids, walls, slabs, roofs, rooms, family instances, structural members, MEP runs, openings and stairs in typed batches.",
           "Crear niveles, ejes, muros, losas, cubiertas, habitaciones, instancias, estructura, redes MEP, aperturas y escaleras en lotes tipados."
         ],
         [
-          "horizun_create_family",
-          "Create new parametric RFA files: solid/void forms, parameters, formulas, types, nested families and MEP connectors; optionally load them.",
-          "Crear archivos RFA paramétricos nuevos: sólidos/vacíos, parámetros, fórmulas, tipos, familias anidadas y conectores MEP; cargarlos opcionalmente."
-        ],
-        [
-          "horizun_family_apply",
-          "Apply family edits in a transaction with a geometry invariant and rollback on drift.",
-          "Aplicar cambios de familia en una transacción con control de geometría y reversión ante desviaciones."
+          "horizun_template_kit",
+          "Load, inspect and audit project templates through a reusable template kit.",
+          "Cargar, consultar y auditar plantillas de proyecto mediante un kit reutilizable."
         ],
         [
           "horizun_manage_materials",
@@ -192,14 +192,34 @@
           "Leer, crear y asignar materiales con sus datos de apariencia e identidad."
         ],
         [
-          "horizun_manage_system_types",
-          "Duplicate system types; edit parameters, wall/slab/roof/ceiling layer structures and MEP junction preferences.",
-          "Duplicar tipos de sistema; editar parámetros, capas de muros/losas/cubiertas/cielos y preferencias de unión MEP."
+          "horizun_manage_classification_table",
+          "Read and manage classification tables used by model types and families.",
+          "Consultar y gestionar tablas de clasificación usadas por tipos y familias del modelo."
         ],
         [
           "horizun_set_keynote",
           "Assign keynote values with the affected instance/type scope made explicit.",
           "Asignar notas clave con alcance explícito sobre instancias y tipos."
+        ],
+        [
+          "horizun_wall_sweep",
+          "Create and verify wall sweeps and reveals on explicit walls.",
+          "Crear y verificar molduras y ranuras en muros explícitos."
+        ],
+        [
+          "horizun_join_geometry",
+          "Join, unjoin and switch who cuts between walls, floors, framing, columns and foundations by a stated priority; the shared volume is re-read to zero. Finds and closes open L/T wall corners; auto_priority joins a whole level.",
+          "Unir, desunir y cambiar quién corta entre muros, losas, vigas, columnas y cimentaciones con una prioridad dicha; el volumen compartido se relee en cero. Encuentra y cierra esquinas L/T de muros abiertas; auto_priority une un nivel completo."
+        ],
+        [
+          "horizun_room_finishes",
+          "Create finish floors and baseboards by room: contour from the room's finish faces, floor type by its use, re-read area and no overlap with walls.",
+          "Crear pisos de acabado y guardaescobas por recinto: contorno desde las caras de acabado, tipo según su uso, área releída y sin traslapo con muros."
+        ],
+        [
+          "horizun_wall_finish",
+          "Match ARQ walls to the EST cores of a link and place finish walls on the core faces with no shared volume.",
+          "Emparejar muros de ARQ con los núcleos de EST de un vínculo y poner muros de acabado en sus caras sin volumen compartido."
         ],
         [
           "horizun_transform_elements",
@@ -263,14 +283,39 @@
           "Crear y configurar plantas, secciones, elevaciones, llamadas, vistas 3D, láminas, ventanas gráficas y ubicación de tablas."
         ],
         [
+          "horizun_view_crop",
+          "Set and verify view crops using model elements or rooms.",
+          "Ajustar y verificar recortes de vistas a partir de elementos o habitaciones."
+        ],
+        [
+          "horizun_sheet_layout",
+          "Read, move and arrange sheet viewports against their crop geometry.",
+          "Consultar, mover y distribuir ventanas gráficas según la geometría de sus recortes."
+        ],
+        [
+          "horizun_view_visibility",
+          "Control visibility in owned views and verify the result.",
+          "Controlar la visibilidad en vistas propias y verificar el resultado."
+        ],
+        [
           "horizun_plan_views",
           "Plan room views and deliverable sets; track delivery status, approvals and invalidation.",
           "Planear vistas por habitación y conjuntos de entrega; seguir estados, aprobaciones e invalidaciones."
         ],
         [
+          "horizun_planimetry_ops",
+          "Set grid and level extents per view, fit viewports into the frame, separate overlapping tags and texts, build a legend from the families in use.",
+          "Ajustar ejes y niveles por vista, llevar viewports dentro del marco, separar etiquetas y textos superpuestos y armar una leyenda con las familias usadas."
+        ],
+        [
           "horizun_query_planimetry",
           "Inspect sheets, views, placements, annotations and drawing references with geometry and coverage.",
           "Consultar láminas, vistas, ubicaciones, anotaciones y referencias de planos con geometría y cobertura."
+        ],
+        [
+          "horizun_room_boundaries",
+          "Read native room boundary loops and their model references.",
+          "Leer contornos nativos de habitaciones y sus referencias de modelo."
         ],
         [
           "horizun_audit_planimetry",
@@ -350,77 +395,6 @@
       ]
     },
     {
-      "en": "CAD / DWG to BIM and revision updates",
-      "es": "CAD / DWG a BIM y actualizaciones de revisión",
-      "tools": [
-        [
-          "horizun_apply_cad_plan",
-          "Build the plan through typed commands; verify source hashes and stamp created elements with CAD provenance.",
-          "Construir el plan mediante comandos tipados; comprobar hashes de origen y registrar procedencia CAD en los elementos."
-        ],
-        [
-          "horizun_apply_cad_update",
-          "Apply supported revision changes and preserve provenance for the next update.",
-          "Aplicar cambios de revisión soportados y conservar la procedencia para la siguiente actualización."
-        ],
-        [
-          "horizun_audit_cad_model",
-          "Compare the drawing against the model using provenance, geometry and measured differences.",
-          "Comparar dibujo y modelo mediante procedencia, geometría y diferencias medidas."
-        ],
-        [
-          "horizun_cad_connect",
-          "Build the joins a drawing declares, placing the fitting each junction needs and verifying it.",
-          "Construir las uniones que declara un dibujo, colocando el accesorio que pide cada nudo y verificándolo."
-        ],
-        [
-          "horizun_cad_extract",
-          "Extract CAD geometry and, with a readable source DWG, text; plan detail transfer with measured gaps.",
-          "Extraer geometría CAD y, con DWG fuente legible, texto; planear el detalle con brechas medidas."
-        ],
-        [
-          "horizun_cad_networks",
-          "Derive the network a drawing describes: which ends meet, what belongs between them and which stay open.",
-          "Derivar la red que describe un dibujo: qué extremos se encuentran, qué va entre ellos y cuáles quedan abiertos."
-        ],
-        [
-          "horizun_cad_review",
-          "Report what a conversion could not settle, with the evidence for each held candidate.",
-          "Reportar lo que una conversión no pudo resolver, con la evidencia de cada candidato retenido."
-        ],
-        [
-          "horizun_cad_symbols",
-          "List the block symbols a drawing defines and where each one is placed.",
-          "Listar los símbolos de bloque que define un dibujo y dónde se coloca cada uno."
-        ],
-        [
-          "horizun_cad_unit_instances",
-          "Find repeated units in a drawing and the transform that places each occurrence.",
-          "Encontrar unidades repetidas en un dibujo y la transformación que coloca cada aparición."
-        ],
-        [
-          "horizun_manage_cad_links",
-          "List, add, reload and repoint CAD links with measured state.",
-          "Listar, añadir, recargar y cambiar rutas de vínculos CAD con estado medido."
-        ],
-        [
-          "horizun_plan_cad_update",
-          "Plan changes between DWG revisions while identifying manual model edits that need review.",
-          "Planear cambios entre revisiones DWG e identificar modificaciones manuales del modelo que requieren revisión."
-        ],
-        [
-          "horizun_plan_from_cad",
-          "Interpret a DWG using supplied versioned rules and return a dependency-ordered BIM plan with omissions and provenance.",
-          "Interpretar un DWG con reglas versionadas proporcionadas y producir un plan BIM ordenado con omisiones y procedencia."
-        ],
-        [
-          "horizun_query_cad",
-          "Inspect DWG instances, layers, curve geometry, profiles and readable coverage.",
-          "Consultar instancias DWG, capas, curvas, perfiles y cobertura legible."
-        ]
-      ]
-    },
-    {
       "en": "Structure, reinforcement, MEP and coordination",
       "es": "Estructura, refuerzo, MEP y coordinación",
       "tools": [
@@ -430,49 +404,9 @@
           "Leer evidencia de los registros de Desktop Connector sobre asignación de archivos locales a carpetas ACC."
         ],
         [
-          "horizun_apply_reinforcement",
-          "Apply supported reinforcement plans with typed checks and verification.",
-          "Aplicar planes de refuerzo soportados mediante comprobaciones tipadas y verificación."
-        ],
-        [
-          "horizun_audit_reinforcement",
-          "Audit reinforcement against supplied requirements and report coverage.",
-          "Auditar refuerzo contra requisitos proporcionados y reportar cobertura."
-        ],
-        [
-          "horizun_clash",
-          "Detect scoped clashes, plan supported penetrations and record coordination findings.",
-          "Detectar interferencias en un alcance definido, planear penetraciones soportadas y registrar hallazgos."
-        ],
-        [
-          "horizun_connect_mep",
-          "Connect or disconnect named MEP connectors, refusing to close a visible gap by moving geometry.",
-          "Conectar o desconectar conectores MEP nombrados, negándose a cerrar un hueco visible moviendo geometría."
-        ],
-        [
-          "horizun_coordination",
-          "Track coordination findings, assignments, decisions, evidence and model-detected resolution or regression.",
-          "Seguir hallazgos, asignaciones, decisiones, evidencia y resolución o reaparición medida en el modelo."
-        ],
-        [
-          "horizun_manage_links",
-          "Manage Revit links and screen linked-view candidates with explicit uncertainty.",
-          "Gestionar vínculos de Revit y analizar candidatos visibles con incertidumbre explícita."
-        ],
-        [
-          "horizun_plan_mep",
-          "Plan pipe/duct routes and fittings; inspect networks through actual connector connectivity.",
-          "Planear rutas y accesorios de tuberías/conductos; consultar redes mediante conectividad real de conectores."
-        ],
-        [
           "horizun_read_schedule",
           "Read reinforcement schedule sheets (vector PDF, DWG entities) into bar rows and named self-checks, and propose beam cards as a requirement set keyed by mark; refuse what cannot be read.",
           "Leer hojas de despiece (PDF vectorial, entidades DWG) en filas de barras y autocomprobaciones con nombre, y proponer las cartillas de vigas como un conjunto de requisitos por marca; rechazar lo que no se lee con certeza."
-        ],
-        [
-          "horizun_plan_reinforcement",
-          "Plan reinforcement from supplied host and reinforcement requirements.",
-          "Planear refuerzo a partir de anfitriones y requisitos proporcionados."
         ],
         [
           "horizun_plan_structure",
@@ -488,26 +422,6 @@
           "horizun_structural_connections",
           "Read and apply structural connection types between framing elements.",
           "Leer y aplicar tipos de conexión estructural entre elementos de estructura."
-        ],
-        [
-          "horizun_mep_routing",
-          "Read and edit routing preferences and catalogue sizes, resize MEP runs to catalogue sizes and plan sizes by flow.",
-          "Leer y editar preferencias de enrutamiento y tamaños de catálogo, redimensionar tramos MEP y planear tamaños por caudal."
-        ],
-        [
-          "horizun_electrical",
-          "List panels and circuits, create circuits, assign panels, add or remove elements and create panel schedules.",
-          "Listar tableros y circuitos, crear circuitos, asignar tableros, añadir o quitar elementos y crear cuadros de carga."
-        ],
-        [
-          "horizun_resolve_clash",
-          "Propose and apply the smallest safe move for MEP clashes, proved by re-detecting and rolled back if anything new clashes.",
-          "Proponer y aplicar el menor movimiento seguro para clashes MEP, probado redetectando y revertido si aparece un clash nuevo."
-        ],
-        [
-          "horizun_federation_check",
-          "Check that each federated model holds only its disciplines, its expected links and coherent shared coordinates.",
-          "Comprobar que cada modelo federado contiene solo sus disciplinas, sus vínculos esperados y coordenadas compartidas coherentes."
         ]
       ]
     },
@@ -574,6 +488,11 @@
           "horizun_manage_worksets",
           "List, create and rename worksets, move elements between them and set per-view visibility.",
           "Listar, crear y renombrar worksets, mover elementos entre ellos y ajustar su visibilidad por vista."
+        ],
+        [
+          "horizun_split_by_level",
+          "Split one wall, column or vertical MEP run at every crossed level and verify the pieces.",
+          "Partir un muro, columna o tramo MEP vertical en cada nivel que cruza y verificar las piezas."
         ]
       ]
     },
@@ -651,6 +570,11 @@
           "horizun_run_procedure",
           "Run a named, versioned procedure that this machine has stored, with its own consent.",
           "Ejecutar un procedimiento nombrado y versionado guardado en esta máquina, con su propio consentimiento."
+        ],
+        [
+          "horizun_api_help",
+          "Describe Revit API members and check call signatures by reflecting the API this Revit has loaded.",
+          "Describir miembros de la API de Revit y comprobar firmas de llamada reflejando la API que este Revit cargó."
         ]
       ]
     },
@@ -672,11 +596,6 @@
           "horizun_information_container",
           "Name, seal, verify, inspect and transition information containers across WIP, Shared, Published and Archived folders.",
           "Nombrar, sellar, verificar, inspeccionar y promover contenedores de información entre carpetas WIP, Compartido, Publicado y Archivado."
-        ],
-        [
-          "horizun_deliver_ifc",
-          "Export an IFC and prove it: IDS on the file, property-set mapping coverage, georeference, BCF of failures and a sealed container.",
-          "Exportar un IFC y demostrarlo: IDS sobre el archivo, cobertura del mapeo de Psets, georreferencia, BCF de fallos y contenedor sellado."
         ],
         [
           "horizun_cde_cloud",
