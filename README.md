@@ -40,6 +40,12 @@ The first Community release since 4.0.1. The detail is in the [CHANGELOG](CHANGE
 - **Annotation, views and delivery:** tags that look for a free spot and refuse the batch when none is found, note leaders verified against their target, rehearsed polygonal view crops, `horizun_selection_context` `operation=view_contents`, `horizun_manage_worksets` `operation=loans`, export folders created on apply (`require_existing_folder` to require them) and `horizun_export` `pdf_qa`.
 - **Collaborative models:** `horizun_save_document` `operation=sync_with_central` rehearses and applies with its `confirmation_token`, and is refused while a write of the session has a failed or unmeasured check.
 
+## 101 real client tasks
+
+The same 101 client tasks and the same criterion in every version, measured in Revit 2025 and 2026. Pro 6.0.1 completes 99 of 101; the free Community 6.0.0, with fewer tools, completes 49. Point cloud to model: 91 % fidelity on visible faces (Pro), measured in Revit on a real industrial plant. The chart is in Spanish.
+
+![Horizun MCP across 101 real Revit tasks](docs/benchmarks/clientes/grafica-clientes-6.0.1.png)
+
 ## Community vs Pro
 
 | Capability area | Community (this repository) | Pro |

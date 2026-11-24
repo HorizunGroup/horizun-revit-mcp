@@ -41,6 +41,12 @@ Primera versión Community desde la 4.0.1. El detalle está en el [CHANGELOG](CH
 - **Anotación, vistas y entrega:** etiquetas que buscan un sitio libre y rechazan el lote si no lo encuentran, directrices de notas verificadas contra su destino, recortes poligonales de vista con ensayo, `horizun_selection_context` `operation=view_contents`, `horizun_manage_worksets` `operation=loans`, carpetas de exportación creadas al aplicar (`require_existing_folder` para exigirlas) y `horizun_export` `pdf_qa`.
 - **Modelos colaborativos:** `horizun_save_document` `operation=sync_with_central` ensaya y aplica con su `confirmation_token`, y se niega mientras una escritura de la sesión tenga una verificación fallida o sin medir.
 
+## 101 tareas reales de clientes
+
+Mismas 101 tareas de clientes y mismo criterio en cada versión, medidas en Revit 2025 y 2026. La edición Pro 6.0.1 resuelve 99 de 101; la Community 6.0.0, gratuita y con menos herramientas, resuelve 49. Nube de puntos a modelo: 91 % de fidelidad en caras visibles (Pro), medido en Revit sobre una planta industrial real.
+
+![Evolución del MCP de Horizun en 101 tareas reales de Revit](docs/benchmarks/clientes/grafica-clientes-6.0.1.png)
+
 ## Community frente a Pro
 
 | Área | Community (este repositorio) | Pro |
