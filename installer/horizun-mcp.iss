@@ -730,6 +730,114 @@ begin
   DeleteFile(Path);
 end;
 
+{ ---- Community must never silently replace an installed Pro ------------------
+  Both editions share this AppId, install folder, add-in folder and MCP name, so
+  running this Setup over a Pro would overwrite it without a word. Signals read
+  from what is installed, in this order (install-release.ps1 reads the same):
+    1. manifest.json "Edition": "community" is Community, any other value is Pro.
+    2. no "Edition" and manifest.json has "LicenseTestKey" (Pro packaging only).
+    3. no "Edition" and a Pro-only type name inside an installed Horizun.Revit.dll
+       (Pro builds from before the stamp, and source installs).
+  Something installed with none of these is an older Community: it upgrades as
+  before. An unknown install is not treated as Pro. Setup refuses BEFORE changing
+  anything; there is deliberately no switch to override it. }
+function InstalledAppDir: String;
+begin
+  Result := '';
+  if not RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1',
+    'InstallLocation', Result) then
+    if not RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}_is1',
+      'InstallLocation', Result) then
+      Result := '';
+  if Result = '' then Result := ExpandConstant('{localappdata}') + '\Programs\Horizun\MCP';
+  while (Result <> '') and (Result[Length(Result)] = '\') do Delete(Result, Length(Result), 1);
+end;
+
+function ManifestEditionValue(const Raw: AnsiString): String;
+var
+  At, Colon, QOpen, QClose: Integer;
+  Tail: String;
+  Needle: AnsiString;
+begin
+  { The text of "Edition": "<value>", lower-cased; '' when absent. }
+  Result := '';
+  Needle := '"Edition"';
+  At := Pos(Needle, Raw);
+  if At = 0 then exit;
+  Tail := Copy(String(Raw), At + 9, 80);
+  Colon := Pos(':', Tail);
+  if Colon = 0 then exit;
+  Tail := Copy(Tail, Colon + 1, Length(Tail));
+  QOpen := Pos('"', Tail);
+  if QOpen = 0 then exit;
+  Tail := Copy(Tail, QOpen + 1, Length(Tail));
+  QClose := Pos('"', Tail);
+  if QClose = 0 then exit;
+  Result := Lowercase(Trim(Copy(Tail, 1, QClose - 1)));
+  if Result = '' then Result := '?';
+end;
+
+function FileHasProOnlyType(const Path: String): Boolean;
+var
+  Raw, Needle: AnsiString;
+begin
+  Result := False;
+  if not FileExists(Path) then exit;
+  if not LoadStringFromFile(Path, Raw) then exit;
+  Needle := 'ElectricalCommand';
+  if Pos(Needle, Raw) > 0 then Result := True;
+  Needle := 'PlanMepCommand';
+  if Pos(Needle, Raw) > 0 then Result := True;
+end;
+
+function InstalledProEvidence: String;
+var
+  Manifest, Edition, Dll: String;
+  Raw, Needle: AnsiString;
+  I: Integer;
+  Explicit, Pro: Boolean;
+begin
+  { '' when no Pro is installed, otherwise the signals that said so. }
+  Result := '';
+  Explicit := False;
+  Pro := False;
+  Manifest := InstalledAppDir + '\manifest.json';
+  if FileExists(Manifest) and LoadStringFromFile(Manifest, Raw) then
+  begin
+    Edition := ManifestEditionValue(Raw);
+    if Edition <> '' then
+    begin
+      Explicit := True;
+      if Edition <> 'community' then
+      begin
+        Pro := True;
+        AddEvidence(Result, 'manifest.json Edition=' + Edition + ' (' + Manifest + ')');
+      end;
+    end
+    else
+    begin
+      Needle := '"LicenseTestKey"';
+      if Pos(Needle, Raw) > 0 then
+      begin
+        Pro := True;
+        AddEvidence(Result, 'manifest.json has LicenseTestKey (Pro packaging) (' + Manifest + ')');
+      end;
+    end;
+  end;
+  if (not Explicit) and (not Pro) then
+    for I := 0 to YearsCount - 1 do
+    begin
+      Dll := ExpandConstant('{userappdata}') + '\Autodesk\Revit\Addins\' + Years[I] + '\Horizun\Horizun.Revit.dll';
+      if FileHasProOnlyType(Dll) then
+      begin
+        Pro := True;
+        AddEvidence(Result, 'Pro-only type found in ' + Dll);
+        break;
+      end;
+    end;
+  if not Pro then Result := '';
+end;
+
 function InitializeSetup: Boolean;
 var
   I: Integer;
@@ -737,6 +845,25 @@ var
   ExpectedUserManifest, Evidence: String;
 begin
   Result := True;
+  InitYears;
+  Evidence := InstalledProEvidence;
+  if Evidence <> '' then
+  begin
+    { No message box when silent: a hidden box would hang an unattended install
+      instead of failing it. The reason goes to the /LOG file and to
+      %LOCALAPPDATA%\Horizun\install-precheck.json, and the exit code is 14. }
+    if WizardSilent then
+    begin
+      Log('Preflight refused: cause=pro_installed exit_code=14 evidence=' + Evidence);
+      WritePrecheck('pro_installed', 14, Evidence);
+      Win32ExitProcess(14);
+    end;
+    RefusePreflight('pro_installed',
+      L('Ya hay una edición Pro de Horizun Revit MCP instalada. Esta instalación Community la reemplazaría, y Pro ya incluye todo lo que trae Community.' + #13#10#13#10 +
+        'Para cambiar de todos modos, desinstala primero Horizun Revit MCP desde Aplicaciones instaladas de Windows y vuelve a ejecutar este instalador.',
+        'A Horizun Revit MCP Pro edition is already installed. This Community Setup would replace it, and Pro already contains everything Community has.' + #13#10#13#10 +
+        'To switch anyway, first uninstall Horizun Revit MCP from Windows Installed apps, then run this Setup again.'), Evidence, 14);
+  end;
   if RevitIsRunning then
   begin
     Evidence := RevitProcessEvidence;

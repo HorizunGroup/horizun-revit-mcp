@@ -159,6 +159,68 @@ function Get-HorizunInstalledAppDir([string[]]$UninstallKeys) {
     return (Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP')
 }
 
+# ---- Community must never silently replace an installed Pro -------------------
+# Both editions share the AppId, install folder, add-in folder and MCP name, so a
+# Community Setup over a Pro would overwrite it. Signals, in this order (the same
+# ones installer/horizun-mcp.iss reads):
+#   1. manifest.json 'Edition' ('community' = Community; any other value = Pro).
+#   2. no 'Edition' and manifest.json has 'LicenseTestKey' (written by Pro packaging).
+#   3. no 'Edition' and a Pro-only type name inside an installed Horizun.Revit.dll
+#      (covers Pro builds from before the stamp, and source installs).
+# No signal at all but something installed = an older Community. Unknown is not Pro.
+$script:HorizunProMarkers = @('ElectricalCommand', 'PlanMepCommand')
+
+function Get-HorizunInstalledEdition([string]$AppDir, [string[]]$AddinRoots) {
+    if (-not $AddinRoots) {
+        $AddinRoots = @(2023..2027 | ForEach-Object { Join-Path $env:APPDATA "Autodesk\Revit\Addins\$_\Horizun" })
+    }
+    $signals = New-Object System.Collections.Generic.List[string]
+    $found = $false
+    $explicit = $null
+    $manifestPath = Join-Path $AppDir 'manifest.json'
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $found = $true
+        try {
+            $doc = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $names = @($doc.PSObject.Properties.Name)
+            if ($names -contains 'Edition') {
+                $explicit = ([string]$doc.Edition).Trim().ToLowerInvariant()
+                $signals.Add("manifest Edition='$explicit'")
+            }
+            elseif ($names -contains 'LicenseTestKey') { $signals.Add('manifest has LicenseTestKey (Pro packaging)') }
+        } catch { $signals.Add('manifest.json unreadable') }
+    }
+    $dllHit = $false
+    $latin1 = [Text.Encoding]::GetEncoding(28591)
+    foreach ($root in $AddinRoots) {
+        $dll = Join-Path $root 'Horizun.Revit.dll'
+        if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { continue }
+        $found = $true
+        try {
+            $text = $latin1.GetString([IO.File]::ReadAllBytes($dll))
+            foreach ($marker in $script:HorizunProMarkers) {
+                if ($text.Contains($marker)) { $dllHit = $true; $signals.Add("Pro-only type '$marker' in $dll"); break }
+            }
+        } catch { $signals.Add("could not read $dll") }
+    }
+    $edition = 'none'
+    if ($found) {
+        if ($explicit -eq 'community') { $edition = 'community' }
+        elseif ($explicit) { $edition = 'pro' }
+        elseif ($dllHit -or ($signals -match 'LicenseTestKey')) { $edition = 'pro' }
+        else { $edition = 'community' }
+    }
+    [pscustomobject]@{ Edition = $edition; Signals = @($signals) }
+}
+
+function Get-HorizunProInstalledMessage {
+    'Ya hay una edicion Pro de Horizun Revit MCP instalada. Community la reemplazaria, y Pro ya incluye todo lo que trae Community. ' +
+    'Para cambiar de todos modos, desinstala primero Horizun Revit MCP desde Aplicaciones instaladas de Windows y vuelve a ejecutar este instalador. No se descargo ni cambio nada.' +
+    [Environment]::NewLine +
+    'A Horizun Revit MCP Pro edition is already installed. Community would replace it, and Pro already contains everything Community has. ' +
+    'To switch anyway, first uninstall Horizun Revit MCP from Windows Installed apps, then run this installer again. Nothing was downloaded or changed.'
+}
+
 function New-HorizunSetupArguments([string]$ResultPath, [string]$InstallerClient) {
     $resultArgument = '/HORIZUNRESULT="' + $ResultPath.Replace('"', '""') + '"'
     @($resultArgument, "/HORIZUNCLIENT=$InstallerClient", '/NORESTART')
@@ -179,6 +241,11 @@ $temporary = Join-Path ([IO.Path]::GetTempPath()) ('horizun-release-install-' + 
 try {
     if (@(Get-Process -Name Revit -ErrorAction SilentlyContinue).Count -gt 0) {
         throw 'Revit is running. Close every Revit window and run this installer again. Nothing was downloaded or changed.'
+    }
+    $installed = Get-HorizunInstalledEdition (Get-HorizunInstalledAppDir)
+    if ($installed.Edition -eq 'pro') {
+        Write-Host ('[Horizun] Pro detected: ' + ($installed.Signals -join '; ')) -ForegroundColor Yellow
+        throw (Get-HorizunProInstalledMessage)
     }
     New-Item -ItemType Directory -Path $temporary | Out-Null
     Write-Host "[Horizun] reading release metadata from $api" -ForegroundColor Cyan

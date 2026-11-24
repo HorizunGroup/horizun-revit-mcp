@@ -3,6 +3,14 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v6.0.1 (sin publicar)
+
+- **Community ya no reemplaza en silencio a Pro.** Las dos ediciones comparten el mismo AppId, carpeta de instalación, carpeta del add-in y nombre de registro en el cliente MCP, así que instalar Community sobre una Pro la sobrescribía sin avisar. Ahora el Setup Community mira lo que hay instalado y, si es Pro, se detiene antes de cambiar nada: dice que Pro ya incluye todo lo de Community y que, para cambiar de todos modos, hay que desinstalar primero Horizun Revit MCP desde Aplicaciones instaladas de Windows. Mensaje en español o inglés según el idioma elegido.
+  - Señales, en este orden: (1) `manifest.json` con `Edition` (`community` es Community; cualquier otro valor se trata como Pro); (2) sin `Edition`, un manifiesto con `LicenseTestKey` (lo escribe solo el empaquetado Pro); (3) sin `Edition`, un tipo exclusivo de Pro (`ElectricalCommand` o `PlanMepCommand`) dentro de un `Horizun.Revit.dll` instalado, que cubre las Pro anteriores al sello y las instalaciones desde fuente. Una instalación sin ninguna señal es una Community anterior y se actualiza como siempre; un caso desconocido no se trata como Pro. Desde esta versión `pack.ps1` escribe `Edition: community` en el manifiesto.
+  - Instalación silenciosa (`/SILENT`, `/VERYSILENT`): no abre ventana, termina con código de salida 14 y deja la causa (`pro_installed`) y las señales en el registro de `/LOG` y en `%LOCALAPPDATA%\Horizun\install-precheck.json`. Interactiva: ventana de error y el mismo código 14.
+  - `install-release.ps1` hace la misma comprobación antes de crear la carpeta temporal o tocar la red, y se detiene con el mismo mensaje. No hay opción para saltarse la comprobación: se desinstala Pro primero.
+  - Pruebas: `scripts/community-over-pro.tests.ps1` (instalaciones de prueba para cada señal, Community sobre Community y que el Setup, el bootstrap y `pack.ps1` coincidan), enlazada en CI. El Setup compila con ISCC; no se ha probado todavía un Setup real sobre una máquina con Pro.
+
 ## v6.0.0 Community (2026-11-22)
 
 **Resumen.** Primera versión Community desde la 4.0.1. Trae al repositorio público el mismo código 6.0.0 de las herramientas Community, con todo lo que esas herramientas ganaron desde la 4.0.1. Licencia Apache-2.0, sin cambios.
