@@ -42,9 +42,9 @@ The first Community release since 4.0.1. The detail is in the [CHANGELOG](CHANGE
 
 ## 101 real client tasks
 
-The same 101 client tasks and the same criterion in every version, measured in Revit 2025 and 2026. Pro 6.0.1 completes 99 of 101; the free Community 6.0.0, with fewer tools, completes 49. Point cloud to model: 91 % fidelity on visible faces (Pro), measured in Revit on a real industrial plant. The chart is in Spanish.
+The same 101 client tasks and the same criterion in every version, measured in Revit 2025 and 2026. Pro 6.0.1 completes 99 of 101; the free Community 6.0.0, with fewer tools, completes 49. Point cloud to model: 91 % fidelity on visible faces (Pro), measured in Revit on a real industrial plant.
 
-![Horizun MCP across 101 real Revit tasks](docs/benchmarks/clientes/grafica-clientes-6.0.1.png)
+![How much can AI really do in Revit? Horizun MCP capability by area, Community vs PRO](docs/benchmarks/clientes/capacidad-por-area.png)
 
 ## Community vs Pro
 
