@@ -366,6 +366,8 @@ $doc = [pscustomobject]@{
     Schema         = 2
     Commit         = $commit
     CleanTree      = (-not $dirty)
+    # Which product this stage is. Setup of the other edition reads it to refuse replacing this one.
+    Edition        = 'community'
     BuiltUtc       = (Get-Date).ToUniversalTime().ToString('o')
     Config         = $Config
     Server         = [pscustomobject]@{

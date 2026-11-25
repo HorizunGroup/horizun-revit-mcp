@@ -111,6 +111,7 @@ jobs:
             'scripts/manifest-integrity.tests.ps1'
             'scripts/client-process.tests.ps1'
             'scripts/install-release-helpers.tests.ps1'
+            'scripts/community-over-pro.tests.ps1'
             'scripts/scan-sensitive.tests.ps1'
             'scripts/server-update.tests.ps1'
             'scripts/public-consistency.tests.ps1'
