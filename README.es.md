@@ -10,6 +10,14 @@ cantidades, Excel, Power BI y exportación. El modelado MEP, DWG a BIM, el
 refuerzo, IFC a BIM y la entrega IFC, las nubes de puntos, la autoría de familias
 y la coordinación están en la edición Pro: ver [Community frente a Pro](#community-frente-a-pro).
 
+> **Pásate a Pro.** Pro suma modelado MEP, DWG e IFC a BIM, refuerzo
+> estructural, nube de puntos a modelo, autoría de familias y coordinación
+> (vínculos RVT, detección de interferencias) a todo lo que trae Community.
+> **[Ver precios de Pro](https://horizunhub.com/precios/?utm_source=github&utm_medium=readme&utm_campaign=horizun-revit-mcp)**
+>
+> Community termina en la 6.0.0: las versiones nuevas salen en Pro. Este
+> repositorio sigue público y la 6.0.0 se puede seguir descargando.
+
 Trabaja con objetivos en lenguaje natural desde tu cliente MCP para crear
 contenido BIM nuevo, consultar modelos y ejecutar flujos de producción de varios
 pasos. Los cambios tipados incluyen ensayo, objetivos explícitos y verificación
