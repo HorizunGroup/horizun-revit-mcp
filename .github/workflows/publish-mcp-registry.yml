@@ -1,0 +1,94 @@
+# Publish one existing release to the official MCP registry, on demand.
+#
+# ci.yml publishes the registry entry at the end of the tag pipeline, but only
+# when every earlier job of that pipeline succeeds. A release published any
+# other way (v6.0.0 was) never reaches the registry. This workflow closes that
+# gap: it takes the version of a release that ALREADY exists, rebuilds
+# server.json from that tag's own generator and the release's own .mcpb, and
+# publishes with GitHub OIDC - no personal token is involved.
+name: publish-mcp-registry
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to publish, without the v (for example 6.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'HorizunGroup/horizun-revit-mcp' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Accept only a stable version number
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like 6.0.0"; exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/v${{ inputs.version }}
+          persist-credentials: false
+
+      - name: Download the release's own extension
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p registry-package
+          gh release download "v$VERSION" -R "$GITHUB_REPOSITORY" -p "horizun-revit-$VERSION.mcpb" -D registry-package
+
+      - name: Build server.json from the tag's generator and the downloaded extension
+        shell: pwsh
+        run: |
+          pwsh scripts/generate-mcp-manifest.ps1 -OutFile registry-package/server.json -PackagePath "registry-package/horizun-revit-$env:VERSION.mcpb" -RequirePackage
+          if ($LASTEXITCODE -ne 0) { throw 'server.json could not be generated' }
+          $meta = Get-Content registry-package/server.json -Raw | ConvertFrom-Json
+          if ($meta.version -ne $env:VERSION) { throw "the tag declares version $($meta.version), not $env:VERSION" }
+          $meta.websiteUrl = 'https://horizunhub.com/en/pricing/?utm_source=mcp-registry&utm_medium=directory&utm_campaign=horizun-revit-mcp'
+          $meta | ConvertTo-Json -Depth 10 | Set-Content registry-package/server.json -Encoding utf8NoBOM
+          Get-Content registry-package/server.json
+
+      - name: Install the pinned official MCP publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://github.com/modelcontextprotocol/registry/releases/download/v1.8.0/mcp-publisher_linux_amd64.tar.gz'
+          expected='1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf'
+          curl --fail --location --proto '=https' --tlsv1.2 "$url" --output mcp-publisher.tar.gz
+          echo "$expected  mcp-publisher.tar.gz" | sha256sum --check --strict
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          ./mcp-publisher validate registry-package/server.json
+
+      - name: Authenticate with OIDC and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish registry-package/server.json
+
+      - name: Confirm the registry lists this version
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.HorizunGroup/horizun-revit-mcp" \
+              | jq -e --arg v "$VERSION" '.servers[] | select(.server.name=="io.github.HorizunGroup/horizun-revit-mcp" and .server.version==$v)' >/dev/null; then
+              echo "registry lists $VERSION"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::the registry does not list $VERSION yet"; exit 1
