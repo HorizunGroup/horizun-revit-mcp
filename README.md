@@ -13,7 +13,7 @@ coordination are in the Pro edition: see [Community vs Pro](#community-vs-pro).
 > **Upgrade to Pro.** Pro adds MEP modeling, DWG and IFC to BIM, structural
 > reinforcement, point clouds to model, family authoring and coordination
 > (RVT links, clash detection) to everything in Community.
-> **[See Pro pricing](https://horizunhub.com/precios/?utm_source=github&utm_medium=readme&utm_campaign=horizun-revit-mcp)**
+> **[See Pro pricing](https://horizunhub.com/en/pricing/?utm_source=github&utm_medium=readme&utm_campaign=horizun-revit-mcp)**
 >
 > Community ends at 6.0.0: new versions ship in Pro. This repository stays
 > public, and 6.0.0 remains available to download.
@@ -729,7 +729,7 @@ Horizun Hub teaches, in Spanish, how to direct AI agents in real construction an
 New to agents? Level 1 of [Opera agentes de IA desde cero](https://horizunhub.com/academia/agentes-ia-desde-cero/?utm_source=github&utm_medium=readme&utm_campaign=horizun-revit-mcp) is free with an account.
 
 Built in Colombia 🇨🇴 and maintained by Horizun Group as part of
-[Horizun Hub](https://horizunhub.com). The bridge is organisation-neutral;
+[Horizun Hub](https://horizunhub.com/?utm_source=github&utm_medium=readme&utm_campaign=horizun-revit-mcp). The bridge is organisation-neutral;
 project standards and catalogs are supplied as inputs. The optional
 [standards pack](standards/README.md) provides editable examples.
 

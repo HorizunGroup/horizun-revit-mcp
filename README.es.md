@@ -739,7 +739,7 @@ de diseño de la evidencia de ejecución real.
 [Política de releases](docs/RELEASE-POLICY.md)
 
 Hecho en Colombia 🇨🇴 y mantenido por Horizun Group como parte de
-[Horizun Hub](https://horizunhub.com). El puente es neutral respecto a
+[Horizun Hub](https://horizunhub.com/?utm_source=github&utm_medium=readme&utm_campaign=horizun-revit-mcp). El puente es neutral respecto a
 organizaciones: los estándares y catálogos del proyecto son entradas. El
 [paquete de estándares](standards/README.md) opcional ofrece ejemplos editables.
 
